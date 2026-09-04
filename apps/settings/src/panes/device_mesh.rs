@@ -121,10 +121,9 @@ impl RelayRuntimeStatus {
         let metrics_path = config.state_root.join(qos_relay::store::METRICS_FILE);
         let fresh = std::fs::metadata(metrics_path)
             .and_then(|metadata| metadata.modified())
-            .map(|modified| {
+            .is_ok_and(|modified| {
                 now.duration_since(modified).unwrap_or(Duration::ZERO) <= STATUS_FRESHNESS
-            })
-            .unwrap_or(false);
+            });
         if !fresh {
             return Self::Offline;
         }
@@ -181,6 +180,10 @@ fn runtime_status_tint(status: RelayRuntimeStatus) -> vello::peniko::Color {
 }
 
 /// Editor for the daemon's real device-mesh configuration.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these booleans are independent asynchronous process and widget lifecycle states, not one mutually exclusive state machine"
+)]
 pub struct DeviceMeshPane {
     config_path: PathBuf,
     config: RelayConfig,
@@ -239,9 +242,10 @@ fn workspace_key(id: u64) -> String {
 }
 
 fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
-    let path = dirs::config_dir()
-        .map(|dir| dir.join("qos/state.json"))
-        .unwrap_or_else(|| PathBuf::from("state.json"));
+    let path = dirs::config_dir().map_or_else(
+        || PathBuf::from("state.json"),
+        |dir| dir.join("qos/state.json"),
+    );
     let mut result = std::fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -383,6 +387,12 @@ fn poll_child(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
     child.try_wait()
 }
 
+fn take_reaped_child(slot: &mut Option<Child>) -> Option<Child> {
+    let mut child = slot.take()?;
+    let _ = child.wait();
+    Some(child)
+}
+
 fn child_error(child: &mut Child, fallback: &str) -> String {
     let mut detail = String::new();
     if let Some(mut stderr) = child.stderr.take() {
@@ -409,12 +419,14 @@ impl DeviceMeshPane {
             Err(qos_relay::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                let mut config = RelayConfig::default();
                 // Settings is opened on interactive qOS devices far more
                 // often than on a newly provisioned headless relay. Do not
                 // visually opt an unconfigured desktop into server behavior.
-                config.device_role = DeviceRole::Interactive;
-                config.services = Default::default();
+                let config = RelayConfig {
+                    device_role: DeviceRole::Interactive,
+                    services: qos_relay::ServiceCapabilities::default(),
+                    ..RelayConfig::default()
+                };
                 (config, "Not configured on this device".to_string())
             }
             Err(error) => (
@@ -654,9 +666,11 @@ impl DeviceMeshPane {
         let pairing = self.pairing_child.is_some();
         let pair_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
             "Pairing…".to_string()
-        } else if self.pairing_target == PairingTarget::HomePeer && self.pairing_candidate.is_some()
+        } else if let Some(candidate) = self
+            .pairing_candidate
+            .as_ref()
+            .filter(|_| self.pairing_target == PairingTarget::HomePeer)
         {
-            let candidate = self.pairing_candidate.as_ref().expect("candidate exists");
             format!(
                 "Approve {} · {}",
                 candidate.label, candidate.verification_code
@@ -978,7 +992,7 @@ impl DeviceMeshPane {
     }
 
     fn persist(&mut self) {
-        if self.config_path == PathBuf::from(DEFAULT_CONFIG) {
+        if self.config_path == std::path::Path::new(DEFAULT_CONFIG) {
             if self.apply_child.is_some() {
                 self.apply_queued = true;
                 self.load_status = "Saving latest changes…".into();
@@ -1209,11 +1223,19 @@ impl DeviceMeshPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "polling keeps each child-process completion transition together so success, retry, error text, and UI rebuild state cannot drift apart"
+    )]
     fn poll_background_tasks(&mut self) {
         let apply_result = self.apply_child.as_mut().map(poll_child);
         match apply_result {
             Some(Ok(Some(status))) => {
-                let mut child = self.apply_child.take().expect("apply child exists");
+                let Some(mut child) = take_reaped_child(&mut self.apply_child) else {
+                    self.load_status = "Not saved: setup process disappeared".into();
+                    self.structure_dirty = true;
+                    return;
+                };
                 if status.success() {
                     if self.apply_queued {
                         self.apply_queued = false;
@@ -1242,7 +1264,11 @@ impl DeviceMeshPane {
         let pairing_result = self.pairing_child.as_mut().map(poll_child);
         match pairing_result {
             Some(Ok(Some(status))) => {
-                let mut child = self.pairing_child.take().expect("pairing child exists");
+                let Some(mut child) = take_reaped_child(&mut self.pairing_child) else {
+                    self.load_status = "Pairing stopped: setup process disappeared".into();
+                    self.structure_dirty = true;
+                    return;
+                };
                 if status.success() && self.pairing_discovery {
                     let mut output = String::new();
                     if let Some(mut stdout) = child.stdout.take() {
@@ -1299,10 +1325,11 @@ impl DeviceMeshPane {
         let management_result = self.management_child.as_mut().map(poll_child);
         match management_result {
             Some(Ok(Some(status))) => {
-                let mut child = self
-                    .management_child
-                    .take()
-                    .expect("management child exists");
+                let Some(mut child) = take_reaped_child(&mut self.management_child) else {
+                    self.load_status = "Home-server check stopped unexpectedly".into();
+                    self.structure_dirty = true;
+                    return;
+                };
                 let device = self.management_device.take().unwrap_or_default();
                 if status.success() {
                     let mut output = String::new();
@@ -1372,6 +1399,10 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DeviceMeshPane {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one synchronization pass consumes the pane's related role, replication, pairing, device-revocation, and server-management controls atomically"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.poll_background_tasks();
         if self.needs_seed {

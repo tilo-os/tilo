@@ -1233,6 +1233,10 @@ impl QuickFS {
     /// but expose only a small explanation for File Explorer.  This is a
     /// read-only operation: a failed or stale preflight leaves the conflict
     /// exactly as it was.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded preflight keeps access checks, exact immutable-version hydration, deterministic merge classification, and the validated wire projection in one auditable read-only path"
+    )]
     fn history_merge_preflight(&self, ino: u64, conflict_id: uuid::Uuid) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
@@ -2136,7 +2140,11 @@ impl QuickFS {
         Ok(())
     }
 
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "retrying a transfer keeps the persisted availability transition, authorization, hydration dispatch, and error rollback in one auditable operation"
+    )]
     fn retry_transfer(&self, ino: u64) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
@@ -3700,6 +3708,10 @@ fn update_candidate_state(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the reconciliation pass intentionally keeps topology discovery, durable transfer-state repair, local-residency probing, and bounded scheduling in one ordered state-machine pass"
+)]
 async fn reconcile_pinned_hydration(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
@@ -3797,9 +3809,11 @@ async fn reconcile_pinned_hydration(
             continue;
         }
 
-        let state = hydrator
-            .sync_state(candidate.hash.expect("filtered hash"))
-            .await;
+        let Some(hash) = candidate.hash else {
+            continue;
+        };
+
+        let state = hydrator.sync_state(hash).await;
         if state == crate::syncstate::SyncState::Local {
             update_candidate_state(&registry, candidate, |record| {
                 record.residency = Residency::Resident {
@@ -3810,9 +3824,7 @@ async fn reconcile_pinned_hydration(
             });
             continue;
         }
-        let partial = hydrator
-            .residency(candidate.hash.expect("filtered hash"))
-            .await;
+        let partial = hydrator.residency(hash).await;
         let resident_bytes = partial.hydrated_bytes.min(candidate.size);
         let due = {
             let mut registry = registry
@@ -3923,7 +3935,8 @@ async fn hydrate_pinned_candidate(
             record.transfer.phase = TransferPhase::Queued;
             record.transfer.retry_count = record.transfer.retry_count.saturating_add(1);
             let delay = 1_u64 << record.transfer.retry_count.min(6);
-            record.transfer.retry_at_ms = Some(now_ms().saturating_add(delay * 1_000));
+            record.transfer.retry_at_ms =
+                Some(now_ms().saturating_add(delay.saturating_mul(1_000)));
             record.transfer.last_error = Some(crate::availability::TransferError {
                 message: "No available replica could provide this file".into(),
                 occurred_at_ms: now_ms(),

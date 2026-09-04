@@ -1516,7 +1516,7 @@ impl RoomActivityPane {
 
     fn refresh_agent_runs(
         &mut self,
-        tree: &mut WorkspaceTree,
+        tree: &WorkspaceTree,
         records: &RecordStore,
         local: Option<&dyn crate::shell::workspace_history::PersistedRecordHistory>,
     ) {
@@ -2009,7 +2009,11 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one immediate-mode detail renderer keeps the agent task narrative and actions spatially coherent"
+    )]
     fn draw_agent_task_detail(
         &mut self,
         scene: &mut Scene,
@@ -2147,6 +2151,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode action row needs shared scene, typography, theme, bounds, and selection context"
+    )]
     fn draw_detail_actions(
         &mut self,
         scene: &mut Scene,
@@ -3772,6 +3780,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive focus-to-accessibility mapping is clearest beside the focus enum variants"
+    )]
     fn access_control(&self, focus: &ActivityFocus) -> Option<AccessControl> {
         use ui::a11y::Role;
 
