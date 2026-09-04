@@ -82,7 +82,10 @@ private_metadata_file() {
 }
 
 process_group_has_live_members() {
-  ps -eo pgid=,stat= | awk -v pgid="$1" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'
+  # Bash's job-control mode below starts each background job in a process
+  # group whose ID is its leader PID.  Probe that group with the shell builtin
+  # instead of depending on the host-specific `ps` command and output format.
+  kill -0 -- "-$1" 2>/dev/null
 }
 
 private_metadata_file "$uuid_file" 'runner UUID file'
@@ -199,31 +202,9 @@ set -m
   --label "$label:host" \
   --wait &
 runner_pid=$!
-if ! runner_pgid="$(ps -o pgid= -p "$runner_pid" 2>/dev/null | tr -d '[:space:]')"; then
-  # A one-job runner may finish before its process group can be sampled (for
-  # example when Forgejo has already assigned the queued job). Reap that
-  # completed child normally instead of turning the harmless ps race into a
-  # launcher failure under `set -e`.
-  # With monitor mode enabled, the background pipeline's leader PID is also
-  # its process-group ID. Preserve it so cleanup can still terminate children
-  # that outlived an already-reaped runner.
-  runner_pgid="$runner_pid"
-  set +e
-  wait "$runner_pid"
-  status=$?
-  set -e
-  runner_reaped=1
-  if [ "$status" -ne 0 ]; then
-    printf 'ephemeral Forgejo runner exited unsuccessfully (%s)\n' "$status" >&2
-    exit "$status"
-  fi
-  printf 'one-job runner completed; destroy this VM now\n'
-  exit 0
-fi
-if [ "$runner_pgid" != "$runner_pid" ]; then
-  printf 'could not isolate ephemeral runner in its own process group\n' >&2
-  exit 1
-fi
+# `set -m` gives this background job its own group, led by `$!`.  This remains
+# valid even when a very short one-job runner exits before the next statement.
+runner_pgid="$runner_pid"
 (
   sleep "$max_wait"
   kill -TERM -- "-$runner_pgid" 2>/dev/null || exit 0
@@ -231,11 +212,7 @@ fi
   kill -KILL -- "-$runner_pgid" 2>/dev/null || true
 ) &
 watcher_pid=$!
-watcher_pgid="$(ps -o pgid= -p "$watcher_pid" | tr -d '[:space:]')"
-if [ "$watcher_pgid" != "$watcher_pid" ]; then
-  printf 'could not isolate runner timeout watchdog in its own process group\n' >&2
-  exit 1
-fi
+watcher_pgid="$watcher_pid"
 
 set +e
 wait "$runner_pid"
