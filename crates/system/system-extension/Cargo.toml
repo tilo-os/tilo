@@ -10,6 +10,10 @@ description = "Signed, pinned desired-state transactions for optional qOS system
 name = "system_extension"
 path = "src/lib.rs"
 
+[[bin]]
+name = "qos-system-extension-manager"
+path = "src/bin/qos-system-extension-manager.rs"
+
 [dependencies]
 atomic-file = { path = "../atomic-file" }
 ed25519-dalek.workspace = true

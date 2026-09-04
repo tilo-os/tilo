@@ -1,0 +1,44 @@
+[Unit]
+Description=Stage one signed qOS BootPack as a future bootc deployment
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=network-online.target local-fs.target
+Wants=network-online.target
+RequiresMountsFor=/boot /sysroot /var/lib/containers
+ConditionPathExists=/var/lib/qos/system-extensions/boot-pack-request
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-system-extension-manager stage-pending
+
+# This is the sole networked BootPack boundary. Its input is the root-owned,
+# fixed queue file written by the socket dispatcher; the manager independently
+# re-verifies the signed image-owned catalogue before its one bootc switch.
+# bootc deploys an OSTree/composefs boot entry, which needs the mount namespace,
+# image-store/OSTree/ESP write paths, and the narrow capabilities below. This is
+# intentionally unlike the marker-only activation units: denying @mount or all
+# capabilities here would make a security-looking but nonfunctional service.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=no
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_MKNOD CAP_SETFCAP
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/qos/system-extensions /run/qos/system-extension-api /var/lib/containers /var/lib/bootc /ostree /sysroot /boot
+ReadOnlyPaths=/usr/share/qos/system-extensions
