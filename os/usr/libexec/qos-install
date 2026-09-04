@@ -870,21 +870,7 @@ else
       --target-imgref "$QOS_TARGET_IMGREF" \
       "$DISK"
 fi
-if [ "$ALONGSIDE" -eq 1 ]; then
-  restore_firmware_boot_state
-  BOOT_MENU_RESULT="$("$BOOT_MENU" install "$BOOT_ESP_ROOT" "${ROOT_FS_UUID:-no-root-uuid}")"
-  if [ -n "$BOOT_MENU_RESULT" ]; then
-    log "  boot menu   : added safe shortcuts for existing operating systems on the qOS ESP"
-  elif [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
-    # systemd-boot intentionally operates on its own ESP. Copying Windows or a
-    # distro shim from another ESP would break its update/BCD trust boundary;
-    # preserve firmware entries/order and keep those systems in the firmware
-    # picker instead of presenting a shortcut which cannot boot.
-    log "  boot menu   : existing systems remain in the firmware boot picker (their ESPs were not changed)"
-  else
-    log "  boot menu   : no unambiguous existing loader was present on the selected ESP; firmware entries were preserved"
-  fi
-fi
+[ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
 log "  base system installed."
 
 # Make sure the kernel sees the freshly written partition table.
@@ -984,6 +970,55 @@ fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
 
+# Publish a recovery receipt before adding any qOS-owned chainloader shortcuts
+# or target configuration. Both this provisional receipt and its final refresh
+# are atomic, so an interrupted alongside install never leaves an empty/partial
+# marker or boot-menu files which cannot be attributed to this exact root.
+install -d -m 0755 "$DEPLOY_ETC/qos"
+INSTALL_MARKER="$DEPLOY_ETC/qos/install-marker"
+write_install_marker() {
+  local marker_tmp install_mode=full-disk root_partition_uuid=""
+  [ "$ALONGSIDE" -eq 0 ] || install_mode=alongside
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    root_partition_uuid="$(blkid -s UUID -o value "$ROOT_PARTITION" 2>/dev/null || true)"
+    [ -n "$root_partition_uuid" ] || die "could not bind the recovery receipt to the qOS root partition"
+  fi
+  marker_tmp="$(mktemp "$DEPLOY_ETC/qos/.install-marker.XXXXXX")"
+  chmod 0600 "$marker_tmp"
+  {
+    printf 'version=1\nmode=%s\nroot_partition_uuid=%s\nroot_filesystem_uuid=%s\n' \
+      "$install_mode" "$root_partition_uuid" "${ROOT_FS_UUID:-}"
+    if [ "$ALONGSIDE" -eq 1 ]; then
+      EFI_UUID="$(blkid -s UUID -o value "$EFI_PARTITION" 2>/dev/null || true)"
+      [ -n "$EFI_UUID" ] || die "could not bind the recovery receipt to the qOS EFI partition"
+      printf 'efi_uuid=%s\n' "$EFI_UUID"
+      "$EFI_ARTIFACTS" "$MNT/boot/efi" "${ROOT_FS_UUID:-no-root-uuid}" \
+        | sed 's/^/efi_artifact=/'
+    fi
+  } > "$marker_tmp"
+  mv -f -- "$marker_tmp" "$INSTALL_MARKER"
+  sync -f "$DEPLOY_ETC/qos" 2>/dev/null || sync
+}
+write_install_marker
+log "  wrote provisional qOS recovery ownership marker"
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  BOOT_MENU_RESULT="$("$BOOT_MENU" install "$BOOT_ESP_ROOT" "${ROOT_FS_UUID:-no-root-uuid}")"
+  if [ -n "$BOOT_MENU_RESULT" ]; then
+    log "  boot menu   : added safe shortcuts for existing operating systems on the qOS ESP"
+  elif [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    # systemd-boot intentionally operates on its own ESP. Copying Windows or a
+    # distro shim from another ESP would break its update/BCD trust boundary;
+    # preserve firmware entries/order and keep those systems in the firmware
+    # picker instead of presenting a shortcut which cannot boot.
+    log "  boot menu   : existing systems remain in the firmware boot picker (their ESPs were not changed)"
+  else
+    log "  boot menu   : no unambiguous existing loader was present on the selected ESP; firmware entries were preserved"
+  fi
+  write_install_marker
+  log "  recorded qOS-owned boot menu files in the recovery marker"
+fi
+
 # The payload is the offline installer image, so undo its two live-medium-only
 # /etc changes in the installed deployment. The kernel argument is removed by
 # bootc above; restoring greetd and removing the transient privilege drop-in
@@ -1031,30 +1066,17 @@ if [ "$COPIED_CONNECTIONS" -gt 0 ]; then
   log "  preserved $COPIED_CONNECTIONS NetworkManager connection profile(s) for first boot"
 fi
 
-install -d -m 0755 "$DEPLOY_ETC/qos"
 # Leave a machine-readable ownership receipt for live-media recovery. Removal
 # never infers ownership from a generic Linux partition type or filesystem
 # label: it requires this receipt, verifies the selected filesystem UUID, and
 # removes only EFI artifacts whose embedded command line names this exact root.
 # A full-disk install is recorded too, but the recovery tool deliberately will
 # not dismantle it partition-by-partition; whole disks belong in Disks.
-INSTALL_MARKER="$DEPLOY_ETC/qos/install-marker"
-INSTALL_MODE=full-disk
-[ "$ALONGSIDE" -eq 1 ] && INSTALL_MODE=alongside
-{
-  ROOT_PARTITION_UUID=""
-  [ "$ALONGSIDE" -eq 1 ] && ROOT_PARTITION_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION" 2>/dev/null || true)"
-  printf 'version=1\nmode=%s\nroot_partition_uuid=%s\nroot_filesystem_uuid=%s\n' \
-    "$INSTALL_MODE" "$ROOT_PARTITION_UUID" "${ROOT_FS_UUID:-}"
-  if [ "$ALONGSIDE" -eq 1 ]; then
-    EFI_UUID="$(blkid -s UUID -o value "$EFI_PARTITION" 2>/dev/null || true)"
-    printf 'efi_uuid=%s\n' "$EFI_UUID"
-    "$EFI_ARTIFACTS" "$MNT/boot/efi" "${ROOT_FS_UUID:-no-root-uuid}" \
-      | sed 's/^/efi_artifact=/'
-  fi
-} > "$INSTALL_MARKER"
-chmod 0600 "$INSTALL_MARKER"
-log "  wrote qOS recovery ownership marker"
+# Refresh after target configuration as a final durable checkpoint. The
+# contents normally match the post-menu receipt; rewriting atomically also
+# heals a surviving provisional marker when an install is safely resumed.
+write_install_marker
+log "  finalized qOS recovery ownership marker"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
 CONF_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user.XXXXXX")"
 chmod 0600 "$CONF_TMP"
