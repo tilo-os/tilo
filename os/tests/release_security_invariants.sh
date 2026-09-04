@@ -58,6 +58,8 @@ fi
 
 grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh" \
   && grep -Fq 'latest does not point at signed gen$current' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--type slsaprovenance1' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--predicate provenance.json --type slsaprovenance1' "$workflow" \
   && ok 'generation allocation authenticates provenance and the latest channel' \
   || bad 'generation allocation still trusts registry tags alone'
 
@@ -77,7 +79,8 @@ if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.subject[0].digest.sha256 | length == 64' "$tmp/provenance.json" >/dev/null; then
+   && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.runDetails.byproducts[0].uri == "urn:qos:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
   ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
 else
   bad 'release provenance generator did not produce a bound predicate'

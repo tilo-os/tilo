@@ -199,10 +199,11 @@ verify_signed_generation() {
   signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" "$image")" || die \
     "gen$generation has no valid transparency-logged qOS release signature"
   provenance="$(cosign verify-attestation --key "$QOS_GENERATION_VERIFY_KEY" \
-    --type slsaprovenance "$image")" || die \
+    --type slsaprovenance1 "$image")" || die \
     "gen$generation has no valid transparency-logged SLSA provenance"
   printf '%s' "$provenance" | jq -e --argjson generation "$generation" '
-    [.[].payload | @base64d | fromjson
+    [(if type == "array" then .[] else . end)
+      | .payload | @base64d | fromjson
       | .predicate.buildDefinition.externalParameters.generation]
     | any(. == $generation)
   ' >/dev/null || die \

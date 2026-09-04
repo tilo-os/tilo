@@ -51,7 +51,10 @@ jq -n \
     buildDefinition: {
       buildType: "https://qos.dev/buildtypes/bootc-os/v1",
       externalParameters: {generation: ($generation|tonumber)},
-      internalParameters: {sourceDateEpoch: ($epoch|tonumber)},
+      internalParameters: {
+        sourceDateEpoch: ($epoch|tonumber),
+        expectedReleaseDigest: $digest
+      },
       resolvedDependencies: (
         [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
         + if $app_collection == "" then []
@@ -62,7 +65,9 @@ jq -n \
     runDetails: {
       builder: {id: "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
-      byproducts: [{name: "independent-rebuild", content: "manifest-digest-equal"}]
-    },
-    subject: [{name: "code.podesta.ai/qos/qos", digest: {sha256: ($digest|sub("^sha256:"; ""))}}]
+      byproducts: [{
+        name: "independent-rebuild",
+        uri: "urn:qos:verification:manifest-digest-equal"
+      }]
+    }
   }' > "$out"
