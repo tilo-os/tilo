@@ -11,6 +11,12 @@
 //!     publishers.toml      # owner-controlled allowlist
 //!     entries/
 //!         <urlencoded-pkg-id>.json   # one file per RegistryEntry
+//!     pending/
+//!         <urlencoded-pkg-id>.json   # one pending signed change per package
+//!     reviews/
+//!         <review-id>.json           # immutable moderator audit records
+//!     quarantined/
+//!         <urlencoded-pkg-id>.json   # entries removed from public visibility
 //! ```
 //!
 //! Writes go through atomic rename (`.tmp` → real path) so a
@@ -25,11 +31,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use registry_types::RegistryEntry;
+use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry};
 
 use crate::allowlist::PublisherAllowlist;
 
 /// Directory + on-disk file layout for one registry.
+#[derive(Clone)]
 pub struct Storage {
     root: PathBuf,
 }
@@ -39,11 +46,13 @@ impl Storage {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Io`] if the `entries/` directory can't be created.
+    /// Returns [`StorageError::Io`] if the state directories can't be created.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
-        std::fs::create_dir_all(root.join("entries"))
-            .map_err(|e| StorageError::Io(format!("mkdir entries: {e}")))?;
+        for name in ["entries", "pending", "reviews", "quarantined"] {
+            std::fs::create_dir_all(root.join(name))
+                .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
+        }
         Ok(Self { root })
     }
 
@@ -126,6 +135,33 @@ impl Storage {
             .join(format!("{}.json", filename_encode(package_id)))
     }
 
+    /// One quarantined entry's file path.
+    fn quarantined_entry_path(&self, package_id: &str) -> PathBuf {
+        self.root
+            .join("quarantined")
+            .join(format!("{}.json", filename_encode(package_id)))
+    }
+
+    /// One pending submission's file path.
+    fn pending_path(&self, submission_id: &str) -> PathBuf {
+        self.root
+            .join("pending")
+            .join(format!("{}.json", filename_encode(submission_id)))
+    }
+
+    /// One review record's file path.
+    fn review_path(&self, review_id: &str) -> PathBuf {
+        self.root
+            .join("reviews")
+            .join(format!("{}.json", filename_encode(review_id)))
+    }
+
+    /// Process-wide lock used by the server and local reviewer CLI to
+    /// serialize multi-file moderation transitions.
+    pub(crate) fn moderation_lock_path(&self) -> PathBuf {
+        self.root.join("moderation.lock")
+    }
+
     /// Load every entry from disk. Order is not defined.
     ///
     /// # Errors
@@ -192,13 +228,213 @@ impl Storage {
     ///
     /// Returns [`StorageError::Io`] if the file exists but can't be removed.
     pub fn delete_entry(&self, package_id: &str) -> Result<bool, StorageError> {
-        let path = self.entry_path(package_id);
-        if !path.exists() {
-            return Ok(false);
-        }
-        std::fs::remove_file(&path).map_err(|e| StorageError::Io(e.to_string()))?;
-        Ok(true)
+        delete_if_exists(&self.entry_path(package_id))
     }
+
+    /// Load an entry that moderation has removed from public visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry cannot be read or decoded.
+    pub fn load_quarantined_entry(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<RegistryEntry>, StorageError> {
+        load_json(
+            &self.quarantined_entry_path(package_id),
+            "quarantined entry",
+        )
+    }
+
+    /// Atomically persist an entry outside the public index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry cannot be encoded or persisted.
+    pub fn save_quarantined_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
+        save_json(&self.quarantined_entry_path(&entry.package_id), entry)
+    }
+
+    /// Remove an entry from quarantine after it has been restored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry exists but cannot be removed.
+    pub fn delete_quarantined_entry(&self, package_id: &str) -> Result<bool, StorageError> {
+        delete_if_exists(&self.quarantined_entry_path(package_id))
+    }
+
+    /// Load one pending publisher submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the submission cannot be read or decoded.
+    pub fn load_pending(
+        &self,
+        submission_id: &str,
+    ) -> Result<Option<PendingSubmission>, StorageError> {
+        load_json(&self.pending_path(submission_id), "pending submission")
+    }
+
+    /// Load all pending submissions. Ordering is not defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue cannot be read or decoded.
+    pub fn load_pending_submissions(&self) -> Result<Vec<PendingSubmission>, StorageError> {
+        load_json_dir(&self.root.join("pending"), "pending submission")
+    }
+
+    /// Atomically create or replace a pending submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the submission cannot be encoded or persisted.
+    pub fn save_pending(&self, submission: &PendingSubmission) -> Result<(), StorageError> {
+        save_json(&self.pending_path(&submission.submission_id), submission)
+    }
+
+    /// Remove a pending submission after its terminal review record is durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the submission exists but cannot be removed.
+    pub fn delete_pending(&self, submission_id: &str) -> Result<bool, StorageError> {
+        delete_if_exists(&self.pending_path(submission_id))
+    }
+
+    /// Load one durable moderator review/audit record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the review cannot be read or decoded.
+    pub fn load_review(&self, review_id: &str) -> Result<Option<ReviewRecord>, StorageError> {
+        load_json(&self.review_path(review_id), "review")
+    }
+
+    /// Load all moderator review/audit records. Ordering is not defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the review log cannot be read or decoded.
+    pub fn load_reviews(&self) -> Result<Vec<ReviewRecord>, StorageError> {
+        load_json_dir(&self.root.join("reviews"), "review")
+    }
+
+    /// Atomically persist a review/audit record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the review cannot be encoded or persisted.
+    pub fn save_review(&self, review: &ReviewRecord) -> Result<(), StorageError> {
+        save_json(&self.review_path(&review.review_id), review)
+    }
+}
+
+fn load_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>, StorageError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| StorageError::Io(format!("read {label} {}: {e}", path.display())))?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| StorageError::Parse(e.to_string()))
+}
+
+fn load_json_dir<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+    label: &str,
+) -> Result<Vec<T>, StorageError> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| StorageError::Io(e.to_string()))? {
+        let path = entry.map_err(|e| StorageError::Io(e.to_string()))?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Some(value) = load_json(&path, label)? {
+            out.push(value);
+        }
+    }
+    Ok(out)
+}
+
+fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
+    let body = serde_json::to_vec_pretty(value).map_err(|e| StorageError::Encode(e.to_string()))?;
+    atomic_write(path, &body)
+}
+
+fn delete_if_exists(path: &Path) -> Result<bool, StorageError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(path).map_err(|e| StorageError::Io(e.to_string()))?;
+    // Match `atomic-file`'s durability property for the transition's delete
+    // side: a successful return should not resurrect this state after power
+    // loss because the containing directory entry was never flushed.
+    if let Some(parent) = path.parent()
+        && let Ok(directory) = std::fs::File::open(parent)
+    {
+        let _result = directory.sync_all();
+    }
+    Ok(true)
+}
+
+/// A publisher request awaiting a moderator's decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSubmission {
+    /// The package id. There is at most one pending revision for a package,
+    /// so a newer revision can atomically replace its predecessor.
+    pub submission_id: String,
+    /// Time the registry accepted this pending revision.
+    pub submitted_at_unix: u64,
+    /// The publisher-signed request that will be re-verified at approval.
+    pub change: EntryChangeRequest,
+}
+
+/// The terminal effect recorded for a moderator action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Approved,
+    Rejected,
+    Quarantined,
+    Restored,
+}
+
+/// What an audit record reviewed. Publisher submissions retain the complete
+/// signed request; operational quarantine/restore records retain the entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReviewSubject {
+    Submission(PendingSubmission),
+    Entry {
+        action: EntryAction,
+        entry: RegistryEntry,
+    },
+}
+
+/// Durable audit record for every terminal moderation decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    /// Globally unique ID for this decision.
+    pub review_id: String,
+    /// Result of the moderation action.
+    pub decision: ReviewDecision,
+    /// Moderator identity, supplied by the caller.
+    pub reviewer: String,
+    /// Operator-supplied explanation; an empty string is allowed.
+    pub reason: String,
+    /// Time this terminal decision was made.
+    pub reviewed_at_unix: u64,
+    /// The exact data reviewed.
+    pub subject: ReviewSubject,
 }
 
 /// The server's own greeting: name, description, `base_url` plus
@@ -287,6 +523,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Storage::open(dir.path()).unwrap();
         assert!(s.root.join("entries").is_dir());
+        assert!(s.root.join("pending").is_dir());
+        assert!(s.root.join("reviews").is_dir());
+        assert!(s.root.join("quarantined").is_dir());
     }
 
     #[test]
