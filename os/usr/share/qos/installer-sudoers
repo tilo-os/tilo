@@ -7,9 +7,9 @@
 # never gets this rule.
 #
 # It lets the unprivileged greetd session user (which runs the qos-installer
-# UI under cage) self-escalate the privileged backend commands via
-# `sudo -n`: the installer, Finish-screen power/recovery actions, and the exact
-# read-only guided-receipt inspection form. The create verb is not granted.
+# UI under cage) self-escalate the two privileged backend commands via
+# `sudo -n`: the installer (qos-install) and the Finish-screen power action
+# (qos-power, reboot/poweroff).
 #
 # Preserve a release-channel tag/digest override across the sudo env reset.
 # qos-install rejects repositories outside the signature-required qOS origin.
@@ -22,4 +22,4 @@ Defaults env_keep += "QOS_TARGET_IMGREF"
 # path, so the pty hardening buys little here).
 Defaults:greetd !use_pty
 
-greetd ALL=(root) NOPASSWD: /usr/libexec/qos-install, /usr/libexec/qos-power, /usr/libexec/qos-recovery, /usr/libexec/qos-guided-partition inspect --disk /dev/*
+greetd ALL=(root) NOPASSWD: /usr/libexec/qos-install, /usr/libexec/qos-power, /usr/libexec/qos-recovery
