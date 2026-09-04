@@ -81,6 +81,10 @@ private_metadata_file() {
   done
 }
 
+process_group_has_live_members() {
+  ps -eo pgid=,stat= | awk -v pgid="$1" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'
+}
+
 private_metadata_file "$uuid_file" 'runner UUID file'
 private_metadata_file "$token_file" 'runner token file'
 
@@ -100,16 +104,16 @@ cleanup() {
     fi
     wait "$watcher_pid" 2>/dev/null || true
   fi
-  if [ -n "$runner_pgid" ] && kill -0 -- "-$runner_pgid" 2>/dev/null; then
+  if [ -n "$runner_pgid" ] && process_group_has_live_members "$runner_pgid"; then
     kill -TERM -- "-$runner_pgid" 2>/dev/null || true
     for attempt in {1..50}; do
-      kill -0 -- "-$runner_pgid" 2>/dev/null || break
+      process_group_has_live_members "$runner_pgid" || break
       sleep 0.1
     done
-    if kill -0 -- "-$runner_pgid" 2>/dev/null; then
+    if process_group_has_live_members "$runner_pgid"; then
       kill -KILL -- "-$runner_pgid" 2>/dev/null || true
       for attempt in {1..50}; do
-        kill -0 -- "-$runner_pgid" 2>/dev/null || break
+        process_group_has_live_members "$runner_pgid" || break
         sleep 0.1
       done
     fi
@@ -117,7 +121,7 @@ cleanup() {
   if [ -n "$runner_pid" ] && [ "$runner_reaped" = 0 ]; then
     wait "$runner_pid" 2>/dev/null || true
   fi
-  if [ -n "$runner_pgid" ] && kill -0 -- "-$runner_pgid" 2>/dev/null; then
+  if [ -n "$runner_pgid" ] && process_group_has_live_members "$runner_pgid"; then
     printf 'ephemeral runner process group survived cleanup\n' >&2
     cleanup_failed=1
   fi
@@ -195,7 +199,27 @@ set -m
   --label "$label:host" \
   --wait &
 runner_pid=$!
-runner_pgid="$(ps -o pgid= -p "$runner_pid" | tr -d '[:space:]')"
+if ! runner_pgid="$(ps -o pgid= -p "$runner_pid" 2>/dev/null | tr -d '[:space:]')"; then
+  # A one-job runner may finish before its process group can be sampled (for
+  # example when Forgejo has already assigned the queued job). Reap that
+  # completed child normally instead of turning the harmless ps race into a
+  # launcher failure under `set -e`.
+  # With monitor mode enabled, the background pipeline's leader PID is also
+  # its process-group ID. Preserve it so cleanup can still terminate children
+  # that outlived an already-reaped runner.
+  runner_pgid="$runner_pid"
+  set +e
+  wait "$runner_pid"
+  status=$?
+  set -e
+  runner_reaped=1
+  if [ "$status" -ne 0 ]; then
+    printf 'ephemeral Forgejo runner exited unsuccessfully (%s)\n' "$status" >&2
+    exit "$status"
+  fi
+  printf 'one-job runner completed; destroy this VM now\n'
+  exit 0
+fi
 if [ "$runner_pgid" != "$runner_pid" ]; then
   printf 'could not isolate ephemeral runner in its own process group\n' >&2
   exit 1

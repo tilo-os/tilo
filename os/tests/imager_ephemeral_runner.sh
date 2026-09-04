@@ -85,7 +85,8 @@ QOS_TEST_CHILD_PID_FILE="$tmp/child-pid" QOS_TEST_ARGUMENTS="$tmp/process-tree" 
   "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
   >/dev/null
 child_pid="$(cat "$tmp/child-pid")"
-if kill -0 "$child_pid" 2>/dev/null; then
+child_state="$(ps -o stat= -p "$child_pid" 2>/dev/null || true)"
+if [ -n "$child_state" ] && [[ "$child_state" != Z* ]]; then
   printf 'ephemeral runner launcher left a child process alive\n' >&2
   exit 1
 fi
