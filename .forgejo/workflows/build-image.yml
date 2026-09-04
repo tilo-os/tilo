@@ -117,7 +117,7 @@ jobs:
 
       - name: Require the promoted native WPE buildroot
         env:
-          WITH_BROWSER: ${{ github.event.inputs.with_browser || '1' }}
+          WITH_BROWSER: ${{ github.event_name == 'pull_request' && '0' || github.event.inputs.with_browser || '1' }}
         run: |
           set -euo pipefail
           . os/wpe-buildroot-snapshot.env
@@ -230,7 +230,7 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ github.event_name == 'pull_request' && '0' || github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
@@ -278,7 +278,7 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ github.event_name == 'pull_request' && '0' || github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
