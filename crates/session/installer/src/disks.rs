@@ -56,13 +56,6 @@ pub struct GuidedAlongsidePlan {
     pub efi_size_bytes: u64,
     pub root_start_bytes: u64,
     pub root_size_bytes: u64,
-    /// Original random identities from a pending, paired on-disk consistency
-    /// receipt. Empty for a newly reviewed free extent.
-    pub efi_partuuid: String,
-    pub root_partuuid: String,
-    /// The exact GPT map which preceded the pending pair. This deliberately
-    /// excludes the two receipt-associated entries.
-    pub expected_partitions: Vec<PartitionExtent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,11 +120,6 @@ pub struct Disk {
     pub read_only: bool,
     pub is_system: bool,
     pub partitions: Vec<DiskPartition>,
-    /// A consistently identified guided pair whose GPT commit survived but
-    /// whose EFI formatting did not. The receipt is not authorization; Review
-    /// still requires fresh exact typed confirmation. Populated only by the
-    /// privileged inspector and never inferred from names or labels.
-    pub pending_guided: Option<GuidedAlongsidePlan>,
 }
 
 impl Disk {
@@ -190,9 +178,6 @@ impl Disk {
     /// ESP plus a >=32 GiB root, in on-disk order. Callers must require an
     /// explicit choice when this returns more than one plan.
     pub fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
-        if let Some(plan) = &self.pending_guided {
-            return vec![plan.clone()];
-        }
         if !self.partition_table.eq_ignore_ascii_case("gpt")
             || self.partition_table_uuid.is_empty()
             || self.logical_sector_size == 0
@@ -239,9 +224,6 @@ impl Disk {
                         efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
                         root_start_bytes: root_start,
                         root_size_bytes: root_size,
-                        efi_partuuid: String::new(),
-                        root_partuuid: String::new(),
-                        expected_partitions: Vec::new(),
                     });
                 }
             }
@@ -370,7 +352,6 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
-            pending_guided: None,
         });
     }
     disks
@@ -412,7 +393,6 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 read_only: boolean(d, "ro"),
                 is_system,
                 partitions,
-                pending_guided: None,
             })
         })
         .collect()
@@ -481,126 +461,9 @@ fn format_bytes(bytes: u64) -> String {
 /// is missing or fails — the UI surfaces that as "No disks found".
 pub fn read_disks() -> Vec<Disk> {
     match Command::new("lsblk").args(LSBLK_ARGS).output() {
-        Ok(out) if out.status.success() => {
-            let mut disks = parse_lsblk(&String::from_utf8_lossy(&out.stdout));
-            let helper = std::env::var("QOS_GUIDED_PARTITION")
-                .unwrap_or_else(|_| "/usr/libexec/qos-guided-partition".to_string());
-            for disk in &mut disks {
-                // The graphical session is `greetd`, not root. The live-only
-                // sudoers contract permits precisely this read-only verb; it
-                // does not grant direct access to the helper's create verb.
-                let Ok(inspected) = Command::new("sudo")
-                    .args(["-n", &helper, "inspect", "--disk", disk.name.as_str()])
-                    .output()
-                else {
-                    continue;
-                };
-                if inspected.status.success() {
-                    disk.pending_guided = parse_pending_guided_receipt(
-                        &String::from_utf8_lossy(&inspected.stdout),
-                        disk,
-                    );
-                }
-            }
-            disks
-        }
+        Ok(out) if out.status.success() => parse_lsblk(&String::from_utf8_lossy(&out.stdout)),
         _ => Vec::new(),
     }
-}
-
-/// Parse the privileged helper's deliberately tiny line protocol. The helper
-/// has already verified both receipt copies and the current GPT under a disk
-/// lock; we repeat all disk-level values before allowing it to affect the UI.
-fn parse_pending_guided_receipt(output: &str, disk: &Disk) -> Option<GuidedAlongsidePlan> {
-    fn one<'a>(output: &'a str, key: &str) -> Option<&'a str> {
-        let prefix = format!("{key}=");
-        let mut values = output.lines().filter_map(|line| line.strip_prefix(&prefix));
-        let value = values.next()?;
-        values.next().is_none().then_some(value)
-    }
-    fn number(output: &str, key: &str) -> Option<u64> {
-        one(output, key)?.parse().ok()
-    }
-    fn valid_uuid(value: &str) -> bool {
-        uuid::Uuid::parse_str(value).is_ok()
-    }
-
-    (one(output, "PENDING_GUIDED")? == "1").then_some(())?;
-    let disk_ptuuid = one(output, "DISK_PTUUID")?;
-    (disk.partition_table_uuid.eq_ignore_ascii_case(disk_ptuuid)
-        && disk.size_bytes == number(output, "DISK_SIZE")?
-        && disk.logical_sector_size == number(output, "LOGICAL_SECTOR")?)
-    .then_some(())?;
-    let efi_partuuid = one(output, "EFI_PARTUUID")?.to_ascii_lowercase();
-    let root_partuuid = one(output, "ROOT_PARTUUID")?.to_ascii_lowercase();
-    (valid_uuid(&efi_partuuid) && valid_uuid(&root_partuuid) && efi_partuuid != root_partuuid)
-        .then_some(())?;
-    let efi_start_bytes = number(output, "EFI_START")?;
-    let efi_size_bytes = number(output, "EFI_SIZE")?;
-    let root_start_bytes = number(output, "ROOT_START")?;
-    let root_size_bytes = number(output, "ROOT_SIZE")?;
-    (efi_size_bytes == MIN_ALONGSIDE_ESP_BYTES
-        && root_size_bytes >= MIN_ALONGSIDE_BYTES
-        && efi_start_bytes.checked_add(efi_size_bytes)? == root_start_bytes)
-        .then_some(())?;
-    let expected_partitions = output
-        .lines()
-        .filter_map(|line| line.strip_prefix("PRIOR="))
-        .map(|item| {
-            let mut fields = item.split(':');
-            let part_uuid = fields.next()?.to_ascii_lowercase();
-            let start_bytes = fields.next()?.parse().ok()?;
-            let size_bytes = fields.next()?.parse().ok()?;
-            (fields.next().is_none() && valid_uuid(&part_uuid)).then_some(PartitionExtent {
-                part_uuid,
-                start_bytes,
-                size_bytes,
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let mut actual_prior = disk
-        .partitions
-        .iter()
-        .filter(|partition| {
-            !partition.part_uuid.eq_ignore_ascii_case(&efi_partuuid)
-                && !partition.part_uuid.eq_ignore_ascii_case(&root_partuuid)
-        })
-        .map(|partition| PartitionExtent {
-            part_uuid: partition.part_uuid.to_ascii_lowercase(),
-            start_bytes: partition.start_bytes,
-            size_bytes: partition.size_bytes,
-        })
-        .collect::<Vec<_>>();
-    let mut expected_sorted = expected_partitions.clone();
-    actual_prior.sort_by_key(|extent| extent.start_bytes);
-    expected_sorted.sort_by_key(|extent| extent.start_bytes);
-    (actual_prior == expected_sorted).then_some(())?;
-    let efi = disk
-        .partitions
-        .iter()
-        .find(|partition| partition.part_uuid.eq_ignore_ascii_case(&efi_partuuid))?;
-    let root = disk
-        .partitions
-        .iter()
-        .find(|partition| partition.part_uuid.eq_ignore_ascii_case(&root_partuuid))?;
-    (efi.start_bytes == efi_start_bytes
-        && efi.size_bytes == efi_size_bytes
-        && efi.part_type.eq_ignore_ascii_case(EFI_SYSTEM_GUID)
-        && root.start_bytes == root_start_bytes
-        && root.size_bytes == root_size_bytes
-        && root.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID))
-    .then_some(())?;
-    Some(GuidedAlongsidePlan {
-        free_start_bytes: efi_start_bytes,
-        free_size_bytes: efi_size_bytes.checked_add(root_size_bytes)?,
-        efi_start_bytes,
-        efi_size_bytes,
-        root_start_bytes,
-        root_size_bytes,
-        efi_partuuid,
-        root_partuuid,
-        expected_partitions,
-    })
 }
 
 #[cfg(test)]
@@ -691,7 +554,6 @@ mod tests {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
-            pending_guided: None,
         };
         assert_eq!(with.label(), "/dev/sda  —  238.5G  —  Samsung SSD");
         let without = Disk {
@@ -709,7 +571,6 @@ mod tests {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
-            pending_guided: None,
         };
         assert_eq!(without.label(), "/dev/vda  —  64G");
     }
@@ -821,53 +682,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_receipt_protocol_revalidates_pair_and_complete_prior_map() {
-        let gib = 1024_u64 * 1024 * 1024;
-        let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/vda","size":{},"model":"VM","type":"disk","pttype":"gpt","ptuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","log-sec":512,"rm":false,"ro":false,"serial":"disk","maj:min":"252:0","children":[{{"name":"/dev/vda1","size":{},"start":2048,"type":"part","fstype":"ntfs","parttype":"basic","partuuid":"00000000-0000-4000-8000-000000000001"}},{{"name":"/dev/vda2","size":{},"start":209715200,"type":"part","parttype":"{}","partuuid":"10000000-0000-4000-8000-000000000002"}},{{"name":"/dev/vda3","size":{},"start":213909504,"type":"part","parttype":"{}","partuuid":"20000000-0000-4000-8000-000000000003"}}]}}]}}"#,
-            200 * gib,
-            100 * gib - 1024 * 1024,
-            2 * gib,
-            EFI_SYSTEM_GUID,
-            98 * gib,
-            LINUX_FILESYSTEM_GUID,
-        );
-        let disk = parse_lsblk(&fixture).remove(0);
-        let receipt = format!(
-            "PENDING_GUIDED=1\nDISK_PTUUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\nDISK_SIZE={}\nLOGICAL_SECTOR=512\nEFI_PARTUUID=10000000-0000-4000-8000-000000000002\nEFI_START={}\nEFI_SIZE={}\nROOT_PARTUUID=20000000-0000-4000-8000-000000000003\nROOT_START={}\nROOT_SIZE={}\nPRIOR=00000000-0000-4000-8000-000000000001:1048576:{}\n",
-            200 * gib,
-            100 * gib,
-            2 * gib,
-            102 * gib,
-            98 * gib,
-            100 * gib - 1024 * 1024,
-        );
-        let plan = parse_pending_guided_receipt(&receipt, &disk).expect("valid paired receipt");
-        assert_eq!(plan.efi_start_bytes, 100 * gib);
-        assert_eq!(plan.expected_partitions.len(), 1);
-
-        assert!(
-            parse_pending_guided_receipt(
-                &receipt.replace("EFI_SIZE=2147483648", "EFI_SIZE=1"),
-                &disk
-            )
-            .is_none(),
-            "changed recovery geometry must fail closed"
-        );
-        assert!(
-            parse_pending_guided_receipt(
-                &receipt.replace(
-                    "PRIOR=",
-                    "PRIOR=ffffffff-ffff-4fff-8fff-ffffffffffff:1:1\nPRIOR="
-                ),
-                &disk
-            )
-            .is_none(),
-            "incomplete or forged prior maps must fail closed"
-        );
-    }
-
-    #[test]
     fn guided_plan_uses_one_aligned_gpt_free_extent_without_resizing() {
         let gib = 1024_u64 * 1024 * 1024;
         let fixture = format!(
@@ -903,7 +717,6 @@ mod tests {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
-            pending_guided: None,
         };
         assert!(
             disk.guided_alongside_plan().is_none(),
