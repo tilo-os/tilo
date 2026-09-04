@@ -1888,10 +1888,7 @@ mod tests {
         let (mut fb, _identity_dir) = onboarding_frame();
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Use my existing qOS identity")
-        );
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
     }
 
     #[test]
@@ -1901,7 +1898,7 @@ mod tests {
         fb.reconcile_native_focus(&mut focus);
 
         let update = fb.build_a11y_tree_update(focus, 1.0);
-        let (existing_id, existing) = exported_node_named(&update, "Use my existing qOS identity")
+        let (existing_id, existing) = exported_node_named(&update, "Use existing")
             .expect("existing-identity action reaches the external tree");
         let (_, create) = exported_node_named(&update, "Create identity")
             .expect("create-identity action reaches the external tree");
@@ -1936,7 +1933,7 @@ mod tests {
         let protect = fb.build_a11y_tree_update(focus, 1.0);
 
         assert!(
-            exported_node_named(&protect, "Use my existing qOS identity").is_none(),
+            exported_node_named(&protect, "Use existing").is_none(),
             "nodes from the replaced step must leave the exported tree"
         );
         assert!(
@@ -2006,10 +2003,7 @@ mod tests {
 
         let shift = Modifiers::from(ModifiersState::SHIFT);
         assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Use my existing qOS identity")
-        );
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
     }
 
     #[test]
@@ -2040,10 +2034,7 @@ mod tests {
         let mut focus = None;
         let mut doc = AutoCommit::new();
         fb.reconcile_native_focus(&mut focus);
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Use my existing qOS identity")
-        );
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
 
         doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
             .expect("begin identity setup");
