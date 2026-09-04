@@ -10,10 +10,14 @@ What it checks, in order:
 
   1. `initialize` negotiates and names the server.
   2. `tools/list` offers the five tools, including receipt status/cancel.
-  3. `qos_enumerate_actions` returns the live surface through the shim.
-  4. `qos_invoke_action` moves real state — read back with an
+  3. MCP resources reveal the surface lazily: the root contains applications
+     only; reading one application returns its objects with their actions
+     nested beneath them. The full catalogue never lands in the model's
+     initial context, and the tree follows the ownership apps already publish.
+  4. `qos_enumerate_actions` can still search the live surface explicitly.
+  5. `qos_invoke_action` moves real state — read back with an
      independent `state_dump`, not from the tool's own reply.
-  5. A refusal reaches the model as `isError: true` carrying the
+  6. A refusal reaches the model as `isError: true` carrying the
      compositor's own code, rather than being smoothed into a success.
 
 Exits non-zero if any of those fail.
@@ -76,6 +80,13 @@ def tool_text(reply) -> str:
         return reply["result"]["content"][0]["text"]
     except (KeyError, IndexError, TypeError):
         return ""
+
+
+def resource_text(reply) -> dict:
+    try:
+        return json.loads(reply["result"]["contents"][0]["text"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return {}
 
 
 def overlays() -> dict:
@@ -176,12 +187,35 @@ def main() -> int:
                         "qos_invoke_action", "qos_state_dump"],
               ", ".join(names))
 
-        print("\n[3] enumerate through the shim")
+        print("\n[3] resources are lazy: application -> object -> action")
+        rpc(shim, {"jsonrpc": "2.0", "id": 3, "method": "resources/list"})
+        reply = read_reply(shim, 3)
+        resources = (reply or {}).get("result", {}).get("resources", [])
+        app_only = bool(resources) and all(
+            resource.get("mimeType") == "application/vnd.qos.application+json"
+            and resource.get("uri", "").startswith("qos://application/")
+            for resource in resources
+        )
+        check("the root loads applications, not action descriptors", app_only,
+              f"{len(resources)} application surface(s)")
+
+        app = resources[0] if resources else {}
+        rpc(shim, {"jsonrpc": "2.0", "id": 4, "method": "resources/read",
+                   "params": {"uri": app.get("uri", "")}})
+        application = resource_text(read_reply(shim, 4))
+        objects = application.get("objects", [])
+        nested_actions = [action for object_ in objects for action in object_.get("actions", [])]
+        check("reading one application nests actions under their objects",
+              application.get("type") == "application"
+              and bool(objects) and bool(nested_actions),
+              f"{len(objects)} object(s), {len(nested_actions)} action(s)")
+
+        print("\n[4] enumerate through the shim")
         rpc(shim, {
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
             "params": {"name": "qos_enumerate_actions", "arguments": {"query": ""}},
         })
-        reply = read_reply(shim, 3)
+        reply = read_reply(shim, 5)
         try:
             payload = json.loads(tool_text(reply))
             count = payload.get("count", 0)
@@ -189,14 +223,14 @@ def main() -> int:
             count = 0
         check("a live surface reaches the model", count > 0, f"{count} actions")
 
-        print("\n[4] invoke, and read the effect back independently")
+        print("\n[5] invoke, and read the effect back independently")
         before = overlays().get("collaborators")
         rpc(shim, {
-            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
             "params": {"name": "qos_invoke_action",
                        "arguments": {"provider": "actions", "id": "collaborators.open"}},
         })
-        reply = read_reply(shim, 4)
+        reply = read_reply(shim, 6)
         check("the invocation is not an error",
               reply is not None and not reply["result"].get("isError"),
               tool_text(reply)[:60].replace("\n", " "))
@@ -204,13 +238,13 @@ def main() -> int:
         after = overlays().get("collaborators")
         check("live state actually moved", before != after, f"{before} -> {after}")
 
-        print("\n[5] a refusal reaches the model intact")
+        print("\n[6] a refusal reaches the model intact")
         rpc(shim, {
-            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
             "params": {"name": "qos_invoke_action",
                        "arguments": {"provider": "actions", "id": "not.a.real.action"}},
         })
-        reply = read_reply(shim, 5)
+        reply = read_reply(shim, 7)
         text = tool_text(reply)
         check("the model is told it failed",
               reply is not None and reply["result"].get("isError") is True)

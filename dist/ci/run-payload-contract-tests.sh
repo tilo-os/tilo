@@ -52,4 +52,24 @@ sed -i \
     "$nix/share/wayland-sessions/qos.desktop"
 "$repo_root/dist/ci/verify-nix-result.sh" "$nix" amd64
 
+# The OS hand-off is deterministic and contains only the three native binaries
+# already install-tested by the distro package lane.
+payload_bin=$work/payload-bin
+mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
+for binary in shell qos-launcher qos-unlock-helper; do
+    install -m755 "$true_bin" "$payload_bin/$binary"
+done
+SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
+    "$repo_root/dist/desktop/package-os-payload.sh" \
+    "$payload_bin" x86_64 "$work/payload-a"
+SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
+    "$repo_root/dist/desktop/package-os-payload.sh" \
+    "$payload_bin" x86_64 "$work/payload-b"
+cmp "$work/payload-a/qos-desktop-os-x86_64.tar.gz" \
+    "$work/payload-b/qos-desktop-os-x86_64.tar.gz"
+mkdir "$work/payload-unpacked"
+tar -xzf "$work/payload-a/qos-desktop-os-x86_64.tar.gz" \
+    -C "$work/payload-unpacked"
+(cd "$work/payload-unpacked" && sha256sum --check --strict SHA256SUMS)
+
 echo "payload contract fixtures passed"

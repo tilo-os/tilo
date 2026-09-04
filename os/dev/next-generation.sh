@@ -59,6 +59,30 @@ esac
 # problem rather than a lookup one.
 QOS_REGISTRY_CREDS="${QOS_REGISTRY_CREDS:-}"
 
+# Cosign performs separate registry requests after tag discovery. Give it the
+# same explicit credential in a private Docker config instead of relying on a
+# runner credential helper that may not exist inside the job container.
+QOS_COSIGN_AUTH_DIR=""
+cleanup_auth() {
+  [ -z "$QOS_COSIGN_AUTH_DIR" ] || rm -r "$QOS_COSIGN_AUTH_DIR"
+}
+trap cleanup_auth EXIT
+if [ -n "$QOS_REGISTRY_CREDS" ]; then
+  case "$QOS_REGISTRY_CREDS" in
+    *:*) ;;
+    *) die "QOS_REGISTRY_CREDS must be user:token" ;;
+  esac
+  [ -n "${QOS_REGISTRY_CREDS%%:*}" ] && [ -n "${QOS_REGISTRY_CREDS#*:}" ] \
+    || die "QOS_REGISTRY_CREDS must contain a non-empty user and token"
+  QOS_COSIGN_AUTH_DIR="$(mktemp -d)"
+  chmod 0700 "$QOS_COSIGN_AUTH_DIR"
+  encoded="$(printf '%s' "$QOS_REGISTRY_CREDS" | base64 | tr -d '\n')"
+  printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+    "${QOS_PUBLISH_REPO%%/*}" "$encoded" > "$QOS_COSIGN_AUTH_DIR/config.json"
+  chmod 0600 "$QOS_COSIGN_AUTH_DIR/config.json"
+  export DOCKER_CONFIG="$QOS_COSIGN_AUTH_DIR"
+fi
+
 # skopeo is not installed everywhere this runs — the host is image-based and the CI
 # runner does not ship it — so fall back to running it in a container.
 SKOPEO_IMAGE="${QOS_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
@@ -105,7 +129,7 @@ list_tags() {
 
   if command -v skopeo >/dev/null 2>&1; then
     if [ -n "${auth:-}" ]; then
-      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO"; then
         rc=0
       else
         rc=$?
@@ -113,7 +137,7 @@ list_tags() {
       rm -r "$tmp"
       return $rc
     fi
-    skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
+    skopeo list-tags "docker://$QOS_PUBLISH_REPO"
     return $?
   fi
 

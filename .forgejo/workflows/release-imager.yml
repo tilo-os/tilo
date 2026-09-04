@@ -1,7 +1,7 @@
-name: Build qOS Imager host downloads
+name: Release / imager
 
-# Pushes and pull requests continuously prove each native build. An imager-v*
-# tag is different: all three jobs require protected platform credentials and
+# Pushes and pull requests continuously prove the Linux x86_64 smoke lane. An
+# imager-v* tag expands to all native hosts; those jobs require protected credentials and
 # fail closed unless the resulting package is signed (and notarized on macOS).
 on:
   push:
@@ -10,11 +10,30 @@ on:
     paths:
       - "apps/imager/**"
       - "ui/**"
-      - "crates/runtime/**"
-      - "crates/**"
+      - "crates/app/qos-app/**"
+      - "crates/collab/actions/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/dev/headless-schema/**"
+      - "crates/dev/ui-graph/**"
+      - "crates/doc/qdoc/**"
+      - "crates/media/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/runtime-collab/**"
+      - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-identity/**"
+      - "crates/runtime/runtime-portal/**"
+      - "crates/system/app-state/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/qos-startup-metrics/**"
+      - "crates/system/settings-store/**"
+      - "crates/system/tts/**"
+      - "crates/text/spellcheck/**"
+      - "vendor/vello/**"
+      - "vendor/vello_encoding/**"
+      - "vendor/winit/**"
       - "docs/installer-walkthrough.md"
       - "Cargo.toml"
-      - "Cargo.lock"
       - "rust-toolchain.toml"
       - "os/**"
       - "shell/**"
@@ -26,11 +45,30 @@ on:
     paths:
       - "apps/imager/**"
       - "ui/**"
-      - "crates/runtime/**"
-      - "crates/**"
+      - "crates/app/qos-app/**"
+      - "crates/collab/actions/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/dev/headless-schema/**"
+      - "crates/dev/ui-graph/**"
+      - "crates/doc/qdoc/**"
+      - "crates/media/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/runtime-collab/**"
+      - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-identity/**"
+      - "crates/runtime/runtime-portal/**"
+      - "crates/system/app-state/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/qos-startup-metrics/**"
+      - "crates/system/settings-store/**"
+      - "crates/system/tts/**"
+      - "crates/text/spellcheck/**"
+      - "vendor/vello/**"
+      - "vendor/vello_encoding/**"
+      - "vendor/winit/**"
       - "docs/installer-walkthrough.md"
       - "Cargo.toml"
-      - "Cargo.lock"
       - "rust-toolchain.toml"
       - "os/**"
       - "shell/**"
@@ -38,6 +76,12 @@ on:
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
   workflow_dispatch:
+    inputs:
+      full_native:
+        description: "Build every host OS/architecture instead of the Linux x86_64 smoke lane."
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
@@ -156,7 +200,7 @@ jobs:
           QOS_ACCEL: kvm
           QOS_BOOT_WAIT_ATTEMPTS: "600"
           QOS_DISTROBOX: ""
-          QOS_INSTALLER_CYCLE_STORAGE: ${{ runner.temp }}/qos-installer-cycle-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          QOS_INSTALLER_CYCLE_STORAGE: /var/tmp/qos-installer-cycle-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS: "3600"
           QOS_MEM: "8192"
           QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
@@ -205,6 +249,8 @@ jobs:
     if: always()
     needs: medium
     runs-on: runner
+    outputs:
+      linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -220,6 +266,16 @@ jobs:
             cp apps/imager/release-catalog.json \
               dist/qos-installer-catalog/qos-installer-catalog-v1.json
           fi
+      - name: Select native lanes
+        id: lanes
+        env:
+          FULL_NATIVE: ${{ github.event.inputs.full_native }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner"},{"arch":"aarch64","runner":"runner-arm64"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-installer-catalog
@@ -230,16 +286,8 @@ jobs:
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
     # is enabled; GitHub's `permissions: id-token: write` is not sufficient.
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     strategy:
-      matrix:
-        include:
-          - arch: x86_64
-            runner: runner
-          - arch: aarch64
-            runner: runner-arm64
+      matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -342,11 +390,15 @@ jobs:
       - run: cargo test -p imager --lib --locked
       - name: Prove the packaged host writer is enabled
         run: cargo test -p imager --lib --locked --features host-media-writer
+      - name: Prove the sandboxed UDisks2 writer is enabled
+        run: cargo test -p imager --lib --locked --features flatpak-media-writer
       - name: Build the complete native Linux package set
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: apps/imager/packaging/package-host.sh
+        run: |
+          apps/imager/packaging/package-host.sh
+          apps/imager/packaging/package-flatpak.sh
       - name: Remove bootstrap Linux signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/qos-imager-signing-key.asc"
@@ -362,6 +414,9 @@ jobs:
             apps/imager/packaging/sign-linux-release-file.sh \
               "$catalog" "dist/qos-imager/$(basename "$catalog").asc"
           fi
+          flatpak="dist/qos-imager/qos-imager-linux-${{ matrix.arch }}.flatpak"
+          apps/imager/packaging/sign-linux-release-file.sh \
+            "$flatpak" "$flatpak.asc"
       - name: Launch the packaged Linux UI offscreen
         run: |
           set -euo pipefail
@@ -392,6 +447,9 @@ jobs:
             dist/qos-imager/qos-imager-linux-*.AppImage
             dist/qos-imager/qos-imager-linux-*.AppImage.sha256
             dist/qos-imager/qos-imager-linux-*.AppImage.asc
+            dist/qos-imager/qos-imager-linux-*.flatpak
+            dist/qos-imager/qos-imager-linux-*.flatpak.sha256
+            dist/qos-imager/qos-imager-linux-*.flatpak.asc
             dist/qos-imager/qos-installer-*.asc
           if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -406,11 +464,9 @@ jobs:
           if-no-files-found: error
 
   windows:
+    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     needs: catalog
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     runs-on: windows
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -516,11 +572,9 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     needs: catalog
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       matrix:
         include:
@@ -669,8 +723,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: [linux, windows, macos]
     runs-on: runner
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -687,6 +739,8 @@ jobs:
             qos-imager-linux-aarch64.AppImage
             qos-imager-linux-x86_64.tar.gz
             qos-imager-linux-aarch64.tar.gz
+            qos-imager-linux-x86_64.flatpak
+            qos-imager-linux-aarch64.flatpak
             qos-imager-windows-x86_64.exe
             qos-imager-windows-x86_64.zip
             qos-imager-setup-windows-x86_64.exe
@@ -706,7 +760,7 @@ jobs:
                 test -s "$(find release-assets -type f -name "$name.asc" -print -quit)" \
                   || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; }
                 ;;
-              *.AppImage|*.tar.gz) test -s "$path.asc" \
+              *.AppImage|*.tar.gz|*.flatpak) test -s "$path.asc" \
                 || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
             esac
           done
@@ -729,9 +783,6 @@ jobs:
     needs: publish
     runs-on: macos-arm64
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -798,9 +849,6 @@ jobs:
     needs: publish
     runs-on: runner
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -834,9 +882,6 @@ jobs:
     needs: [homebrew-install-test, winget]
     runs-on: runner
     enable-openid-connect: true
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Advance the landing page to this verified release

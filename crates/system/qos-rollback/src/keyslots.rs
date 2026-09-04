@@ -371,29 +371,15 @@ pub fn unseal(
             "loading the sealed generation secret",
         )?;
         let out_file = ws.path("unsealed.bin");
-        let auth = match (token.pin, pin) {
-            (true, Some(p)) => format!(
-                "session:{}+{}",
-                session.context.display(),
-                String::from_utf8_lossy(p)
-            ),
-            (true, None) => bail!(
-                "generation {} is sealed with a PIN but none was supplied",
-                token.generation
-            ),
-            (false, _) => format!("session:{}", session.context.display()),
-        };
-        let out = runner.run(
-            "tpm2_unseal",
-            &argv![
-                "-c",
-                obj.as_os_str(),
-                "-p",
-                &auth,
-                "-o",
-                out_file.as_os_str()
-            ],
-            None,
+        let out = invoke_unseal(
+            runner,
+            ws,
+            &obj,
+            &session.context,
+            &out_file,
+            token.generation,
+            token.pin,
+            pin,
         )?;
         let _ = runner.run(
             "tpm2_flushcontext",
@@ -421,6 +407,50 @@ pub fn unseal(
         return Err(e);
     }
     Ok(None)
+}
+
+/// Build tpm2-tools' compound policy-session authorization without putting a
+/// PIN in argv. Its `file:` form is read by the child after it starts.
+fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {
+    match pin_file {
+        Some(pin) => format!("session:{}+file:{}", session.display(), pin.display()),
+        None => format!("session:{}", session.display()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_unseal(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    object: &Path,
+    session: &Path,
+    output: &Path,
+    generation: u64,
+    pin_required: bool,
+    pin: Option<&[u8]>,
+) -> Result<crate::exec::Output> {
+    let pin_path = match (pin_required, pin) {
+        (true, Some(value)) => Some(ws.put("unseal.pin", value)?),
+        (true, None) => bail!("generation {generation} is sealed with a PIN but none was supplied"),
+        (false, _) => None,
+    };
+    let auth = unseal_auth(session, pin_path.as_deref());
+    let result = runner.run(
+        "tpm2_unseal",
+        &argv![
+            "-c",
+            object.as_os_str(),
+            "-p",
+            &auth,
+            "-o",
+            output.as_os_str()
+        ],
+        None,
+    );
+    if let Some(path) = pin_path {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 /// Add a keyslot for `passphrase`, authorised by `authorising`, and prove it works before
@@ -781,5 +811,15 @@ Digests:
         assert!(p.iter().all(u8::is_ascii_hexdigit));
         // Two calls must not agree.
         assert_ne!(*p, *new_passphrase().unwrap());
+    }
+
+    #[test]
+    fn unseal_pin_auth_references_a_file_instead_of_exposing_the_pin() {
+        let auth = unseal_auth(
+            Path::new("/run/work/policy.ctx"),
+            Some(Path::new("/run/work/pin")),
+        );
+        assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
+        assert!(!auth.contains("246810"));
     }
 }

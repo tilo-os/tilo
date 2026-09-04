@@ -81,6 +81,10 @@ pub enum WriteBackend {
     /// The unprivileged live UI will authenticate a short-lived platform
     /// helper at write time.
     PrivilegedHelper,
+    /// Linux sandbox path: `UDisks2` authorizes and returns one exclusive raw
+    /// device descriptor.  The Flatpak never sees `/dev` and cannot execute
+    /// commands on the host.
+    Udisks2,
 }
 
 impl WriteBackend {
@@ -88,7 +92,11 @@ impl WriteBackend {
     /// for deliberate root-side diagnostics; normal live UI uses the narrow
     /// helper, while tests and shots remain disabled.
     pub fn system() -> Self {
-        if allow_write() {
+        if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
+            && std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1")
+        {
+            WriteBackend::Udisks2
+        } else if allow_write() {
             WriteBackend::System
         } else if cfg!(feature = "host-media-writer")
             || std::env::var("IMAGER_LIVE").as_deref() == Ok("1")
@@ -825,6 +833,165 @@ fn run_job_paths_bound(
     }
 }
 
+/// Run the same exact write, digest, read-back and profile pipeline against an
+/// already-authorized device descriptor. `UDisks2` uses this seam so raw-device
+/// authority never has to be represented by a sandbox-visible path.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the descriptor stays borrowed through one linear write, verify, and profile transaction; splitting ownership across helpers would obscure the destructive-I/O lifecycle"
+)]
+fn run_job_file_bound(
+    req: &WriteRequest,
+    device: &mut std::fs::File,
+    should_cancel: &impl Fn() -> bool,
+    mut on_progress: impl FnMut(Progress),
+) -> JobResult {
+    let source_path = Path::new(&req.source.path);
+    let mut source = match OpenOptions::new().read(true).open(source_path) {
+        Ok(file) => file,
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    };
+    let metadata = match source.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    };
+    if !metadata.is_file()
+        || metadata.len() != req.source.size
+        || req
+            .source
+            .identity
+            .is_some_and(|expected| SourceIdentity::from_metadata(&metadata) != Some(expected))
+    {
+        return JobResult::WriteFailed("source image changed after review".into());
+    }
+    if let Some(expected) = req.source.expected_sha256.as_deref() {
+        let actual = match hash_source_exact(&mut source, req.source.size, should_cancel) {
+            Ok(digest) => digest,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                return JobResult::Cancelled;
+            }
+            Err(error) => return JobResult::WriteFailed(error.to_string()),
+        };
+        if !actual.eq_ignore_ascii_case(expected) {
+            return JobResult::WriteFailed(
+                "source image no longer matches its signed release catalog".into(),
+            );
+        }
+    }
+    if let Err(error) = source.seek(SeekFrom::Start(0)) {
+        return JobResult::WriteFailed(error.to_string());
+    }
+    if let Err(error) = device.seek(SeekFrom::Start(0)) {
+        return JobResult::WriteFailed(error.to_string());
+    }
+
+    let total = req.source.size.max(1);
+    let mut buffer = vec![0_u8; CHUNK];
+    let mut written = 0_u64;
+    let mut digest = Sha256::new();
+    while written < req.source.size {
+        if should_cancel() {
+            return JobResult::Cancelled;
+        }
+        let want = usize::try_from((req.source.size - written).min(CHUNK as u64)).unwrap_or(CHUNK);
+        let Some(chunk) = buffer.get_mut(..want) else {
+            return JobResult::WriteFailed("source chunk exceeds buffer".into());
+        };
+        if let Err(error) = read_exact_fill(&mut source, chunk) {
+            return JobResult::WriteFailed(error.to_string());
+        }
+        if let Err(error) = device.write_all(chunk) {
+            return JobResult::WriteFailed(error.to_string());
+        }
+        digest.update(&*chunk);
+        written = written.saturating_add(want as u64);
+        on_progress(Progress {
+            phase: JobPhase::Writing,
+            write_frac: (written as f64 / total as f64).min(1.0),
+            verify_frac: 0.0,
+            rate_bps: 0,
+            error: None,
+        });
+    }
+    if req
+        .source
+        .expected_sha256
+        .as_deref()
+        .is_some_and(|expected| !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected))
+    {
+        return JobResult::WriteFailed(
+            "source image no longer matches its signed release catalog".into(),
+        );
+    }
+    if let Err(error) = device.flush().and_then(|()| device.sync_all()) {
+        return JobResult::WriteFailed(error.to_string());
+    }
+    if let Err(error) = source.seek(SeekFrom::Start(0)) {
+        return JobResult::VerifyFailed(error.to_string());
+    }
+    if let Err(error) = device.seek(SeekFrom::Start(0)) {
+        return JobResult::VerifyFailed(error.to_string());
+    }
+    let mut source_buffer = vec![0_u8; CHUNK];
+    let mut target_buffer = vec![0_u8; CHUNK];
+    let mut verified = 0_u64;
+    while verified < req.source.size {
+        if should_cancel() {
+            return JobResult::Cancelled;
+        }
+        let want = usize::try_from((req.source.size - verified).min(CHUNK as u64)).unwrap_or(CHUNK);
+        let Some(source_chunk) = source_buffer.get_mut(..want) else {
+            return JobResult::VerifyFailed("source verify chunk exceeds buffer".into());
+        };
+        let Some(target_chunk) = target_buffer.get_mut(..want) else {
+            return JobResult::VerifyFailed("target verify chunk exceeds buffer".into());
+        };
+        if let Err(error) = read_exact_fill(&mut source, source_chunk) {
+            return JobResult::VerifyFailed(error.to_string());
+        }
+        if let Err(error) = read_exact_fill(device, target_chunk) {
+            return JobResult::VerifyFailed(error.to_string());
+        }
+        if let Some(offset) = first_diff(source_chunk, target_chunk) {
+            return JobResult::VerifyMismatch(verified.saturating_add(offset as u64));
+        }
+        verified = verified.saturating_add(want as u64);
+        on_progress(Progress {
+            phase: JobPhase::Verifying,
+            write_frac: 1.0,
+            verify_frac: (verified as f64 / total as f64).min(1.0),
+            rate_bps: 0,
+            error: None,
+        });
+    }
+    if req.source.installable {
+        let block = match encode_profile_block(&req.profile) {
+            Ok(block) => block,
+            Err(error) => return JobResult::VerifyFailed(error.to_string()),
+        };
+        let Some(offset) = req.target.size.checked_sub(PROFILE_BLOCK_SIZE as u64) else {
+            return JobResult::VerifyFailed("target is too small for installation profile".into());
+        };
+        if let Err(error) = device
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| device.write_all(&block))
+            .and_then(|()| device.flush())
+            .and_then(|()| device.sync_all())
+            .and_then(|()| device.seek(SeekFrom::Start(offset)).map(|_| ()))
+        {
+            return JobResult::VerifyFailed(error.to_string());
+        }
+        let mut actual = vec![0_u8; PROFILE_BLOCK_SIZE];
+        if let Err(error) = read_exact_fill(device, &mut actual) {
+            return JobResult::VerifyFailed(error.to_string());
+        }
+        if actual != block {
+            return JobResult::VerifyFailed("installation profile read-back did not match".into());
+        }
+    }
+    JobResult::Verified
+}
+
 /// Run the real job for `req` (source file → target device), streaming
 /// [`Progress`] over `tx`. Only ever called on a worker thread when the
 /// allow-gate selected [`WriteBackend::System`].
@@ -895,6 +1062,160 @@ fn run_system_job(
     // Keep the per-device exclusion through platform finalization, then make
     // its release point explicit before reporting the terminal event.
     drop(target_lock);
+    let error = match &result {
+        JobResult::Verified => None,
+        JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
+        JobResult::VerifyMismatch(offset) => Some(format!(
+            "Verification found different data at byte {offset}. The drive may be faulty."
+        )),
+        JobResult::VerifyFailed(message) => {
+            Some(format!("Could not verify the finished drive: {message}"))
+        }
+        JobResult::Cancelled => Some(
+            "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
+                .into(),
+        ),
+    };
+    on_progress(Progress {
+        phase: if result.is_success() {
+            JobPhase::Success
+        } else {
+            JobPhase::Failed
+        },
+        write_frac,
+        verify_frac,
+        rate_bps: 0,
+        error,
+    });
+    result
+}
+
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn udisks_object_path(device_name: &str) -> String {
+    use std::fmt::Write as _;
+
+    let leaf = device_name.strip_prefix("/dev/").unwrap_or(device_name);
+    let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
+    for byte in leaf.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            path.push(byte as char);
+        } else {
+            let _ = write!(path, "_{byte:02x}");
+        }
+    }
+    path
+}
+
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn unmount_udisks_filesystems(
+    connection: &zbus::blocking::Connection,
+    target: &TargetDrive,
+) -> io::Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    for name in std::iter::once(target.name.as_str()).chain(
+        target
+            .partitions
+            .iter()
+            .map(|partition| partition.name.as_str()),
+    ) {
+        let block = zbus::blocking::Proxy::new(
+            connection,
+            "org.freedesktop.UDisks2",
+            udisks_object_path(name),
+            "org.freedesktop.UDisks2.Block",
+        )
+        .map_err(|error| io::Error::other(format!("UDisks2 block lookup failed: {error}")))?;
+        let usage: String = block
+            .get_property("IdUsage")
+            .map_err(|error| io::Error::other(format!("UDisks2 safety query failed: {error}")))?;
+        if usage != "filesystem" {
+            continue;
+        }
+        let proxy = zbus::blocking::Proxy::new(
+            connection,
+            "org.freedesktop.UDisks2",
+            udisks_object_path(name),
+            "org.freedesktop.UDisks2.Filesystem",
+        )
+        .map_err(|error| io::Error::other(format!("UDisks2 partition lookup failed: {error}")))?;
+        let mount_points: Vec<Vec<u8>> = proxy.get_property("MountPoints").map_err(|error| {
+            io::Error::other(format!("UDisks2 mount-state query failed: {error}"))
+        })?;
+        if mount_points.is_empty() {
+            continue;
+        }
+        let options: HashMap<&str, Value<'_>> = HashMap::new();
+        proxy
+            .call::<_, _, ()>("Unmount", &(options,))
+            .map_err(|error| {
+                io::Error::other(format!("UDisks2 could not unmount {name}: {error}"))
+            })?;
+    }
+    Ok(())
+}
+
+/// Ask the host's root-owned `UDisks2` daemon for one descriptor to the exact
+/// reviewed device. Polkit owns user authentication; `O_EXCL` prevents a
+/// mounted or concurrently opened device from being written.
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
+    use std::collections::HashMap;
+    use zbus::zvariant::{OwnedFd, Value};
+
+    revalidate_target(target)?;
+    let connection = zbus::blocking::Connection::system()
+        .map_err(|error| io::Error::other(format!("could not reach UDisks2: {error}")))?;
+    unmount_udisks_filesystems(&connection, target)?;
+    // Revalidate after unmounting: removable media can disappear while an
+    // authorization prompt is on screen. UDisks2 then independently resolves
+    // and exclusively opens the same object.
+    revalidate_target(target)?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "org.freedesktop.UDisks2",
+        udisks_object_path(&target.name),
+        "org.freedesktop.UDisks2.Block",
+    )
+    .map_err(|error| io::Error::other(format!("UDisks2 device lookup failed: {error}")))?;
+    let flags = libc::O_EXCL | libc::O_SYNC | libc::O_CLOEXEC;
+    let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+    options.insert("flags", Value::from(flags));
+    let fd: OwnedFd = proxy
+        .call("OpenDevice", &("rw", options))
+        .map_err(|error| io::Error::other(format!("UDisks2 denied device access: {error}")))?;
+    let std_fd: std::os::fd::OwnedFd = fd.into();
+    Ok(std::fs::File::from(std_fd))
+}
+
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn run_udisks_job(
+    req: &WriteRequest,
+    should_cancel: &impl Fn() -> bool,
+    mut on_progress: impl FnMut(Progress),
+) -> JobResult {
+    let mut write_frac = 0.0;
+    let mut verify_frac = 0.0;
+    let mut relay = |progress: Progress| {
+        write_frac = progress.write_frac;
+        verify_frac = progress.verify_frac;
+        on_progress(progress);
+    };
+    let mut device = match open_udisks_device(&req.target) {
+        Ok(device) => device,
+        Err(error) => {
+            let result = JobResult::WriteFailed(error.to_string());
+            on_progress(Progress {
+                phase: JobPhase::Failed,
+                error: Some(format!("Could not authorize this drive: {error}")),
+                ..Progress::default()
+            });
+            return result;
+        }
+    };
+    let result = run_job_file_bound(req, &mut device, should_cancel, &mut relay);
+    drop(device);
     let error = match &result {
         JobResult::Verified => None,
         JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
@@ -1469,6 +1790,18 @@ pub fn spawn_job(
             WriteBackend::PrivilegedHelper => {
                 spawn_privileged_helper(req, &worker_control, &tx);
             }
+            WriteBackend::Udisks2 => {
+                #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+                let _ = run_udisks_job(&req, &|| worker_control.is_cancelled(), |p| {
+                    let _ = tx.send(p);
+                });
+                #[cfg(not(all(target_os = "linux", feature = "flatpak-media-writer")))]
+                let _ = tx.send(Progress {
+                    phase: JobPhase::Failed,
+                    error: Some("UDisks2 media writing is unavailable in this build.".into()),
+                    ..Progress::default()
+                });
+            }
             WriteBackend::Disabled => {}
         });
     (JobStart::Started, Some(rx), Some(control))
@@ -1563,11 +1896,37 @@ mod tests {
         unsafe { std::env::remove_var("IMAGER_LIVE") };
     }
 
+    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    #[test]
+    fn flatpak_selects_udisks_without_enabling_direct_device_writes() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        unsafe { std::env::set_var("QOS_IMAGER_FLATPAK", "1") };
+        assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
+        assert!(!allow_write(), "the sandbox never gains direct /dev access");
+        unsafe { std::env::remove_var("QOS_IMAGER_FLATPAK") };
+    }
+
+    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    #[test]
+    fn udisks_path_encoding_cannot_escape_the_block_device_namespace() {
+        assert_eq!(
+            udisks_object_path("/dev/dm-0"),
+            "/org/freedesktop/UDisks2/block_devices/dm_2d0"
+        );
+        assert_eq!(
+            udisks_object_path("../../sda"),
+            "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda"
+        );
+    }
+
     #[test]
     fn only_disabled_backend_is_unavailable() {
         assert!(!WriteBackend::Disabled.is_available());
         assert!(WriteBackend::System.is_available());
         assert!(WriteBackend::PrivilegedHelper.is_available());
+        assert!(WriteBackend::Udisks2.is_available());
     }
 
     #[test]
@@ -2004,6 +2363,42 @@ mod tests {
         assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn authorized_descriptor_path_writes_verifies_and_embeds_profile() {
+        let data = sample_bytes(CHUNK + 917);
+        let source = tmp_with(&data);
+        let mut target = tempfile::tempfile().unwrap();
+        let target_size = data.len() as u64 + PROFILE_BLOCK_SIZE as u64 + 4096;
+        target.set_len(target_size).unwrap();
+        let metadata = source.as_file().metadata().unwrap();
+        let mut request = req();
+        request.source.path = source.path().to_string_lossy().into_owned();
+        request.source.size = data.len() as u64;
+        request.source.identity = SourceIdentity::from_metadata(&metadata);
+        request.source.installable = true;
+        request.target.size = target_size;
+
+        let mut phases = Vec::new();
+        let result = run_job_file_bound(&request, &mut target, &|| false, |progress| {
+            if phases.last() != Some(&progress.phase) {
+                phases.push(progress.phase);
+            }
+        });
+
+        assert_eq!(result, JobResult::Verified);
+        assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
+        target.seek(SeekFrom::Start(0)).unwrap();
+        let mut written = vec![0_u8; data.len()];
+        target.read_exact(&mut written).unwrap();
+        assert_eq!(written, data);
+        target
+            .seek(SeekFrom::Start(target_size - PROFILE_BLOCK_SIZE as u64))
+            .unwrap();
+        let mut profile = vec![0_u8; PROFILE_BLOCK_SIZE];
+        target.read_exact(&mut profile).unwrap();
+        assert!(profile.starts_with(PROFILE_MAGIC.as_bytes()));
     }
 
     #[test]

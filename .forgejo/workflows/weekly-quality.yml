@@ -1,4 +1,4 @@
-name: Weekly full static and size gates
+name: CI / weekly quality
 
 # These compile-heavy whole-tree gates do not need to consume the shared runner
 # on every pull request. Nightly covers compilation/tests; this weekly job covers

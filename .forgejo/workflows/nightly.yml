@@ -1,4 +1,4 @@
-name: Nightly complete workspace coverage
+name: CI / nightly workspace
 
 # This is the coverage backstop for dependency-aware pull-request CI. Every
 # Cargo package and every target is checked, and every test is executed daily.
