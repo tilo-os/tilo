@@ -88,7 +88,9 @@ impl WriteBackend {
     pub fn system() -> Self {
         if allow_write() {
             WriteBackend::System
-        } else if std::env::var("IMAGER_LIVE").as_deref() == Ok("1") {
+        } else if cfg!(feature = "host-media-writer")
+            || std::env::var("IMAGER_LIVE").as_deref() == Ok("1")
+        {
             WriteBackend::PrivilegedHelper
         } else {
             WriteBackend::Disabled
@@ -1108,6 +1110,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "host-media-writer"))]
     fn default_backend_is_disabled_without_gate() {
         let _g = ENV_LOCK.lock().unwrap();
         // No opt-in env var set → unavailable, never a fake success.
@@ -1115,6 +1118,16 @@ mod tests {
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
+    }
+
+    #[test]
+    #[cfg(feature = "host-media-writer")]
+    fn packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
+        assert!(write_available());
     }
 
     #[test]
@@ -1144,7 +1157,12 @@ mod tests {
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
-        assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
+        let expected = if cfg!(feature = "host-media-writer") {
+            WriteBackend::PrivilegedHelper
+        } else {
+            WriteBackend::Disabled
+        };
+        assert_eq!(WriteBackend::system(), expected);
     }
 
     #[test]
@@ -1347,6 +1365,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "host-media-writer"))]
     fn spawn_refuses_instead_of_simulating_with_gate_off() {
         let _g = ENV_LOCK.lock().unwrap();
         // Validation remains pure, but the live start refuses rather than
