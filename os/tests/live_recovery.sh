@@ -6,12 +6,13 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tool="$repo/os/usr/libexec/qos-recovery"
 console="$repo/os/usr/libexec/qos-live-recovery"
 installer="$repo/os/usr/libexec/qos-install"
+artifact_helper="$repo/os/usr/libexec/qos-install-efi-artifacts"
 unit="$repo/os/usr/lib/systemd/system/qos-live-recovery.service"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-for file in "$tool" "$console" "$unit"; do
+for file in "$tool" "$console" "$unit" "$artifact_helper"; do
   if [ -r "$file" ]; then ok "$(basename "$file") ships"; else bad "missing $file"; fi
 done
 [ "$fail" = 0 ] || exit 1
@@ -21,6 +22,24 @@ if grep -Fq -- '-o ro,nosuid,nodev,noexec,noload' "$tool" \
   ok "recovered source files are opened read-only and non-executable"
 else
   bad "recovery source does not preserve the read-only mount boundary"
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/esp/EFI/Linux/bootc" "$work/esp/loader/entries"
+owned_uuid=11111111-2222-3333-4444-555555555555
+printf 'sealed root=UUID=%s quiet' "$owned_uuid" > "$work/esp/EFI/Linux/bootc/bootc_composefs-owned.efi"
+printf 'options root=UUID=%s quiet\n' "$owned_uuid" > "$work/esp/loader/entries/qos.conf"
+printf 'sealed root=UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee quiet' > "$work/esp/EFI/Linux/bootc/foreign.efi"
+ln -s bootc/bootc_composefs-owned.efi "$work/esp/EFI/Linux/symlink.efi"
+owned="$($artifact_helper "$work/esp" "$owned_uuid")"
+if grep -Fxq 'EFI/Linux/bootc/bootc_composefs-owned.efi' <<<"$owned" \
+   && grep -Fxq 'loader/entries/qos.conf' <<<"$owned" \
+   && ! grep -Fq 'foreign.efi' <<<"$owned" \
+   && ! grep -Fq 'symlink.efi' <<<"$owned"; then
+  ok "nested composefs UKIs are found recursively and ownership-bound to their sealed root UUID"
+else
+  bad "nested boot-artifact discovery was incomplete or accepted a foreign/symlinked file: $owned"
 fi
 
 if grep -Fq 'destination must itself be a mounted external filesystem' "$tool" \
@@ -50,14 +69,15 @@ if grep -Fq 'grep -qw qos.install /proc/cmdline' "$tool" \
    && grep -Fq 'has no qOS install marker; refusing to guess ownership' "$tool" \
    && grep -Fq '[ "$mode" = alongside ]' "$tool" \
    && grep -Fq '[ "$confirmation" = "$expected" ]' "$tool" \
-   && grep -Fq 'QOS_RECOVERY_DRY_RUN' "$tool"; then
+   && grep -Fq 'QOS_RECOVERY_DRY_RUN' "$tool" \
+   && grep -Fq 'no EFI artifact still proves ownership by this qOS root; root was not removed' "$tool"; then
   ok "removal is live-only, ownership-bound, alongside-only, confirmed, and dry-runnable"
 else
   bad "removal safety gates are incomplete"
 fi
 
 if grep -Fq 'efi_artifact=' "$installer" \
-   && grep -Fq 'root=UUID=${ROOT_FS_UUID' "$installer" \
+   && grep -Fq 'QOS_INSTALL_EFI_ARTIFACTS' "$installer" \
    && grep -Fq 'root_partition_uuid=' "$installer" \
    && grep -Fq 'root_filesystem_uuid=' "$installer" \
    && grep -Fq 'efi_uuid=' "$installer"; then
