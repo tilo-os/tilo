@@ -171,15 +171,12 @@ fi
 
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
-   && grep -Fq 'if verified_tpm; then' "$backend" \
    && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
-   && grep -Fq '&& kernel_lockdown_active' "$backend" \
-   && grep -Fq '&& target_verified_boot_ready' "$backend" \
-   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
-   && grep -Fq -- '--prepare-target "$target_root"' "$backend" \
-   && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && ! grep -Fq 'if verified_tpm; then' "$backend" \
+   && ! grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && ! grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
    && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
-  ok "native qOS requires encryption and target-verified short-PIN startup"
+  ok "native qOS requires encryption and a strong passphrase on every machine"
 else
   bad "native qOS installer can bypass encryption or the startup secret"
 fi
@@ -192,9 +189,11 @@ else
 fi
 
 disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
-if grep -Fq 'force_passphrase=1' "$disk_encrypt" \
-   && grep -Fq 'TPM enrollment is disabled until qOS unlock is bound' "$disk_encrypt"; then
-  ok "disk helper defaults to a strong passphrase and rejects TPM resealing"
+if grep -Fq 'TPM enrollment is disabled until qOS unlock is bound' "$disk_encrypt" \
+   && grep -Fq 'enrolling the supplied strong passphrase as a LUKS key slot' "$disk_encrypt" \
+   && ! grep -Fq -- '--tpm2-pcrs=' "$disk_encrypt" \
+   && ! grep -Fq 'force_passphrase=' "$disk_encrypt"; then
+  ok "disk helper has no dormant PCR-only TPM path and rejects resealing"
 else
   bad "disk helper can create a PCR-7-only TPM slot"
 fi
@@ -212,7 +211,7 @@ rollback_enrollment_calls="$(
 if [ -z "$rollback_enrollment_calls" ] \
    && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'the directory ships empty' "$production_containerfile" \
-   && grep -Fq 'force_passphrase=1' "$encryptor" \
+   && ! grep -Fq -- '--tpm2-pcrs=' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
   ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
