@@ -37,8 +37,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-kernel-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
 jobs:
   build-and-push-kernel:
