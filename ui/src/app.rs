@@ -2697,6 +2697,9 @@ impl App {
                 // hook; an ordinary application has no local state to apply.
                 CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::PublishedInvocationResult { .. }
+                | CollabEvent::TaskRun(_)
+                | CollabEvent::TaskActionInvocationResult { .. }
+                | CollabEvent::TaskRunCancellation { .. }
                 | CollabEvent::WorkspaceControl { .. } => {}
             }
         }
