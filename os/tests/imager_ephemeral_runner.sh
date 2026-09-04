@@ -45,7 +45,11 @@ if [ -n "${QOS_TEST_CHILD_PID_FILE:-}" ]; then
   (trap '' TERM; while :; do sleep 1; done) &
   printf '%s\n' "$!" > "$QOS_TEST_CHILD_PID_FILE"
 fi
-[ -z "${QOS_TEST_LOCK_METADATA_DIR:-}" ] || chmod 0500 "$(dirname "${7#file://}")"
+if [ -n "${QOS_TEST_BREAK_METADATA_CLEANUP:-}" ]; then
+  token_path="${7#file://}"
+  rm -f "$token_path"
+  mkdir "$token_path"
+fi
 EOF
 "${root_do[@]}" install -o root -g root -m 0755 "$tmp/forgejo-runner" "$trusted/bin/forgejo-runner"
 
@@ -70,14 +74,14 @@ grep -Fq 'destroy this VM now' "$tmp/stdout"
 
 install_metadata
 if QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_RUNNER_MAX_WAIT_SECONDS=30 \
-    QOS_TEST_LOCK_METADATA_DIR=1 QOS_TEST_ARGUMENTS="$tmp/cleanup-failure" \
+    QOS_TEST_BREAK_METADATA_CLEANUP=1 QOS_TEST_ARGUMENTS="$tmp/cleanup-failure" \
     "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher hid a credential-cleanup failure\n' >&2
   exit 1
 fi
-chmod 0700 "$trusted/metadata"
-rm -f "$trusted/metadata/uuid" "$trusted/metadata/token"
+rm -f "$trusted/metadata/uuid"
+rm -rf "$trusted/metadata/token"
 
 install_metadata
 QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_RUNNER_MAX_WAIT_SECONDS=30 \
