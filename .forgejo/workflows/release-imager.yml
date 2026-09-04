@@ -342,11 +342,15 @@ jobs:
       - run: cargo test -p imager --lib --locked
       - name: Prove the packaged host writer is enabled
         run: cargo test -p imager --lib --locked --features host-media-writer
+      - name: Prove the sandboxed UDisks2 writer is enabled
+        run: cargo test -p imager --lib --locked --features flatpak-media-writer
       - name: Build the complete native Linux package set
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: apps/imager/packaging/package-host.sh
+        run: |
+          apps/imager/packaging/package-host.sh
+          apps/imager/packaging/package-flatpak.sh
       - name: Remove bootstrap Linux signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/qos-imager-signing-key.asc"
@@ -362,6 +366,9 @@ jobs:
             apps/imager/packaging/sign-linux-release-file.sh \
               "$catalog" "dist/qos-imager/$(basename "$catalog").asc"
           fi
+          flatpak="dist/qos-imager/qos-imager-linux-${{ matrix.arch }}.flatpak"
+          apps/imager/packaging/sign-linux-release-file.sh \
+            "$flatpak" "$flatpak.asc"
       - name: Launch the packaged Linux UI offscreen
         run: |
           set -euo pipefail
@@ -392,6 +399,9 @@ jobs:
             dist/qos-imager/qos-imager-linux-*.AppImage
             dist/qos-imager/qos-imager-linux-*.AppImage.sha256
             dist/qos-imager/qos-imager-linux-*.AppImage.asc
+            dist/qos-imager/qos-imager-linux-*.flatpak
+            dist/qos-imager/qos-imager-linux-*.flatpak.sha256
+            dist/qos-imager/qos-imager-linux-*.flatpak.asc
             dist/qos-imager/qos-installer-*.asc
           if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -687,6 +697,8 @@ jobs:
             qos-imager-linux-aarch64.AppImage
             qos-imager-linux-x86_64.tar.gz
             qos-imager-linux-aarch64.tar.gz
+            qos-imager-linux-x86_64.flatpak
+            qos-imager-linux-aarch64.flatpak
             qos-imager-windows-x86_64.exe
             qos-imager-windows-x86_64.zip
             qos-imager-setup-windows-x86_64.exe
@@ -706,7 +718,7 @@ jobs:
                 test -s "$(find release-assets -type f -name "$name.asc" -print -quit)" \
                   || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; }
                 ;;
-              *.AppImage|*.tar.gz) test -s "$path.asc" \
+              *.AppImage|*.tar.gz|*.flatpak) test -s "$path.asc" \
                 || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
             esac
           done

@@ -5,8 +5,8 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `runner` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm |
-| `runner-arm64` | Linux ARM64 | same Linux toolchain and release utilities, running natively |
+| `runner` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `runner-arm64` | Linux ARM64 | same Linux toolchain, release utilities, and UDisks2 service, running natively |
 | `windows` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `macos-x64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `macos-arm64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
@@ -24,6 +24,26 @@ not returned to a warm pool. The practical autoscaling sequence is:
 3. Start `forgejo-runner one-job` with the one native `:host` label, wait for it
    to exit, revoke the registration if the job never arrived, and destroy the
    VM and attached disk in all cases.
+
+Golden Linux and macOS images should install
+`tools/run-imager-ephemeral-runner.sh` as a root-owned, non-writable executable
+outside the checkout. Invoke that installed copy as
+`/usr/local/sbin/run-imager-ephemeral-runner LABEL UUID_FILE TOKEN_FILE`.
+Windows images should likewise install `tools/Run-ImagerEphemeralRunner.ps1`
+outside the checkout with an ACL writable only by Administrators, then invoke
+it as `powershell.exe -NoLogo -NoProfile -NonInteractive -File
+C:\ProgramData\qOS\Run-ImagerEphemeralRunner.ps1 -Label windows -UuidFile
+C:\run\qos-runner\uuid -TokenFile C:\run\qos-runner\token`. Both launchers
+validate the native OS/architecture-to-label binding, require
+Forgejo Runner 12.5 or newer, accept only private runner-owned metadata files
+inside a private runner-owned directory, pin the Forgejo origin, run exactly
+`one-job` with a `:host` label, bound the wait to six hours, and erase both
+registration values on every exit after their paths pass safety validation. Set
+`QOS_RUNNER_MAX_WAIT_SECONDS` to a smaller orchestration deadline when useful;
+the accepted range is 1 second through 24 hours. The final success message is a
+destruction instruction, not permission to return the VM to a pool. Run the
+PowerShell launcher directly on Windows; do not use a Unix compatibility layer
+as the release host.
 
 The repository runner page is `/qos/qos/settings/actions/runners`. Forgejo's
 [runner-registration guide](https://forgejo.org/docs/latest/admin/actions/registration/)
@@ -43,6 +63,14 @@ The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
 type-2 runtime binaries from the Forgejo cache separately for each Linux
 architecture. They do not need to be baked into the runner, and AppImage
 creation is forbidden from downloading an implicit “latest” runtime.
+The same golden images preinstall `org.freedesktop.Sdk//25.08` and run UDisks2
+with at least the VM's system disk visible. The Flatpak build forbids downloads
+during bundle assembly, smoke-loads the exported app inside the pinned runtime,
+and reconciles its sandbox inventory with that host UDisks2 view before it can
+become an artifact.
+End-user Linux hosts need UDisks2 (standard on major desktop
+distributions); its polkit prompt mediates the one exclusive removable-drive
+descriptor used by the sandboxed writer.
 
 ## Short-lived credentials
 

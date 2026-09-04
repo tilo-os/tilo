@@ -1342,11 +1342,17 @@ COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
 COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
 COPY os/usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
 COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
+COPY os/usr/libexec/qos-rollback-initrd-unlock /usr/libexec/qos-rollback-initrd-unlock
+COPY os/usr/lib/systemd/system-generators/qos-rollback-unlock-generator /usr/lib/systemd/system-generators/qos-rollback-unlock-generator
+COPY os/usr/lib/dracut/modules.d/91qos-rollback /usr/lib/dracut/modules.d/91qos-rollback
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
 COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
 COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
 RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
+        /usr/libexec/qos-rollback-initrd-unlock \
+        /usr/lib/systemd/system-generators/qos-rollback-unlock-generator \
+        /usr/lib/dracut/modules.d/91qos-rollback/module-setup.sh \
         /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
  && install -d -m 0755 /usr/share/qos/pcr-predictions
 
@@ -1752,7 +1758,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # them under the CI builder, silently, and a missing module here is a root
     # that cannot be unlocked. Naming them makes dracut fail instead of omit.
     dracut --force --reproducible -v --kver "$kver" \
-        --add "crypt systemd-cryptsetup tpm2-tss plymouth" \
+        --add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback" \
         "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
       || { cat /tmp/dracut.log >&2; exit 1; }; \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
@@ -1765,7 +1771,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     mkdir -p /usr/lib/qos; \
     sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
       | sort -u > /usr/lib/qos/initramfs-modules.txt; \
-    for m in crypt systemd-cryptsetup tpm2-tss plymouth; do \
+    for m in crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback; do \
       grep -qx "$m" /usr/lib/qos/initramfs-modules.txt || { \
         echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
         cat /usr/lib/qos/initramfs-modules.txt >&2; exit 1; }; \

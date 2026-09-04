@@ -59,8 +59,10 @@ verified=0
 for name in \
   qos-imager-linux-x86_64.AppImage \
   qos-imager-linux-x86_64.tar.gz \
+  qos-imager-linux-x86_64.flatpak \
   qos-imager-linux-aarch64.AppImage \
   qos-imager-linux-aarch64.tar.gz \
+  qos-imager-linux-aarch64.flatpak \
   qos-installer-linux-x86_64.img.zst \
   qos-installer-linux-aarch64.img.zst \
   qos-installer-catalog-v1.json; do
@@ -80,7 +82,7 @@ for name in \
     verified=$((verified + 1))
 done
 
-[ "$verified" -eq 7 ] \
+[ "$verified" -eq 9 ] \
   || { printf 'did not verify the complete Linux and installer release matrix\n' >&2; exit 1; }
 printf 'verified %s Linux and installer artifacts with release key %s\n' \
   "$verified" "$expected"

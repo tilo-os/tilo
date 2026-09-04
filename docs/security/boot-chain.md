@@ -317,7 +317,7 @@ bootloader — was available all along and deliberately not taken: a file on the
 outside any signature, editable by anything that can write there, would look like
 compliance and provide none of it.
 
-**The unlock hook — available in shape, with these concrete facts.** An encrypted
+**The unlock hook.** An encrypted
 install made by `qos-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
 that is what dracut derives from the `rd.luks.uuid=` karg. So the key file the
 hook must write is:
@@ -326,16 +326,18 @@ hook must write is:
 /run/cryptsetup-keys.d/luks-<LUKS-UUID>.key
 ```
 
-`systemd-cryptsetup` consults that path before it tries any token, so a hook that
-writes it takes precedence over token discovery. No TPM fallback currently
-ships; recovery-key, passphrase, and optional FIDO2 paths remain independent.
-Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside the
-initramfs is the remaining work, and it needs the `qos-rollback` binary installed
-into the initramfs by a dracut module.
+`systemd-cryptsetup` consults that path before it tries any token. The
+`qos-rollback` dracut module installs the binary, its TPM tools and public policy
+key, plus a systemd generator that orders a per-volume unlock service after the
+LUKS device appears and before its cryptsetup unit. It asks for the PIN only when
+the LUKS header actually contains a `qos-rollback` token. A cancelled or failed
+unseal removes partial key material and returns control to the independent
+recovery-key, passphrase, or FIDO2 prompt instead of making boot an emergency.
 
-The rollback crate and late-boot confirmation services are now shipped, but the
-generation-bound unlock path is deliberately **not enrolled by the installer**.
-Three prerequisites have to land as one tested change before that is safe:
+The rollback crate, early-unlock consumer, and late-boot confirmation services
+are now shipped, but the generation-bound unlock path is deliberately **not
+enrolled by the installer**. The remaining target-prediction prerequisites have
+to land as one tested change before that is safe:
 
 1. The installer rewrites the installed UKI's measured `.cmdline` with the new
    root filesystem UUID, LUKS UUID, token-discovery options, and live-media marker
@@ -345,24 +347,19 @@ Three prerequisites have to land as one tested change before that is safe:
    public key and an empty `/usr/share/qos/pcr-predictions`. Its private key must
    not be copied to installation media. There is therefore no authority present
    that can sign the target-specific PCR 11 prediction during an offline install.
-3. The production initramfs has no `qos-rollback unlock` dracut hook yet. Even a
-   correctly enrolled generation slot would not be offered to
-   `systemd-cryptsetup` on the first installed boot.
-
 Calling `qos-rollback enroll` despite those facts would not add rollback
 protection: sealing against the live installer's PCRs produces an unusable target,
 while omitting PCR 11 silently reduces the policy to the rejected PCR 7-only
 boundary. The current release therefore retains the strong passphrase, mandatory
 recovery key, and optional FIDO2 slot and offers no short-PIN TPM path.
 
-A complete integration must either make the installed UKI independent of
+A complete enrollment integration must either make the installed UKI independent of
 per-device command-line values, so a release-signed prediction remains valid, or
-introduce a machine authority whose public half and predictions are available in
-early userspace and whose update-time custody is no weaker than the owner Secure
-Boot key. It must also add the initramfs unlock hook and enroll every staged
-generation before reboot. The installer invariant test rejects a lone rollback
-enrollment call until those prerequisites exist; this prevents an apparently
-enabled but non-bootable partial deployment.
+introduce a machine authority whose public half and predictions are available at
+enrollment and whose update-time custody is no weaker than the owner Secure Boot
+key. It must enroll every staged generation before reboot. The installer
+invariant test rejects a lone rollback enrollment call until those prerequisites
+exist; this prevents an apparently enabled but non-bootable partial deployment.
 
 ## Disk encryption
 
@@ -407,6 +404,16 @@ cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
 until qOS additionally ships signed measured-artifact policies and update-safe
 prediction consumption.
+
+The privileged installer enforces the same startup-secret policy shown by the
+graphical installer. It requires at least fifteen characters (the NIST
+single-factor minimum), rejects leading or trailing whitespace, common
+passwords padded with digits or punctuation,
+short numeric-only secrets, and repeated low-diversity patterns. A long numeric
+secret remains possible, and multi-word passphrases do not have to satisfy an
+arbitrary mix of upper case, punctuation, and digits. This check runs again
+after privilege escalation so a modified or non-graphical client cannot bypass
+the UI validation.
 TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the

@@ -6693,6 +6693,7 @@ dependencies = [
  "tempfile",
  "vello",
  "winit",
+ "zbus 4.4.0",
  "zstd",
 ]
 

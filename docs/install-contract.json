@@ -6,7 +6,7 @@
       {
         "os": "Linux",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["AppImage", "portable tarball"],
+        "downloads": ["Flatpak bundle", "AppImage", "portable tarball"],
         "packageManager": "Homebrew formula"
       },
       {

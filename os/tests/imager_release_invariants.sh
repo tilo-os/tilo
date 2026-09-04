@@ -132,7 +132,7 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
   && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
     "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
-  && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
+  && grep -Fq 'qos-imager-linux-*.flatpak.asc' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
 
@@ -168,6 +168,21 @@ if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
 else
   bad 'a host package can ship with its media writer disabled'
 fi
+flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.qos.Imager.yml"
+flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
+if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
+  && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
+    "$repo/apps/imager/src/write.rs" \
+  && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
+  && grep -Fq 'apps/imager/packaging/package-flatpak.sh' "$workflow" \
+  && grep -Fq -- '--qos-flatpak-probe-smoke' "$flatpak_package" \
+  && grep -Fq -- '--disable-download' "$flatpak_package"; then
+  ok 'Flatpak uses only a polkit-mediated exclusive UDisks2 descriptor and is release-gated'
+else
+  bad 'Flatpak raw-media authority or release packaging is too broad/incomplete'
+fi
 if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq 'with administrator privileges' "$mac_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
@@ -185,6 +200,7 @@ fi
 
 for artifact in \
   'qos-imager-linux-*.AppImage' \
+  'qos-imager-linux-*.flatpak' \
   'qos-imager-windows-x86_64.exe' \
   'qos-imager-setup-windows-x86_64.exe' \
   'qos-imager-macos-*.dmg'; do

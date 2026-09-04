@@ -114,7 +114,7 @@ for kver in "${kvers[@]}"; do
   # and an initramfs that does carry cryptsetup looks like one that does not.
   mods="$OS_ROOT/usr/lib/qos/initramfs-modules.txt"
   if [ -s "$mods" ]; then
-    for want in crypt systemd-cryptsetup tpm2-tss plymouth; do
+    for want in crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback; do
       if grep -qx "$want" "$mods"; then
         ok "initramfs includes the $want module"
       else
@@ -124,7 +124,7 @@ for kver in "${kvers[@]}"; do
   elif [ -s "$img" ] && command -v lsinitrd >/dev/null 2>&1 \
        && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
-    for want in systemd-cryptsetup cryptsetup; do
+    for want in systemd-cryptsetup cryptsetup qos-rollback-initrd-unlock; do
       if printf '%s' "$listing" | grep -q "$want"; then
         ok "initramfs carries $want"
       else

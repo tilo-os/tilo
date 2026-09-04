@@ -233,9 +233,11 @@ generation number arrived on the sealed command line, that PCR 7 and 11 hold
 meaningful measurements, that early userspace produced the key file before
 `systemd-cryptsetup` wanted it, and that the units fired. It passes on a VM booted
 from an image `os/dev/build-image.sh` produced. The unlock hand-off is reported
-`n/a` on an unencrypted disk and asserted on an encrypted one; the initramfs hook
-that calls `qos-rollback unlock` is still outstanding, and the check reports its
-absence as a failure rather than a skip.
+`n/a` on an unencrypted disk and asserted on an enrolled encrypted one. The
+initramfs module now calls `qos-rollback unlock` before the matching cryptsetup
+unit and yields to its independent recovery prompt on failure. Signed target
+predictions and installer enrollment remain outstanding; the check reports an
+enrolled volume without a working hand-off as a failure rather than a skip.
 
 **A check that only ever passes is not evidence**, so there are two ways to make it
 fail on purpose:
