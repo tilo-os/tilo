@@ -16,9 +16,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "os/external-assets/github-assets.tsv"
-      - "os/dev/cache-github-assets.sh"
-      - "os/dev/install-cached-cosign.sh"
+      - "os/**"
+      - "shell/**"
       - ".forgejo/workflows/release-imager.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -33,9 +32,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "os/external-assets/github-assets.tsv"
-      - "os/dev/cache-github-assets.sh"
-      - "os/dev/install-cached-cosign.sh"
+      - "os/**"
+      - "shell/**"
       - ".forgejo/workflows/release-imager.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -60,8 +58,12 @@ jobs:
           - arch: aarch64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      REGISTRY_AUTH_FILE: ${{ runner.temp }}/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require the native medium architecture
+        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Verify documented installation targets
         run: python3 scripts/check-install-contract.py
       - name: Restore checksum-verified GitHub build inputs
@@ -86,12 +88,13 @@ jobs:
         env:
           QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
+          set -euo pipefail
           test -n "$QOS_REGISTRY_TOKEN"
-          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.sandbox.example \
+          umask 077
+          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login \
+            --authfile "$REGISTRY_AUTH_FILE" code.sandbox.example \
             --username '${{ github.actor }}' --password-stdin
       - name: Build the tested qOS live installer
-        env:
-          QOS_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
@@ -100,6 +103,54 @@ jobs:
           ./os/dev/build-custom-installer.sh
           apps/imager/packaging/package-install-medium.sh \
             os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}"
+      - name: Remove native image registry credentials
+        if: always()
+        run: rm -f -- "${REGISTRY_AUTH_FILE:?}"
+      - name: Install full-cycle VM dependencies
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends \
+              imagemagick ovmf qemu-system-gui qemu-system-x86 qemu-utils socat tesseract-ocr
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y \
+              edk2-ovmf ImageMagick qemu-device-display-virtio-vga-gl qemu-img \
+              qemu-system-x86-core qemu-ui-egl-headless qemu-ui-opengl socat tesseract
+          else
+            printf 'unsupported runner OS for installer VM cycle\n' >&2
+            exit 1
+          fi
+          command -v qemu-img qemu-system-x86_64 socat tesseract >/dev/null
+          command -v magick >/dev/null || command -v convert >/dev/null
+          qemu-system-x86_64 -display help | grep -Fq egl-headless
+          qemu-system-x86_64 -device help | grep -Fq virtio-vga-gl
+          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+          compgen -G '/dev/dri/renderD*' >/dev/null
+      - name: Exercise the complete graphical installation cycle
+        if: matrix.arch == 'x86_64'
+        env:
+          QOS_ACCEL: kvm
+          QOS_BOOT_WAIT_ATTEMPTS: "600"
+          QOS_DISTROBOX: ""
+          QOS_INSTALLER_CYCLE_STORAGE: ${{ runner.temp }}/qos-installer-cycle-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS: "3600"
+          QOS_MEM: "8192"
+          QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ./os/dev/test-installer-cycle.sh \
+            os/output/installer/qcow2/disk.qcow2 \
+            --out dist/installer-cycle
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always() && matrix.arch == 'x86_64'
+        with:
+          name: qos-installer-full-cycle-x86_64
+          path: dist/installer-cycle
+          if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |
           set -euo pipefail
