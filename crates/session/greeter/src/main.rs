@@ -12,7 +12,8 @@
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
-//     `fingerprint`, `starting`, `caps`, `longname`. Defaults to `form`.
+//     `fingerprint`, `starting`, `caps`, `longname`, `personal`, and
+//     `personal-no-fingerprint`. Defaults to `form`.
 
 #![cfg_attr(
     test,
@@ -59,8 +60,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let text_scale = parse_text_scale_arg(&args);
         let widget = GreeterApp::for_shot(scenario);
-        render_shot_to_png(Box::new(widget), viewport, &out, shot_credentials(scenario))?;
+        render_shot_to_png(
+            Box::new(widget),
+            viewport,
+            text_scale,
+            &out,
+            shot_credentials(scenario),
+        )?;
         return Ok(());
     }
 
@@ -108,6 +116,21 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
 }
 
+fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--text-scale" {
+            break iter.next()?.as_str();
+        }
+        if let Some(rest) = arg.strip_prefix("--text-scale=") {
+            break rest;
+        }
+    };
+    let scale: f32 = raw.parse().ok()?;
+    (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
+}
+
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
 /// in `args`, otherwise `None`.
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
@@ -145,6 +168,10 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "hint" => Some(AuthScenario::Hint),
         "starting" => Some(AuthScenario::Starting),
         "longname" | "long-name" | "long" => Some(AuthScenario::LongName),
+        "personal" => Some(AuthScenario::Personal),
+        "personal-no-fingerprint" | "personal-passcode" => {
+            Some(AuthScenario::PersonalNoFingerprint)
+        }
         _ => None,
     }
 }
@@ -157,7 +184,7 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
 fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static str)> {
     match scenario {
         // The first frame anyone ever sees: both fields empty.
-        AuthScenario::Form => None,
+        AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
         // The whole point of the hint state is the *missing* password.
         AuthScenario::Hint => Some(("ada", "")),
         // Long enough to overrun the field, so the snapshot proves how it
@@ -179,6 +206,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
     seed: Option<(&str, &str)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -192,7 +220,7 @@ fn render_shot_to_png(
         reason = "viewport dimensions are screen/image sizes, always far under 2^24"
     )]
     let (wf, hf) = (w as f32, h as f32);
-    let theme = Theme::dark();
+    let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -296,6 +324,20 @@ mod tests {
                 parse_viewport_arg(&args(&["qos-greeter", "--viewport", raw])),
                 None,
                 "accepted malformed viewport {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shot_text_scale_accepts_only_bounded_finite_values() {
+        assert_eq!(
+            parse_text_scale_arg(&args(&["qos-greeter", "--text-scale=1.3"])),
+            Some(1.3)
+        );
+        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+            assert_eq!(
+                parse_text_scale_arg(&args(&["qos-greeter", "--text-scale", value])),
+                None
             );
         }
     }

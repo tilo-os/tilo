@@ -305,6 +305,12 @@ impl ImagerApp {
         self.shot_confirmation_ready = true;
     }
 
+    /// Headless-shot only: expose the long, searchable time-zone chooser so
+    /// its overlay placement is part of visual review.
+    pub fn shot_open_customize_timezone(&mut self) {
+        self.customize.open_timezone_for_shot();
+    }
+
     fn confirm_matches(&self) -> bool {
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
         let confirm = self.confirm_input.value();
