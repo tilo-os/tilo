@@ -189,6 +189,13 @@ enum Cmd {
         /// `XDG_RUNTIME_DIR` are both derived from it.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
+        /// Rootless Xwayland display supplied by the compositor for legacy
+        /// X11 applications.
+        #[arg(long, requires = "x11_authority")]
+        x11_display: Option<String>,
+        /// Xauthority file paired with `--x11-display`.
+        #[arg(long, requires = "x11_display")]
+        x11_authority: Option<PathBuf>,
         /// A file to open. Expands the entry's `%f`/`%F` field codes (and
         /// `%u`/`%U` as a `file://` URL).
         #[arg(long)]
@@ -302,12 +309,16 @@ fn main() -> ExitCode {
         Cmd::RunHost {
             desktop_id,
             wayland_socket,
+            x11_display,
+            x11_authority,
             open,
             open_url,
             dry_run,
         } => run_host(
             &desktop_id,
             wayland_socket,
+            x11_display,
+            x11_authority,
             open.as_deref(),
             open_url,
             dry_run,
@@ -642,12 +653,16 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
 fn run_host(
     desktop_id: &str,
     wayland_socket: Option<PathBuf>,
+    x11_display: Option<String>,
+    x11_authority: Option<PathBuf>,
     open: Option<&Path>,
     open_url: Option<String>,
     dry_run: bool,
 ) -> ExitCode {
     let env = LaunchEnv {
         wayland_socket,
+        x11_display,
+        x11_authority,
         files: open
             .map(|p| vec![p.display().to_string()])
             .unwrap_or_default(),

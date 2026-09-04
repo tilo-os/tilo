@@ -18,7 +18,9 @@ for file in /usr/bin/qos-shell /usr/bin/qos-launcher \
 done
 for file in /etc/pam.d/qos-unlock \
             /usr/share/wayland-sessions/qos.desktop \
-            /usr/share/xdg-desktop-portal/portals/qos.portal; do
+            /usr/share/xdg-desktop-portal/portals/qos.portal \
+            /usr/share/xdg-desktop-portal/nirios-portals.conf \
+            /usr/lib/systemd/user/qos-graphical-session.target; do
     [[ -f $(path "$file") ]] || { echo "missing file: $file" >&2; exit 1; }
 done
 if [[ ! -f $(path /usr/share/licenses/qos-session/LICENSE) \
@@ -31,8 +33,15 @@ grep -Fqx "Exec=$libexec_dir/qos-session" "$(path /usr/share/wayland-sessions/qo
 grep -q '^TryExec=/usr/bin/qos-shell$' "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^DesktopNames=nirios$' "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^UseIn=nirios$' "$(path /usr/share/xdg-desktop-portal/portals/qos.portal)"
+grep -q '^default=qos$' "$(path /usr/share/xdg-desktop-portal/nirios-portals.conf)"
 grep -q '^QOS_SHELL=/usr/bin/qos-shell$' "$(path "$libexec_dir/qos-session")"
 grep -q -- '--firstboot' "$(path "$libexec_dir/qos-session")"
+grep -Fq '"$SYSTEMCTL" --user start "$SESSION_TARGET"' "$(path "$libexec_dir/qos-session")"
+grep -Fq '"$SYSTEMCTL" --user stop "$SESSION_TARGET"' "$(path "$libexec_dir/qos-session")"
+grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
+    "$(path /usr/lib/systemd/user/qos-graphical-session.target)"
+grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.target' \
+    "$(path /usr/lib/systemd/user/qos-graphical-session.target)"
 # The compositor owns the portal bus name in-process. A D-Bus activator or
 # separate user unit would race it and serve an empty workspace.
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service) ]]

@@ -3561,8 +3561,7 @@ pub fn run() -> ! {
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_clipboard(state.selection_store());
 
-    // `--backend drm|winit` selects the impl; `Drm` is currently a skeleton
-    // (errors "not yet implemented" at construction) but dispatch is wired so follow-up TTY work plugs in.
+    // `--backend drm|winit` selects the real native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
 
@@ -3741,6 +3740,22 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    // The complete qOS image deliberately remains Wayland-only. A host
+    // desktop session is a different trust tier: it promises to keep the
+    // distro applications the person already installed usable, including
+    // legacy X11 software, and labels those launches as unconfined.
+    let xwayland = if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args())
+    {
+        match super::xwayland::SessionXwayland::start(&socket_name) {
+            Ok(bridge) => Some(bridge),
+            Err(error) => {
+                tracing::warn!(%error, "rootless Xwayland compatibility is unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -5344,6 +5359,7 @@ pub fn run() -> ! {
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
     drop(tool_service);
+    drop(xwayland);
     // Same reasoning again: releases the D-Bus bus name and tears down the
     // notification object server before `process::exit` skips its destructor.
     drop(notif_handle);
