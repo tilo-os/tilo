@@ -851,7 +851,11 @@ impl OnboardingView {
                     Box::new(
                         Button::new(
                             "onboarding.connect.button",
-                            "Use my existing qOS identity",
+                            // Keep this action concise enough to remain legible beside
+                            // Create identity on the supported 420 px narrow layout.
+                            // The surrounding intro already establishes qOS identity
+                            // as the subject, so the shorter copy loses no context.
+                            "Use existing",
                             Some(KEY_CONNECT),
                         )
                         .with_icon(ui::icons::Icon::ExternalLink),

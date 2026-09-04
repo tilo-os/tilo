@@ -123,7 +123,8 @@ jobs:
               display_device=virtio-gpu-gl-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              imagemagick qemu-system-gui qemu-utils socat tesseract-ocr $native_packages
+              dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g qemu-system-gui \
+              qemu-utils socat tesseract-ocr $native_packages
           elif command -v dnf >/dev/null; then
             if [ "${{ matrix.arch }}" = x86_64 ]; then
               native_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
@@ -134,13 +135,14 @@ jobs:
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
             fi
-            sudo -n dnf install -y ImageMagick qemu-img qemu-ui-egl-headless \
-              qemu-ui-opengl socat tesseract $native_packages
+            sudo -n dnf install -y dosfstools e2fsprogs ImageMagick mtools ntfs-3g util-linux \
+              qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
-          command -v qemu-img "$qemu_binary" socat tesseract >/dev/null
+          command -v debugfs mcopy mmd mkfs.ext4 mkfs.ntfs mkfs.vfat ntfscp \
+            qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
           "$qemu_binary" -display help | grep -Fq egl-headless
           "$qemu_binary" -device help | grep -Fq "$display_device"
@@ -160,11 +162,18 @@ jobs:
           ./os/dev/test-installer-cycle.sh \
             os/output/installer/qcow2/disk.qcow2 \
             --out dist/installer-cycle
+          QOS_VM_CYCLE="${QOS_VM_CYCLE}-alongside" \
+            ./os/dev/test-installer-cycle.sh \
+              os/output/installer/qcow2/disk.qcow2 \
+              --prepared-alongside \
+              --out dist/installer-alongside-cycle
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: qos-installer-full-cycle-${{ matrix.arch }}
-          path: dist/installer-cycle
+          path: |
+            dist/installer-cycle
+            dist/installer-alongside-cycle
           if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |
