@@ -81,6 +81,36 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
+mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
+homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
+if ! grep -Fq 'declare -A' "$mac_broker" \
+   && grep -Fq '"$broker" "$platform" "$lease" >/dev/null' "$mac_broker" \
+   && grep -Fq '$null = & $Trusted windows $Lease' \
+     "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
+   && grep -Fq '"$broker" "$kind" "$output" >/dev/null' \
+     "$repo/apps/imager/packaging/acquire-release-token.sh" \
+   && ! grep -Fq '${EXPECTED_CERT_SHA256^^}' "$workflow" \
+   && ! grep -Fq 'sort -V' "$homebrew_publish" \
+   && [ "$(grep -Fc 'Out-File -FilePath $env:GITHUB_ENV' "$workflow")" -eq \
+        "$(grep -Fc 'Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append' "$workflow")" ]; then
+  ok 'native release credential and promotion paths support stock macOS Bash and Windows PowerShell'
+else
+  bad 'native release automation exposes broker stdout, depends on Bash 4/GNU sort, or writes a non-UTF-8 Windows environment file'
+fi
+
+# Load only the side-effect-free comparator, then exercise boundaries which a
+# fixed-width numeric key or awk floating-point comparison gets wrong.
+source <(sed -n '/^version_is_newer()/,/^}/p' "$homebrew_publish")
+if version_is_newer 1.10.0 1.9.999 \
+   && version_is_newer 10000000000.0.0 9999999999.999.999 \
+   && ! version_is_newer 1.0.0 1.0.0 \
+   && ! version_is_newer 1.2.3 2.0.0 \
+   && grep -Fq 'existing Homebrew formula has no parseable version' "$homebrew_publish"; then
+  ok 'Homebrew promotion compares semantic version components without numeric truncation'
+else
+  bad 'Homebrew promotion can replace a newer release or reject a valid upgrade'
+fi
+
 grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'qos-installer-*.asc' "$workflow" \
   && grep -Fq 'qos-installer-catalog-v1.json' "$repo/apps/imager/packaging/verify-linux-release.sh" \
