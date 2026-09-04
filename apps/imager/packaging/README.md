@@ -29,11 +29,20 @@ digest-bound, secret-free request, repeats the device identity and safety
 checks, writes and verifies the medium, then exits. Account and disk-encryption
 secrets never cross that privilege boundary.
 
-Flatpak is deliberately not offered. A sandboxed application cannot safely gain
-raw block-device access without a separately installed, narrowly scoped host
-helper, and elevating a second copy of the whole Flatpak application would both
-defeat the sandbox and fail for normal per-user installs. The signed AppImage is
-the preferred self-contained Linux download.
+The Flatpak uses the host's root-owned UDisks2 service as its narrow media
+helper. After typed confirmation, polkit authorizes one exclusive read/write
+descriptor for the reviewed removable block object. The sandbox gets no direct
+`/dev` access, host filesystem access, or `org.freedesktop.Flatpak` host-command
+escape. The exact same streaming write, signed-source digest, read-back verify,
+profile-tail verify, and hot-unplug identity checks run over that descriptor.
+`package-flatpak.sh` exports against the pinned 25.08 runtime, smoke-loads the
+result in that sandbox as an ABI gate, and emits a signed-release
+`qos-imager-linux-{x86_64,aarch64}.flatpak` bundle. Release runners must have
+`flatpak-builder` and `org.freedesktop.Sdk//25.08` preinstalled.
+The packaging smoke gate also runs the bundled `lsblk` without a device grant
+and reconciles its sysfs view with host-side UDisks2 Size, ReadOnly, HintSystem,
+IdUsage, and MountPoints properties. A missing service/property, mismatched
+size, read-only disk, or incomplete partition record rejects that drive.
 
 Native release packages are fail-closed with `QOS_REQUIRE_NATIVE_PACKAGES=1`.
 Linux release builders need GnuPG; CI materializes checksum-pinned
