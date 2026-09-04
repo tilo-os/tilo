@@ -32,6 +32,11 @@ if command -v appstreamcli >/dev/null 2>&1; then
     || bad 'Linux application metadata is invalid'
 fi
 
+grep -Fq '"$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"' \
+  "$repo/apps/imager/packaging/package-host.sh" \
+  && ok 'AppImage metadata uses the desktop-id filename expected by linuxdeploy' \
+  || bad 'AppImage packaging will omit discoverable application metadata'
+
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
   && ok 'tag releases fail closed without signed native packages' \
