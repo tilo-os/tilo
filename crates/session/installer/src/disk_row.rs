@@ -294,6 +294,7 @@ mod tests {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
+            pending_guided: None,
         }
     }
 
