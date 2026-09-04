@@ -1706,9 +1706,9 @@ pub fn spawn_launch(
             let detail = format!("could not start launch thread: {e}");
             push_event(LaunchEvent {
                 package_id: identity.0,
-            display_name: identity.1,
-            managed_agent_id: identity.2,
-            managed_workspace_id: identity.3,
+                display_name: identity.1,
+                managed_agent_id: identity.2,
+                managed_workspace_id: identity.3,
                 kind: LaunchEventKind::SpawnFailed {
                     detail: detail.clone(),
                 },
