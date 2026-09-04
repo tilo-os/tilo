@@ -1173,9 +1173,13 @@ impl RoomActivityPane {
             let Some(heads) = ui::heads_for_entry(&mut baseline.doc, &entry.id) else {
                 continue;
             };
-            let Ok(doc) = baseline.doc.fork_at(&heads) else {
-                continue;
-            };
+            // Automerge 0.8's `fork_at` collector can traverse a valid merged
+            // graph in non-topological order and panic on a dependency that
+            // appears later. Clone the complete graph, then constrain reads to
+            // the historical clock; the replay snapshot is discarded after
+            // this frame is materialised.
+            let mut doc = baseline.doc.fork();
+            doc.isolate(&heads);
             let mut snapshot = baseline.clone();
             snapshot.doc = doc;
             snapshot.resync_cache_from_doc();
