@@ -12212,7 +12212,9 @@ name = "registry-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-registry",
  "atomic-file",
+ "blake3",
  "bytes",
  "clap",
  "ed25519-dalek 2.2.0",
@@ -12220,6 +12222,8 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
+ "pkg",
  "rand 0.8.8",
  "registry-types",
  "reqwest 0.12.28",

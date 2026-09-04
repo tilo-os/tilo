@@ -106,7 +106,7 @@ jobs:
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
     env:
-      REGISTRY_AUTH_FILE: /var/tmp/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
+      REGISTRY_AUTH_FILE: /tmp/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Require the native medium architecture
