@@ -237,7 +237,7 @@ case "$host" in
     cp apps/imager/packaging/linux/qos-imager.desktop \
       "$appdir/usr/share/applications/org.qos.Imager.desktop"
     cp apps/imager/packaging/linux/org.qos.Imager.metainfo.xml \
-      "$appdir/usr/share/metainfo/"
+      "$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/qos-imager.svg"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/.DirIcon"
