@@ -16,7 +16,10 @@ jobs:
     runs-on: runner
     timeout-minutes: 240
     container:
-      image: code.sandbox.example/qos/qos-builder:latest
+      # Visual goldens are meaningful only when fonts, Mesa and the software
+      # renderer are byte-for-byte identical to the reviewed refresh job.
+      # Advance this digest together with refresh-visual-baselines.yml.
+      image: code.sandbox.example/qos/qos-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

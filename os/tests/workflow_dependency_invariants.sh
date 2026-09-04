@@ -9,6 +9,8 @@ fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
 containerfile="$repo/os/Containerfile"
+nightly_workflow="$workflows/nightly.yml"
+visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
 github_cache_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
@@ -39,6 +41,24 @@ done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
 
 if [ "$fail" = 0 ]; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
+fi
+
+nightly_visual_image="$({
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+    "$nightly_workflow"
+} | head -n 1)"
+refresh_visual_image="$({
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+    "$visual_refresh_workflow"
+} | head -n 1)"
+if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
+  && [ "$nightly_visual_image" = "$refresh_visual_image" ] \
+  && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
+  && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
+  printf 'ok    visual verification and reviewed candidates share one immutable builder\n'
+else
+  printf 'visual candidates must use the nightly image and never auto-commit pixels\n' >&2
+  fail=1
 fi
 
 declare -A asset_names=()
