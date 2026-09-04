@@ -37,6 +37,12 @@ plan, and publishes a new immutable `.tar.gz`. OS images and desktop
 distributions can pin one by version and architecture without compiling apps
 again.
 
+Each architecture collection also contains the signed `qos-runtime` bundle
+built in the same Cargo graph as its thin app binaries. The OS verifies and
+installs that exact runtime; it never independently relinks
+`libruntime_dylib.so`, whose Rust symbol hashes would otherwise make reused
+qpkgs ABI-incompatible.
+
 Set repository variables `QOS_APP_COLLECTION_URL` and
 `QOS_APP_COLLECTION_SHA256`, and `QOS_APP_COLLECTION_PUBLISHER` to make that
 pinned bundle the normal OS input, or

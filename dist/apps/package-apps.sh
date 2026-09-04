@@ -7,6 +7,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 apps=${QOS_RELEASE_APPS:?space-separated app directory names are required}
 out=${QOS_APP_RELEASE_OUT:-$repo_root/dist/app-release}
 identity=${QPKG_PUBLISHER_IDENTITY_FILE:-}
+runtime_identity=${RUNTIME_BUNDLE_IDENTITY_FILE:-}
 source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
 max_qpkg_bytes=${MAX_QPKG_BYTES:-10000000}
 
@@ -32,6 +33,22 @@ mapfile -t app_binaries < <(
         '.catalog[] | $root + "/" + .binary' "$plan"
 )
 "$repo_root/os/scripts/verify-elf-hardening.sh" "${app_binaries[@]}"
+
+runtime_version=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^qos-runtime/"; "")' "$plan")
+[[ $runtime_version =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
+if [[ -z $runtime_identity ]]; then
+    runtime_identity="$out/work/runtime-publisher.json"
+    "$repo_root/target/release/qos-runtime-bundle" key generate --out "$runtime_identity"
+fi
+runtime_dylib="$repo_root/target/thin-app/libruntime_dylib.so"
+rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
+[[ -f $runtime_dylib && -f $rust_libstd ]]
+OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
+    SOURCE_DATE_EPOCH="$source_epoch" \
+    ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
+    BUNDLE_BIN="$repo_root/target/release/qos-runtime-bundle" \
+    EXTRA_LIBS="$runtime_dylib $rust_libstd" \
+    "$repo_root/os/scripts/bake-runtime-bundle.sh"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
@@ -73,9 +90,10 @@ for app in plan["catalog"]:
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY
-(cd "$out" && sha256sum qpkg/*.qpkg index.json > SHA256SUMS)
+(cd "$out" && find qpkg runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
+    && sha256sum index.json >> SHA256SUMS)
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
-    -C "$out" -czf "$out/qos-apps-$(uname -m).tar.gz" qpkg index.json SHA256SUMS
+    -C "$out" -czf "$out/qos-apps-$(uname -m).tar.gz" qpkg runtime index.json SHA256SUMS
 (
   cd "$out"
   sha256sum "qos-apps-$(uname -m).tar.gz" > "qos-apps-$(uname -m).tar.gz.sha256"

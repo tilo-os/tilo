@@ -75,6 +75,7 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "binary": binary,
             "id": app["package"]["id"],
             "version": app["package"]["version"],
+            "runtime": app["package"]["runtime"],
             "manifest": str(manifest.relative_to(root)),
         }
     if not result:

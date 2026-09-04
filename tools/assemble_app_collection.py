@@ -14,7 +14,13 @@ import sys
 ARCHITECTURES = {"x86_64", "aarch64"}
 
 
-def assemble(plan: dict, architecture: str, qpkg_dir: Path, source: str) -> dict:
+def assemble(
+    plan: dict,
+    architecture: str,
+    qpkg_dir: Path,
+    runtime_dir: Path,
+    source: str,
+) -> dict:
     if architecture not in ARCHITECTURES:
         raise ValueError(f"unsupported architecture: {architecture}")
     entries = []
@@ -43,7 +49,25 @@ def assemble(plan: dict, architecture: str, qpkg_dir: Path, source: str) -> dict
         extra = ", ".join(sorted(actual - expected)) or "none"
         missing = ", ".join(sorted(expected - actual)) or "none"
         raise ValueError(f"qpkg set mismatch (missing: {missing}; extra: {extra})")
-    return {"format": 1, "architecture": architecture, "source": source, "apps": entries}
+    publisher_file = runtime_dir / "runtime-bundle-publisher.hex"
+    publisher = publisher_file.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
+        raise ValueError("runtime bundle publisher must be a 64-hex Ed25519 key")
+    bundle_root = runtime_dir / "qos-runtime"
+    versions = sorted(
+        path.name
+        for path in bundle_root.iterdir()
+        if path.is_dir() and not path.is_symlink() and (path / "bundle.toml").is_file()
+    )
+    if len(versions) != 1:
+        raise ValueError("collection must contain exactly one signed runtime version")
+    return {
+        "format": 1,
+        "architecture": architecture,
+        "source": source,
+        "runtime": {"version": versions[0], "publisher": publisher.lower()},
+        "apps": entries,
+    }
 
 
 def main() -> int:
@@ -51,12 +75,15 @@ def main() -> int:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--architecture", required=True)
     parser.add_argument("--qpkg-dir", type=Path, required=True)
+    parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
     args = parser.parse_args()
     try:
         plan = json.loads(args.plan.read_text(encoding="utf-8"))
-        result = assemble(plan, args.architecture, args.qpkg_dir, args.source)
+        result = assemble(
+            plan, args.architecture, args.qpkg_dir, args.runtime_dir, args.source
+        )
         args.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

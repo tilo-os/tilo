@@ -53,6 +53,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
+  && grep -Fq 'dist/app-release/runtime/**' "$apps" \
   && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
   && grep -Fq '$GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
@@ -72,6 +73,9 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'Authorization: Bearer $jwt' "$os" \
   && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
+  && grep -Fq 'cp -a /build/os/app-runtime/qos-runtime /usr/lib/' "$repo/os/Containerfile" \
+  && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
+  && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && ok 'trusted OS builds consume an OIDC-authenticated pinned app collection without rebuilding apps' \
   || bad 'OS releases are still coupled to app source builds'
 

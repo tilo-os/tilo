@@ -421,11 +421,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
          && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
+         && cp -a /build/os/app-runtime/qos-runtime /usr/lib/ \
+         && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
+         && RUNTIME_DYLIB="$(find /usr/lib/qos-runtime -name libruntime_dylib.so -print -quit)" \
+         && [ -n "$RUNTIME_DYLIB" ] \
+         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
          && { [ "${QOS_WITH_BROWSER}" = 0 ] \
-              || cp /out/optional/browser /out/browser-app/browser; } \
-         && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-            cargo build --profile thin-app -p runtime-dylib; \
+              || cp /out/optional/browser /out/browser-app/browser; }; \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
@@ -436,12 +438,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
               [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
             done \
-         && cp /out/file-explorer /out/thin-apps/file-explorer; \
+         && cp /out/file-explorer /out/thin-apps/file-explorer \
+         && cp target/thin-app/libruntime_dylib.so /out/ \
+         && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+         && [ -n "${LIBSTD}" ] \
+         && cp "${LIBSTD}" /out/; \
        fi \
-    && cp target/thin-app/libruntime_dylib.so /out/ \
-    && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
-    && [ -n "${LIBSTD}" ] \
-    && cp "${LIBSTD}" /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
@@ -480,10 +482,16 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out \
 # the operator to run `qos-install runtime install` — 46 of them, and no image.
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
-RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
-    && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
-    && [ -n "${RUST_LIBSTD}" ] \
-    && /bin/bash -eu -o pipefail -c ' \
+RUN if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+      test -s /out/runtime-bundle-publisher.hex \
+      && /out/qos-runtime-bundle verify \
+        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
+    else \
+      /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+      && [ -n "${RUST_LIBSTD}" ] \
+      && /bin/bash -eu -o pipefail -c ' \
         args=(/out/qos-runtime-bundle build \
           --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
@@ -494,13 +502,14 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' \
-    && /out/qos-runtime-bundle key pubkey \
+      && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
-    && /out/qos-runtime-bundle verify \
+      && /out/qos-runtime-bundle verify \
         "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
-    && rm -f /out/runtime-bundle-identity.json
+      && rm -f /out/runtime-bundle-identity.json; \
+    fi
 
 # ---- Pack + install every app into the image-wide app store -----------------
 # Without this the launcher's registry is empty on a fresh install and the

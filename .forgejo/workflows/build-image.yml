@@ -149,10 +149,12 @@ jobs:
             | sha256sum --check --strict
           found=0
           while IFS= read -r member; do
-            if [[ $member == qpkg/ || $member == index.json || $member == SHA256SUMS ]]; then
+            if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
               continue
             elif [[ $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
               found=1
+            elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
+              continue
             else
               printf 'unexpected app collection member: %s\n' "$member" >&2
               exit 1
@@ -161,14 +163,18 @@ jobs:
           [[ $found == 1 ]]
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
             --no-same-owner --no-same-permissions
-          if find "$work/qpkg" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+          if find "$work/qpkg" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
             printf 'app collection contains links or special files\n' >&2
             exit 1
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
           find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
+          find os/app-runtime -mindepth 1 ! -name .gitignore -delete
           cp "$work"/qpkg/*.qpkg os/app-artifacts/
+          cp -a "$work"/runtime/. os/app-runtime/
           test -n "$(find os/app-artifacts -name '*.qpkg' -print -quit)"
+          test -s os/app-runtime/runtime-bundle-publisher.hex
+          test -n "$(find os/app-runtime/qos-runtime -name bundle.toml -print -quit)"
           echo 'QOS_PREBUILT_APPS=1' >> "$GITHUB_ENV"
           echo "QOS_APP_COLLECTION_SHA256=${COLLECTION_SHA256,,}" >> "$GITHUB_ENV"
           echo "QOS_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"

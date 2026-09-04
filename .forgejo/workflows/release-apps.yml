@@ -190,22 +190,36 @@ jobs:
         env:
           QOS_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
           QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
         run: |
           if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
             identity="$RUNNER_TEMP/qos-app-publisher.json"
             (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
             export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
-            trap 'rm -f "$identity"' EXIT
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
             printf 'QPKG_PUBLISHER_IDENTITY is required for publication\n' >&2
             exit 1
           fi
+          if [[ -n ${RUNTIME_BUNDLE_SIGNING_KEY:-} ]]; then
+            runtime_identity="$RUNNER_TEMP/qos-runtime-publisher.json"
+            (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
+            export RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
+          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            printf 'RUNTIME_BUNDLE_SIGNING_KEY is required for publication\n' >&2
+            exit 1
+          fi
+          cleanup_identities() {
+            [[ -z ${identity:-} ]] || rm -f "$identity"
+            [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
+          }
+          trap cleanup_identities EXIT
           dist/apps/package-apps.sh
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-apps-${{ matrix.arch }}
           path: |
             dist/app-release/qpkg/*.qpkg
+            dist/app-release/runtime/**
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
           if-no-files-found: error
@@ -312,8 +326,9 @@ jobs:
                 --header "Authorization: Bearer $jwt" "$prior_url" --output "$prior"
               printf '%s  %s\n' "$prior_sha" "$prior" | sha256sum --check --strict
               while IFS= read -r member; do
-                if [[ $member == qpkg/ || $member == index.json || $member == SHA256SUMS \
-                      || $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
+                if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS \
+                      || $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ \
+                      || $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
                   continue
                 fi
                 printf 'unexpected prior collection member: %s\n' "$member" >&2
@@ -321,9 +336,23 @@ jobs:
               done < <(tar -tzf "$prior")
               tar --extract --gzip --file "$prior" --directory "$prior_dir" \
                 --no-same-owner --no-same-permissions
-              if find "$prior_dir/qpkg" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+              if find "$prior_dir/qpkg" "$prior_dir/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
                 printf 'prior app collection contains links or special files\n' >&2
                 exit 1
+              fi
+              built_count=$(jq -r '.apps | length' "$index")
+              collection_count=$(jq -r '.catalog | length' "$collection_plan")
+              if (( built_count < collection_count )); then
+                new_manifest=$(find "${index%/index.json}/runtime/qos-runtime" \
+                  -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
+                prior_manifest=$(find "$prior_dir/runtime/qos-runtime" \
+                  -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
+                new_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$new_manifest")
+                prior_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$prior_manifest")
+                if [[ -z $new_root || ${new_root,,} != ${prior_root,,} ]]; then
+                  printf 'shared runtime changed; the full collection must be rebuilt\n' >&2
+                  exit 1
+                fi
               fi
               cp "$prior_dir"/qpkg/*.qpkg "$qpkg_dir/"
             fi
@@ -342,6 +371,7 @@ jobs:
             out="dist/app-collections/$arch"
             QOS_APP_COLLECTION_PLAN="$collection_plan" \
               QOS_APP_ARCH="$arch" QOS_APP_QPKG_DIR="$qpkg_dir" \
+              QOS_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
               QOS_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
               dist/apps/assemble-collection.sh
             bundle="$out/qos-apps-$arch.tar.gz"
