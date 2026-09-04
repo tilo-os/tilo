@@ -1472,6 +1472,116 @@ impl FrameBuilder {
         self.host_node
     }
 
+    /// Build the semantic tree for compositor-owned chrome.
+    ///
+    /// Hosted applications get this through [`ui::App`]'s winit adapter. The
+    /// native shell has no application window, so its AT-SPI bridge calls this
+    /// equivalent projection directly after layout. Keeping the projection in
+    /// [`ui::accesskit_bridge`] means first-use surfaces expose the same roles,
+    /// names, state and stable node ids as every other qOS UI.
+    pub fn build_a11y_tree_update(
+        &self,
+        focus: Option<NodeId>,
+        scale: f64,
+    ) -> ui::accesskit::TreeUpdate {
+        ui::accesskit_bridge::build_tree_update(&self.host, &self.node_map, focus, scale)
+    }
+
+    /// Route an assistive-technology action back through the live compositor
+    /// widget tree. Returns `true` only when the request addressed a current
+    /// semantic node and was handled (directly or through the standard pointer
+    /// fallback used by [`ui::App`]).
+    pub fn dispatch_a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        use ui::a11y::Action;
+        use ui::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let Some(resolved) = resolve_node_id(&self.host, &self.node_map, target) else {
+            return false;
+        };
+        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+            A11yTarget::Root => return false,
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Synthetic {
+                owner,
+                key_path,
+                ordinal_path,
+                semantic_target,
+            } => (owner, key_path, ordinal_path, semantic_target, true),
+        };
+        let Some(&widget) = self.node_map.get(&taffy_id) else {
+            return false;
+        };
+
+        let handled = unsafe {
+            if let Some(target) = semantic_target.as_deref() {
+                (*widget).perform_semantic_action(target, action, state, root_obj)
+            } else if synthetic {
+                (*widget).perform_action_at(action, &key_path, state, root_obj)
+            } else {
+                (*widget).perform_action(action, state, root_obj)
+            }
+        };
+        if handled {
+            if matches!(action, Action::Focus) {
+                self.set_native_focus(focus, Some(taffy_id));
+            }
+            if self.host.take_focus_reset() {
+                self.relayout();
+                self.focus_first(focus);
+            }
+            return true;
+        }
+
+        match action {
+            Action::Focus => {
+                if synthetic && !ordinal_path.is_empty() {
+                    unsafe { (*widget).focus_synthetic_accessibility(&ordinal_path) };
+                }
+                self.set_native_focus(focus, Some(taffy_id));
+                true
+            }
+            Action::Activate | Action::ToggleCheck => {
+                let rect = if synthetic {
+                    unsafe { (*widget).synthetic_accessibility_rect(&ordinal_path) }
+                        .unwrap_or_else(|| unsafe { (*widget).get_rect() })
+                } else {
+                    unsafe { (*widget).get_rect() }
+                };
+                let center = rect.center();
+                let events = [
+                    WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                    },
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                    },
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                    },
+                ];
+                let mut handled = false;
+                for event in events {
+                    handled |=
+                        self.dispatch_event(&event, &Modifiers::default(), state, root_obj, focus);
+                }
+                handled
+            }
+            _ => false,
+        }
+    }
+
     /// Read-only access to the taffy tree — also for input dispatch.
     pub fn taffy(&self) -> &TaffyTree<()> {
         &self.taffy
@@ -1754,6 +1864,17 @@ mod tests {
         unsafe { (**ptr).accessibility()?.name }
     }
 
+    fn exported_node_named(
+        update: &ui::accesskit::TreeUpdate,
+        name: &str,
+    ) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .cloned()
+    }
+
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -1770,6 +1891,100 @@ mod tests {
         assert_eq!(
             focused_name(&fb, focus).as_deref(),
             Some("Use my existing qOS identity")
+        );
+    }
+
+    #[test]
+    fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (existing_id, existing) = exported_node_named(&update, "Use my existing qOS identity")
+            .expect("existing-identity action reaches the external tree");
+        let (_, create) = exported_node_named(&update, "Create identity")
+            .expect("create-identity action reaches the external tree");
+        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 3: Choose")
+            .expect("the OOBE progress state reaches the external tree");
+
+        assert_eq!(existing.role(), ui::accesskit::Role::Button);
+        assert_eq!(create.role(), ui::accesskit::Role::Button);
+        assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
+        assert!(existing.supports_action(ui::accesskit::Action::Focus));
+        assert!(existing.supports_action(ui::accesskit::Action::Click));
+        assert_eq!(update.focus, existing_id);
+        assert_eq!(
+            update.tree.as_ref().map(|tree| tree.root),
+            Some(ui::accesskit_bridge::ROOT_ID)
+        );
+    }
+
+    #[test]
+    fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let intro = fb.build_a11y_tree_update(focus, 1.0);
+
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+            .expect("begin identity setup");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        let protect = fb.build_a11y_tree_update(focus, 1.0);
+
+        assert!(
+            exported_node_named(&protect, "Use my existing qOS identity").is_none(),
+            "nodes from the replaced step must leave the exported tree"
+        );
+        assert!(
+            exported_node_named(&intro, crate::onboarding::ACKNOWLEDGEMENT).is_none(),
+            "the next step must not leak into the initial tree"
+        );
+        let (ack_id, acknowledgement) =
+            exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
+                .expect("the recovery acknowledgement reaches the external tree");
+        let (_, create) = exported_node_named(&protect, "Create")
+            .expect("the gated create action reaches the external tree");
+        assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
+        assert_eq!(
+            acknowledgement.toggled(),
+            Some(ui::accesskit::Toggled::False)
+        );
+        assert!(create.is_disabled());
+        assert_eq!(protect.focus, ack_id);
+
+        assert!(fb.dispatch_a11y_action(
+            ack_id,
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        // The first pump observes the parent flow change; layout rebuilds the
+        // composition just as the production frame loop does before its next
+        // refresh. The second pump then syncs the newly-created checkbox from
+        // the CRDT. Omitting the intervening layout would test two reducer
+        // passes against the old tree, which cannot occur in the live loop.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
+        let (_, acknowledgement) =
+            exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
+        let (_, create) = exported_node_named(&acknowledged, "Create").unwrap();
+        assert_eq!(
+            acknowledgement.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the rebuilt checkbox must preserve its visible and spoken state"
+        );
+        assert!(
+            !create.is_disabled(),
+            "the externally-operated acknowledgement must enable the gated action"
         );
     }
 
