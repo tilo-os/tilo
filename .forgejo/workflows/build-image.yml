@@ -388,6 +388,14 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
+          # The OS graph contains several large RPM and Rust stages. Letting
+          # BuildKit run all of them at once exhausts the ephemeral runner's
+          # backing store and can tear SQLite's rpmdb while a layer is being
+          # committed. Two solver operations retain useful overlap without
+          # making disk-pressure failures nondeterministic.
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
 
       - name: Extract image metadata (tags, labels)
         id: meta

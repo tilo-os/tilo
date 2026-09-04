@@ -45,6 +45,7 @@ grep -Fq 'publish-os-payload:' "$desktop" \
 
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
+  && grep -Fq 'max-parallelism = 2' "$os" \
   && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
