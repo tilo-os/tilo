@@ -519,6 +519,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.persist()
     }
 
+    /// Persist a queued runtime start before the background worker is
+    /// launched.  Settings can return to its event loop immediately and
+    /// reconstruct honest progress after it is closed or restarted.
+    pub fn mark_starting(&mut self, model_id: &str) -> Result<(), ServiceError> {
+        self.update_status(model_id, LocalModelStatus::Starting, None)
+    }
+
     /// Start vLLM under a supervisor. Runtime/model paths are content addressed
     /// and the runtime must have an accepted signed extension record.
     pub fn start(
