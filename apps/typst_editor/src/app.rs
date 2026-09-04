@@ -2063,7 +2063,8 @@ impl Widget for TypstApp {
         let source = AccessNode::new(Role::MultilineTextInput)
             .with_name("Typst source")
             .with_value(self.source_cache.clone())
-            .with_state(AccessState::new().focusable(true).multiline(true));
+            .with_state(AccessState::new().focusable(true).multiline(true))
+            .with_action_target("typst.source");
         let preview = AccessNode::new(Role::Canvas)
             .with_name("Document preview")
             .with_value(format!(
@@ -2076,7 +2077,9 @@ impl Widget for TypstApp {
                 "Compact layout; use the toolbar to switch between source and preview"
             } else {
                 "Live rendered preview"
-            });
+            })
+            .with_semantic_key("typst.preview")
+            .with_hashed_key("typst.preview");
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Typst editor")
@@ -2084,6 +2087,41 @@ impl Widget for TypstApp {
                 .with_state(AccessState::new().focusable(true))
                 .with_children(vec![source, preview]),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target != "typst.source" {
+            return false;
+        }
+        match action {
+            ui::a11y::Action::Focus => {
+                if self.compact {
+                    self.set_compact_view(CompactPane::Editor);
+                }
+                self.editor.focused = true;
+                true
+            }
+            ui::a11y::Action::SetValue(source) => {
+                let source_id = self.ensure_source_obj(doc);
+                ui::doc::splice_text_diffed(doc, &source_id, source);
+                self.source_id = Some(source_id);
+                self.source_cache.clone_from(source);
+                self.editor.set_caret(source.len());
+                self.native_edit_pending = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
     }
 
     fn needs_commit(&self) -> bool {
@@ -3125,5 +3163,21 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.contains("Page"))
         );
+        assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
+    }
+
+    #[test]
+    fn accessible_source_replaces_the_collaborative_text() {
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = fresh();
+        assert!(app.perform_semantic_action(
+            "typst.source",
+            &ui::a11y::Action::SetValue("= Accessible edit".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.read_source(&doc), "= Accessible edit");
+        assert!(app.needs_commit());
     }
 }
