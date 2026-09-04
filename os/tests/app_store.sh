@@ -28,6 +28,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CONTAINERFILE="$REPO/os/Containerfile"
+# shellcheck source=lib/containerfile.sh
+. "$REPO/os/tests/lib/containerfile.sh"
 PACK="$REPO/os/scripts/pack-apps.sh"
 
 fail=0
@@ -139,7 +141,7 @@ fi
 store="$(sed -n 's/^STORE="\${STORE:-\(.*\)}"$/\1/p' "$PACK" | head -1)"
 if [ -z "$store" ]; then
   bad "could not read the default STORE out of os/scripts/pack-apps.sh"
-elif grep -q "^COPY --from=builder $store/ $store/\$" "$CONTAINERFILE"; then
+elif containerfile_has_copy "$CONTAINERFILE" "$store/" "$store/" builder; then
   ok "the image copies the app store from and to $store, so registry paths resolve"
 else
   bad "os/Containerfile does not copy $store/ to $store/
@@ -194,7 +196,7 @@ else
       build, so every packaged app is refused at install time with
       RuntimeDependencyMissing and the image never builds."
   fi
-  if grep -q "^COPY --from=builder $sysroot/ $sysroot/\$" "$CONTAINERFILE"; then
+  if containerfile_has_copy "$CONTAINERFILE" "$sysroot/" "$sysroot/" builder; then
     ok "the image copies the runtime bundle from and to $sysroot"
   else
     bad "os/Containerfile does not copy $sysroot/ to $sysroot/ — the booted system
@@ -242,7 +244,7 @@ else
       else
         bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
       fi
-      grep -q '^COPY --from=builder /out/shell /usr/bin/shell$' "$CONTAINERFILE" \
+      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
         && ok "the image installs the compositor that owns 'collab'" \
         || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
       continue
@@ -266,7 +268,8 @@ else
     svc_bin="$(sed -n 's|^ExecStart=\([^ ]*\).*|\1|p' "$unit" | head -1)"
     if [ -z "$svc_bin" ]; then
       bad "$unit_rel has no ExecStart, so nothing checks that its binary ships"
-    elif grep -q "^COPY --from=builder [^ ]* $svc_bin\$" "$CONTAINERFILE"; then
+    elif containerfile_copy_contract "$CONTAINERFILE" | \
+         awk -F '\t' -v d="$svc_bin" '$1 == "builder" && $3 == d { found=1 } END { exit !found }'; then
       ok "the image installs $svc_bin for '$svc'"
     else
       bad "os/Containerfile never copies $svc_bin into the image, so

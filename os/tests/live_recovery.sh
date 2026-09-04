@@ -95,8 +95,10 @@ else
   bad "live-media recovery entry point is missing or undiscoverable"
 fi
 
-if grep -Fq 'COPY os/usr/libexec/qos-recovery /usr/libexec/qos-recovery' "$repo/os/Containerfile" \
-   && grep -Fq '/usr/libexec/qos-recovery /usr/libexec/qos-uki-cmdline' "$repo/os/Containerfile"; then
+# shellcheck source=lib/containerfile.sh
+. "$repo/os/tests/lib/containerfile.sh"
+if containerfile_has_copy "$repo/os/Containerfile" os/usr/libexec/qos-recovery /usr/libexec/qos-recovery \
+   && containerfile_has_copy "$repo/os/Containerfile" os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline; then
   ok "installed repair mode includes the recovery backend"
 else
   bad "base image does not install the recovery backend used by repair mode"

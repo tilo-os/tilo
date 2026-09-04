@@ -28,7 +28,7 @@ Before=$crypt_service cryptsetup.target initrd-root-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/qos-rollback-initrd-unlock $uuid
+ExecStart=/usr/libexec/qos-rollback-initrd-unlock /dev/disk/by-uuid/$uuid $volume
 EOF
   cat >"$out/$crypt_service.d/10-qos-rollback.conf" <<EOF
 [Unit]

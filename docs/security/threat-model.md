@@ -84,7 +84,7 @@ or locally cached role is not evidence by itself.
 
 | Attack | Required control and current evidence | Residual risk / status |
 |---|---|---|
-| Offline disk theft and guessing | LUKS with a strong startup passphrase and independent recovery key. TPM short-PIN enrollment is disabled until unlock can be bound to signed measured qOS artifacts, not PCR 7 alone. | DMA/cold-boot attacks against a running device remain. |
+| Offline disk theft and guessing | LUKS with an independent recovery key. Verified TPM2 installs bind a short PIN to release-authorized PCR11 measurements and the device's direct PCR7 state; every missing or changed prerequisite falls back to requiring a strong ordinary passphrase, never PCR7-only enrollment. | DMA/cold-boot attacks against a running device remain. |
 | Evil-maid ESP/initramfs/cmdline change | Owner-enrolled Secure Boot; signed UKI embeds initramfs, command line, os-release, root digest and generation. Preflight verifies every section and signature. | Firmware UI and key-enrollment correctness vary by device and need a hardware matrix. |
 | Root filesystem replacement | Composefs/fs-verity root digest is sealed into the UKI command line. Release VM checks the installed image contract. | Kernel/composefs vulnerabilities remain trusted-computing-base defects. |
 | OS downgrade by disk snapshot | Per-generation LUKS secrets require a TPM NV monotonic floor; confirmation advances only after health, retains a bounded recovery window, and proves another unlock route before deleting a slot. Emulator tests restore old LUKS headers adversarially. | An old image may execute before unlock refusal; this is weaker than bootloader-enforced Android rollback indexes. Physical TPM validation is outstanding. |

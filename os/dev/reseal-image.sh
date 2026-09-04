@@ -26,5 +26,8 @@ ARG BASE_IMAGE
 FROM \${BASE_IMAGE}
 RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \
     python3 /run/uki-cmdline.py set "composefs=$digest" \
+ && if [ -f /boot/qos-target/qos-target.efi ]; then \
+      python3 /run/uki-cmdline.py set "composefs=$digest" /boot/qos-target/qos-target.efi; \
+    fi \
  && python3 /run/uki-cmdline.py show
 EOF

@@ -107,6 +107,9 @@ pub struct Config {
     /// PCR bank and selection the prediction authority signs over.
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
+    /// Device-local PCRs applied after PolicyAuthorize. These cannot be part of
+    /// a release prediction because their values depend on the machine.
+    pub platform_pcrs: Vec<u32>,
     /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
     /// Public half of the key that authorises floor advances. Defaults to the PCR-prediction
@@ -136,10 +139,11 @@ impl Default for Config {
             nv_index: counter::DEFAULT_NV_INDEX,
             retained_generations: 3,
             pcr_bank: "sha256".into(),
-            // 7  — Secure Boot state and the enrolled keys.
-            // 11 — systemd-stub's UKI measurements (kernel, initrd, cmdline, os-release), which
-            //      transitively measures the generation number and root digest.
-            pcrs: vec![7, 11],
+            // 11 — release-predictable systemd-stub UKI measurements.
+            pcrs: vec![11],
+            // 7 — machine-local Secure Boot state and enrolled keys. This is
+            // applied after PolicyAuthorize so the reset cannot erase it.
+            platform_pcrs: vec![7],
             pcr_public_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
             floor_authority_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
             approval_dir: approval::DEFAULT_DIR.into(),

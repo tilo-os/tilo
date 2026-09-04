@@ -214,7 +214,7 @@ enum VerifiedBootState {
 fn encrypt_description(state: VerifiedBootState) -> &'static str {
     match state {
         VerifiedBootState::TargetVerified => {
-            "qOS always encrypts the disk with LUKS2. Measured qOS-bound TPM unlock is not enabled yet, so this installation requires a strong disk passphrase even though the verified-boot checks pass. A recovery key is shown once during install."
+            "qOS encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized qOS boot measurement. You will use a short startup PIN; a recovery key is shown once during install."
         }
         VerifiedBootState::TargetUnverified => {
             "qOS always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
@@ -437,11 +437,9 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
     }
 }
 
-/// Validate the mandatory disk-unlock secret. Current releases deliberately
-/// enrol it as an ordinary LUKS passphrase on every machine: a TPM device is
-/// not a safe reason to accept a short PIN until unlock is bound to signed,
-/// measured qOS boot artifacts.
-fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
+/// Validate either the measured-boot TPM PIN or the independent strong LUKS
+/// passphrase selected when the target cannot prove that policy.
+fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
     const COMMON_BASES: &[&str] = &[
         "password",
         "qwerty",
@@ -458,6 +456,22 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
         return Err("Do not begin or end the disk passphrase with spaces");
     }
     let chars: Vec<char> = secret.chars().collect();
+    if tpm_pin {
+        if chars.len() < 6 {
+            return Err("Use at least 6 digits for the TPM-protected startup PIN");
+        }
+        if !chars.iter().all(char::is_ascii_digit) {
+            return Err("The TPM-protected startup PIN must contain digits only");
+        }
+        if chars.iter().all(|c| *c == chars[0])
+            || ["012345", "123456", "234567", "345678", "456789", "987654"]
+                .iter()
+                .any(|bad| secret.contains(bad))
+        {
+            return Err("Choose a less predictable startup PIN");
+        }
+        return Ok(());
+    }
     if chars.len() < 15 {
         return Err("Use at least 15 characters for the disk passphrase");
     }
@@ -484,6 +498,11 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
+    validate_startup_secret_for(secret, false)
 }
 
 // ===================================================================
@@ -941,8 +960,8 @@ pub struct InstallerApp {
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
     /// Whether this machine has a TPM2 device, sampled once at construction.
-    /// Encryption and passphrase policy are identical either way; this only
-    /// helps explain why automatic TPM unlock is not currently offered.
+    /// Together with the verified-target preflight, this selects either the
+    /// measured-boot PIN policy or the strong passphrase policy.
     tpm2: bool,
     /// Diagnostic state used to explain the measured-boot boundary.
     secure_boot: bool,
@@ -1301,10 +1320,17 @@ impl InstallerApp {
 
     /// May the install start, as far as encryption is concerned? Native qOS
     /// always requires both a reproducible recovery factor and a startup
-    /// secret. TPM-backed unlock is not enabled until it can be bound to
-    /// signed, measured qOS boot artifacts.
+    /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
-        self.recovery_ack && validate_startup_secret(&secret_copy(&self.password)).is_ok()
+        self.recovery_ack
+            && validate_startup_secret_for(
+                &secret_copy(&self.password),
+                matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ),
+            )
+            .is_ok()
     }
 
     fn destructive_confirmation_target(&self) -> Option<String> {
@@ -1325,11 +1351,21 @@ impl InstallerApp {
 
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
-        // Recovery key is always present; the strong boot passphrase is
-        // mandatory; FIDO2 is listed only when enrolling.
+        // Recovery is always present; the primary startup factor reflects the
+        // same verified-target decision used by validation and the backend.
         let mut factors = vec!["recovery key".to_string()];
         if !secret_copy(&self.password).trim().is_empty() {
-            factors.push("boot passphrase".to_string());
+            factors.push(
+                if matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ) {
+                    "TPM-protected startup PIN"
+                } else {
+                    "boot passphrase"
+                }
+                .to_string(),
+            );
         }
         if self.fido2 {
             factors.push("FIDO2".to_string());
@@ -1562,7 +1598,13 @@ impl InstallerApp {
                     return;
                 }
                 if self.step == Step::Account
-                    && let Err(message) = validate_startup_secret(&secret_copy(&self.password))
+                    && let Err(message) = validate_startup_secret_for(
+                        &secret_copy(&self.password),
+                        matches!(
+                            self.verified_boot_state(),
+                            VerifiedBootState::TargetVerified
+                        ),
+                    )
                 {
                     self.set_status(message);
                     return;
@@ -1689,7 +1731,13 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) = validate_startup_secret(&secret_copy(&self.password)) {
+        if let Err(message) = validate_startup_secret_for(
+            &secret_copy(&self.password),
+            matches!(
+                self.verified_boot_state(),
+                VerifiedBootState::TargetVerified
+            ),
+        ) {
             self.set_status(message);
             return;
         }
@@ -2143,8 +2191,17 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
+        let tpm_pin = matches!(
+            self.verified_boot_state(),
+            VerifiedBootState::TargetVerified
+        );
         children.push(Box::new(
-            Text::new("Startup and unlock passphrase").with_size(base),
+            Text::new(if tpm_pin {
+                "TPM-protected startup PIN"
+            } else {
+                "Startup and unlock passphrase"
+            })
+            .with_size(base),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -2153,12 +2210,21 @@ impl InstallerApp {
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new("Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later.")
-                .with_size(sm)
-                .with_color(dim),
+            Text::new(if tpm_pin {
+                "Use at least 6 digits. The TPM rate-limits guesses; keep the recovery key for hardware changes."
+            } else {
+                "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
+            })
+            .with_size(sm)
+            .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new("Confirm startup and unlock passphrase").with_size(base),
+            Text::new(if tpm_pin {
+                "Confirm TPM-protected startup PIN"
+            } else {
+                "Confirm startup and unlock passphrase"
+            })
+            .with_size(base),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -3862,24 +3928,24 @@ mod tests {
     #[test]
     fn encryption_summary_reflects_factors() {
         let mut app = InstallerApp::with_disks(sample());
-        // Pin the hardware so this proves even a fully verified TPM does not
-        // weaken the passphrase requirement in this release.
+        // Pin the hardware so the Review copy must describe measured-boot PIN
+        // mode rather than the non-TPM passphrase fallback.
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, boot passphrase)"
+            "On (LUKS — recovery key, TPM-protected startup PIN)"
         );
 
         app.fido2 = true;
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, boot passphrase, FIDO2)"
+            "On (LUKS — recovery key, TPM-protected startup PIN, FIDO2)"
         );
     }
 
@@ -3911,7 +3977,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_tpm_still_requires_a_strong_passphrase() {
+    fn verified_tpm_requires_a_nontrivial_pin() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.tpm2 = true;
@@ -3923,12 +3989,12 @@ mod tests {
             !app.encryption_ready(),
             "silent TPM-only unlock is not a hardened startup boundary"
         );
-        *app.password.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "123456".to_string();
         assert!(
             !app.encryption_ready(),
-            "a TPM must not make a six-digit LUKS passphrase acceptable"
+            "a trivial sequence must not become a TPM PIN"
         );
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
         assert!(app.encryption_ready());
     }
 
@@ -4061,7 +4127,7 @@ mod tests {
         app2.target_verified_boot = true;
         app2.recovery_ack = true;
         app2.erase_confirmation = "/dev/sda".to_string();
-        *app2.password.lock().unwrap() = "correct horse battery".to_string();
+        *app2.password.lock().unwrap() = "804927".to_string();
         let _ = build(&mut app2);
         let card2 = find_named(&app2, "InstallerCard").expect("review card");
         let begin_enabled = card2
@@ -4081,8 +4147,8 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         app.recovery_ack = true;
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
-        *app.password_confirmation.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
+        *app.password_confirmation.lock().unwrap() = "804927".to_string();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
