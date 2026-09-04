@@ -98,13 +98,22 @@ jobs:
           ./os/dev/build-custom-installer.sh
           apps/imager/packaging/package-install-medium.sh \
             os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}"
+      - name: Verify the installer-medium release payload
+        run: |
+          set -euo pipefail
+          medium="qos-installer-linux-${{ matrix.arch }}.img.zst"
+          test -s "dist/qos-installer/$medium"
+          test -s "dist/qos-installer/$medium.sha256"
+          test -s "dist/qos-installer/catalog-${{ matrix.arch }}.json"
+          (cd dist/qos-installer && sha256sum --check "$medium.sha256")
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-installer-medium-${{ matrix.arch }}
           path: |
-            dist/qos-installer/qos-installer-linux-*.img.zst
-            dist/qos-installer/qos-installer-linux-*.img.zst.sha256
-            dist/qos-installer/catalog-*.json
+            dist/qos-installer/qos-installer-linux-${{ matrix.arch }}.img.zst
+            dist/qos-installer/qos-installer-linux-${{ matrix.arch }}.img.zst.sha256
+            dist/qos-installer/catalog-${{ matrix.arch }}.json
+          if-no-files-found: error
 
   catalog:
     if: always()
@@ -527,6 +536,8 @@ jobs:
         run: |
           set -euo pipefail
           required=(
+            qos-installer-linux-x86_64.img.zst
+            qos-installer-linux-aarch64.img.zst
             qos-imager-linux-x86_64.AppImage
             qos-imager-linux-aarch64.AppImage
             qos-imager-linux-x86_64.tar.gz
@@ -541,6 +552,10 @@ jobs:
             test -n "$path" || { printf 'missing release artifact: %s\n' "$name" >&2; exit 1; }
             test -s "$path.sha256" || { printf 'missing release digest: %s.sha256\n' "$name" >&2; exit 1; }
             case "$name" in
+              *.img.zst)
+                (cd "$(dirname "$path")" && sha256sum --check "$(basename "$path").sha256") \
+                  || { printf 'invalid installer-medium digest: %s.sha256\n' "$name" >&2; exit 1; }
+                ;;
               *.AppImage|*.tar.gz) test -s "$path.asc" \
                 || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
             esac
