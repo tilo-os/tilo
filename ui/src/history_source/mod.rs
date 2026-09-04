@@ -63,7 +63,8 @@ pub use run_undo::{
     RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
 };
 pub use runs::{
-    AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run, run_starting_at,
+    AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
+    record_run_with_details, run_starting_at,
 };
 pub use seen::HistorySeenFrontier;
 

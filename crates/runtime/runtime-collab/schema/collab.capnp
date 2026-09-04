@@ -461,6 +461,11 @@ struct PresencePayload {
       start @9 :UInt64;
       end  @10 :UInt64;
     }
+
+    # Ephemeral visual relationship presence. The authenticated event sender
+    # is following this participant; an empty value clears the cue. This is
+    # never a request to alter the receiver's viewport.
+    following @11 :Text;
   }
 }
 

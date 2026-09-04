@@ -3117,6 +3117,9 @@ impl presence_stream::Server for PresenceStreamServer {
                     s.set_start(start as u64);
                     s.set_end(end as u64);
                 }
+                PresencePayload::Following { target } => {
+                    payload.set_following(target.as_deref().unwrap_or(""));
+                }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
             }

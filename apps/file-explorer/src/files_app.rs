@@ -47,6 +47,15 @@ const RENAME_QUERY_PATH: &str = "files.rename_query";
 const BODY_BREAKPOINT_PX: f64 = 640.0;
 const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
 type HistoryPreviewResult = Arc<std::sync::Mutex<Option<(String, Option<String>)>>>;
+type MergePreflightResult = Arc<
+    std::sync::Mutex<
+        Option<(
+            uuid::Uuid,
+            collab_types::FileVersionId,
+            Result<collab_types::MergePreflightProjectionV1, String>,
+        )>,
+    >,
+>;
 
 fn format_duration(duration_ms: u64) -> String {
     let seconds = duration_ms / 1_000;
@@ -143,6 +152,10 @@ enum CollabPanelAction {
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
     EmptyTrash,
+    ApplySafeMerge {
+        conflict_id: uuid::Uuid,
+        version_id: collab_types::FileVersionId,
+    },
 }
 
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
@@ -487,6 +500,8 @@ pub struct FileExplorerWidget {
     history_pending_path: Option<PathBuf>,
     history_pending_success: Option<String>,
     history_preview_result: HistoryPreviewResult,
+    merge_preflight_result: MergePreflightResult,
+    merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
     host_intent: Option<ui::widget::AppHostIntent>,
@@ -655,6 +670,8 @@ impl FileExplorerWidget {
             history_pending_path: None,
             history_pending_success: None,
             history_preview_result: Arc::new(std::sync::Mutex::new(None)),
+            merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
+            merge_preflight_pending: None,
             resource_invocation: None,
             resource_result: None,
             host_intent: None,
@@ -845,11 +862,13 @@ impl FileExplorerWidget {
     }
 
     fn show_collab_panel(&mut self, panel: CollabPanel) {
+        self.merge_preflight_pending = None;
         self.collab_panel = Some(panel);
         self.collab_panel_focused = true;
     }
 
     fn close_collab_panel(&mut self) {
+        self.merge_preflight_pending = None;
         self.collab_panel = None;
         self.collab_panel_focused = false;
     }
@@ -867,6 +886,14 @@ impl FileExplorerWidget {
                 })
             }
             CollabPanelAction::EmptyTrash => Some(FileCommand::ConfirmEmptyTrash),
+            CollabPanelAction::ApplySafeMerge {
+                conflict_id,
+                version_id,
+            } => Some(FileCommand::ResolveConflict {
+                conflict_id: *conflict_id,
+                strategy: collab_types::ConflictStrategy::Merge,
+                version_id: *version_id,
+            }),
         }
     }
 
@@ -877,6 +904,7 @@ impl FileExplorerWidget {
             }
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
+            CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
         }
     }
 
@@ -886,6 +914,7 @@ impl FileExplorerWidget {
             CollabPanelAction::PermanentDelete(_) | CollabPanelAction::EmptyTrash => {
                 Some(t("files-permanent-delete-loss"))
             }
+            CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
         }
     }
 
@@ -2127,6 +2156,39 @@ impl FileExplorerWidget {
                         *slot = Some(outcome);
                     }
                 });
+                true
+            }
+            FileCommand::ReviewConflictMerge {
+                conflict_id,
+                version_id,
+                other_device,
+            } => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
+                    self.status = Some(t("files-select-file-with-history"));
+                    return true;
+                };
+                // The review remains non-committing while the daemon reads the
+                // immutable members. It repeats this preflight immediately
+                // before publishing, so reopening an old menu can never commit
+                // a merge whose members or base have changed.
+                self.show_collab_panel(CollabPanel {
+                    title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
+                    summary: t("files-merge-review-checking"),
+                    lines: vec![
+                        t_args(
+                            "files-merge-review-incoming",
+                            &[arg("device", short_fingerprint(&other_device))],
+                        ),
+                        t("files-merge-review-checking-detail"),
+                    ],
+                    action: None,
+                    history: None,
+                });
+                self.request_merge_preflight(entry.path, conflict_id, version_id);
                 true
             }
             FileCommand::ResolveConflict {
@@ -3766,16 +3828,25 @@ impl FileExplorerWidget {
         if let Some(action_rect) = self.collab_panel_action_rect()
             && let Some(label) = self.collab_panel_action_label()
         {
-            let danger = theme.tokens.colors.semantic.danger;
+            let action_color = match panel.action.as_ref() {
+                Some(CollabPanelAction::ApplySafeMerge { .. }) => accent,
+                _ => theme.tokens.colors.semantic.danger,
+            };
             let action_shape = RoundedRect::from_rect(action_rect, 8.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                danger.with_alpha_factor(0.14),
+                action_color.with_alpha_factor(0.14),
                 None,
                 &action_shape,
             );
-            scene.stroke(&Stroke::new(1.5), transform, danger, None, &action_shape);
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                action_color,
+                None,
+                &action_shape,
+            );
             let (label_width, _) = text_renderer.measure(
                 &label,
                 theme.tokens.typography.scale.sm,
@@ -3785,7 +3856,7 @@ impl FileExplorerWidget {
                 scene,
                 &label,
                 theme.tokens.typography.scale.sm,
-                danger,
+                action_color,
                 transform
                     * Affine::translate((
                         action_rect.x0 + (action_rect.width() - f64::from(label_width)) / 2.0,
@@ -4554,15 +4625,13 @@ impl FileExplorerWidget {
                                     spec.push((
                                         format!(
                                             "{} · {}",
-                                            conflict_strategy_label(
-                                                collab_types::ConflictStrategy::Merge,
-                                            ),
+                                            t("files-merge-review-menu"),
                                             short_fingerprint(&other.actor.device),
                                         ),
-                                        Some(FileCommand::ResolveConflict {
+                                        Some(FileCommand::ReviewConflictMerge {
                                             conflict_id: conflict.id,
-                                            strategy: collab_types::ConflictStrategy::Merge,
                                             version_id: collab_types::FileVersionId(other_id),
+                                            other_device: other.actor.device,
                                         }),
                                     ));
                                 }
@@ -5164,8 +5233,74 @@ impl FileExplorerWidget {
         false
     }
 
+    fn request_merge_preflight(
+        &mut self,
+        path: PathBuf,
+        conflict_id: uuid::Uuid,
+        version_id: collab_types::FileVersionId,
+    ) {
+        self.merge_preflight_pending = Some((conflict_id, version_id));
+        let result = Arc::clone(&self.merge_preflight_result);
+        std::thread::spawn(move || {
+            let outcome = crate::model::read_merge_preflight(&path, conflict_id)
+                .ok_or_else(|| t("files-merge-review-unavailable"));
+            *result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((conflict_id, version_id, outcome));
+        });
+    }
+
+    fn poll_merge_preflight(&mut self) -> bool {
+        let result = self
+            .merge_preflight_result
+            .lock()
+            .ok()
+            .and_then(|mut result| result.take());
+        let Some((conflict_id, version_id, result)) = result else {
+            return false;
+        };
+        if self.merge_preflight_pending != Some((conflict_id, version_id)) {
+            return false;
+        }
+        self.merge_preflight_pending = None;
+        let Some(panel) = self.collab_panel.as_mut() else {
+            return false;
+        };
+        match result {
+            Ok(preflight) if preflight.safe => {
+                panel.summary = t("files-merge-review-safe");
+                panel.lines = vec![
+                    preflight.explanation,
+                    preflight.diff_summary,
+                    t("files-merge-review-undo"),
+                ];
+                panel.action = Some(CollabPanelAction::ApplySafeMerge {
+                    conflict_id,
+                    version_id,
+                });
+            }
+            Ok(preflight) => {
+                panel.summary = t("files-merge-review-needs-review");
+                panel.lines = vec![
+                    preflight.explanation,
+                    preflight.diff_summary,
+                    t("files-merge-review-no-apply"),
+                ];
+                panel.action = None;
+            }
+            Err(error) => {
+                panel.summary = t("files-merge-review-needs-review");
+                panel.lines = vec![error, t("files-merge-review-no-apply")];
+                panel.action = None;
+            }
+        }
+        self.structure_dirty = true;
+        true
+    }
+
     fn poll_history_result(&mut self) -> bool {
-        let preview_changed = self.poll_history_preview();
+        let preview_changed = self.poll_history_preview() || self.poll_merge_preflight();
         let result = self
             .history_result
             .lock()
@@ -8792,7 +8927,7 @@ mod command_path_tests {
     }
 
     #[test]
-    fn open_text_conflict_menu_offers_exact_safe_actions_including_merge() {
+    fn open_text_conflict_menu_requires_review_before_an_exact_merge() {
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
@@ -8867,12 +9002,107 @@ mod command_path_tests {
         }));
         assert!(menu.iter().any(|(_, command)| {
             *command
-                == Some(FileCommand::ResolveConflict {
+                == Some(FileCommand::ReviewConflictMerge {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::Merge,
                     version_id: other_id,
+                    other_device: [2; 32],
                 })
         }));
+    }
+
+    #[test]
+    fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
+        let conflict_id = uuid::Uuid::from_u128(42);
+        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let mut widget = FileExplorerWidget::new();
+        widget.show_collab_panel(CollabPanel {
+            title: "Review merge".into(),
+            summary: "Checking".into(),
+            lines: Vec::new(),
+            action: None,
+            history: None,
+        });
+        *widget
+            .merge_preflight_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            conflict_id,
+            version_id,
+            Ok(collab_types::MergePreflightProjectionV1 {
+                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+                conflict_id,
+                safe: true,
+                explanation: "Changes are disjoint.".into(),
+                diff_summary: "Both revisions are included.".into(),
+            }),
+        ));
+        widget.merge_preflight_pending = Some((conflict_id, version_id));
+        assert!(widget.poll_merge_preflight());
+        assert!(matches!(
+            widget.collab_panel.as_ref().and_then(|panel| panel.action.as_ref()),
+            Some(CollabPanelAction::ApplySafeMerge {
+                conflict_id: actual_conflict,
+                version_id: actual_version,
+            }) if *actual_conflict == conflict_id && *actual_version == version_id
+        ));
+
+        *widget
+            .merge_preflight_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            conflict_id,
+            version_id,
+            Ok(collab_types::MergePreflightProjectionV1 {
+                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+                conflict_id,
+                safe: false,
+                explanation: "Both revisions changed the same text region.".into(),
+                diff_summary: "No proposed content was produced.".into(),
+            }),
+        ));
+        widget.merge_preflight_pending = Some((conflict_id, version_id));
+        assert!(widget.poll_merge_preflight());
+        let panel = widget.collab_panel.as_ref().unwrap();
+        assert!(
+            panel.action.is_none(),
+            "conflicting edits must not expose Apply safe merge"
+        );
+        assert!(panel.summary.contains("Needs review"));
+    }
+
+    #[test]
+    fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
+        let stale_conflict = uuid::Uuid::from_u128(50);
+        let current_conflict = uuid::Uuid::from_u128(51);
+        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let mut widget = FileExplorerWidget::new();
+        widget.show_collab_panel(CollabPanel {
+            title: "Delete permanently?".into(),
+            summary: "This cannot be undone".into(),
+            lines: Vec::new(),
+            action: Some(CollabPanelAction::EmptyTrash),
+            history: None,
+        });
+        widget.merge_preflight_pending = Some((current_conflict, version_id));
+        *widget
+            .merge_preflight_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            stale_conflict,
+            version_id,
+            Ok(collab_types::MergePreflightProjectionV1 {
+                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+                conflict_id: stale_conflict,
+                safe: true,
+                explanation: "Changes are disjoint.".into(),
+                diff_summary: "Both revisions are included.".into(),
+            }),
+        ));
+
+        assert!(!widget.poll_merge_preflight());
+        let panel = widget.collab_panel.as_ref().unwrap();
+        assert_eq!(panel.title, "Delete permanently?");
+        assert!(matches!(panel.action, Some(CollabPanelAction::EmptyTrash)));
     }
 
     #[test]

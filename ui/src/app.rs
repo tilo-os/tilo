@@ -2716,6 +2716,14 @@ impl App {
             }
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
+            self.presence_ctx.set_participant_kind(
+                crate::permissions::UserId(c.id),
+                if c.is_agent {
+                    crate::presence::ParticipantKind::Agent
+                } else {
+                    crate::presence::ParticipantKind::Person
+                },
+            );
         }
     }
 
@@ -2776,6 +2784,9 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
+            CollabEvent::Context { collaborators, .. } => {
+                self.apply_collab_context(collaborators);
+            }
             CollabEvent::Invocation {
                 id,
                 resource,
