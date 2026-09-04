@@ -6,6 +6,23 @@ the package contains the compositor, sandbox launcher, unlock helper, PAM policy
 portal registration, display-manager entry, and AGPL-3.0 license text. It does
 not replace the host's boot chain, greeter, or package manager.
 
+The session scans the host's normal XDG application directories, including
+per-user and system Flatpak exports. Those existing applications keep their
+real home directory and their original confinement model, and qOS labels them
+as unconfined host apps rather than implying they use qOS package policy. On
+Fedora, `xwayland-satellite` is a hard package dependency so legacy X11-only
+applications continue to open; native Wayland applications still use the qOS
+socket directly. The complete qOS image remains Wayland-only—this compatibility
+bridge is enabled only by the explicit host-desktop session mode.
+
+The wrapper owns `graphical-session.target` for the lifetime of qOS, clears
+display variables left by the preceding desktop before starting it, and removes
+qOS's desktop identity when the session ends. That is what allows portal and
+other standard user services to use qOS while logged in and ensures they stop
+before GNOME, KDE, or another session is selected next.
+The portal frontend and filtered D-Bus proxy are hard package dependencies, so
+sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
+
 ## Supported outputs
 
 | Distribution | Release files | Architectures |

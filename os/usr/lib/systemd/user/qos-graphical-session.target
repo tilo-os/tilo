@@ -7,7 +7,7 @@ Documentation=man:systemd.special(7)
 Requires=graphical-session-pre.target graphical-session.target
 After=graphical-session-pre.target
 PartOf=graphical-session.target
-# Releasing the greetd-owned qOS target must tear down both standard session
+# Releasing the qOS-owned target must tear down both standard session
 # targets immediately; relying on later StopWhenUnneeded garbage collection
 # leaves PartOf services alive for an indeterminate window.
 PropagatesStopTo=graphical-session.target graphical-session-pre.target

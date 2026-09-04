@@ -18878,7 +18878,7 @@ mod roster_rows {
     }
 
     #[test]
-    fn a_connected_headless_agent_is_tagged_but_not_followable() {
+    fn a_connected_headless_agent_is_tagged_without_a_fake_follow_target() {
         let mut tree = tree_with_room();
         {
             let ws = tree.active_workspace_mut().expect("fixture has a room");
@@ -18899,7 +18899,10 @@ mod roster_rows {
             "an agent listed without its tag is the OS reporting a person",
         );
         assert_eq!(rows[0].initial, 'S');
-        assert!(!rows[0].followable);
+        assert!(
+            !rows[0].followable,
+            "a connected headless agent has no viewport to follow"
+        );
         assert_eq!(rows[0].activity.as_deref(), Some("Connected"));
     }
 
