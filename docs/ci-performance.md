@@ -21,6 +21,12 @@ different physical GPUs, and `WGPU_BACKEND=vulkan` alone selects the API rather
 than a particular adapter; a golden produced on one node is not canonical
 unless both the driver and adapter are fixed.
 
+Nightly visual verification and the manual candidate renderer additionally use
+the same registry image by immutable manifest digest. Advance those two digest
+references together only after reviewing the new image's candidate bundle.
+The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
+diff inventory; it deliberately has no repository-write step.
+
 Two affected shards are intentional. A third, permanently dedicated "heavy
 apps" shard was measured as the wrong trade-off for this workspace: it repeats
 large shared dependency graphs and adds runner CPU even when a change does not

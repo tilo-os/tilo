@@ -1,0 +1,399 @@
+#!/usr/bin/bash
+# Recover personal files from, or remove, an installed qOS system.
+#
+# The useful default is deliberately read-only: `open` unlocks an encrypted
+# volume (when necessary) and mounts its qOS data without executing anything
+# from it. `copy` copies one path from that view to an already-mounted external
+# filesystem. `remove` is available only from qOS installation media and only
+# for a root that can be positively identified as qOS.
+set -euo pipefail
+
+RUN_ROOT="${QOS_RECOVERY_RUN_ROOT:-/run/qos-recovery}"
+LSBLK="${QOS_RECOVERY_LSBLK:-lsblk}"
+MOUNT="${QOS_RECOVERY_MOUNT:-mount}"
+UMOUNT="${QOS_RECOVERY_UMOUNT:-umount}"
+CRYPTSETUP="${QOS_RECOVERY_CRYPTSETUP:-cryptsetup}"
+SFDISK="${QOS_RECOVERY_SFDISK:-sfdisk}"
+DRY_RUN="${QOS_RECOVERY_DRY_RUN:-0}"
+EFI_ARTIFACTS="${QOS_INSTALL_EFI_ARTIFACTS:-/usr/libexec/qos-install-efi-artifacts}"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+safe_relative() { case "$1" in /*|*../*|../*|..|*/..) return 1;; *) return 0;; esac; }
+safe_efi_artifact() {
+  case "$1" in /*|*..*) return 1;; esac
+  case "$1" in EFI/Linux/*.efi|loader/entries/*.conf) return 0;; *) return 1;; esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  qos-recovery list
+  qos-recovery open --device /dev/PARTITION [--key-file FILE]
+  qos-recovery close
+  qos-recovery copy --device /dev/PARTITION --from RELATIVE_PATH \
+                    --destination MOUNTED_DIRECTORY [--key-file FILE]
+  qos-recovery copy-current --from RELATIVE_PATH --destination MOUNTED_DIRECTORY
+  qos-recovery mount-destination --device /dev/PARTITION --source-device /dev/PARTITION
+  qos-recovery close-destination
+  qos-recovery remove --device /dev/PARTITION --confirm 'REMOVE <fingerprint>' [--dry-run]
+
+`list` never changes a disk. `open` mounts the selected qOS data read-only at
+/run/qos-recovery/source. `copy` accepts a path below that data directory and
+will not follow a source symlink outside it. The destination must already be a
+writable mount on a different physical disk.
+
+`remove` is intended for an alongside installation. It erases only the selected
+qOS root partition. It does not touch a shared EFI partition and does not resize
+another operating system; reclaim the resulting free space with that system's
+own disk manager. The exact confirmation shown by `list` is required.
+EOF
+}
+
+as_root() {
+  if [ "$(id -u)" -ne 0 ]; then exec sudo -n "$0" "$@"; fi
+}
+
+canonical_block() {
+  local dev="$1" resolved
+  case "$dev" in /dev/*) ;; *) die "$dev is not below /dev" ;; esac
+  [ -b "$dev" ] || die "$dev is not a block device"
+  resolved="$(readlink -f "$dev")"
+  [ -b "$resolved" ] || die "$dev did not resolve to a block device"
+  printf '%s\n' "$resolved"
+}
+
+parent_disk() {
+  "$LSBLK" -srpno NAME,TYPE "$1" 2>/dev/null \
+    | awk '$2 == "disk" { print $1; exit }'
+}
+
+live_disk() {
+  local source target disk
+  while read -r source target; do
+    source="${source%%\[*}"
+    [ -b "$source" ] || continue
+    case "$target" in
+      /|/boot|/boot/*|/run/initramfs/live|/run/initramfs/live/*|/run/rootfsbase|/run/rootfsbase/*) ;;
+      *) continue ;;
+    esac
+    disk="$(parent_disk "$source")"
+    [ -n "$disk" ] && { printf '%s\n' "$disk"; return; }
+  done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
+}
+
+fingerprint() {
+  local dev="$1" uuid size
+  uuid="$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
+  size="$("$LSBLK" -dno SIZE "$dev" 2>/dev/null | xargs)"
+  [ -n "$uuid" ] || uuid="no-uuid"
+  printf '%s %s %s\n' "$(basename "$dev")" "${size:-unknown-size}" "${uuid:0:12}"
+}
+
+mapper_for() {
+  local uuid
+  uuid="$("$CRYPTSETUP" luksUUID "$1" 2>/dev/null || true)"
+  [ -n "$uuid" ] || return 1
+  printf 'qos-recovery-%s\n' "${uuid//-/}"
+}
+
+is_luks() { "$CRYPTSETUP" isLuks "$1" >/dev/null 2>&1; }
+
+mount_source() {
+  local raw="$1" key_file="${2:-}" source="$raw" mapper="" mountpoint="$RUN_ROOT/source"
+  install -d -m 0700 "$RUN_ROOT" "$mountpoint"
+  if mountpoint -q "$mountpoint"; then
+    die "$mountpoint is already in use; run 'qos-recovery close' first"
+  fi
+  if is_luks "$raw"; then
+    mapper="$(mapper_for "$raw")"
+    if [ -e "/dev/mapper/$mapper" ]; then
+      source="/dev/mapper/$mapper"
+    elif [ -n "$key_file" ]; then
+      [ -f "$key_file" ] || die "key file does not exist: $key_file"
+      "$CRYPTSETUP" open --readonly --key-file "$key_file" "$raw" "$mapper"
+      source="/dev/mapper/$mapper"
+    else
+      say "Unlocking $raw read-only. Enter its recovery key or disk passphrase." >&2
+      "$CRYPTSETUP" open --readonly "$raw" "$mapper"
+      source="/dev/mapper/$mapper"
+    fi
+    printf '%s\n' "$mapper" > "$RUN_ROOT/mapper"
+  fi
+  # ro,nosuid,nodev,noexec is the non-negotiable recovery boundary. `noload`
+  # prevents journal replay on ext filesystems; filesystems which do not know
+  # it reject it, so retry without noload while retaining read-only semantics.
+  if ! "$MOUNT" -o ro,nosuid,nodev,noexec,noload "$source" "$mountpoint" 2>/dev/null; then
+    "$MOUNT" -o ro,nosuid,nodev,noexec "$source" "$mountpoint" \
+      || { close_source; die "could not mount $raw read-only"; }
+  fi
+  printf '%s\n' "$raw" > "$RUN_ROOT/device"
+  printf '%s\n' "$mountpoint"
+}
+
+close_source() {
+  local mapper=""
+  if mountpoint -q "$RUN_ROOT/source" 2>/dev/null; then "$UMOUNT" "$RUN_ROOT/source"; fi
+  [ -r "$RUN_ROOT/mapper" ] && mapper="$(cat "$RUN_ROOT/mapper")"
+  if [ -n "$mapper" ] && [ -e "/dev/mapper/$mapper" ]; then "$CRYPTSETUP" close "$mapper"; fi
+  rm -f "$RUN_ROOT/device" "$RUN_ROOT/mapper"
+}
+
+close_destination() {
+  if mountpoint -q "$RUN_ROOT/destination" 2>/dev/null; then
+    sync -f "$RUN_ROOT/destination" 2>/dev/null || sync
+    "$UMOUNT" "$RUN_ROOT/destination"
+  fi
+  rm -f "$RUN_ROOT/destination-device"
+}
+
+cmd_mount_destination() {
+  local dev="" source=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --device) dev="${2:-}"; shift 2;; --source-device) source="${2:-}"; shift 2;; *) die "mount-destination: unknown option $1";; esac
+  done
+  [ -n "$dev" ] && [ -n "$source" ] || die "mount-destination: --device and --source-device are required"
+  dev="$(canonical_block "$dev")"; source="$(canonical_block "$source")"
+  [ "$("$LSBLK" -dno TYPE "$dev" | xargs)" = part ] || die "destination must be a partition"
+  local destination_disk source_disk current_live fstype mountpoint
+  destination_disk="$(parent_disk "$dev")"; source_disk="$(parent_disk "$source")"; current_live="$(live_disk)"
+  [ -n "$destination_disk" ] && [ "$destination_disk" != "$source_disk" ] \
+    || die "destination must be on a different physical disk from the qOS source"
+  [ "$destination_disk" != "$current_live" ] || die "the installer medium cannot be the recovery destination"
+  [ -z "$("$LSBLK" -nro MOUNTPOINT "$dev" | tr -d '[:space:]')" ] || die "$dev is already mounted"
+  fstype="$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)"
+  case "$fstype" in btrfs|ext4|xfs|vfat|exfat|ntfs|ntfs3) ;; *) die "unsupported destination filesystem '$fstype'";; esac
+  mountpoint="$RUN_ROOT/destination"
+  install -d -m 0700 "$mountpoint"
+  "$MOUNT" -o rw,nosuid,nodev,noexec "$dev" "$mountpoint" || die "could not mount $dev for recovered files"
+  printf '%s\n' "$dev" > "$RUN_ROOT/destination-device"
+  say "External destination mounted at $mountpoint. It will not be formatted."
+}
+
+qos_data_root() {
+  local root="$1" candidate
+  for candidate in \
+    "$root/var/home" \
+    "$root/root/var/home" \
+    "$root"/state/os/*/var/home \
+    "$root"/ostree/deploy/*/var/home; do
+    [ -d "$candidate" ] && { printf '%s\n' "$candidate"; return; }
+  done
+  return 1
+}
+
+qos_install_root() {
+  local root="$1"
+  [ -n "$(install_marker "$root")" ] && return 0
+  [ -f "$root/etc/qos/install-marker" ] && return 0
+  find "$root/state/deploy" -mindepth 2 -maxdepth 2 -type d -name etc -print -quit 2>/dev/null | grep -q . && return 0
+  find "$root/ostree/deploy" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q . \
+    && find "$root" -path '*/etc/qos/desktop.toml' -print -quit 2>/dev/null | grep -q .
+}
+
+install_marker() {
+  find "$1" -type f -path '*/etc/qos/install-marker' -print -quit 2>/dev/null
+}
+
+cmd_list() {
+  need "$LSBLK"
+  say "Storage devices (nothing is mounted or changed):"
+  "$LSBLK" -o NAME,TYPE,SIZE,FSTYPE,LABEL,MODEL,SERIAL,MOUNTPOINTS
+  say ""
+  say "Use a partition path from the NAME column. The confirmation for removal is:"
+  local dev
+  while read -r dev; do
+    [ -b "$dev" ] || continue
+    printf '  %-18s REMOVE %s\n' "$dev" "$(fingerprint "$dev")"
+  done < <("$LSBLK" -lnpo NAME,TYPE | awk '$2 == "part" { print $1 }')
+}
+
+cmd_open() {
+  local dev="" key=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --device) dev="${2:-}"; shift 2;; --key-file) key="${2:-}"; shift 2;; *) die "open: unknown option $1";; esac
+  done
+  [ -n "$dev" ] || die "open: --device is required"
+  dev="$(canonical_block "$dev")"
+  local mounted data
+  mounted="$(mount_source "$dev" "$key")"
+  if ! qos_install_root "$mounted"; then close_source; die "$dev does not contain an identifiable qOS installation"; fi
+  data="$(qos_data_root "$mounted" || true)"
+  [ -n "$data" ] || { close_source; die "qOS data directory was not found on $dev"; }
+  say "qOS data is available read-only at: $data"
+  say "Nothing on $dev can be changed through this recovery mount."
+}
+
+cmd_copy() {
+  local dev="" from="" destination="" key=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --device) dev="${2:-}"; shift 2;; --from) from="${2:-}"; shift 2;;
+      --destination) destination="${2:-}"; shift 2;; --key-file) key="${2:-}"; shift 2;;
+      *) die "copy: unknown option $1";;
+    esac
+  done
+  [ -n "$dev" ] && [ -n "$from" ] && [ -n "$destination" ] \
+    || die "copy: --device, --from and --destination are required"
+  safe_relative "$from" || die "copy: --from must stay below the recovered home directory"
+  dev="$(canonical_block "$dev")"
+  destination="$(readlink -f "$destination")"
+  [ -d "$destination" ] || die "copy destination is not a directory: $destination"
+  mountpoint -q "$destination" || die "copy destination must itself be a mounted external filesystem"
+  [ -w "$destination" ] || die "copy destination is not writable: $destination"
+  local destination_source destination_disk source_disk mounted data source
+  destination_source="$(findmnt -nro SOURCE --target "$destination" | head -1)"
+  [ -b "${destination_source%%\[*}" ] || die "could not identify the destination's block device"
+  destination_disk="$(parent_disk "${destination_source%%\[*}")"
+  source_disk="$(parent_disk "$dev")"
+  [ -n "$destination_disk" ] && [ "$destination_disk" != "$source_disk" ] \
+    || die "destination must be on a different physical disk"
+  mounted="$(mount_source "$dev" "$key")"
+  trap close_source EXIT
+  qos_install_root "$mounted" || die "$dev does not contain an identifiable qOS installation"
+  data="$(qos_data_root "$mounted" || true)"
+  [ -n "$data" ] || die "qOS data directory was not found"
+  source="$(readlink -f "$data/$from")"
+  case "$source" in "$data"|"$data"/*) ;; *) die "source path escapes the recovered home directory";; esac
+  [ -e "$source" ] || die "recovery source does not exist: $from"
+  local output="$destination/qOS recovered files/$(date -u +%Y-%m-%dT%H%M%SZ)-$$"
+  local required available
+  required="$(du -sB1 --apparent-size -- "$source" | awk '{print $1}')"
+  available="$(df -B1 --output=avail "$destination" | tail -1 | xargs)"
+  case "$required:$available" in *[!0-9:]*) die "could not measure source or destination space";; esac
+  [ "$available" -ge "$required" ] \
+    || die "destination has insufficient space (need $required bytes; $available available)"
+  install -d -m 0700 "$output"
+  say "Copying read-only from $source to $output/"
+  cp -a --reflink=auto --no-preserve=ownership -- "$source" "$output/"
+  sync -f "$output" 2>/dev/null || sync
+  say "Copy complete. Review the files before changing or removing the original disk."
+}
+
+cmd_copy_current() {
+  local from="" destination=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --from) from="${2:-}"; shift 2;; --destination) destination="${2:-}"; shift 2;; *) die "copy-current: unknown option $1";; esac
+  done
+  [ -n "$from" ] && [ -n "$destination" ] || die "copy-current: --from and --destination are required"
+  safe_relative "$from" || die "copy-current: --from must stay below /var/home"
+  local data=/var/home source destination_source destination_disk source_disk output required available
+  source="$(readlink -f "$data/$from")"
+  case "$source" in "$data"|"$data"/*) ;; *) die "source path escapes /var/home";; esac
+  [ -e "$source" ] || die "recovery source does not exist: $from"
+  destination="$(readlink -f "$destination")"
+  [ -d "$destination" ] && mountpoint -q "$destination" && [ -w "$destination" ] \
+    || die "destination must be a writable mounted external filesystem"
+  destination_source="$(findmnt -nro SOURCE --target "$destination" | head -1)"
+  destination_disk="$(parent_disk "${destination_source%%\[*}")"
+  source_disk="$(live_disk)"
+  [ -n "$destination_disk" ] && [ "$destination_disk" != "$source_disk" ] \
+    || die "destination must be on a different physical disk"
+  required="$(du -sB1 --apparent-size -- "$source" | awk '{print $1}')"
+  available="$(df -B1 --output=avail "$destination" | tail -1 | xargs)"
+  [ "$available" -ge "$required" ] || die "destination does not have enough free space"
+  output="$destination/qOS recovered files/$(date -u +%Y-%m-%dT%H%M%SZ)-$$"
+  install -d -m 0700 "$output"
+  cp -a --reflink=auto --no-preserve=ownership -- "$source" "$output/"
+  sync -f "$output" 2>/dev/null || sync
+  say "Copy complete at $output. Review it before changing the original disk."
+}
+
+cmd_remove() {
+  local dev="" confirmation="" dry_run="$DRY_RUN"
+  while [ $# -gt 0 ]; do
+    case "$1" in --device) dev="${2:-}"; shift 2;; --confirm) confirmation="${2:-}"; shift 2;; --dry-run) dry_run=1; shift;; *) die "remove: unknown option $1";; esac
+  done
+  [ -n "$dev" ] && [ -n "$confirmation" ] || die "remove: --device and --confirm are required"
+  grep -qw qos.install /proc/cmdline 2>/dev/null || die "remove is available only after booting qOS installation media"
+  dev="$(canonical_block "$dev")"
+  [ "$("$LSBLK" -dno TYPE "$dev" | xargs)" = part ] || die "remove accepts one qOS root partition, not a whole disk"
+  local source_disk current_live expected mounted marker mode marker_uuid filesystem_uuid actual_uuid esp_uuid artifact esp mount_esp part_number
+  source_disk="$(parent_disk "$dev")"; current_live="$(live_disk)"
+  [ -n "$current_live" ] || die "could not identify the live medium; refusing to erase anything"
+  [ "$source_disk" != "$current_live" ] || die "$dev belongs to the running installation medium"
+  expected="REMOVE $(fingerprint "$dev")"
+  [ "$confirmation" = "$expected" ] || die "confirmation did not match; expected exactly: $expected"
+  "$LSBLK" -nro MOUNTPOINT "$dev" | grep -q . && die "$dev is mounted; close it before removal"
+  mounted="$(mount_source "$dev" "")"
+  marker="$(install_marker "$mounted")"
+  [ -n "$marker" ] || { close_source; die "$dev has no qOS install marker; refusing to guess ownership"; }
+  mode="$(sed -n 's/^mode=//p' "$marker" | head -1)"
+  marker_uuid="$(sed -n 's/^root_partition_uuid=//p' "$marker" | head -1)"
+  filesystem_uuid="$(sed -n 's/^root_filesystem_uuid=//p' "$marker" | head -1)"
+  actual_uuid="$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
+  [ "$mode" = alongside ] || { close_source; die "only alongside qOS roots can be removed safely; erase a qOS-only disk with a disk manager"; }
+  [ -n "$marker_uuid" ] && [ "$marker_uuid" = "$actual_uuid" ] \
+    || { close_source; die "qOS install marker does not match this partition"; }
+  [ -n "$filesystem_uuid" ] || { close_source; die "qOS install marker has no filesystem identity"; }
+  esp_uuid="$(sed -n 's/^efi_uuid=//p' "$marker" | head -1)"
+  mapfile -t artifacts < <(sed -n 's/^efi_artifact=//p' "$marker")
+  close_source
+  part_number="$("$LSBLK" -dno PARTN "$dev" | xargs)"
+  case "$part_number" in ''|*[!0-9]*) die "could not determine the selected partition number";; esac
+  if [ "$dry_run" = 1 ]; then
+    say "Would remove qOS EFI files recorded by this installation, then delete partition $part_number from $source_disk."
+    printf '  %s\n' "${artifacts[@]:-no recorded EFI artifacts}"
+    return
+  fi
+  # The marker records only images whose embedded kernel command line names
+  # this exact root UUID. Resolve the ESP by UUID on the same physical disk and
+  # reject every pathname that is not a plain relative EFI/Linux filename.
+  [ -n "$esp_uuid" ] || die "qOS install marker has no EFI filesystem identity; root was not removed"
+  command -v "$EFI_ARTIFACTS" >/dev/null 2>&1 \
+    || die "boot-artifact ownership inspector is missing; root was not removed"
+  esp="$(blkid -U "$esp_uuid" 2>/dev/null || true)"
+  [ -b "$esp" ] && [ "$(parent_disk "$esp")" = "$source_disk" ] \
+    || die "the recorded shared EFI partition is missing or moved; root was not removed"
+  mount_esp="$RUN_ROOT/efi"
+  install -d -m 0700 "$mount_esp"
+  "$MOUNT" -o rw,nosuid,nodev,noexec "$esp" "$mount_esp"
+  trap '"$UMOUNT" "$mount_esp" 2>/dev/null || true' EXIT
+  for artifact in "${artifacts[@]}"; do
+    safe_efi_artifact "$artifact" || die "unsafe EFI artifact in install marker: $artifact"
+  done
+  # Updates may replace the originally recorded UKI. Re-discover the current
+  # bounded EFI/Linux tree, but accept only files whose sealed command line
+  # names the marker-bound root filesystem UUID.
+  mapfile -t artifacts < <("$EFI_ARTIFACTS" "$mount_esp" "$filesystem_uuid")
+  [ "${#artifacts[@]}" -gt 0 ] \
+    || die "no EFI artifact still proves ownership by this qOS root; root was not removed"
+  for artifact in "${artifacts[@]}"; do
+    safe_efi_artifact "$artifact" || die "unsafe owned EFI artifact: $artifact"
+    [ ! -L "$mount_esp/$artifact" ] || die "refusing symlinked EFI artifact: $artifact"
+    [ -f "$mount_esp/$artifact" ] \
+      || die "owned EFI artifact disappeared during removal: $artifact"
+    grep -aFq -- "root=UUID=$filesystem_uuid" "$mount_esp/$artifact" \
+      || die "owned EFI artifact changed during removal: $artifact"
+  done
+  for artifact in "${artifacts[@]}"; do
+    rm -f -- "$mount_esp/$artifact"
+  done
+  sync -f "$mount_esp" 2>/dev/null || sync
+  "$UMOUNT" "$mount_esp"; trap - EXIT
+  need "$SFDISK"
+  "$SFDISK" --delete "$source_disk" "$part_number"
+  command -v udevadm >/dev/null 2>&1 && udevadm settle || true
+  say "Removed the qOS root partition and its recorded boot files. Other partitions and the shared EFI filesystem were preserved."
+  say "The space is now unallocated; expand another OS with its own disk manager if desired."
+  say "If firmware still offers qOS first, choose the remaining OS once and make it the default in firmware settings."
+}
+
+main() {
+  local command="${1:-}"; [ $# -gt 0 ] && shift
+  case "$command" in
+    list) cmd_list "$@";;
+    open) as_root open "$@"; cmd_open "$@";;
+    close) as_root close "$@"; close_source; close_destination;;
+    mount-destination) as_root mount-destination "$@"; cmd_mount_destination "$@";;
+    close-destination) as_root close-destination "$@"; close_destination;;
+    copy) as_root copy "$@"; cmd_copy "$@";;
+    copy-current) as_root copy-current "$@"; cmd_copy_current "$@";;
+    remove) as_root remove "$@"; cmd_remove "$@";;
+    -h|--help|help|'') usage;;
+    *) usage >&2; exit 2;;
+  esac
+}
+
+if [ "${QOS_RECOVERY_LIBRARY:-0}" != 1 ]; then main "$@"; fi

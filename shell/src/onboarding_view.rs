@@ -10,7 +10,9 @@
 //! system theme, focus order and accessibility like the rest of the desktop.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::Read as _;
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -27,7 +29,8 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
@@ -38,6 +41,123 @@ use crate::onboarding::{
 const PANEL_MAX_WIDTH: f32 = 720.0;
 const PANEL_MAX_HEIGHT: f32 = 620.0;
 const VIEWPORT_GUTTER: f32 = 32.0;
+const PROGRESS_FILE: &str = ".onboarding-progress.json";
+const PROGRESS_VERSION: u32 = 1;
+const PROGRESS_MAX_BYTES: u64 = 4096;
+
+/// Secret-free crash journal for the small interval between identity
+/// acquisition and explicit first-use completion. It lives beside the
+/// identity so it follows the same per-user lifecycle and trust boundary.
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum PersistedStage {
+    AcquiringIdentity,
+    IdentityReady,
+    TourNavigate,
+    TourOrganise,
+    TourCollaborate,
+    TourStart,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PersistedProgress {
+    version: u32,
+    stage: PersistedStage,
+}
+
+fn progress_path(identity_dir: &std::path::Path) -> PathBuf {
+    identity_dir.join(PROGRESS_FILE)
+}
+
+/// Whether startup must retain trusted first-use chrome even though an
+/// identity already exists. Any object or unreadable entry at the journal
+/// path counts as pending: malformed recovery state must never become a
+/// shortcut around completion.
+pub fn has_pending_progress(identity_dir: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(progress_path(identity_dir)) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<PersistedStage>> {
+    let path = progress_path(identity_dir);
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.len() > PROGRESS_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "onboarding progress must be a small regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "onboarding progress must be private and owned by this user",
+            ));
+        }
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(PROGRESS_MAX_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let stored: PersistedProgress = serde_json::from_slice(&bytes).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid onboarding progress: {error}"),
+        )
+    })?;
+    if stored.version != PROGRESS_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported onboarding progress version {}", stored.version),
+        ));
+    }
+    Ok(Some(stored.stage))
+}
+
+fn store_progress(identity_dir: &std::path::Path, stage: PersistedStage) -> std::io::Result<()> {
+    crate::firstboot::prepare_identity_directory(identity_dir)?;
+    let bytes = serde_json::to_vec_pretty(&PersistedProgress {
+        version: PROGRESS_VERSION,
+        stage,
+    })
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
+    atomic_file::write_with_mode(&progress_path(identity_dir), &bytes, 0o600)
+}
+
+fn clear_progress(identity_dir: &std::path::Path) -> std::io::Result<()> {
+    let path = progress_path(identity_dir);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // Still sync the directory after NotFound. A previous Finish attempt
+        // may have removed the entry but failed while making that removal
+        // durable; letting the retry finish without fsync could resurrect it
+        // after a power loss.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // Make journal removal durable too. Otherwise a power loss immediately
+    // after Finish could resurrect a completed tour on the next login.
+    std::fs::File::open(identity_dir)?.sync_all()?;
+    Ok(())
+}
 
 /// Context for the compositor-owned identity ceremony. Both variants keep
 /// the same security gates; the host version only makes clear that qOS is not
@@ -73,6 +193,7 @@ enum TourPage {
     Navigate,
     Organise,
     Collaborate,
+    Start,
 }
 
 // Keep this copy beside the tour rather than duplicating a second conceptual
@@ -82,7 +203,7 @@ enum TourPage {
 const NAVIGATE_CARDS: &[(&str, &str)] = &[
     (
         "Search  ·  Super+K or Super+Space",
-        "Type to open apps, files, settings, or actions without hunting through menus.",
+        "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
     ),
     (
         "Overview  ·  Ctrl+Tab or four-finger swipe",
@@ -113,12 +234,37 @@ const ORGANISE_CARDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// A concrete hand-off from trusted setup into the otherwise-empty first
+/// workspace.  The earlier tour pages explain the model; this one answers the
+/// more important first-use question: "what should I do now?"  Keep these
+/// labels aligned with real shell surfaces so the checklist never teaches a
+/// product that does not exist.
+const START_CARDS: &[(&str, &str)] = &[
+    (
+        "1  Name the workspace",
+        "Open Workspace Settings from the title in the top bar. Use the project name everyone will recognise.",
+    ),
+    (
+        "2  Open a shared starting point",
+        "Choose Notes for ideas, Calendar for tasks, or Chat for a discussion or meeting. Add more apps beside it whenever you need them.",
+    ),
+    (
+        "3  Invite the right people",
+        "In Workspace Settings, choose Invite people. Review each person's role before sending; nothing else on your desktop is shared.",
+    ),
+    (
+        "4  Check work and recover mistakes",
+        "Open Activity from the top bar to catch up, inspect who changed what, compare versions, or undo only the change that went wrong.",
+    ),
+];
+
 impl TourPage {
     fn number(self) -> u8 {
         match self {
             Self::Navigate => 1,
             Self::Organise => 2,
             Self::Collaborate => 3,
+            Self::Start => 4,
         }
     }
 }
@@ -197,6 +343,10 @@ pub struct OnboardingView {
     error: Option<String>,
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
+    /// A persistence error is distinct from identity creation failure: the
+    /// current screen remains valid, but advancing is blocked until crash
+    /// recovery state can be written or removed safely.
+    progress_error: Option<String>,
     tour_page: Option<TourPage>,
     /// A tour reopened from the desktop has no identity ceremony behind it.
     /// Back on its first page and Done both dismiss the modal directly.
@@ -307,6 +457,7 @@ impl OnboardingView {
         );
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.identity_dir = Some(identity_dir);
+        view.restore_pending_progress_from_disk();
         view
     }
 
@@ -350,6 +501,7 @@ impl OnboardingView {
             error: None,
             backup_error: None,
             backup_saved: None,
+            progress_error: None,
             tour_page: None,
             tour_only: false,
             finished: false,
@@ -384,6 +536,96 @@ impl OnboardingView {
         self.finished
     }
 
+    fn restore_pending_progress_from_disk(&mut self) {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return;
+        };
+        if !has_pending_progress(identity_dir) {
+            return;
+        }
+
+        let (stage, load_error) = match load_progress(identity_dir) {
+            Ok(Some(stage)) => (stage, None),
+            Ok(None) => return,
+            Err(error) => (PersistedStage::IdentityReady, Some(error.to_string())),
+        };
+        let identity_path = runtime_identity::resolve_active_identity(identity_dir)
+            .unwrap_or_else(|| identity_dir.join("primary.json"));
+        match crate::onboarding::existing_identity_at(&identity_path) {
+            Ok(identity) => {
+                self.flow.resume_created(identity);
+                self.tour_page = match stage {
+                    PersistedStage::AcquiringIdentity | PersistedStage::IdentityReady => None,
+                    PersistedStage::TourNavigate => Some(TourPage::Navigate),
+                    PersistedStage::TourOrganise => Some(TourPage::Organise),
+                    PersistedStage::TourCollaborate => Some(TourPage::Collaborate),
+                    PersistedStage::TourStart => Some(TourPage::Start),
+                };
+                if let Some(error) = load_error {
+                    self.progress_error = Some(format!(
+                        "The saved setup position could not be read ({error}). Your identity is safe; setup resumed at the completion step."
+                    ));
+                }
+            }
+            Err(error) => {
+                // A pre-acquisition journal with no identity is the expected
+                // result of a crash before the key transaction committed:
+                // restart the creation flow. Anything present-but-invalid was
+                // already rejected by normal startup and is surfaced here too.
+                if std::fs::symlink_metadata(&identity_path).is_ok() {
+                    self.progress_error = Some(format!(
+                        "Setup found unfinished progress but could not validate the existing identity: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn persist_progress(&mut self, stage: PersistedStage) -> bool {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return true;
+        };
+        match store_progress(identity_dir, stage) {
+            Ok(()) => {
+                self.progress_error = None;
+                true
+            }
+            Err(error) => {
+                self.progress_error = Some(format!(
+                    "Setup could not save its restart position: {error}. No identity action was repeated."
+                ));
+                self.invalidation.structure();
+                false
+            }
+        }
+    }
+
+    fn finish_persisted_progress(&mut self) -> bool {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return true;
+        };
+        match clear_progress(identity_dir) {
+            Ok(()) => {
+                self.progress_error = None;
+                true
+            }
+            Err(error) => {
+                self.progress_error = Some(format!(
+                    "Setup finished, but its restart marker could not be removed: {error}. Try Finish again so this screen does not return next login."
+                ));
+                self.invalidation.structure();
+                false
+            }
+        }
+    }
+
+    fn progress_notice(&self) -> Option<Box<dyn Widget>> {
+        self.progress_error.as_ref().map(|error| {
+            Box::new(Banner::error("Setup progress needs attention").with_message(error.clone()))
+                as Box<dyn Widget>
+        })
+    }
+
     /// Put the entrance transition in its steady state for deterministic
     /// offscreen review. Production never calls this; the live compositor
     /// advances the exact same transition on animation frames.
@@ -395,7 +637,7 @@ impl OnboardingView {
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
-            return Self::build_tour_composition(theme, panel_height, page);
+            return self.build_tour_composition(theme, panel_height, page);
         }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
@@ -435,11 +677,14 @@ impl OnboardingView {
             .push(Box::new(ProgressBar::new(progress_value).with_label(
                 format!("Identity setup, step {step} of 3: {stage}"),
             )));
-        let content = Column::new()
+        let mut content = Column::new()
             .with_intrinsic_height()
             .with_gap(spacing.s6)
-            .push(Box::new(progress))
-            .push(body);
+            .push(Box::new(progress));
+        if let Some(notice) = self.progress_notice() {
+            content = content.push(notice);
+        }
+        content = content.push(body);
         if self.flow.screen() == Screen::Done {
             // The backup card can be taller than a laptop-height viewport,
             // especially with large text. Keep the only route into the
@@ -475,12 +720,18 @@ impl OnboardingView {
         )
     }
 
-    fn build_tour_composition(theme: &Theme, panel_height: f32, page: TourPage) -> Box<dyn Widget> {
+    fn build_tour_composition(
+        &self,
+        theme: &Theme,
+        panel_height: f32,
+        page: TourPage,
+    ) -> Box<dyn Widget> {
         let number = page.number();
         let stage = match page {
             TourPage::Navigate => "Move",
             TourPage::Organise => "Arrange",
             TourPage::Collaborate => "Share",
+            TourPage::Start => "Begin",
         };
         let progress = Column::new()
             .with_no_padding()
@@ -495,20 +746,23 @@ impl OnboardingView {
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("{stage}  ·  {number} of 3"))
+                        Text::new(&format!("{stage}  ·  {number} of 4"))
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     )),
             ))
             .push(Box::new(
-                ProgressBar::new(f32::from(number) / 3.0)
-                    .with_label(format!("Desktop tour, step {number} of 3: {stage}")),
+                ProgressBar::new(f32::from(number) / 4.0)
+                    .with_label(format!("Desktop tour, step {number} of 4: {stage}")),
             ));
-        let content = Column::new()
+        let mut content = Column::new()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s6)
-            .push(Box::new(progress))
-            .push(Self::tour_page(theme, page));
+            .push(Box::new(progress));
+        if let Some(notice) = self.progress_notice() {
+            content = content.push(notice);
+        }
+        content = content.push(Self::tour_page(theme, page));
         // Keep navigation out of the scrolling lesson. On a compact laptop,
         // portrait display, or large-text setup the cards can be much taller
         // than the panel; making Continue part of that content forced people
@@ -563,6 +817,11 @@ impl OnboardingView {
                     ),
                 ],
             ),
+            TourPage::Start => (
+                "Your first five minutes",
+                "Start with one shared outcome, then let the workspace grow with the project. This checklist remains available from Search as Desktop tour.",
+                START_CARDS,
+            ),
         };
         let mut body = Column::new()
             .with_no_padding()
@@ -578,15 +837,19 @@ impl OnboardingView {
 
     /// Sticky tour navigation, kept outside the scrollable lesson body.
     fn tour_actions(page: TourPage) -> Box<dyn Widget> {
-        let (primary_label, primary_key) = if page == TourPage::Collaborate {
+        let (primary_label, primary_key) = if page == TourPage::Start {
             ("Enter qOS", KEY_FINISH)
         } else {
             ("Continue", KEY_TOUR_NEXT)
         };
         actions(vec![
             Box::new(
+                Button::new("onboarding.tour.skip.button", "Skip tour", Some(KEY_FINISH))
+                    .fit_content(40.0),
+            ),
+            Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
-                    .with_icon(ui::icons::Icon::ArrowLeft),
+                    .fit_content(40.0),
             ),
             Box::new(
                 Button::new(
@@ -594,7 +857,7 @@ impl OnboardingView {
                     primary_label,
                     Some(primary_key),
                 )
-                .with_icon(ui::icons::Icon::ArrowRight)
+                .fit_content(40.0)
                 .with_style(ui::widget::ButtonStyle::Primary),
             ),
         ])
@@ -622,7 +885,11 @@ impl OnboardingView {
                     Box::new(
                         Button::new(
                             "onboarding.connect.button",
-                            "Use my existing qOS identity",
+                            // Keep this action concise enough to remain legible beside
+                            // Create identity on the supported 420 px narrow layout.
+                            // The surrounding intro already establishes qOS identity
+                            // as the subject, so the shorter copy loses no context.
+                            "Use existing",
                             Some(KEY_CONNECT),
                         )
                         .with_icon(ui::icons::Icon::ExternalLink),
@@ -692,7 +959,16 @@ impl OnboardingView {
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
-            nearby = nearby.push(paragraph(status, theme));
+            nearby = nearby.push(Box::new(
+                Text::new(status)
+                    // A stable semantic address lets the accessibility host
+                    // recognise verification-code and completion updates as
+                    // changes to one status region across composition rebuilds.
+                    .with_id("onboarding.nearby.status")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
         }
         nearby = nearby.push(Box::new(nearby_action));
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
@@ -1143,8 +1419,45 @@ impl OnboardingView {
     }
 }
 
+fn terminate_nearby_pairing(child: &mut Option<Child>) {
+    let Some(mut child) = child.take() else {
+        return;
+    };
+    let Ok(pid) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let group = pid.saturating_neg();
+    // SAFETY: the process is spawned with `process_group(0)`, making its
+    // validated PID the process-group ID. A negative target is confined to
+    // that group and cannot signal the compositor's own group.
+    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_millis(750);
+    loop {
+        let leader_finished = child.try_wait().ok().flatten().is_some();
+        // Signal 0 only checks whether any descendant still occupies the
+        // dedicated group. Do not return just because pkexec itself exited:
+        // qos-home-peer-control or qos-enroll may still be winding down.
+        let group_gone = unsafe { libc::kill(group, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if leader_finished && group_gone {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: same dedicated process group as above. This is the bounded
+    // fallback for a broker or enrollment worker that ignored SIGTERM.
+    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        terminate_nearby_pairing(&mut self.nearby_child);
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
@@ -1242,7 +1555,10 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_NEARBY) {
             let _ = state.put(root, KEY_CONNECT_NEARBY, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Connect && self.nearby_child.is_none() {
+            if self.flow.screen() == Screen::Connect
+                && self.nearby_child.is_none()
+                && self.persist_progress(PersistedStage::AcquiringIdentity)
+            {
                 match (&self.identity_dir, &self.nearby_status_path) {
                     (Some(identity_dir), Some(status_path)) => {
                         let _ = std::fs::remove_file(status_path);
@@ -1251,22 +1567,39 @@ impl Widget for OnboardingView {
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
                             .map(PathBuf::from)
                             .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
-                        match Command::new("pkexec")
-                            .args([
-                                "/usr/libexec/qos-home-peer-control",
-                                "pair-device",
-                                "--identity-root",
-                            ])
-                            .arg(identity_root)
-                            .arg("--identity-dir")
-                            .arg(identity_dir)
-                            .args(["--label", &label, "--status-file"])
-                            .arg(status_path)
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                        {
+                        let requester = qos_relay::ProcessLease::capture(std::process::id());
+                        let spawn =
+                            requester
+                                .map_err(|error| error.to_string())
+                                .and_then(|lease| {
+                                    Command::new("pkexec")
+                                        .args([
+                                            "/usr/libexec/qos-home-peer-control",
+                                            "pair-device",
+                                            "--identity-root",
+                                        ])
+                                        .arg(identity_root)
+                                        .arg("--identity-dir")
+                                        .arg(identity_dir)
+                                        .args(["--label", &label, "--status-file"])
+                                        .arg(status_path)
+                                        .arg("--requester-pid")
+                                        .arg(lease.pid().to_string())
+                                        .arg("--requester-start-time")
+                                        .arg(lease.start_time().to_string())
+                                        .stdin(Stdio::null())
+                                        .stdout(Stdio::piped())
+                                        .stderr(Stdio::piped())
+                                        // pkexec, the privileged broker and qos-enroll must
+                                        // share a revocable lifetime.  A dedicated process
+                                        // group lets Cancel, Back and compositor teardown
+                                        // stop the whole transaction instead of merely
+                                        // orphaning a privileged descendant.
+                                        .process_group(0)
+                                        .spawn()
+                                        .map_err(|error| error.to_string())
+                                });
+                        match spawn {
                             Ok(child) => {
                                 self.nearby_child = Some(child);
                                 self.nearby_status =
@@ -1286,9 +1619,9 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
             let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+            terminate_nearby_pairing(&mut self.nearby_child);
+            if let Some(path) = &self.nearby_status_path {
+                let _ = std::fs::remove_file(path);
             }
             self.nearby_status =
                 Some("Nearby setup cancelled. Choose Connect nearby to try again.".into());
@@ -1329,6 +1662,7 @@ impl Widget for OnboardingView {
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
                         if fingerprint.len() == 64 && path.is_some() {
                             self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                            let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
                             self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
                         } else {
@@ -1389,10 +1723,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            terminate_nearby_pairing(&mut self.nearby_child);
             self.nearby_status = None;
             self.flow.back();
         }
@@ -1400,7 +1731,9 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
-            if self.flow.screen() == Screen::Connect {
+            if self.flow.screen() == Screen::Connect
+                && self.persist_progress(PersistedStage::AcquiringIdentity)
+            {
                 let passphrase = Zeroizing::new(
                     self.connect_passphrase
                         .lock()
@@ -1412,6 +1745,7 @@ impl Widget for OnboardingView {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
+                        let _ = self.persist_progress(PersistedStage::IdentityReady);
                         clear_secret(&self.connect_passphrase);
                     }
                     Err(error) => {
@@ -1433,11 +1767,12 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_CREATE) {
             let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
             // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
-            if self.flow.can_create() {
+            if self.flow.can_create() && self.persist_progress(PersistedStage::AcquiringIdentity) {
                 self.error = None;
                 match (self.minter)() {
                     Ok(minted) => {
                         self.flow.complete(minted);
+                        let _ = self.persist_progress(PersistedStage::IdentityReady);
                     }
                     Err(e) => {
                         tracing::error!(target: "qos::onboarding", error = %e, "identity minting failed");
@@ -1452,14 +1787,14 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_TOUR_START) {
             let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
-            if self.flow.is_done() {
+            if self.flow.is_done() && self.persist_progress(PersistedStage::TourNavigate) {
                 self.tour_page = Some(TourPage::Navigate);
             }
         }
 
         if read_bool(state, root, KEY_TOUR_BACK) {
             let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
-            self.tour_page = match self.tour_page {
+            let next = match self.tour_page {
                 Some(TourPage::Navigate) if self.tour_only => {
                     self.finished = true;
                     self.tour_page
@@ -1467,21 +1802,52 @@ impl Widget for OnboardingView {
                 Some(TourPage::Navigate) | None => None,
                 Some(TourPage::Organise) => Some(TourPage::Navigate),
                 Some(TourPage::Collaborate) => Some(TourPage::Organise),
+                Some(TourPage::Start) => Some(TourPage::Collaborate),
             };
+            let progress_stage = match next {
+                None => Some(PersistedStage::IdentityReady),
+                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
+                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
+                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+                Some(TourPage::Start) => Some(PersistedStage::TourStart),
+            };
+            if self.tour_only
+                || progress_stage.is_some_and(|progress| self.persist_progress(progress))
+            {
+                self.tour_page = next;
+            }
         }
 
         if read_bool(state, root, KEY_TOUR_NEXT) {
             let _ = state.put(root, KEY_TOUR_NEXT, ScalarValue::Boolean(false));
-            self.tour_page = match self.tour_page {
+            let next = match self.tour_page {
                 Some(TourPage::Navigate) => Some(TourPage::Organise),
                 Some(TourPage::Organise) => Some(TourPage::Collaborate),
+                Some(TourPage::Collaborate) => Some(TourPage::Start),
                 page => page,
             };
+            let progress_stage = match next {
+                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
+                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
+                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+                Some(TourPage::Start) => Some(PersistedStage::TourStart),
+                None => None,
+            };
+            if self.tour_only
+                || progress_stage.is_none_or(|progress| self.persist_progress(progress))
+            {
+                self.tour_page = next;
+            }
         }
 
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
-            self.finished = self.tour_only || self.flow.is_done();
+            let at_tour_end = self.tour_page == Some(TourPage::Start);
+            let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
+            self.finished = (self.tour_only && at_tour_end)
+                || ((at_tour_end || skipping_tour)
+                    && self.flow.is_done()
+                    && self.finish_persisted_progress());
             if self.finished {
                 clear_secret(&self.connect_passphrase);
                 clear_secret(&self.backup_passphrase);
@@ -1610,6 +1976,38 @@ impl Widget for OnboardingView {
             *handled = true;
             return;
         }
+        if self.tour_page.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_FINISH, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
+        // Escape follows the visible Back action while the identity ceremony
+        // is still reversible. This is especially important on Connect,
+        // where a nearby-device attempt may be running: keyboard users need a
+        // conventional way to leave the branch, and KEY_BACK shares the exact
+        // same cleanup path that terminates that process group and clears its
+        // transient status. Intro and Done deliberately remain non-dismissible
+        // because setup has either not established an identity yet or still
+        // needs an explicit hand-off into the desktop.
+        if matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_BACK, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -1701,6 +2099,7 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
         Some(TourPage::Navigate) => 3,
         Some(TourPage::Organise) => 4,
         Some(TourPage::Collaborate) => 5,
+        Some(TourPage::Start) => 6,
         None => screen_order(screen),
     }
 }
@@ -1769,7 +2168,10 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1784,8 +2186,318 @@ mod tests {
         (v, calls)
     }
 
+    #[test]
+    fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
+        let child = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn pairing-shaped process tree");
+        let pgid = i32::try_from(child.id()).expect("test process ID");
+        // Give the shell enough time to create the descendant that used to
+        // survive when only the immediate pkexec process was killed.
+        std::thread::sleep(Duration::from_millis(40));
+        let mut child = Some(child);
+
+        terminate_nearby_pairing(&mut child);
+
+        assert!(child.is_none());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            // A killed grandchild can remain as a zombie until the host's PID
+            // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping
+            // entry as present, so inspect procfs and require that the group
+            // has no process capable of executing instead.
+            if !process_group_has_live_member(pgid) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a descendant survived cancellation in process group {pgid}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn process_group_has_live_member(pgid: i32) -> bool {
+        std::fs::read_dir("/proc").is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let Ok(process_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    return false;
+                };
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
+                    return false;
+                };
+                let Some((_, tail)) = stat.rsplit_once(')') else {
+                    return false;
+                };
+                let mut fields = tail.split_whitespace();
+                let state = fields.next();
+                let _parent = fields.next();
+                let process_group = fields.next().and_then(|field| field.parse::<i32>().ok());
+                process_group == Some(pgid) && !matches!(state, Some("Z" | "X"))
+            })
+        })
+    }
+
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    fn escape_event() -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+        // winit keeps the platform field private. These inert placeholders
+        // match the toolkit and greeter keyboard-event tests.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::Escape);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy
+            .new_leaf(taffy::Style::default())
+            .expect("event target");
+        let mut handled = false;
+        let mut focus_target = None;
+        view.handle_event(
+            &escape_event(),
+            1.0,
+            &Modifiers::default(),
+            document,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility();
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| accessibility_for_id(child, id))
+    }
+
+    fn write_fixture_identity(directory: &std::path::Path) {
+        let record = IdentityRecord {
+            display_name: "Test user".into(),
+            avatar_color: [20, 120, 220],
+            threshold_identity: SerializableIdentity {
+                single_device: true,
+                group_public_key: [0xab; 32],
+                threshold: 1,
+                total_shares: 1,
+                share_index: 1,
+                secret_bytes: vec![0x42; 32],
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+            schema_version: 1,
+            secret_ref: None,
+        };
+        atomic_file::write_with_mode(
+            &directory.join("primary.json"),
+            &record.to_json_bytes().expect("fixture identity JSON"),
+            0o600,
+        )
+        .expect("write fixture identity");
+    }
+
+    fn finish_identity(view: &mut OnboardingView, document: &mut AutoCommit) {
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(document, key);
+            view.sync(document, &automerge::ROOT);
+        }
+        assert_eq!(view.flow().screen(), Screen::Done);
+    }
+
+    #[test]
+    fn journal_is_durable_before_identity_action_and_removed_only_after_finish() {
+        let directory = TempDir::new().expect("progress directory");
+        let identity_dir = directory.path().join("fresh").join("identity");
+        let observed_precommit = Arc::new(AtomicBool::new(false));
+        let observed_in_minter = Arc::clone(&observed_precommit);
+        let progress_dir = identity_dir.clone();
+        let mut view = OnboardingView::with_minter(Box::new(move || {
+            observed_in_minter.store(
+                matches!(
+                    load_progress(&progress_dir),
+                    Ok(Some(PersistedStage::AcquiringIdentity))
+                ),
+                Ordering::SeqCst,
+            );
+            Ok(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: progress_dir.join("primary.json"),
+            })
+        }));
+        view.identity_dir = Some(identity_dir.clone());
+        let mut document = AutoCommit::new();
+
+        finish_identity(&mut view, &mut document);
+        assert!(
+            observed_precommit.load(Ordering::SeqCst),
+            "the crash journal must reach disk before the minter can write an identity"
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(progress_path(&identity_dir))
+                    .expect("progress metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&identity_dir)
+                    .expect("identity directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+
+        press(&mut document, KEY_FINISH);
+        view.sync(&mut document, &automerge::ROOT);
+        assert!(view.finished());
+        assert!(!has_pending_progress(&identity_dir));
+    }
+
+    #[test]
+    fn restart_resumes_done_and_exact_tour_page_without_recreating_identity() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::IdentityReady).expect("ready journal");
+
+        let mut done = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(done.flow().screen(), Screen::Done);
+        assert!(done.flow().is_done());
+        assert_eq!(
+            done.flow()
+                .minted()
+                .map(|identity| identity.fingerprint.as_str()),
+            Some("abababababababababababababababababababababababababababababababab")
+        );
+        assert!(!done.flow().can_create(), "resume never reopens creation");
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_START);
+        done.sync(&mut document, &automerge::ROOT);
+        assert_eq!(done.tour_page, Some(TourPage::Navigate));
+        assert_eq!(
+            load_progress(directory.path()).expect("tour journal"),
+            Some(PersistedStage::TourNavigate)
+        );
+
+        let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
+        press(&mut document, KEY_TOUR_NEXT);
+        navigate_restart.sync(&mut document, &automerge::ROOT);
+        assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
+
+        let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
+        press(&mut document, KEY_TOUR_NEXT);
+        organise_restart.sync(&mut document, &automerge::ROOT);
+        assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
+
+        let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
+        press(&mut document, KEY_TOUR_NEXT);
+        collaborate_restart.sync(&mut document, &automerge::ROOT);
+        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
+
+        let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(start_restart.tour_page, Some(TourPage::Start));
+        press(&mut document, KEY_FINISH);
+        start_restart.sync(&mut document, &automerge::ROOT);
+        assert!(start_restart.finished());
+        assert!(!has_pending_progress(directory.path()));
+
+        let established = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(
+            established.flow().screen(),
+            Screen::Intro,
+            "without a pending journal startup leaves an established user alone"
+        );
+    }
+
+    #[test]
+    fn unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup() {
+        let directory = TempDir::new().expect("progress directory");
+        atomic_file::write_with_mode(
+            &progress_path(directory.path()),
+            br#"{"version":99,"stage":"identity-ready"}"#,
+            0o600,
+        )
+        .expect("future-version journal");
+        assert!(has_pending_progress(directory.path()));
+        assert!(load_progress(directory.path()).is_err());
+        write_fixture_identity(directory.path());
+        let resumed = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(resumed.flow().screen(), Screen::Done);
+        assert!(resumed.progress_error.is_some());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            std::fs::remove_file(progress_path(directory.path())).expect("remove journal");
+            symlink("primary.json", progress_path(directory.path())).expect("journal symlink");
+            assert!(has_pending_progress(directory.path()));
+            assert!(load_progress(directory.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_journal_write_failure_prevents_identity_creation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let mut view = OnboardingView::with_minter(Box::new(move || {
+            called.fetch_add(1, Ordering::SeqCst);
+            Ok(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            })
+        }));
+        let directory = TempDir::new().expect("progress directory");
+        let blocked_parent = directory.path().join("not-a-directory");
+        std::fs::write(&blocked_parent, b"block directory creation").expect("write blocker");
+        view.identity_dir = Some(blocked_parent.join("identity"));
+        let mut document = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut document, key);
+            view.sync(&mut document, &automerge::ROOT);
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(view.flow().screen(), Screen::NoRecovery);
+        assert!(view.progress_error.is_some());
     }
 
     #[test]
@@ -1918,14 +2630,52 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.tour_page, Some(TourPage::Collaborate));
 
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            !view.finished(),
+            "the tour cannot finish before its hand-off page"
+        );
+
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Start));
+
         press(&mut doc, KEY_TOUR_BACK);
         view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
         press(&mut doc, KEY_TOUR_NEXT);
         view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_FINISH);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished());
+    }
+
+    #[test]
+    fn every_tour_page_exposes_an_explicit_skip_action() {
+        let mut view = OnboardingView::new_tour();
+        let mut doc = AutoCommit::new();
+        view.sync(&mut doc, &automerge::ROOT);
+
+        for page in [
+            TourPage::Navigate,
+            TourPage::Organise,
+            TourPage::Collaborate,
+        ] {
+            assert_eq!(view.tour_page, Some(page));
+            let actions = OnboardingView::tour_actions(page);
+            let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
+                .expect("tour page exposes Skip tour");
+            assert_eq!(node.name.as_deref(), Some("Skip tour"));
+            if page != TourPage::Collaborate {
+                press(&mut doc, KEY_TOUR_NEXT);
+                view.sync(&mut doc, &automerge::ROOT);
+            }
+        }
+
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished(), "Skip tour dismisses a reopened tour");
     }
 
     #[test]
@@ -1950,6 +2700,8 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_TOUR_NEXT);
         view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_FINISH);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished(), "Done closes the reopened tour");
@@ -1965,6 +2717,7 @@ mod tests {
 
         assert!(navigation.contains("Super+K"));
         assert!(navigation.contains("Super+Space"));
+        assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
         assert!(navigation.contains("Ctrl+Tab"));
         assert!(navigation.contains("four-finger swipe"));
         assert!(navigation.contains("Super+arrow keys"));
@@ -1987,6 +2740,30 @@ mod tests {
     }
 
     #[test]
+    fn desktop_tour_ends_with_a_concrete_collaboration_handoff() {
+        let handoff = START_CARDS
+            .iter()
+            .flat_map(|(title, body)| [*title, *body])
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for real_surface in [
+            "Workspace Settings",
+            "Notes",
+            "Calendar",
+            "Chat",
+            "Invite people",
+            "Activity",
+        ] {
+            assert!(
+                handoff.contains(real_surface),
+                "first-use handoff must name the real {real_surface} surface"
+            );
+        }
+        assert!(handoff.contains("undo only the change"));
+    }
+
+    #[test]
     fn onboarding_secret_fields_have_stable_spoken_names() {
         let buffer = Arc::new(Mutex::new(String::new()));
         let input = secret_input(
@@ -2002,6 +2779,69 @@ mod tests {
             node.state.protected,
             "passphrases must be exposed as protected"
         );
+    }
+
+    #[test]
+    fn nearby_pairing_updates_share_one_polite_live_region() {
+        let (mut view, _) = view();
+        view.flow.begin_connect();
+        let theme = Theme::dark();
+
+        for status in [
+            "Looking for a trusted device nearby…",
+            "Code 123456 · waiting for approval on your trusted device",
+            "Connected. Your workspaces will appear automatically.",
+        ] {
+            view.nearby_status = Some(status.into());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let node = accessibility_for_id(&view, "onboarding.nearby.status")
+                .expect("nearby status accessibility node");
+
+            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.name.as_deref(), Some(status));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+        }
+    }
+
+    #[test]
+    fn resumed_tour_preserves_focus_reset_and_reduced_motion_navigation() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
+        let mut view = OnboardingView::new(directory.path().to_path_buf());
+
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert!(
+            view.take_focus_reset(),
+            "a restored page must place keyboard focus inside its rebuilt controls"
+        );
+        assert!(!view.take_focus_reset(), "the focus edge is one-shot");
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(view.reduce_motion);
+        assert!(
+            !view.needs_animation_frame(),
+            "restoring a tour must not restart entrance animation under reduced motion"
+        );
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_NEXT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+        assert_eq!(
+            load_progress(directory.path()).expect("updated tour journal"),
+            Some(PersistedStage::TourCollaborate)
+        );
+        assert!(
+            view.take_focus_reset(),
+            "keyboard navigation must move focus into the newly restored stage"
+        );
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]
@@ -2049,6 +2889,30 @@ mod tests {
     }
 
     #[test]
+    fn escape_follows_back_on_reversible_identity_steps_only() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+
+        assert!(
+            !dispatch_escape(&mut view, &mut document),
+            "intro must not be dismissible before an identity exists"
+        );
+        press(&mut document, KEY_CONNECT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Connect);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
+
+        press(&mut document, KEY_BEGIN);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::NoRecovery);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
+    }
+
+    #[test]
     fn reduced_motion_does_not_request_transition_frames() {
         let (mut view, _) = view();
         view.reduce_motion = true;
@@ -2086,6 +2950,53 @@ mod tests {
         assert_eq!(imported.load(Ordering::SeqCst), 1);
         assert_eq!(view.flow().screen(), Screen::Done);
         assert!(view.flow().is_done());
+    }
+
+    #[test]
+    fn connect_journals_before_import_and_keeps_setup_pending_afterward() {
+        let directory = TempDir::new().expect("progress directory");
+        let identity_dir = directory.path().join("identity");
+        let observed_precommit = Arc::new(AtomicBool::new(false));
+        let observed_in_importer = Arc::clone(&observed_precommit);
+        let progress_dir = identity_dir.clone();
+        let mut view = OnboardingView::with_handlers(
+            Box::new(|| Err("create should not run".to_string())),
+            Box::new(move |_, _| {
+                observed_in_importer.store(
+                    matches!(
+                        load_progress(&progress_dir),
+                        Ok(Some(PersistedStage::AcquiringIdentity))
+                    ),
+                    Ordering::SeqCst,
+                );
+                Ok(MintedIdentity {
+                    fingerprint: "cd".repeat(32),
+                    path: progress_dir.join("primary.json"),
+                })
+            }),
+        );
+        view.identity_dir = Some(identity_dir.clone());
+        let mut document = AutoCommit::new();
+
+        press(&mut document, KEY_CONNECT);
+        let _ = document.put(
+            &automerge::ROOT,
+            KEY_CONNECT_PATH,
+            ScalarValue::Str("/media/backup/primary.json".into()),
+        );
+        view.sync(&mut document, &automerge::ROOT);
+        press(&mut document, KEY_IMPORT);
+        view.sync(&mut document, &automerge::ROOT);
+
+        assert!(
+            observed_precommit.load(Ordering::SeqCst),
+            "the crash journal must reach disk before an import can write the identity"
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady)
+        );
+        assert_eq!(view.flow().screen(), Screen::Done);
     }
 
     #[test]
@@ -2284,7 +3195,7 @@ mod tests {
         const WIDTH: f32 = 420.0;
         const HEIGHT: f32 = 640.0;
 
-        for next_presses in 0..=2 {
+        for next_presses in 0..=3 {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START] {
@@ -2320,7 +3231,12 @@ mod tests {
                 .expect("narrow large-text tour layout");
             view.apply_layout(&taffy, node, Point::ZERO);
 
-            for id in ["onboarding.tour.back.button", "onboarding.tour.next.button"] {
+            let mut action_rects = Vec::new();
+            for id in [
+                "onboarding.tour.skip.button",
+                "onboarding.tour.back.button",
+                "onboarding.tour.next.button",
+            ] {
                 let action = node_map
                     .values()
                     .find_map(|&ptr| unsafe {
@@ -2338,7 +3254,14 @@ mod tests {
                         && action.y1 <= f64::from(HEIGHT),
                     "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
                 );
+                action_rects.push(action);
             }
+            assert!(
+                action_rects
+                    .windows(2)
+                    .all(|pair| pair[0].x1 <= pair[1].x0 && (pair[0].y0 - pair[1].y0).abs() < 1.0),
+                "compact tour actions must remain one ordered row, page={next_presses}, rects={action_rects:?}"
+            );
         }
     }
 }

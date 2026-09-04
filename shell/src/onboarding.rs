@@ -196,6 +196,19 @@ impl Onboarding {
         true
     }
 
+    /// Resume the post-creation portion of first use with an identity that
+    /// was already durably validated at process startup.
+    ///
+    /// This deliberately bypasses [`Self::can_create`]: it does not create or
+    /// import anything, and exists only so a compositor restart after the
+    /// identity write can return to backup/tutorial completion rather than
+    /// repeating the cryptographic ceremony.
+    pub(crate) fn resume_created(&mut self, minted: MintedIdentity) {
+        self.acknowledged = false;
+        self.minted = Some(minted);
+        self.screen = Screen::Done;
+    }
+
     /// Whether the desktop may start.
     pub fn is_done(&self) -> bool {
         self.screen == Screen::Done && self.minted.is_some()
@@ -293,10 +306,26 @@ fn mint_into_with_paths(
 /// Goes through `IdentityRecord` — the same type that wrote the file —
 /// so a record this build can't parse is an error, not a fingerprint that belongs to nothing.
 fn read_fingerprint(path: &Path) -> Result<String, String> {
-    use ui::widget::identity_flow::IdentityRecord;
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let record = IdentityRecord::from_json_bytes(&bytes).map_err(|e| e.to_string())?;
-    Ok(hex_encode(&record.threshold_identity.group_public_key))
+    existing_identity_at(path).map(|identity| identity.fingerprint)
+}
+
+/// Reconstruct the public result needed by the completion screen from an
+/// existing, validated identity record. The disk loader enforces the same
+/// ownership, permissions, size, schema, and no-symlink policy as normal
+/// startup; resuming first use must not accept a weaker file merely because
+/// no key operation is needed.
+pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
+    use crate::shell::identity_provisioning::DiskIdentityStore;
+    use ui::widget::identity_flow::IdentityStore as _;
+
+    let record = DiskIdentityStore::at(path)
+        .load()
+        .map_err(|e| e.to_string())?;
+    let record = record.ok_or_else(|| "the identity record is missing".to_string())?;
+    Ok(MintedIdentity {
+        fingerprint: hex_encode(&record.threshold_identity.group_public_key),
+        path: path.to_path_buf(),
+    })
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -374,6 +403,20 @@ mod tests {
         assert!(o.complete(minted));
         assert_eq!(o.screen(), Screen::Done);
         assert!(o.is_done());
+    }
+
+    #[test]
+    fn resuming_a_created_identity_never_reopens_the_creation_gate() {
+        let mut onboarding = Onboarding::new();
+        onboarding.resume_created(MintedIdentity {
+            fingerprint: "ab".repeat(32),
+            path: PathBuf::from("/identity/primary.json"),
+        });
+
+        assert_eq!(onboarding.screen(), Screen::Done);
+        assert!(onboarding.is_done());
+        assert!(!onboarding.acknowledged());
+        assert!(!onboarding.can_create());
     }
 
     #[test]

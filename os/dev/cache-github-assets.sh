@@ -76,11 +76,17 @@ while IFS=$'\t' read -r expected name url; do
   mv -f -- "$part" "$target"
 done < "$manifest"
 
+# A prefix restore can contain entries removed by a newer manifest. Drop those
+# before exposing the directory as a container build context, then save the
+# reconciled directory under the new exact manifest key.
 while IFS= read -r cached; do
   name="${cached##*/}"
   case "$name" in *.part) continue ;; esac
   awk -F '\t' -v n="$name" '$1 !~ /^#/ && $2 == n { found=1 } END { exit !found }' \
-    "$manifest" || { printf 'unmanaged cached asset: %s\n' "$name" >&2; exit 1; }
+    "$manifest" || {
+      printf '[qos] pruning stale cached asset %s\n' "$name"
+      unlink -- "$cached"
+    }
 done < <(find "$cache_dir" -maxdepth 1 -type f -print)
 
 # A named BuildKit/Podman context is read by a container process rather than

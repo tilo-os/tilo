@@ -14,10 +14,9 @@
 # Every action below is gated on proving a LUKS passphrase for the root volume.
 # The gate is real rather than decorative: the check is
 # `cryptsetup open --test-passphrase`, which only a key that is actually in the
-# LUKS header satisfies. It is needed because the disk may already be open — this
-# boot's TPM keyslot is sealed to PCR 7 (the Secure Boot policy), which repair
-# mode does not change, so the volume unlocks the same way it always does and
-# "the disk is open" is not evidence that the person at the keyboard is the owner.
+# LUKS header satisfies. It is needed because the disk may already be open after
+# a passphrase, recovery key, or explicitly enrolled FIDO2 token was supplied;
+# "the disk is open" is not evidence that the same person is still at the keyboard.
 #
 # On a machine whose root is NOT encrypted there is no secret to prove and none is
 # asked for. That is not a weaker gate, it is an honest one: an unencrypted disk
@@ -188,6 +187,18 @@ act_logs() {
   say "  Full log: journalctl -b -1   (from the shell, option 7)"
 }
 
+act_recover_files() {
+  require_auth || return
+  say "  Connect and mount an external disk first. The original /var/home is"
+  say "  read, never modified. The destination must be a different physical disk."
+  printf '  path below /var/home (for example alex/Documents, or . for all homes): '
+  local source destination
+  read -r source || return
+  printf '  mounted external destination: '
+  read -r destination || return
+  /usr/libexec/qos-recovery copy-current --from "$source" --destination "$destination"
+}
+
 act_shell() {
   require_auth || return
   say "  Root shell. 'exit' comes back here."
@@ -203,10 +214,11 @@ menu() {
   say "  3  Re-fetch and stage the current image"
   say "  4  Make /var writable and show where your data is"
   say "  5  Show the previous boot's warnings and errors"
-  say "  6  Show this report again"
-  say "  7  Root shell"
-  say "  8  Reboot"
-  say "  9  Power off"
+  say "  6  Copy personal files to an external disk"
+  say "  7  Show this report again"
+  say "  8  Root shell"
+  say "  9  Reboot"
+  say "  0  Power off"
   printf '\n  choice: '
 }
 
@@ -232,10 +244,11 @@ main() {
       3) act_update ;;
       4) act_var_rw ;;
       5) act_logs ;;
-      6) report ;;
-      7) act_shell ;;
-      8) require_auth && systemctl reboot ;;
-      9) require_auth && systemctl poweroff ;;
+      6) act_recover_files ;;
+      7) report ;;
+      8) act_shell ;;
+      9) require_auth && systemctl reboot ;;
+      0) require_auth && systemctl poweroff ;;
       "") ;;
       *) oops "not one of the options" ;;
     esac

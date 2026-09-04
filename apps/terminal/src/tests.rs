@@ -2077,7 +2077,7 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
 }
 
 #[test]
-fn kitty_image_becomes_a_shared_content_addressed_placement_without_fake_rendering() {
+fn kitty_image_becomes_a_shared_content_addressed_renderable_placement() {
     use base64::Engine as _;
     let png = base64::engine::general_purpose::STANDARD
         .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -2106,8 +2106,14 @@ fn kitty_image_becomes_a_shared_content_addressed_placement_without_fake_renderi
         panic!("one placement expected: {:?}", host.image_placements());
     };
     assert_eq!(
-        (placement.columns, placement.rows, placement.protocol_id),
-        (3, 2, Some(42))
+        (
+            placement.columns,
+            placement.rows,
+            placement.pixel_width,
+            placement.pixel_height,
+            placement.protocol_id
+        ),
+        (3, 2, 1, 1, Some(42))
     );
     assert_eq!(
         qdoc::blobstore::get(&placement.hash).as_deref(),

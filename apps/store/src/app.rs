@@ -38,6 +38,7 @@ use std::rc::Rc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::a11y::{AccessNode, Role};
 use ui::qos_actions::{
     ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind, Resource,
     ResultSpec, RetryPolicy, RiskLevel,
@@ -1273,6 +1274,16 @@ impl Widget for StoreApp {
         self.rect
     }
 
+    /// The composed child tree supplies individual control semantics; the
+    /// canvas-free root still names the application for assistive technology.
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("App Store")
+                .with_bounds(self.rect),
+        )
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
@@ -1562,5 +1573,15 @@ mod tests {
             ));
             assert_eq!(action.contract.result, ResultSpec::Job);
         }
+    }
+
+    #[test]
+    fn root_accessibility_is_a_named_window_not_an_empty_generic() {
+        let mut app = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let node = app.accessibility().expect("store exports a root node");
+        assert_eq!(node.role, Role::Window);
+        assert_eq!(node.name.as_deref(), Some("App Store"));
+        assert!(node.bounds.is_some());
     }
 }

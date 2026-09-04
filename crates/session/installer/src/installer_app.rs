@@ -35,8 +35,10 @@
 //! the UI stays live and the log animates. If no proxy is wired (tests /
 //! no event loop) it falls back to a synchronous run.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use automerge::{
@@ -54,15 +56,19 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
+use ui::a11y::Politeness;
 use ui::app::UserEvent;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Row, Spinner, Text, TextInput, Widget};
+use ui::tokens::typography::TextRole;
+use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
 use crate::disk_row::DiskRow;
-use crate::disks::{Disk, DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID, read_disks};
+use crate::disks::{
+    Disk, DiskPartition, EFI_SYSTEM_GUID, GuidedAlongsidePlan, LINUX_FILESYSTEM_GUID, read_disks,
+};
 use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
@@ -84,14 +90,24 @@ const BACK_PATH: &str = "installer.back";
 const BEGIN_PATH: &str = "installer.begin";
 const REBOOT_PATH: &str = "installer.reboot";
 const POWEROFF_PATH: &str = "installer.poweroff";
+/// Rising-edge action that copies the one-time recovery key. The key itself
+/// never enters the CRDT; only this non-secret intent flag does.
+const RECOVERY_COPY_PATH: &str = "installer.recovery_copy";
+/// Post-generation acknowledgement. Unlike the Review-step promise, this can
+/// be raised only after the actual key exists and gates terminal power actions.
+const RECOVERY_SAVED_PATH: &str = "installer.recovery_saved";
 const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
 const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
+const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
 fn network_path(i: usize) -> String {
     format!("installer.network.{i}")
 }
 /// Per-disk selection flag path: `installer.disk.<index>`.
 fn disk_path(i: usize) -> String {
     format!("installer.disk.{i}")
+}
+fn guided_extent_path(i: usize) -> String {
+    format!("installer.guided_extent.{i}")
 }
 fn install_method_path(i: usize) -> String {
     format!("installer.install_method.{i}")
@@ -123,6 +139,7 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. qOS cannot make these Windows changes and will not resize NTFS.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
@@ -197,10 +214,10 @@ enum VerifiedBootState {
 fn encrypt_description(state: VerifiedBootState) -> &'static str {
     match state {
         VerifiedBootState::TargetVerified => {
-            "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+            "qOS always encrypts the disk with LUKS2. Measured qOS-bound TPM unlock is not enabled yet, so this installation requires a strong disk passphrase even though the verified-boot checks pass. A recovery key is shown once during install."
         }
         VerifiedBootState::TargetUnverified => {
-            "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
+            "qOS always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
         }
         VerifiedBootState::KernelLockdownInactive => {
             "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
@@ -218,12 +235,19 @@ fn encrypt_description(state: VerifiedBootState) -> &'static str {
 /// worker thread to mark terminal outcomes (anything else is a log line).
 const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
+const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
+const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
 const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 520.0;
 const CARD_PADDING: f32 = 28.0;
 const CARD_GAP: f32 = 12.0;
+/// Breathing room around the card on compact displays. The card itself can
+/// narrow to the remaining width rather than extending beyond the viewport.
+const VIEWPORT_PADDING: f32 = 16.0;
+/// Reserved lane for the always-visible compact-view scrollbar.
+const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Height of the install status log box.
 const STATUS_LOG_HEIGHT: f32 = 200.0;
 
@@ -413,18 +437,12 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
     }
 }
 
-/// Validate the mandatory disk-unlock secret according to the hardware path.
-/// TPM2 rate limiting makes a memorable numeric PIN appropriate; without a
-/// TPM, the secret directly protects a LUKS keyslot and must be a normal,
-/// substantially longer passphrase.
-fn validate_startup_secret(secret: &str, tpm2: bool) -> Result<(), &'static str> {
-    if tpm2 {
-        if (6..=12).contains(&secret.len()) && secret.bytes().all(|byte| byte.is_ascii_digit()) {
-            Ok(())
-        } else {
-            Err("Use a 6–12 digit startup PIN")
-        }
-    } else if secret.trim().chars().count() >= 12 {
+/// Validate the mandatory disk-unlock secret. Current releases deliberately
+/// enrol it as an ordinary LUKS passphrase on every machine: a TPM device is
+/// not a safe reason to accept a short PIN until unlock is bound to signed,
+/// measured qOS boot artifacts.
+fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
+    if secret.trim().chars().count() >= 12 {
         Ok(())
     } else {
         Err("Use at least 12 characters for the disk passphrase")
@@ -432,7 +450,7 @@ fn validate_startup_secret(secret: &str, tpm2: bool) -> Result<(), &'static str>
 }
 
 // ===================================================================
-// Card — a fixed-width, padded, vertically-stacked rounded container.
+// Card — a responsive, padded, vertically-stacked rounded container.
 // Its own `Widget` (not a bare taffy node) so the widget tree mirrors
 // the taffy tree for focus traversal. Mirrors greeter's `Card`.
 // ===================================================================
@@ -493,6 +511,10 @@ impl Widget for Card {
                         bottom: length(CARD_PADDING),
                     },
                     size: Size {
+                        width: percent(1.0_f32),
+                        height: Dimension::auto(),
+                    },
+                    max_size: Size {
                         width: length(CARD_WIDTH),
                         height: Dimension::auto(),
                     },
@@ -648,6 +670,206 @@ impl Widget for Card {
 }
 
 // ===================================================================
+// ViewportStage — centres short cards, then lets the spacers collapse before
+// a tall card overflows into the surrounding Scrollable. This keeps the
+// spacious desktop presentation while making every control reachable on a
+// small laptop panel, portrait screen, or large-text/high-DPI setup.
+// ===================================================================
+
+struct ViewportStage {
+    children: Vec<Box<dyn Widget>>,
+    rect: Rect,
+}
+
+impl ViewportStage {
+    fn new(card: Box<dyn Widget>) -> Self {
+        Self {
+            children: vec![Box::new(Spacer::new()), card, Box::new(Spacer::new())],
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+impl Widget for ViewportStage {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        for child in &mut self.children {
+            child.sync(state, root);
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_nodes: Vec<NodeId> = self
+            .children
+            .iter_mut()
+            .map(|child| child.build_layout(taffy, theme, node_map))
+            .collect();
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
+        let node = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    align_items: Some(AlignItems::Center),
+                    padding: taffy::Rect {
+                        left: length(VIEWPORT_PADDING),
+                        right: length(VIEWPORT_PADDING),
+                        top: length(VIEWPORT_PADDING),
+                        bottom: length(VIEWPORT_PADDING),
+                    },
+                    size: Size {
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &child_nodes,
+            )
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+        let own_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(child_nodes) = taffy.children(node) {
+            for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+                child.apply_layout(taffy, child_node, own_origin);
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in &mut self.children {
+            child.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let Ok(child_nodes) = taffy.children(node_id) else {
+            return;
+        };
+        if let Some(index) = self
+            .children
+            .iter()
+            .position(|child| child.wants_pointer_capture())
+        {
+            if let (Some(child), Some(&child_node)) =
+                (self.children.get_mut(index), child_nodes.get(index))
+            {
+                child.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    child_node,
+                    taffy,
+                );
+            }
+            return;
+        }
+        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+            child.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+            if *handled {
+                break;
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children
+            .iter_mut()
+            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+            .collect()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.children
+            .iter()
+            .any(|child| child.wants_pointer_capture())
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = false;
+        for child in &mut self.children {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.children.iter().any(|child| child.needs_commit())
+    }
+
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            child.on_commit();
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "InstallerViewportStage"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+// ===================================================================
 // InstallerApp
 // ===================================================================
 
@@ -664,7 +886,15 @@ pub struct InstallerApp {
     network: InstallerNetwork,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
+    /// Explicit choice when a disk has multiple safe unallocated extents.
+    /// A sole candidate is selected implicitly; ambiguity never is.
+    selected_guided_extent: Option<usize>,
     install_method: InstallMethod,
+    /// UUIDs reviewed for the partitions the guided free-space path will add.
+    /// Generated once per installer run; changing disks clears confirmation but
+    /// retaining these stable IDs keeps Review and the backend handoff identical.
+    guided_efi_partuuid: String,
+    guided_root_partuuid: String,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
     /// Enroll a FIDO2 security key as an extra unlock factor (only with
@@ -674,13 +904,13 @@ pub struct InstallerApp {
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
     /// Whether this machine has a TPM2 device, sampled once at construction.
-    /// Encryption works either way; without one the unlock secret stops being
-    /// optional, because the alternative is typing the recovery key at boot.
+    /// Encryption and passphrase policy are identical either way; this only
+    /// helps explain why automatic TPM unlock is not currently offered.
     tpm2: bool,
-    /// Short-PIN mode is safe only when firmware verifies early boot.
+    /// Diagnostic state used to explain the measured-boot boundary.
     secure_boot: bool,
     /// Secure Boot must have propagated into the kernel's runtime restrictions;
-    /// the EFI variable alone is not sufficient evidence for short-PIN mode.
+    /// the EFI variable alone is not sufficient evidence for TPM unlock.
     kernel_lockdown: bool,
     /// A dedicated preflight must also prove the installed target, not merely
     /// the running live medium, retains the complete verified-boot boundary.
@@ -691,6 +921,12 @@ pub struct InstallerApp {
     status_lines: Vec<String>,
     /// One-time LUKS recovery key, kept visible until the machine restarts.
     recovery_key: Option<String>,
+    /// Whether the visible key has been copied during this installer session.
+    /// This is presentation state only; a newly emitted key resets it.
+    recovery_key_copied: bool,
+    /// Explicit confirmation made after the concrete recovery key was shown.
+    /// Copying to the live clipboard alone is not evidence of an off-device copy.
+    recovery_key_saved: bool,
     /// Cached account/system fields (mirror their CRDT Text objects) for
     /// the Review display + backend argv.
     username: String,
@@ -727,10 +963,19 @@ pub struct InstallerApp {
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
+    /// Read-only prepared-partition probe launched before leaving Disk. The
+    /// request UUID prevents a late result from a previously selected disk
+    /// from affecting the current choice; the backend independently binds the
+    /// probe to disk/root/ESP identities.
+    storage_preflight_request: Option<String>,
+    storage_preflight_passed: bool,
     /// A validated qOS Imager profile supplied the non-secret setup choices.
     preconfigured: bool,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
+    /// Scroll position survives incidental composition rebuilds (network
+    /// status, validation, progress). Deliberate step changes reset it.
+    viewport_offset: Rc<Cell<(f32, f32)>>,
 }
 
 impl Default for InstallerApp {
@@ -767,7 +1012,10 @@ impl InstallerApp {
             network: InstallerNetwork::default(),
             disks,
             selected_disk: None,
+            selected_guided_extent: None,
             install_method: InstallMethod::Erase,
+            guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
+            guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
             selected_fs: 0,
             fido2: false,
             recovery_ack: false,
@@ -779,6 +1027,8 @@ impl InstallerApp {
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
             recovery_key: None,
+            recovery_key_copied: false,
+            recovery_key_saved: false,
             username: String::new(),
             full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
@@ -798,8 +1048,11 @@ impl InstallerApp {
             rect: Rect::ZERO,
             composed: None,
             install_launched: false,
+            storage_preflight_request: None,
+            storage_preflight_passed: false,
             preconfigured: false,
             proxy_slot: None,
+            viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
@@ -896,6 +1149,23 @@ impl InstallerApp {
             .push("Installed — remove the medium and reboot.".to_string());
     }
 
+    /// Pose the finish card after the real recovery-key marker has arrived.
+    /// The representative value uses the real eight-group shape closely enough
+    /// to exercise wrapping without ever being a usable secret.
+    pub fn shot_finished_with_recovery(&mut self) {
+        self.shot_finished();
+        self.recovery_key = Some(
+            "aaaa1111-bbbb2222-cccc3333-dddd4444-eeee5555-ffff6666-gggg7777-hhhh8888".to_string(),
+        );
+    }
+
+    /// Pose the post-copy/post-save state, including the enabled power actions.
+    pub fn shot_finished_with_saved_recovery(&mut self) {
+        self.shot_finished_with_recovery();
+        self.recovery_key_copied = true;
+        self.recovery_key_saved = true;
+    }
+
     /// Mutate a `for_shot(Install)` app into the failure screen.
     pub fn shot_failed(&mut self) {
         self.step = Step::Install;
@@ -903,6 +1173,15 @@ impl InstallerApp {
         self.status_lines = sample_install_log();
         self.status_lines
             .push("error: bootc install to-disk exited non-zero".to_string());
+    }
+
+    /// Pose the failure card after encryption generated a recovery key, proving
+    /// the rescue action remains available even though installation stopped.
+    pub fn shot_failed_with_recovery(&mut self) {
+        self.shot_failed();
+        self.recovery_key = Some(
+            "aaaa1111-bbbb2222-cccc3333-dddd4444-eeee5555-ffff6666-gggg7777-hhhh8888".to_string(),
+        );
     }
 
     /// The selected disk, if any.
@@ -913,6 +1192,46 @@ impl InstallerApp {
     /// The selected disk's device path, if any.
     fn selected_dev(&self) -> Option<String> {
         self.selected_disk_ref().map(|d| d.name.clone())
+    }
+
+    fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
+        if self.install_method != InstallMethod::Alongside {
+            return None;
+        }
+        let disk = self.selected_disk_ref()?;
+        if disk.can_install_alongside() {
+            return None;
+        }
+        let plans = disk.guided_alongside_plans();
+        match plans.as_slice() {
+            [only] => Some(only.clone()),
+            _ => self
+                .selected_guided_extent
+                .and_then(|index| plans.get(index).cloned()),
+        }
+    }
+
+    fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
+        if self.install_method != InstallMethod::Alongside {
+            return Vec::new();
+        }
+        self.selected_disk_ref()
+            .filter(|disk| !disk.can_install_alongside())
+            .map_or_else(Vec::new, Disk::guided_alongside_plans)
+    }
+
+    fn uses_guided_alongside(&self) -> bool {
+        self.install_method == InstallMethod::Alongside
+            && self
+                .selected_disk_ref()
+                .is_some_and(|disk| !disk.can_install_alongside())
+            && self.guided_alongside_plan().is_some()
+    }
+
+    fn selected_disk_can_install_alongside(&self) -> bool {
+        self.selected_disk_ref().is_some_and(|disk| {
+            disk.can_install_alongside() || self.guided_alongside_plan().is_some()
+        })
     }
 
     /// The chosen filesystem name (e.g. `btrfs`).
@@ -927,10 +1246,6 @@ impl InstallerApp {
     /// falling back to the default (English / US) if it doesn't match.
     fn layout(&self) -> &'static layouts::Layout {
         layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
-    }
-
-    fn verified_tpm(&self) -> bool {
-        self.tpm2 && self.secure_boot && self.kernel_lockdown && self.target_verified_boot
     }
 
     fn verified_boot_state(&self) -> VerifiedBootState {
@@ -949,19 +1264,20 @@ impl InstallerApp {
 
     /// May the install start, as far as encryption is concerned? Native qOS
     /// always requires both a reproducible recovery factor and a startup
-    /// secret: a TPM2-bound PIN where supported, otherwise a disk passphrase.
+    /// secret. TPM-backed unlock is not enabled until it can be bound to
+    /// signed, measured qOS boot artifacts.
     fn encryption_ready(&self) -> bool {
-        self.recovery_ack
-            && validate_startup_secret(&secret_copy(&self.password), self.verified_tpm()).is_ok()
+        self.recovery_ack && validate_startup_secret(&secret_copy(&self.password)).is_ok()
     }
 
     fn destructive_confirmation_target(&self) -> Option<String> {
         match self.install_method {
             InstallMethod::Erase => self.selected_dev(),
-            InstallMethod::Alongside => self
-                .selected_disk_ref()
-                .and_then(|disk| disk.alongside_root())
-                .map(|partition| partition.name.clone()),
+            InstallMethod::Alongside => self.selected_disk_ref().and_then(|disk| {
+                disk.alongside_root()
+                    .map(|partition| partition.name.clone())
+                    .or_else(|| self.guided_alongside_plan().map(|_| disk.name.clone()))
+            }),
         }
     }
 
@@ -972,19 +1288,11 @@ impl InstallerApp {
 
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
-        // Recovery key is always present; TPM is PIN-protected iff a PIN was
-        // entered; FIDO2 is listed only when enrolling.
+        // Recovery key is always present; the strong boot passphrase is
+        // mandatory; FIDO2 is listed only when enrolling.
         let mut factors = vec!["recovery key".to_string()];
-        match (
-            self.verified_tpm(),
-            secret_copy(&self.password).trim().is_empty(),
-        ) {
-            (true, true) => factors.push("TPM2 + startup PIN required".to_string()),
-            (true, false) => factors.push("TPM2 + PIN".to_string()),
-            // No TPM: the same secret is enrolled as an ordinary passphrase
-            // slot, and it is what gets typed at boot.
-            (false, false) => factors.push("boot passphrase".to_string()),
-            (false, true) => {}
+        if !secret_copy(&self.password).trim().is_empty() {
+            factors.push("boot passphrase".to_string());
         }
         if self.fido2 {
             factors.push("FIDO2".to_string());
@@ -1002,6 +1310,11 @@ impl InstallerApp {
         } else {
             (None, None)
         };
+        let guided = if root.is_none() && efi.is_none() {
+            self.guided_alongside_plan()
+        } else {
+            None
+        };
         InstallOptions {
             disk_size_bytes: disk.map_or(0, |disk| disk.size_bytes),
             disk_major_minor: disk.map_or_else(String::new, |disk| disk.major_minor.clone()),
@@ -1015,6 +1328,22 @@ impl InstallerApp {
             alongside_efi_partuuid: efi
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),
             alongside_efi_size_bytes: efi.map_or(0, |partition| partition.size_bytes),
+            guided_free_start_bytes: guided.as_ref().map_or(0, |plan| plan.free_start_bytes),
+            guided_free_size_bytes: guided.as_ref().map_or(0, |plan| plan.free_size_bytes),
+            guided_efi_start_bytes: guided.as_ref().map_or(0, |plan| plan.efi_start_bytes),
+            guided_efi_size_bytes: guided.as_ref().map_or(0, |plan| plan.efi_size_bytes),
+            guided_root_start_bytes: guided.as_ref().map_or(0, |plan| plan.root_start_bytes),
+            guided_root_size_bytes: guided.as_ref().map_or(0, |plan| plan.root_size_bytes),
+            disk_partition_table_uuid: disk
+                .map_or_else(String::new, |disk| disk.partition_table_uuid.clone()),
+            disk_logical_sector_size: disk.map_or(0, |disk| disk.logical_sector_size),
+            guided_efi_partuuid: self.guided_efi_partuuid.clone(),
+            guided_root_partuuid: self.guided_root_partuuid.clone(),
+            expected_partitions: if guided.is_some() {
+                disk.and_then(Disk::occupied_extents).unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
             full_name: self.full_name.trim().to_string(),
@@ -1032,6 +1361,10 @@ impl InstallerApp {
             self.status = msg.to_string();
             self.dirty_structure = true;
         }
+    }
+
+    fn reset_viewport(&self) {
+        self.viewport_offset.set((0.0, 0.0));
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
@@ -1071,9 +1404,12 @@ impl InstallerApp {
             BEGIN_PATH,
             REBOOT_PATH,
             POWEROFF_PATH,
+            RECOVERY_COPY_PATH,
+            RECOVERY_SAVED_PATH,
             RECOVERY_ACK_PATH,
             NETWORK_REFRESH_PATH,
             NETWORK_CONNECT_PATH,
+            DISK_REFRESH_PATH,
         ] {
             if state.get(root, path).ok().flatten().is_none() {
                 let _ = state.put(root, path, false);
@@ -1157,11 +1493,19 @@ impl InstallerApp {
         }
         if self.step == Step::Disk
             && self.install_method == InstallMethod::Alongside
-            && !self
+            && !self.selected_disk_can_install_alongside()
+        {
+            self.set_status("Alongside needs either one unallocated GPT extent of at least 34 GiB, or a prepared empty Linux root (32 GiB+) and EFI partition (2 GiB+)");
+            return;
+        }
+        if self.step == Step::Disk
+            && self.install_method == InstallMethod::Alongside
+            && self
                 .selected_disk_ref()
                 .is_some_and(Disk::can_install_alongside)
+            && !self.storage_preflight_passed
         {
-            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an unmounted EFI partition of at least 2 GiB");
+            self.start_storage_preflight();
             return;
         }
         match validate_step(
@@ -1181,8 +1525,7 @@ impl InstallerApp {
                     return;
                 }
                 if self.step == Step::Account
-                    && let Err(message) =
-                        validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
+                    && let Err(message) = validate_startup_secret(&secret_copy(&self.password))
                 {
                     self.set_status(message);
                     return;
@@ -1197,6 +1540,7 @@ impl InstallerApp {
                     // button (begin flag) is the only entry into install.
                     if n != Step::Install {
                         self.step = n;
+                        self.reset_viewport();
                         self.status.clear();
                         self.dirty_structure = true;
                         self.focus_reset = true;
@@ -1207,18 +1551,63 @@ impl InstallerApp {
         }
     }
 
-    /// Step backward. A failed launch has already deliberately erased both
-    /// secret buffers, so recovery returns to Account instead of presenting a
-    /// Review screen whose Begin button can only fail validation.
+    fn start_storage_preflight(&mut self) {
+        if self.storage_preflight_request.is_some() {
+            self.set_status("Checking the prepared EFI partition…");
+            return;
+        }
+        let Some(proxy) = self.event_proxy() else {
+            self.set_status(
+                "The prepared-storage check is unavailable. Refresh disks, then try again.",
+            );
+            return;
+        };
+        let Some(disk) = self.selected_dev() else {
+            self.set_status("Select the prepared qOS disk before checking it.");
+            return;
+        };
+        let opts = self.install_options();
+        let request = uuid::Uuid::new_v4().to_string();
+        self.storage_preflight_request = Some(request.clone());
+        self.set_status("Checking FAT health and free space on the prepared EFI partition…");
+        std::thread::spawn(move || {
+            let mut detail = String::new();
+            let result = crate::install::run_alongside_preflight(&disk, &opts, |line| {
+                if !line.trim().is_empty() {
+                    detail = line;
+                }
+            });
+            let (prefix, message) = match result {
+                Ok(true) => (PREFLIGHT_OK_PREFIX, detail),
+                Ok(false) => (PREFLIGHT_FAIL_PREFIX, detail),
+                Err(error) => (
+                    PREFLIGHT_FAIL_PREFIX,
+                    format!("Could not launch the prepared-storage check: {error}"),
+                ),
+            };
+            let _ = proxy.send_event(UserEvent::External(format!("{prefix}{request}:{message}")));
+        });
+    }
+
+    /// Step backward. A failed launch may already have formatted the selected
+    /// root. On-disk metadata is not authenticated ownership proof, so never
+    /// steer a failure directly into a destructive retry. Return to storage,
+    /// clear the selection and require a fresh probe/review instead.
     fn go_back(&mut self) {
         if self.step == Step::Install {
             if self.install_state == InstallState::Failed {
-                self.step = Step::Account;
+                self.step = Step::Disk;
+                self.selected_disk = None;
+                self.selected_guided_extent = None;
+                self.erase_confirmation.clear();
+                self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+                self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
+                self.reset_viewport();
                 self.install_state = InstallState::Idle;
                 self.install_launched = false;
                 self.status_lines.clear();
                 self.set_status(
-                    "Re-enter your startup and account secret, then review and try again",
+                    "Refresh storage before continuing. qOS will not reinitialize a target from unauthenticated on-disk metadata; use Ctrl+Alt+F2 if you need recovery tools.",
                 );
                 self.dirty_structure = true;
                 self.focus_reset = true;
@@ -1232,6 +1621,7 @@ impl InstallerApp {
         };
         if let Some(p) = destination {
             self.step = p;
+            self.reset_viewport();
             self.status.clear();
             self.dirty_structure = true;
             self.focus_reset = true;
@@ -1262,9 +1652,7 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) =
-            validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
-        {
+        if let Err(message) = validate_startup_secret(&secret_copy(&self.password)) {
             self.set_status(message);
             return;
         }
@@ -1284,6 +1672,7 @@ impl InstallerApp {
         clear_secret_buffer(&self.password_confirmation);
 
         self.step = Step::Install;
+        self.reset_viewport();
         self.install_state = InstallState::Running;
         self.install_launched = true;
         self.status_lines = vec![format!(
@@ -1291,6 +1680,8 @@ impl InstallerApp {
             opts.filesystem
         )];
         self.recovery_key = None;
+        self.recovery_key_copied = false;
+        self.recovery_key_saved = false;
         self.dirty_structure = true;
         self.focus_reset = true;
 
@@ -1335,10 +1726,14 @@ impl InstallerApp {
 
     fn mark_install_done(&mut self) {
         self.install_state = InstallState::Done;
+        self.reset_viewport();
         self.status_lines
             .push("Installed — remove the medium and reboot.".to_string());
-        self.dirty_structure = true;
+        // Completion replaces an unfocusable progress surface with recovery
+        // and power controls. Put keyboard users on the first recovery action
+        // deterministically instead of retaining a stale node from Review.
         self.focus_reset = true;
+        self.dirty_structure = true;
     }
 
     fn mark_install_failed(&mut self, extra: Option<String>) {
@@ -1346,13 +1741,21 @@ impl InstallerApp {
             self.status_lines.push(line);
         }
         self.install_state = InstallState::Failed;
+        self.reset_viewport();
         self.dirty_structure = true;
-        self.focus_reset = true;
     }
 
     /// Run a terminal power action (Reboot / Power off). On success the
     /// machine goes down before this returns; a failure surfaces a status.
     fn run_power(&mut self, action: PowerAction) {
+        // Do not deliberately leave a disk-unlock factor in the live
+        // session's clipboard after handing off to the installed system. If
+        // the person copied something else since, preserve their newer value.
+        if let Some(key) = &self.recovery_key
+            && ui::clipboard_paste().as_deref() == Some(key.as_str())
+        {
+            ui::clipboard_copy("");
+        }
         match crate::install::run_power(action) {
             Ok(true) => {}
             _ => self
@@ -1385,11 +1788,20 @@ impl InstallerApp {
             children.push(Box::new(
                 Text::new(&self.status)
                     .with_size(theme.tokens.typography.scale.sm)
-                    .with_color(theme.tokens.colors.semantic.danger),
+                    .with_color(theme.tokens.colors.semantic.danger)
+                    .with_live(Politeness::Assertive),
             ));
         }
 
-        Box::new(Card::new(children))
+        let card: Box<dyn Widget> = Box::new(Card::new(children));
+        Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_content_gutter(SCROLLBAR_GUTTER)
+                .with_persisted_offset(Rc::clone(&self.viewport_offset))
+                .always_visible()
+                .with_child(Box::new(ViewportStage::new(card))),
+        )
     }
 
     fn compose_network_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
@@ -1542,7 +1954,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. Prepare an empty Linux partition (32 GiB+) and a 2 GiB EFI partition for qOS first. qOS never shrinks Windows or guesses that unknown data is disposable."
+            "Alongside preserves existing partitions. qOS can use one unallocated GPT extent (34 GiB+) or prepared qOS partitions. It never shrinks, moves, or deletes an existing partition."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -1551,6 +1963,9 @@ impl InstallerApp {
                 dim
             },
         )));
+        children.push(Box::new(
+            ActionButton::new("Refresh disks", DISK_REFRESH_PATH).with_test_id("disk_refresh"),
+        ));
         if self.disks.is_empty() {
             children.push(Box::new(
                 Text::new("No disks found — is this running on real hardware?")
@@ -1566,12 +1981,15 @@ impl InstallerApp {
                 )));
             }
         }
+        children.extend(self.windows_alongside_preparation(theme));
         let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
+        let guided_plans = self.guided_alongside_plans();
+        if self.install_method == InstallMethod::Alongside && guided_plans.len() > 1 {
+            self.compose_guided_extent_choices(theme, children, &guided_plans);
+        }
         let unavailable = read_only
             || (self.install_method == InstallMethod::Alongside
-                && !self
-                    .selected_disk_ref()
-                    .is_some_and(Disk::can_install_alongside));
+                && !self.selected_disk_can_install_alongside());
         if read_only {
             children.push(Box::new(
                 Text::new("This disk is hardware or policy write-protected.")
@@ -1584,13 +2002,89 @@ impl InstallerApp {
             && !read_only
             && self.install_method == InstallMethod::Alongside
         {
-            children.push(Box::new(Text::new("No eligible prepared partition on this disk. Shrink the existing OS from its own disk manager, create an unformatted Linux partition, then refresh/restart the installer.").with_size(sm).with_color(danger)));
+            let message = self.alongside_unavailable_message(&guided_plans);
+            children.push(Box::new(
+                Text::new(&message).with_size(sm).with_color(danger),
+            ));
+        } else if self.install_method == InstallMethod::Alongside
+            && self.uses_guided_alongside()
+            && let Some(plan) = self.guided_alongside_plan()
+        {
+            children.push(Box::new(
+                Text::new(&format!(
+                    "Ready to use {} GiB of unallocated space: a new 2 GiB qOS EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                    plan.free_size_bytes / (1024 * 1024 * 1024),
+                    plan.root_size_bytes / (1024 * 1024 * 1024)
+                ))
+                    .with_size(sm)
+                    .with_color(theme.status_success),
+            ));
         }
         children.push(nav_row(
             Step::Disk,
             NEXT_PATH,
             "Next",
             self.selected_disk.is_none() || unavailable,
+        ));
+    }
+
+    fn windows_alongside_preparation(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
+        (self.install_method == InstallMethod::Alongside
+            && self
+                .selected_disk_ref()
+                .is_some_and(Disk::has_windows_storage))
+        .then(|| {
+            Box::new(
+                Text::new(WINDOWS_ALONGSIDE_PREPARATION)
+                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_color(theme.tokens.colors.semantic.warning),
+            ) as Box<dyn Widget>
+        })
+    }
+
+    fn alongside_unavailable_message(&self, guided_plans: &[GuidedAlongsidePlan]) -> String {
+        if guided_plans.len() > 1 {
+            return "Select one of the unallocated regions above to continue.".to_string();
+        }
+        if let Some(issue) = self
+            .selected_disk_ref()
+            .filter(|disk| disk.alongside_root().is_some())
+            .and_then(Disk::prepared_efi_issue)
+        {
+            return format!(
+                "{issue} The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+            );
+        }
+        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks.".to_string()
+    }
+
+    fn compose_guided_extent_choices(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        plans: &[GuidedAlongsidePlan],
+    ) {
+        children.push(Box::new(
+            Text::new("Choose the exact unallocated region for qOS")
+                .with_size(theme.tokens.typography.scale.base),
+        ));
+        for (index, plan) in plans.iter().enumerate() {
+            let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
+            let size_gib = plan.free_size_bytes / (1024 * 1024 * 1024);
+            let label = if self.selected_guided_extent == Some(index) {
+                format!("✓ Selected · {size_gib} GiB free at {start_gib} GiB")
+            } else {
+                format!("Use {size_gib} GiB free at {start_gib} GiB")
+            };
+            children.push(Box::new(
+                ActionButton::new(&label, &guided_extent_path(index))
+                    .with_test_id(&format!("guided_extent_{index}")),
+            ));
+        }
+        children.push(Box::new(
+            Text::new("The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.")
+                .with_size(theme.tokens.typography.scale.sm)
+                .with_color(theme.text_dim),
         ));
     }
 
@@ -1612,32 +2106,23 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
-        let credential_label = if self.verified_tpm() {
-            "Startup and unlock PIN"
-        } else {
-            "Startup and unlock passphrase"
-        };
-        children.push(Box::new(Text::new(credential_label).with_size(base)));
+        children.push(Box::new(
+            Text::new("Startup and unlock passphrase").with_size(base),
+        ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
-        let credential_help = if self.verified_tpm() {
-            "Choose 6–12 digits. Enter this once at startup; it also unlocks your session later."
-        } else {
-            "Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later."
-        };
         children.push(Box::new(
-            Text::new(credential_help).with_size(sm).with_color(dim),
+            Text::new("Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later.")
+                .with_size(sm)
+                .with_color(dim),
         ));
-        let confirmation_label = if self.verified_tpm() {
-            "Confirm startup and unlock PIN"
-        } else {
-            "Confirm startup and unlock passphrase"
-        };
-        children.push(Box::new(Text::new(confirmation_label).with_size(base)));
+        children.push(Box::new(
+            Text::new("Confirm startup and unlock passphrase").with_size(base),
+        ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
@@ -1664,6 +2149,11 @@ impl InstallerApp {
                 .with_placeholder("Select a keyboard layout"),
         ));
         children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
+        children.push(Box::new(
+            Text::new("Need files from this computer, or removing an alongside qOS install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
         children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
     }
 
@@ -1757,10 +2247,18 @@ impl InstallerApp {
         let (expected, operation) = match self.install_method {
             InstallMethod::Erase => (disk, "whole-disk erase"),
             InstallMethod::Alongside => (
-                self.selected_disk_ref()
-                    .and_then(|selected| selected.alongside_root())
-                    .map_or("<missing root>", |partition| partition.name.as_str()),
-                "qOS root format",
+                if self.uses_guided_alongside() {
+                    disk
+                } else {
+                    self.selected_disk_ref()
+                        .and_then(|selected| selected.alongside_root())
+                        .map_or("<missing root>", |partition| partition.name.as_str())
+                },
+                if self.uses_guided_alongside() {
+                    "guided free-space partition plan"
+                } else {
+                    "qOS root format"
+                },
             ),
         };
         children.push(Box::new(
@@ -1776,6 +2274,10 @@ impl InstallerApp {
         ));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the review is one linear visual composition and splitting it would obscure its exact destructive-plan ordering"
+    )]
     fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
@@ -1806,18 +2308,45 @@ impl InstallerApp {
         if self.install_method == InstallMethod::Alongside
             && let Some(disk) = self.selected_disk_ref()
         {
-            children.push(summary_row(
-                theme,
-                "qOS root",
-                disk.alongside_root()
-                    .map_or("<missing>", |p| p.name.as_str()),
-            ));
-            children.push(summary_row(
-                theme,
-                "qOS EFI partition",
-                disk.efi_partition()
-                    .map_or("<missing>", |p| p.name.as_str()),
-            ));
+            if let Some(plan) = self.guided_alongside_plan() {
+                children.push(summary_row(
+                    theme,
+                    "Partition plan",
+                    &format!(
+                        "Create 2 GiB qOS EFI + {} GiB qOS root in {} GiB unallocated space",
+                        plan.root_size_bytes / (1024 * 1024 * 1024),
+                        plan.free_size_bytes / (1024 * 1024 * 1024)
+                    ),
+                ));
+                children.push(summary_row(
+                    theme,
+                    "Existing partitions",
+                    "Preserved byte-for-byte; none resized, moved, or deleted",
+                ));
+                children.push(summary_row(
+                    theme,
+                    "Choose an OS",
+                    "Use the firmware boot picker; its current default and existing entries are preserved",
+                ));
+            } else {
+                children.push(summary_row(
+                    theme,
+                    "qOS root",
+                    disk.alongside_root()
+                        .map_or("<missing>", |p| p.name.as_str()),
+                ));
+                children.push(summary_row(
+                    theme,
+                    "qOS EFI partition",
+                    disk.efi_partition()
+                        .map_or("<missing>", |p| p.name.as_str()),
+                ));
+                children.push(summary_row(
+                    theme,
+                    "Choose an OS",
+                    "qOS adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
+                ));
+            }
         }
         children.push(summary_row(theme, "Filesystem", self.filesystem()));
         children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
@@ -1840,9 +2369,15 @@ impl InstallerApp {
         ));
 
         let impact = if self.install_method == InstallMethod::Alongside {
-            format!(
-                "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
-            )
+            if self.uses_guided_alongside() {
+                format!(
+                    "Two new qOS partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                )
+            } else {
+                format!(
+                    "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                )
+            }
         } else {
             format!("This will ERASE {dev} and all data on it.")
         };
@@ -1866,7 +2401,9 @@ impl InstallerApp {
             "[ ] I will save my recovery key"
         };
         children.push(Box::new(
-            ActionButton::new(ack_label, RECOVERY_ACK_PATH).with_test_id("recovery_ack"),
+            ActionButton::new(ack_label, RECOVERY_ACK_PATH)
+                .with_test_id("recovery_ack")
+                .checkbox(self.recovery_ack),
         ));
 
         // Begin is gated on the recovery-key acknowledgement when
@@ -1892,37 +2429,65 @@ impl InstallerApp {
                 children.push(Box::new(
                     Text::new("qOS is installed")
                         .with_size(xl)
-                        .with_color(theme.status_success),
+                        .with_color(theme.status_success)
+                        .with_role(TextRole::Title)
+                        .with_live(Politeness::Polite),
                 ));
                 children.push(Box::new(
                     Text::new("Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
+                if self.install_method == InstallMethod::Alongside {
+                    children.push(Box::new(
+                        Text::new(if self.uses_guided_alongside() {
+                            "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                        } else {
+                            "The qOS boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
+                        })
+                        .with_size(sm)
+                        .with_color(dim),
+                    ));
+                }
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
-                children.push(finish_row());
+                if !self.status.is_empty() {
+                    children.push(Box::new(
+                        Text::new(&self.status)
+                            .with_size(sm)
+                            .with_color(theme.tokens.colors.semantic.warning)
+                            .with_live(Politeness::Assertive),
+                    ));
+                }
+                children.push(finish_row(!self.recovery_key_saved));
             }
             InstallState::Failed => {
                 children.push(Box::new(
                     Text::new("Installation failed")
                         .with_size(xl)
-                        .with_color(danger),
+                        .with_color(danger)
+                        .with_role(TextRole::Title)
+                        .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
-                    Text::new("The installer stopped before it could confirm a bootable system. The destination may have been changed. Review the details, then re-enter your secrets before trying again.")
+                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. qOS will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
                 children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
+                self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
                 )));
-                children.push(Box::new(ActionButton::new("Re-enter secrets", BACK_PATH)));
+                children.push(Box::new(ActionButton::new("Review storage", BACK_PATH)));
             }
             _ => {
-                children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
+                children.push(Box::new(
+                    Text::new("Installing qOS…")
+                        .with_size(xl)
+                        .with_role(TextRole::Title),
+                ));
                 children.push(Box::new(
                     Row::new().push(Box::new(Spinner::new())).push(Box::new(
                         Text::new("Working — this can take a few minutes. Don't power off.")
@@ -1947,6 +2512,41 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(Text::new(key).with_size(sm)));
+        children.push(Box::new(
+            ActionButton::new(
+                if self.recovery_key_copied {
+                    "Copy recovery key again"
+                } else {
+                    "Copy recovery key"
+                },
+                RECOVERY_COPY_PATH,
+            )
+            .with_test_id("recovery_key_copy"),
+        ));
+        children.push(Box::new(
+            Text::new(if self.recovery_key_copied {
+                "Copied. Paste it into a password manager or an encrypted note on another drive before rebooting."
+            } else {
+                "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy when you reboot or power off."
+            })
+            .with_size(sm)
+            .with_color(if self.recovery_key_copied {
+                theme.status_success
+            } else {
+                theme.text_dim
+            })
+            .with_live(Politeness::Polite),
+        ));
+        let saved_label = if self.recovery_key_saved {
+            "[x] I saved this key off this computer"
+        } else {
+            "[ ] I saved this key off this computer"
+        };
+        children.push(Box::new(
+            ActionButton::new(saved_label, RECOVERY_SAVED_PATH)
+                .with_test_id("recovery_key_saved")
+                .checkbox(self.recovery_key_saved),
+        ));
     }
 }
 
@@ -1996,13 +2596,17 @@ fn take_secret(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
 }
 
 /// The Finish-screen action row: Reboot (primary) + Power off (secondary).
-fn finish_row() -> Box<dyn Widget> {
+fn finish_row(disabled: bool) -> Box<dyn Widget> {
     Box::new(
         Row::new()
             .push(Box::new(
-                ActionButton::new("Reboot now", REBOOT_PATH).primary(),
+                ActionButton::new("Reboot now", REBOOT_PATH)
+                    .primary()
+                    .disabled(disabled),
             ))
-            .push(Box::new(ActionButton::new("Power off", POWEROFF_PATH))),
+            .push(Box::new(
+                ActionButton::new("Power off", POWEROFF_PATH).disabled(disabled),
+            )),
     )
 }
 
@@ -2057,6 +2661,9 @@ fn sample_disks() -> Vec<Disk> {
             size: "238.5G".to_string(),
             model: "Samsung SSD 860 EVO".to_string(),
             size_bytes: 256_000_000_000,
+            partition_table: "gpt".to_string(),
+            partition_table_uuid: "11111111-1111-1111-1111-111111111111".to_string(),
+            logical_sector_size: 512,
             major_minor: "8:0".to_string(),
             wwn: "0x5002538e40abcdef".to_string(),
             serial: "QOS-SAMPLE-SATA".to_string(),
@@ -2066,6 +2673,7 @@ fn sample_disks() -> Vec<Disk> {
             partitions: vec![
                 DiskPartition {
                     name: "/dev/sda1".to_string(),
+                    start_bytes: 1_048_576,
                     size_bytes: 536_870_912,
                     part_uuid: "00000000-0000-0000-0000-000000000001".to_string(),
                     filesystem: "vfat".to_string(),
@@ -2075,6 +2683,7 @@ fn sample_disks() -> Vec<Disk> {
                 },
                 DiskPartition {
                     name: "/dev/sda2".to_string(),
+                    start_bytes: 537_919_488,
                     size_bytes: 160_000_000_000,
                     part_uuid: "00000000-0000-0000-0000-000000000002".to_string(),
                     filesystem: "ntfs".to_string(),
@@ -2084,6 +2693,7 @@ fn sample_disks() -> Vec<Disk> {
                 },
                 DiskPartition {
                     name: "/dev/sda3".to_string(),
+                    start_bytes: 160_537_919_488,
                     size_bytes: 64_000_000_000,
                     part_uuid: "00000000-0000-0000-0000-000000000003".to_string(),
                     filesystem: String::new(),
@@ -2093,6 +2703,7 @@ fn sample_disks() -> Vec<Disk> {
                 },
                 DiskPartition {
                     name: "/dev/sda4".to_string(),
+                    start_bytes: 224_537_919_488,
                     size_bytes: 2_147_483_648,
                     part_uuid: "00000000-0000-0000-0000-000000000004".to_string(),
                     filesystem: "vfat".to_string(),
@@ -2107,6 +2718,9 @@ fn sample_disks() -> Vec<Disk> {
             size: "1T".to_string(),
             model: "WD Black SN770".to_string(),
             size_bytes: 1_000_000_000_000,
+            partition_table: "gpt".to_string(),
+            partition_table_uuid: "22222222-2222-2222-2222-222222222222".to_string(),
+            logical_sector_size: 512,
             major_minor: "259:0".to_string(),
             wwn: "eui.0000000000000001".to_string(),
             serial: "QOS-SAMPLE-NVME".to_string(),
@@ -2157,6 +2771,12 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
             add("Preparing encrypted storage…");
         } else if lower.contains("installing qos onto") || lower.contains("base system installed") {
             add("Installing the signed qOS system…");
+        } else if lower.contains("fido2") && (lower.contains("touch") || lower.contains("enroll")) {
+            // This is not background progress: systemd-cryptenroll is blocked
+            // until the person touches their selected hardware token. Keep it
+            // as an explicit stage so the visible log and its assertive live
+            // region both ask for the required action.
+            add("Touch your security key to continue…");
         } else if lower.contains("enrolling disk-encryption")
             || lower.contains("recovery key verified")
             || lower.contains("tpm2+pin enrolled")
@@ -2227,6 +2847,45 @@ impl InstallerApp {
         }
     }
 
+    fn ensure_disk_paths(&self, state: &mut AutoCommit, root: &ObjId) {
+        for i in 0..self.disks.len() {
+            let path = disk_path(i);
+            if state.get(root, path.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, path.as_str(), false);
+            }
+        }
+        let extent_count = self
+            .disks
+            .iter()
+            .map(|disk| disk.guided_alongside_plans().len())
+            .max()
+            .unwrap_or(0);
+        for i in 0..extent_count {
+            let path = guided_extent_path(i);
+            if state.get(root, path.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, path.as_str(), false);
+            }
+        }
+    }
+
+    fn refresh_disks_with(&mut self, disks: Vec<Disk>) {
+        self.disks = disks;
+        self.selected_disk = None;
+        self.selected_guided_extent = None;
+        self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+        self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
+        self.erase_confirmation.clear();
+        self.storage_preflight_request = None;
+        self.storage_preflight_passed = false;
+        self.status = if self.disks.is_empty() {
+            "Disk list refreshed; no installable disks were found.".to_string()
+        } else {
+            "Disk list refreshed. Select a destination again.".to_string()
+        };
+        self.dirty_structure = true;
+        self.focus_reset = true;
+    }
+
     fn sync_network_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let proxy = self.event_proxy();
         if self.network.ensure_initial_scan(proxy.clone()) {
@@ -2284,6 +2943,27 @@ impl InstallerApp {
     /// edges — each selector raises a per-option boolean flag on pick,
     /// which this drains and resolves into the corresponding index/state.
     fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.ensure_disk_paths(state, root);
+        if Self::read_flag(state, root, DISK_REFRESH_PATH) {
+            let _ = state.put(root, DISK_REFRESH_PATH, false);
+            for i in 0..self.disks.len() {
+                let _ = state.put(root, disk_path(i).as_str(), false);
+            }
+            for i in 0..self
+                .disks
+                .iter()
+                .map(|disk| disk.guided_alongside_plans().len())
+                .max()
+                .unwrap_or(0)
+            {
+                let _ = state.put(root, guided_extent_path(i).as_str(), false);
+            }
+            Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+            self.refresh_disks_with(read_disks());
+            self.ensure_disk_paths(state, root);
+            return;
+        }
+
         // Disk-selection rising edges (only meaningful on the Disk step).
         for i in 0..self.disks.len() {
             let p = disk_path(i);
@@ -2297,6 +2977,9 @@ impl InstallerApp {
                     if self.selected_disk != Some(i) {
                         Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                         self.erase_confirmation.clear();
+                        self.selected_guided_extent = None;
+                        self.storage_preflight_request = None;
+                        self.storage_preflight_passed = false;
                     }
                     self.selected_disk = Some(i);
                     self.status.clear();
@@ -2317,10 +3000,28 @@ impl InstallerApp {
                 if self.install_method != method {
                     Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                     self.erase_confirmation.clear();
+                    self.selected_guided_extent = None;
+                    self.storage_preflight_request = None;
+                    self.storage_preflight_passed = false;
                 }
                 self.install_method = method;
                 self.status.clear();
                 self.dirty_structure = true;
+            }
+        }
+
+        let guided_plan_count = self.guided_alongside_plans().len();
+        for i in 0..guided_plan_count {
+            let p = guided_extent_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                if guided_plan_count > 1 && self.selected_guided_extent != Some(i) {
+                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+                    self.erase_confirmation.clear();
+                    self.selected_guided_extent = Some(i);
+                    self.status.clear();
+                    self.dirty_structure = true;
+                }
             }
         }
 
@@ -2356,6 +3057,24 @@ impl InstallerApp {
             self.dirty_structure = true;
         }
 
+        if Self::read_flag(state, root, RECOVERY_COPY_PATH) {
+            let _ = state.put(root, RECOVERY_COPY_PATH, false);
+            if let Some(key) = &self.recovery_key {
+                ui::clipboard_copy(key);
+                self.recovery_key_copied = true;
+                self.dirty_structure = true;
+            }
+        }
+
+        if Self::read_flag(state, root, RECOVERY_SAVED_PATH) {
+            let _ = state.put(root, RECOVERY_SAVED_PATH, false);
+            if self.recovery_key.is_some() {
+                self.recovery_key_saved = !self.recovery_key_saved;
+                self.status.clear();
+                self.dirty_structure = true;
+            }
+        }
+
         // Back rising edge.
         if Self::read_flag(state, root, BACK_PATH) {
             let _ = state.put(root, BACK_PATH, false);
@@ -2380,13 +3099,25 @@ impl InstallerApp {
         if Self::read_flag(state, root, REBOOT_PATH) {
             let _ = state.put(root, REBOOT_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
-                self.run_power(PowerAction::Reboot);
+                if self.recovery_key_saved {
+                    self.run_power(PowerAction::Reboot);
+                } else {
+                    self.set_status(
+                        "Save the recovery key off this computer and confirm it before rebooting",
+                    );
+                }
             }
         }
         if Self::read_flag(state, root, POWEROFF_PATH) {
             let _ = state.put(root, POWEROFF_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
-                self.run_power(PowerAction::PowerOff);
+                if self.recovery_key_saved {
+                    self.run_power(PowerAction::PowerOff);
+                } else {
+                    self.set_status(
+                        "Save the recovery key off this computer and confirm it before powering off",
+                    );
+                }
             }
         }
     }
@@ -2572,9 +3303,36 @@ impl Widget for InstallerApp {
             self.mark_install_done();
         } else if payload == CTRL_FAIL {
             self.mark_install_failed(None);
+        } else if let Some(result) = payload.strip_prefix(PREFLIGHT_OK_PREFIX) {
+            if let Some((request, message)) = result.split_once(':')
+                && self.storage_preflight_request.as_deref() == Some(request)
+            {
+                self.storage_preflight_request = None;
+                self.storage_preflight_passed = true;
+                self.set_status(if message.trim().is_empty() {
+                    "Prepared EFI partition passed its read-only health and free-space check."
+                } else {
+                    message.trim()
+                });
+                self.go_next();
+            }
+        } else if let Some(result) = payload.strip_prefix(PREFLIGHT_FAIL_PREFIX) {
+            if let Some((request, message)) = result.split_once(':')
+                && self.storage_preflight_request.as_deref() == Some(request)
+            {
+                self.storage_preflight_request = None;
+                self.storage_preflight_passed = false;
+                self.set_status(if message.trim().is_empty() {
+                    "The prepared EFI partition failed its read-only health or free-space check."
+                } else {
+                    message.trim()
+                });
+            }
         } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
+                self.recovery_key_copied = false;
+                self.recovery_key_saved = false;
                 self.dirty_structure = true;
             }
         } else {
@@ -2646,6 +3404,22 @@ mod tests {
         sample_disks()
     }
 
+    fn disk_with_two_guided_extents() -> Disk {
+        let gib = 1024_u64 * 1024 * 1024;
+        let mut disk = sample_disks().remove(1);
+        disk.partitions.push(DiskPartition {
+            name: "/dev/nvme0n1p1".to_string(),
+            start_bytes: 100 * gib,
+            size_bytes: 20 * gib,
+            part_uuid: "30000000-0000-4000-8000-000000000001".to_string(),
+            filesystem: "ntfs".to_string(),
+            label: "Existing OS".to_string(),
+            mountpoint: String::new(),
+            part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".to_string(),
+        });
+        disk
+    }
+
     /// Recursively assert the widget tree mirrors the taffy tree at every
     /// node — the structural invariant the App's focusable-order traversal
     /// depends on.
@@ -2665,12 +3439,82 @@ mod tests {
         }
     }
 
+    fn find_named<'a>(widget: &'a dyn Widget, name: &str) -> Option<&'a dyn Widget> {
+        if widget.name() == name {
+            return Some(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_named(child, name))
+    }
+
+    fn find_accessible(widget: &dyn Widget, name: &str) -> Option<ui::a11y::AccessNode> {
+        if let Some(node) = widget.accessibility()
+            && node.name.as_deref() == Some(name)
+        {
+            return Some(node);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_accessible(child, name))
+    }
+
+    fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
+        widget.test_id() == Some(id)
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| has_test_id(child, id))
+    }
+
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let root = app.build_layout(&mut taffy, &theme, &mut node_map);
         (taffy, root)
+    }
+
+    fn layout_at(app: &mut InstallerApp, width: f32, height: f32) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let app_node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: length(width),
+                        height: length(height),
+                    },
+                    ..Default::default()
+                },
+                &[app_node],
+            )
+            .expect("viewport node");
+        let measure_map = node_map.clone();
+        let mut text_renderer = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&widget) = measure_map.get(&node_id) {
+                        // SAFETY: every pointer belongs to `app`, which remains
+                        // alive and stationary for this layout pass.
+                        unsafe { (*widget).measure(known, available, &mut text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .expect("compute compact installer layout");
+        app.apply_layout(&taffy, app_node, Point::ORIGIN);
     }
 
     // --- pure state-machine ---------------------------------------
@@ -2940,10 +3784,10 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
 
-        *app.password.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         app.sync(&mut doc, &root);
-        assert_eq!(&*secret_copy(&app.password), "246810");
-        assert_eq!(app.install_options().pin.as_str(), "246810");
+        assert_eq!(&*secret_copy(&app.password), "correct horse");
+        assert_eq!(app.install_options().pin.as_str(), "correct horse");
     }
 
     #[test]
@@ -2981,27 +3825,24 @@ mod tests {
     #[test]
     fn encryption_summary_reflects_factors() {
         let mut app = InstallerApp::with_disks(sample());
-        // Pin the hardware: sampled from the host, this would assert something
-        // different on a machine with no TPM.
+        // Pin the hardware so this proves even a fully verified TPM does not
+        // weaken the passphrase requirement in this release.
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
-        assert_eq!(
-            app.encryption_summary(),
-            "On (LUKS — recovery key, TPM2 + startup PIN required)"
-        );
+        assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
-        *app.password.lock().unwrap() = "123456".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, TPM2 + PIN)"
+            "On (LUKS — recovery key, boot passphrase)"
         );
 
         app.fido2 = true;
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, TPM2 + PIN, FIDO2)"
+            "On (LUKS — recovery key, boot passphrase, FIDO2)"
         );
     }
 
@@ -3033,7 +3874,7 @@ mod tests {
     }
 
     #[test]
-    fn with_a_tpm_the_startup_pin_is_required() {
+    fn verified_tpm_still_requires_a_strong_passphrase() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.tpm2 = true;
@@ -3046,17 +3887,19 @@ mod tests {
             "silent TPM-only unlock is not a hardened startup boundary"
         );
         *app.password.lock().unwrap() = "246810".to_string();
+        assert!(
+            !app.encryption_ready(),
+            "a TPM must not make a six-digit LUKS passphrase acceptable"
+        );
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
     }
 
     #[test]
-    fn startup_secret_policy_matches_the_hardware_boundary() {
-        assert!(validate_startup_secret("246810", true).is_ok());
-        assert!(validate_startup_secret("1234", true).is_err());
-        assert!(validate_startup_secret("secret", true).is_err());
-
-        assert!(validate_startup_secret("correct horse", false).is_ok());
-        assert!(validate_startup_secret("hunter2", false).is_err());
+    fn startup_secret_policy_always_requires_a_strong_passphrase() {
+        assert!(validate_startup_secret("correct horse").is_ok());
+        assert!(validate_startup_secret("246810").is_err());
+        assert!(validate_startup_secret("hunter2").is_err());
     }
 
     #[test]
@@ -3116,7 +3959,7 @@ mod tests {
         assert!(app.encryption_ready());
         assert!(
             encrypt_description(VerifiedBootState::TargetUnverified)
-                .contains("cannot yet prove that the installed target")
+                .contains("Verified boot is unavailable for this installation")
         );
     }
 
@@ -3157,14 +4000,14 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("review card");
         let begin_disabled = card
             .children()
             .last()
             .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
         assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
-        // Acknowledgement alone is insufficient because the PIN is mandatory.
+        // Acknowledgement alone is insufficient because the passphrase is mandatory.
         let mut app2 = InstallerApp::with_disks(sample());
         app2.selected_disk = Some(0);
         app2.step = Step::Review;
@@ -3174,9 +4017,9 @@ mod tests {
         app2.target_verified_boot = true;
         app2.recovery_ack = true;
         app2.erase_confirmation = "/dev/sda".to_string();
-        *app2.password.lock().unwrap() = "246810".to_string();
+        *app2.password.lock().unwrap() = "correct horse".to_string();
         let _ = build(&mut app2);
-        let card2 = app2.children()[0];
+        let card2 = find_named(&app2, "InstallerCard").expect("review card");
         let begin_enabled = card2
             .children()
             .last()
@@ -3194,8 +4037,8 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         app.recovery_ack = true;
-        *app.password.lock().unwrap() = "246810".to_string();
-        *app.password_confirmation.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password_confirmation.lock().unwrap() = "correct horse".to_string();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
@@ -3218,7 +4061,7 @@ mod tests {
             "typing the confirmation must rebuild the disabled Begin button"
         );
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("review card");
         let begin_enabled = card
             .children()
             .last()
@@ -3249,7 +4092,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("options card");
         let has_fido2 = card
             .children()
             .iter()
@@ -3296,6 +4139,264 @@ mod tests {
             "00000000-0000-0000-0000-000000000004"
         );
         assert_eq!(opts.alongside_efi_size_bytes, 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn guided_alongside_advances_and_binds_reviewed_free_extent() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.step = Step::Disk;
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(1); // empty 1 TB GPT sample
+        assert!(app.uses_guided_alongside());
+        assert!(app.selected_disk_can_install_alongside());
+
+        let plan = app.guided_alongside_plan().unwrap();
+        let opts = app.install_options();
+        assert_eq!(opts.guided_free_start_bytes, plan.free_start_bytes);
+        assert_eq!(opts.guided_free_size_bytes, plan.free_size_bytes);
+        assert_eq!(opts.guided_efi_size_bytes, 2 * 1024 * 1024 * 1024);
+        assert!(opts.guided_root_size_bytes >= 32 * 1024 * 1024 * 1024);
+        assert_eq!(
+            opts.disk_partition_table_uuid,
+            "22222222-2222-2222-2222-222222222222"
+        );
+        assert!(opts.expected_partitions.is_empty());
+        assert_eq!(
+            app.destructive_confirmation_target().as_deref(),
+            Some("/dev/nvme0n1")
+        );
+
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+    }
+
+    #[test]
+    fn guided_alongside_explains_the_firmware_picker_before_and_after_install() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(1);
+        app.step = Step::Review;
+        assert!(app.uses_guided_alongside());
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(
+                &app,
+                "Use the firmware boot picker; its current default and existing entries are preserved"
+            )
+            .is_some()
+        );
+
+        app.install_state = InstallState::Done;
+        app.step = Step::Install;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(
+                &app,
+                "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn alongside_surfaces_windows_preparation_before_leaving_storage() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+
+        assert!(
+            find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_some(),
+            "Windows preparation must be actionable before the user leaves storage selection"
+        );
+
+        app.disks[0].partitions[1].filesystem = "ext4".into();
+        app.disks[0].partitions[1].label = "Existing Linux".into();
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_none(),
+            "Linux-only alongside disks must not receive Windows-specific instructions"
+        );
+    }
+
+    #[test]
+    fn alongside_explains_a_determinable_prepared_efi_failure() {
+        let mut disk = sample_disks().remove(0);
+        disk.partitions.pop(); // remove the valid 2 GiB qOS ESP
+        let mut app = InstallerApp::with_disks(vec![disk]);
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+
+        assert!(
+            find_accessible(
+                &app,
+                "/dev/sda1 is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+            )
+            .is_some(),
+            "known ESP failures should be explained before the user leaves storage selection"
+        );
+    }
+
+    #[test]
+    fn prepared_preflight_ignores_stale_results_and_advances_only_on_success() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        app.storage_preflight_request = Some("current".into());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        app.on_external_event(
+            &format!("{PREFLIGHT_OK_PREFIX}stale:stale result"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert!(!app.storage_preflight_passed);
+
+        app.on_external_event(
+            &format!("{PREFLIGHT_FAIL_PREFIX}current:EFI has less than 1 GiB free"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert!(app.status.contains("less than 1 GiB"));
+
+        app.storage_preflight_request = Some("retry".into());
+        app.on_external_event(
+            &format!("{PREFLIGHT_OK_PREFIX}retry:prepared storage check passed"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Account);
+        assert!(app.storage_preflight_passed);
+    }
+
+    #[test]
+    fn prepared_preflight_fails_closed_without_an_event_channel() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+
+        app.go_next();
+
+        assert_eq!(app.step, Step::Disk);
+        assert!(!app.storage_preflight_passed);
+        assert!(app.status.contains("prepared-storage check is unavailable"));
+    }
+
+    #[test]
+    fn restarted_ui_does_not_reinitialize_an_unauthenticated_partial_pair() {
+        let mut disk = sample_disks().remove(1);
+        let gib = 1024_u64 * 1024 * 1024;
+        disk.partitions = vec![
+            DiskPartition {
+                name: "/dev/nvme0n1p1".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 3 * gib,
+                part_uuid: "00000000-0000-4000-8000-000000000001".into(),
+                filesystem: "ntfs".into(),
+                label: "existing OS".into(),
+                mountpoint: String::new(),
+                part_type: LINUX_FILESYSTEM_GUID.into(),
+            },
+            DiskPartition {
+                name: "/dev/nvme0n1p2".into(),
+                start_bytes: 4 * gib,
+                size_bytes: 2 * gib,
+                part_uuid: "10000000-0000-4000-8000-000000000002".into(),
+                filesystem: String::new(),
+                label: "qOS EFI".into(),
+                mountpoint: String::new(),
+                part_type: EFI_SYSTEM_GUID.into(),
+            },
+            DiskPartition {
+                name: "/dev/nvme0n1p3".into(),
+                start_bytes: 6 * gib,
+                size_bytes: disk.size_bytes - 7 * gib,
+                part_uuid: "20000000-0000-4000-8000-000000000003".into(),
+                filesystem: String::new(),
+                label: "qOS root".into(),
+                mountpoint: String::new(),
+                part_type: LINUX_FILESYSTEM_GUID.into(),
+            },
+        ];
+        let mut restarted = InstallerApp::with_disks(vec![disk]);
+        restarted.step = Step::Disk;
+        restarted.install_method = InstallMethod::Alongside;
+        restarted.selected_disk = Some(0);
+
+        assert!(!restarted.selected_disk_can_install_alongside());
+        assert!(!restarted.uses_guided_alongside());
+        restarted.erase_confirmation = "/dev/nvme0n1".into();
+        assert!(!restarted.destructive_confirmation_ready());
+        restarted.go_next();
+        assert_eq!(restarted.step, Step::Disk);
+    }
+
+    #[test]
+    fn multiple_guided_extents_require_and_bind_an_explicit_choice() {
+        let disk = disk_with_two_guided_extents();
+        let plans = disk.guided_alongside_plans();
+        assert_eq!(plans.len(), 2);
+        let mut app = InstallerApp::with_disks(vec![disk]);
+        app.step = Step::Disk;
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+
+        assert!(app.guided_alongside_plan().is_none());
+        assert!(!app.selected_disk_can_install_alongside());
+        app.go_next();
+        assert_eq!(app.step, Step::Disk, "ambiguous free space must block Next");
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        let _ = doc.put(&root, guided_extent_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.guided_alongside_plan(), Some(plans[1].clone()));
+        let options = app.install_options();
+        assert_eq!(options.guided_free_start_bytes, plans[1].free_start_bytes);
+        assert_eq!(options.guided_free_size_bytes, plans[1].free_size_bytes);
+
+        let _ = build(&mut app);
+        assert!(has_test_id(&app, "disk_refresh"));
+        assert!(has_test_id(&app, "guided_extent_0"));
+        assert!(has_test_id(&app, "guided_extent_1"));
+    }
+
+    #[test]
+    fn disk_refresh_invalidates_every_reviewed_guided_identity() {
+        let disk = disk_with_two_guided_extents();
+        let mut app = InstallerApp::with_disks(vec![disk.clone()]);
+        app.step = Step::Disk;
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.selected_guided_extent = Some(1);
+        app.erase_confirmation = disk.name.clone();
+        let old_efi_uuid = app.guided_efi_partuuid.clone();
+        let old_root_uuid = app.guided_root_partuuid.clone();
+        assert!(app.guided_alongside_plan().is_some());
+
+        app.refresh_disks_with(vec![disk]);
+        assert_eq!(app.selected_disk, None);
+        assert_eq!(app.selected_guided_extent, None);
+        assert!(app.erase_confirmation.is_empty());
+        assert_ne!(app.guided_efi_partuuid, old_efi_uuid);
+        assert_ne!(app.guided_root_partuuid, old_root_uuid);
+
+        app.selected_disk = Some(0);
+        assert!(
+            app.guided_alongside_plan().is_none(),
+            "the pre-refresh extent index must not survive rediscovery"
+        );
+        app.go_next();
+        assert_eq!(app.step, Step::Disk, "a stale choice must remain blocked");
     }
 
     #[test]
@@ -3351,8 +4452,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_install_recovery_returns_to_cleared_secret_step() {
+    fn failed_install_recovery_returns_to_unselected_storage_review() {
         let mut app = InstallerApp::with_disks(sample());
+        let old_efi_partuuid = app.guided_efi_partuuid.clone();
+        let old_root_partuuid = app.guided_root_partuuid.clone();
         app.selected_disk = Some(0);
         app.step = Step::Install;
         app.install_state = InstallState::Failed;
@@ -3363,10 +4466,13 @@ mod tests {
 
         let _ = doc.put(&root, BACK_PATH, true);
         app.sync(&mut doc, &root);
-        assert_eq!(app.step, Step::Account);
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(app.selected_disk, None);
+        assert_ne!(app.guided_efi_partuuid, old_efi_partuuid);
+        assert_ne!(app.guided_root_partuuid, old_root_partuuid);
         assert_eq!(app.install_state, InstallState::Idle);
         assert!(!app.install_launched, "retry must re-arm the launch guard");
-        assert!(app.status.contains("Re-enter"));
+        assert!(app.status.contains("will not reinitialize a target"));
     }
 
     #[test]
@@ -3387,7 +4493,7 @@ mod tests {
         assert_eq!(app.install_state, InstallState::Done);
         assert!(
             app.take_focus_reset(),
-            "done sets focus reset for finish row"
+            "completion must focus the first recovery action on the new Finish surface"
         );
     }
 
@@ -3408,6 +4514,93 @@ mod tests {
     }
 
     #[test]
+    fn visible_recovery_key_can_be_copied_without_entering_shared_state() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        assert!(
+            !has_test_id(
+                app.build_composition(&Theme::dark()).as_ref(),
+                "recovery_key_copy"
+            ),
+            "the action must not exist before a key has been received"
+        );
+
+        let key = "abcd-efgh-ijkl-mnop";
+        app.on_external_event(&format!("{RECOVERY_KEY_PREFIX}{key}"), &mut doc, &root);
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_copy"
+        ));
+
+        let _ = doc.put(&root, RECOVERY_COPY_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.recovery_key_copied);
+        assert!(!InstallerApp::read_flag(&doc, &root, RECOVERY_COPY_PATH));
+        assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
+        assert!(
+            !String::from_utf8_lossy(&doc.save()).contains(key),
+            "the recovery secret must never be replicated through the CRDT"
+        );
+
+        app.on_external_event(
+            &format!("{RECOVERY_KEY_PREFIX}replacement-key"),
+            &mut doc,
+            &root,
+        );
+        assert!(
+            !app.recovery_key_copied,
+            "a newly emitted key needs its own copy confirmation"
+        );
+        assert!(
+            !app.recovery_key_saved,
+            "a newly emitted key needs its own post-generation saved confirmation"
+        );
+    }
+
+    #[test]
+    fn generated_recovery_key_survives_failure_and_power_requires_saved_ack() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        app.on_external_event(
+            &format!("{RECOVERY_KEY_PREFIX}failure-safe-key"),
+            &mut doc,
+            &root,
+        );
+        app.on_external_event(CTRL_FAIL, &mut doc, &root);
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_copy"
+        ));
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_saved"
+        ));
+
+        app.install_state = InstallState::Done;
+        let _ = doc.put(&root, REBOOT_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.status.contains("Save the recovery key"));
+
+        let _ = doc.put(&root, RECOVERY_SAVED_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.recovery_key_saved);
+        assert!(
+            !app.recovery_key_copied,
+            "explicit saved acknowledgement must not be inferred from clipboard state"
+        );
+    }
+
+    #[test]
     fn install_progress_hides_container_noise_behind_human_milestones() {
         let lines = vec![
             "Starting install to /dev/vdb for user qostest (btrfs).".to_string(),
@@ -3424,6 +4617,73 @@ mod tests {
                 "Preparing encrypted storage…",
             ]
         );
+    }
+
+    #[test]
+    fn hardware_token_touch_is_an_explicit_human_milestone() {
+        let lines = vec![
+            "==> Enrolling disk-encryption unlock factors".to_string(),
+            "  enrolling a FIDO2 security key (touch it now if prompted)…".to_string(),
+        ];
+        assert_eq!(
+            friendly_install_status(&lines),
+            vec![
+                "Securing disk unlock and recovery…",
+                "Touch your security key to continue…",
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_states_and_recovery_actions_have_live_accessible_semantics() {
+        let mut done = InstallerApp::for_shot(Step::Install);
+        done.shot_finished();
+        done.recovery_key = Some("test-recovery-key".to_string());
+        let _ = build(&mut done);
+        let success = find_accessible(&done, "qOS is installed").expect("success title");
+        assert_eq!(success.live, Some(Politeness::Polite));
+        let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
+        assert_eq!(reboot.role, ui::a11y::Role::Button);
+        assert!(
+            !reboot.state.focusable,
+            "power stays gated until the key is saved"
+        );
+        assert!(find_accessible(&done, "Power off").is_some());
+        done.recovery_key_saved = true;
+        let _ = build(&mut done);
+        assert!(
+            find_accessible(&done, "Reboot now")
+                .expect("enabled reboot action")
+                .state
+                .focusable
+        );
+
+        let mut failed = InstallerApp::for_shot(Step::Install);
+        failed.shot_failed();
+        let _ = build(&mut failed);
+        let failure = find_accessible(&failed, "Installation failed").expect("failure title");
+        assert_eq!(failure.live, Some(Politeness::Assertive));
+        assert!(find_accessible(&failed, "Review storage").is_some());
+    }
+
+    #[test]
+    fn validation_and_recovery_ack_announce_without_focus_reset() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Review;
+        app.selected_disk = Some(0);
+        app.set_status("Type /dev/sda exactly to confirm formatting it");
+        let _ = build(&mut app);
+
+        let validation = find_accessible(&app, "Type /dev/sda exactly to confirm formatting it")
+            .expect("validation status");
+        assert_eq!(validation.live, Some(Politeness::Assertive));
+        assert!(!app.focus_reset);
+
+        let ack =
+            find_accessible(&app, "I will save my recovery key").expect("recovery acknowledgement");
+        assert_eq!(ack.role, ui::a11y::Role::Checkbox);
+        assert_eq!(ack.state.checked, Some(false));
+        assert!(ack.state.focusable);
     }
 
     #[test]
@@ -3479,6 +4739,44 @@ mod tests {
         assert_tree_mirrors(&failed, &t, r);
     }
 
+    #[test]
+    fn compact_review_narrows_the_card_and_exposes_keyboard_scroll() {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        layout_at(&mut app, 320.0, 480.0);
+
+        let card = find_named(&app, "InstallerCard").expect("review card");
+        assert!(
+            card.get_rect().width() <= 320.0 - 2.0 * f64::from(VIEWPORT_PADDING),
+            "responsive card escaped compact viewport: {:?}",
+            card.get_rect()
+        );
+        assert!(card.get_rect().x0 >= f64::from(VIEWPORT_PADDING));
+        assert!(
+            card.get_rect().height() > 480.0,
+            "representative Review must exercise vertical overflow"
+        );
+
+        let scroll = find_named(&app, "Scrollable").expect("installer scroll viewport");
+        assert!(
+            scroll.is_focusable(),
+            "overflowing installer must expose Page Up/Down, Home/End and arrow scrolling"
+        );
+    }
+
+    #[test]
+    fn step_changes_start_at_the_top_without_losing_incidental_scroll() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Disk;
+        app.selected_disk = Some(0);
+        app.viewport_offset.set((0.0, 144.0));
+        app.set_status("A transient message");
+        assert_eq!(app.viewport_offset.get(), (0.0, 144.0));
+
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+        assert_eq!(app.viewport_offset.get(), (0.0, 0.0));
+    }
+
     /// Count focusable widgets anywhere in the subtree (the Account step's
     /// nav buttons live nested inside a Row, not as direct card children).
     fn count_focusable(widget: &dyn Widget) -> usize {
@@ -3521,7 +4819,7 @@ mod tests {
         );
 
         // The visual preview is present as a card child.
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("keyboard card");
         assert!(
             card.children().iter().any(|c| c.name() == "KeyboardView"),
             "the Keyboard step renders the visual keyboard preview"
@@ -3536,7 +4834,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let next_disabled = card
             .children()
             .last()
@@ -3547,7 +4845,7 @@ mod tests {
         app2.step = Step::Disk;
         app2.selected_disk = Some(0);
         let _ = build(&mut app2);
-        let card2 = app2.children()[0];
+        let card2 = find_named(&app2, "InstallerCard").expect("disk card");
         let next_enabled = card2
             .children()
             .last()
@@ -3564,7 +4862,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let fields = card.children();
         let disk_rows = fields.iter().filter(|c| c.name() == "DiskRow").count();
         assert_eq!(disk_rows, 2, "both sample disks render as rows");
@@ -3582,7 +4880,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(disks);
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let disk_rows: Vec<_> = card
             .children()
             .into_iter()

@@ -28,6 +28,7 @@ pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_outbound;
 pub mod collab_presence;
+mod collaboration_launchpad;
 mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod crdt_text;
@@ -105,19 +106,15 @@ use ui::widget::context_menu::MenuItem;
 #[cfg(any(test, debug_assertions))]
 use ui::widget::toast::ToastStack;
 use ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, EmptyState, GroupRow, Stack, StripView,
-    TabDescriptor, TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
-    WorkspaceView, context_menu::ContextMenu,
+    AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
+    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
+    context_menu::ContextMenu,
 };
 
 use crate::shell::browser_stub::BrowserStubWidget;
 use crate::shell::editor_app::EditorApp;
 use crate::shell::global_search::GlobalSearch;
 
-/// Semantic action emitted by the production first-use empty workspace.
-/// The overlay host consumes it and opens the same Applications-filtered
-/// palette used by the new-window shortcut.
-pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 use crate::shell::notes_app::NotesApp;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::tile::{
@@ -126,6 +123,10 @@ use crate::shell::tile::{
 };
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
+pub use collaboration_launchpad::{
+    EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
+    EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
+};
 use file_explorer::FileExplorerWidget;
 use terminal::TerminalWidget;
 
@@ -1090,11 +1091,7 @@ pub fn build_workspace_root(
     });
     if workspace_is_empty {
         content_col = content_col.push(Box::new(
-            EmptyState::new("Start with an app")
-                .with_icon(ui::icons::Icon::LayoutGrid)
-                .with_message("Choose an app, or press Super+N.")
-                .with_action("Open an app")
-                .with_action_path(EMPTY_WORKSPACE_OPEN_APP),
+            collaboration_launchpad::CollaborationLaunchpad::new(),
         ));
     }
 

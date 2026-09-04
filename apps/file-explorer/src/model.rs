@@ -95,6 +95,27 @@ pub fn read_history_text_preview(
     let text = String::from_utf8(bytes).ok()?;
     (!text.chars().any(|character| character == '\0')).then_some(text)
 }
+
+/// Read the daemon's non-committing classification for one open conflict.
+/// The daemon loads the exact immutable members and base, so this result is
+/// intentionally more authoritative than a filename or timestamp heuristic.
+pub fn read_merge_preflight(
+    path: &Path,
+    conflict_id: uuid::Uuid,
+) -> Option<collab_types::MergePreflightProjectionV1> {
+    let name = format!(
+        "{}{}",
+        collab_types::MERGE_PREFLIGHT_XATTR_PREFIX,
+        conflict_id
+    );
+    let bytes = xattr::get(path, name).ok()??;
+    if bytes.len() > collab_types::MAX_MERGE_PREFLIGHT_BYTES {
+        return None;
+    }
+    let projection: collab_types::MergePreflightProjectionV1 =
+        serde_json::from_slice(&bytes).ok()?;
+    (projection.conflict_id == conflict_id && projection.validate().is_ok()).then_some(projection)
+}
 pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
 pub const MAX_COLLAB_PROJECTION_BYTES: usize = 16 * 1024;
 

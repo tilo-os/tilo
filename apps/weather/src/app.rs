@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
+use ui::a11y::{AccessNode, Politeness, Role};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -620,6 +621,21 @@ impl Widget for WeatherApp {
 
     fn get_rect(&self) -> Rect {
         self.nav.get_rect()
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        let core = self.core.borrow();
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Weather")
+            .with_bounds(self.nav.get_rect());
+        if !core.status.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(core.status.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1656,5 +1672,19 @@ mod interaction_tests {
             .iter()
             .any(|r| matches!(r, Request::Forecast { .. }));
         assert!(queued, "clicking Refresh queues a forecast fetch");
+    }
+
+    #[test]
+    fn root_accessibility_announces_weather_status() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        h.app.core.borrow_mut().status = "Updated just now".into();
+        let tree = h.app.accessibility().expect("weather exports a window");
+        assert_eq!(tree.role, Role::Window);
+        assert_eq!(tree.name.as_deref(), Some("Weather"));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Updated just now")
+                && node.live == Some(Politeness::Polite)
+        }));
     }
 }

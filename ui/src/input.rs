@@ -63,10 +63,10 @@ impl KeyLegend {
             "end" => Self::End,
             "pageup" | "page_up" => Self::PageUp,
             "pagedown" | "page_down" => Self::PageDown,
-            value if value.len() > 1 && value.starts_with('f') => value[1..]
-                .parse::<u8>()
-                .map_or_else(|_| Self::Character(name.to_owned()), Self::Function),
-            _ => Self::Character(name.to_owned()),
+            value => value
+                .strip_prefix('f')
+                .and_then(|number| number.parse::<u8>().ok())
+                .map_or_else(|| Self::Character(name.to_owned()), Self::Function),
         }
     }
 
@@ -174,25 +174,30 @@ fn modifier_label(
     platform: PlatformConventions,
     family: KeyboardFamily,
 ) -> &'static str {
-    match (modifier, platform.platform(), family) {
-        (KeyboardModifier::Command | KeyboardModifier::System, _, KeyboardFamily::Apple) => "⌘",
-        (KeyboardModifier::Alt, _, KeyboardFamily::Apple) => "⌥",
-        (KeyboardModifier::Shift, _, KeyboardFamily::Apple) => "⇧",
-        (KeyboardModifier::Fn, _, KeyboardFamily::Apple) => "fn",
-        (KeyboardModifier::Control, _, KeyboardFamily::Apple) => "⌃",
-        (KeyboardModifier::Command | KeyboardModifier::System, Platform::MacOs, _) => "⌘",
-        (KeyboardModifier::Command, _, _) | (KeyboardModifier::Control, Platform::Windows, _) => {
-            "Ctrl"
-        }
-        (KeyboardModifier::Control, Platform::MacOs, _) => "⌃",
-        (KeyboardModifier::Control, Platform::Linux | Platform::Other, _) => "Ctrl",
-        (KeyboardModifier::Alt, Platform::MacOs, _) => "⌥",
-        (KeyboardModifier::Alt, _, _) => "Alt",
-        (KeyboardModifier::Shift, Platform::MacOs, _) => "⇧",
-        (KeyboardModifier::Shift, _, _) => "Shift",
-        (KeyboardModifier::System, Platform::Windows, _) => "⊞",
-        (KeyboardModifier::System, Platform::Linux | Platform::Other, _) => "Super",
-        (KeyboardModifier::Fn, _, _) => "fn",
+    if family == KeyboardFamily::Apple {
+        return match modifier {
+            KeyboardModifier::Command | KeyboardModifier::System => "⌘",
+            KeyboardModifier::Control => "⌃",
+            KeyboardModifier::Alt => "⌥",
+            KeyboardModifier::Shift => "⇧",
+            KeyboardModifier::Fn => "fn",
+        };
+    }
+
+    match (modifier, platform.platform()) {
+        (KeyboardModifier::Command | KeyboardModifier::System, Platform::MacOs) => "⌘",
+        (
+            KeyboardModifier::Command | KeyboardModifier::Control,
+            Platform::Windows | Platform::Linux | Platform::Other,
+        ) => "Ctrl",
+        (KeyboardModifier::Control, Platform::MacOs) => "⌃",
+        (KeyboardModifier::Alt, Platform::MacOs) => "⌥",
+        (KeyboardModifier::Alt, _) => "Alt",
+        (KeyboardModifier::Shift, Platform::MacOs) => "⇧",
+        (KeyboardModifier::Shift, _) => "Shift",
+        (KeyboardModifier::System, Platform::Windows) => "⊞",
+        (KeyboardModifier::System, Platform::Linux | Platform::Other) => "Super",
+        (KeyboardModifier::Fn, _) => "fn",
     }
 }
 
@@ -224,18 +229,26 @@ impl ControllerButton {
     pub fn label(self, family: ControllerFamily) -> &'static str {
         use ControllerButton::{East, North, South, West};
         match (self, family) {
-            (South, ControllerFamily::Xbox | ControllerFamily::Generic) => "A",
-            (East, ControllerFamily::Xbox | ControllerFamily::Generic) => "B",
-            (West, ControllerFamily::Xbox | ControllerFamily::Generic) => "X",
-            (North, ControllerFamily::Xbox | ControllerFamily::Generic) => "Y",
+            (
+                South,
+                ControllerFamily::Xbox | ControllerFamily::Generic | ControllerFamily::JoyConRight,
+            )
+            | (East, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "A",
+            (East, ControllerFamily::Xbox | ControllerFamily::Generic)
+            | (South, ControllerFamily::Nintendo | ControllerFamily::JoyConPair)
+            | (West, ControllerFamily::JoyConRight) => "B",
+            (West, ControllerFamily::Xbox | ControllerFamily::Generic)
+            | (North, ControllerFamily::Nintendo | ControllerFamily::JoyConPair)
+            | (East, ControllerFamily::JoyConRight) => "X",
+            (
+                North,
+                ControllerFamily::Xbox | ControllerFamily::Generic | ControllerFamily::JoyConRight,
+            )
+            | (West, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "Y",
             (South, ControllerFamily::PlayStation) => "×",
             (East, ControllerFamily::PlayStation) => "○",
             (West, ControllerFamily::PlayStation) => "□",
             (North, ControllerFamily::PlayStation) => "△",
-            (South, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "B",
-            (East, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "A",
-            (West, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "Y",
-            (North, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "X",
             // A left Joy-Con is rotated counter-clockwise when used alone
             // with SL/SR along the top edge, so its printed arrows rotate
             // with it. Bindings remain physical positions.
@@ -243,10 +256,6 @@ impl ControllerButton {
             (East, ControllerFamily::JoyConLeft) => "↓",
             (West, ControllerFamily::JoyConLeft) => "↑",
             (North, ControllerFamily::JoyConLeft) => "→",
-            (South, ControllerFamily::JoyConRight) => "A",
-            (East, ControllerFamily::JoyConRight) => "X",
-            (West, ControllerFamily::JoyConRight) => "B",
-            (North, ControllerFamily::JoyConRight) => "Y",
             (Self::DpadLeft, _) => "D-pad ←",
             (Self::DpadRight, _) => "D-pad →",
             (Self::DpadUp, _) => "D-pad ↑",
@@ -261,10 +270,10 @@ impl ControllerButton {
             (Self::RightTrigger, _) => "RT",
             (Self::LeftStick, _) => "L3",
             (Self::RightStick, _) => "R3",
-            (Self::Start, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "+",
-            (Self::Select, ControllerFamily::Nintendo | ControllerFamily::JoyConPair) => "−",
-            (Self::Start | Self::Select, ControllerFamily::JoyConLeft) => "−",
-            (Self::Start | Self::Select, ControllerFamily::JoyConRight) => "+",
+            (Self::Start, ControllerFamily::Nintendo | ControllerFamily::JoyConPair)
+            | (Self::Start | Self::Select, ControllerFamily::JoyConRight) => "+",
+            (Self::Select, ControllerFamily::Nintendo | ControllerFamily::JoyConPair)
+            | (Self::Start | Self::Select, ControllerFamily::JoyConLeft) => "−",
             (Self::Start, _) => "Menu",
             (Self::Select, _) => "View",
             (Self::Guide, ControllerFamily::JoyConLeft) => "Capture",
@@ -384,6 +393,11 @@ impl BindingSet {
     /// Replace one binding after checking the whole application for a
     /// collision. Passing `allow_conflict` is an explicit UX choice; silent
     /// shadowing is never the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindingConflict`] when another action already uses `binding`
+    /// and `allow_conflict` is false.
     pub fn rebind(
         &mut self,
         action_id: &str,
