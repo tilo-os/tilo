@@ -155,6 +155,19 @@ impl Disk {
             && self.efi_partition().is_some()
     }
 
+    /// Whether discovery found storage normally managed by Windows. This is a
+    /// preparation hint, not proof that a bootable Windows installation is
+    /// present: an NTFS data partition is enough reason to avoid implying qOS
+    /// can safely clear hibernation state or resize it.
+    pub fn has_windows_storage(&self) -> bool {
+        self.partitions.iter().any(|partition| {
+            matches!(
+                partition.filesystem.to_ascii_lowercase().as_str(),
+                "ntfs" | "ntfs3" | "bitlocker"
+            ) || partition.label.to_ascii_lowercase().contains("windows")
+        })
+    }
+
     pub fn occupied_extents(&self) -> Option<Vec<PartitionExtent>> {
         let mut extents = self
             .partitions
@@ -306,7 +319,7 @@ pub const LSBLK_ARGS: [&str; 5] = [
     "-b",
     "-p",
     "--output",
-    "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN",
+    "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINTS,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN",
 ];
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
@@ -375,9 +388,9 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 .and_then(Value::as_array)
                 .map(|children| children.iter().filter_map(parse_partition).collect())
                 .unwrap_or_default();
-            let is_system = partitions.iter().any(|p: &DiskPartition| {
-                matches!(p.mountpoint.as_str(), "/" | "/boot" | "/boot/efi")
-            });
+            let is_system = partitions
+                .iter()
+                .any(|partition: &DiskPartition| is_live_system_mount(&partition.mountpoint));
             Some(Disk {
                 name,
                 size: format_bytes(size_bytes),
@@ -419,8 +432,39 @@ fn parse_partition(value: &Value) -> Option<DiskPartition> {
         part_uuid: field(value, "partuuid"),
         filesystem: field(value, "fstype"),
         label: field(value, "label"),
-        mountpoint: field(value, "mountpoint"),
+        mountpoint: mountpoints(value),
         part_type: field(value, "parttype"),
+    })
+}
+
+/// `MOUNTPOINTS` is an array in lsblk JSON. A single `MOUNTPOINT` is not
+/// sufficient here: on a Btrfs system one partition commonly backs `/`,
+/// `/var`, and `/home`, and lsblk may choose any one of them for the singular
+/// column. Keep a newline-separated representation so existing empty/mounted
+/// checks remain simple while running-system detection sees every mount.
+fn mountpoints(value: &Value) -> String {
+    if let Some(points) = value.get("mountpoints").and_then(Value::as_array) {
+        return points
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|point| !point.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    // Compatibility with older fixtures and callers that still provide the
+    // singular field.
+    field(value, "mountpoint")
+}
+
+fn is_live_system_mount(mountpoints: &str) -> bool {
+    mountpoints.lines().map(str::trim).any(|mountpoint| {
+        matches!(mountpoint, "/" | "/boot" | "/boot/efi" | "/sysroot")
+            || mountpoint.starts_with("/sysroot/")
+            || mountpoint == "/run/initramfs/live"
+            || mountpoint.starts_with("/run/initramfs/live/")
+            || mountpoint == "/run/rootfsbase"
+            || mountpoint.starts_with("/run/rootfsbase/")
     })
 }
 
@@ -484,6 +528,34 @@ mod tests {
         for name in ["/dev/sda", "/dev/nvme0n1", "/dev/vdb", "/dev/mmcblk0"] {
             assert!(is_installable_device_name(name), "rejected {name}");
         }
+    }
+
+    #[test]
+    fn every_mountpoint_marks_a_multimounted_linux_system_disk_unavailable() {
+        let fixture = r#"{"blockdevices":[{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"serial":"SYSTEM-DISK","maj:min":"259:0","children":[{"name":"/dev/nvme0n1p3","size":900000000000,"start":2048,"type":"part","fstype":"btrfs","mountpoints":["/var/home","/var","/"],"parttype":"0fc63daf-8483-4772-8e79-3d69d8477de4","partuuid":"00000000-0000-0000-0000-000000000003"}]}]}"#;
+        let disks = parse_lsblk(fixture);
+
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].partitions[0].mountpoint, "/var/home\n/var\n/");
+        assert!(
+            disks[0].is_system,
+            "the root mount must not be hidden by another mount of the same partition"
+        );
+    }
+
+    #[test]
+    fn live_media_mounts_mark_the_installer_device_unavailable() {
+        for mountpoint in [
+            "/run/initramfs/live",
+            "/run/initramfs/live/rootfs",
+            "/run/rootfsbase",
+            "/run/rootfsbase/subdir",
+            "/sysroot",
+            "/sysroot/ostree/deploy/qos",
+        ] {
+            assert!(is_live_system_mount(mountpoint), "missed {mountpoint}");
+        }
+        assert!(!is_live_system_mount("/run/media/qos/data"));
     }
 
     #[test]
@@ -626,6 +698,41 @@ mod tests {
         assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/sda3");
         assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
         assert_eq!(disks[0].partitions[1].filesystem, "ext4");
+    }
+
+    #[test]
+    fn windows_preparation_hint_recognizes_ntfs_and_bitlocker_storage() {
+        let mut disk = Disk {
+            name: "/dev/sda".into(),
+            size: "100 GiB".into(),
+            model: String::new(),
+            size_bytes: 100 * 1024 * 1024 * 1024,
+            partition_table: "gpt".into(),
+            partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            logical_sector_size: 512,
+            major_minor: "8:0".into(),
+            wwn: String::new(),
+            serial: "windows-hint".into(),
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: vec![DiskPartition {
+                name: "/dev/sda1".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 50 * 1024 * 1024 * 1024,
+                part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                filesystem: "ntfs3".into(),
+                label: String::new(),
+                mountpoint: String::new(),
+                part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into(),
+            }],
+        };
+        assert!(disk.has_windows_storage());
+
+        disk.partitions[0].filesystem = "BitLocker".into();
+        assert!(disk.has_windows_storage());
+        disk.partitions[0].filesystem = "ext4".into();
+        assert!(!disk.has_windows_storage());
     }
 
     #[test]

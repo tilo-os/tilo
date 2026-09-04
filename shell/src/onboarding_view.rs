@@ -1942,6 +1942,26 @@ impl Widget for OnboardingView {
             *handled = true;
             return;
         }
+        // Escape follows the visible Back action while the identity ceremony
+        // is still reversible. This is especially important on Connect,
+        // where a nearby-device attempt may be running: keyboard users need a
+        // conventional way to leave the branch, and KEY_BACK shares the exact
+        // same cleanup path that terminates that process group and clears its
+        // transient status. Intro and Done deliberately remain non-dismissible
+        // because setup has either not established an identity yet or still
+        // needs an explicit hand-off into the desktop.
+        if matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_BACK, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -2178,6 +2198,47 @@ mod tests {
 
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    fn escape_event() -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+        // winit keeps the platform field private. These inert placeholders
+        // match the toolkit and greeter keyboard-event tests.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::Escape);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy
+            .new_leaf(taffy::Style::default())
+            .expect("event target");
+        let mut handled = false;
+        let mut focus_target = None;
+        view.handle_event(
+            &escape_event(),
+            1.0,
+            &Modifiers::default(),
+            document,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
     }
 
     fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
@@ -2735,6 +2796,30 @@ mod tests {
         let _ = doc.put(&root, KEY_BACK, true);
         view.sync(&mut doc, &root);
         assert_eq!(view.transition_direction, -1.0);
+    }
+
+    #[test]
+    fn escape_follows_back_on_reversible_identity_steps_only() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+
+        assert!(
+            !dispatch_escape(&mut view, &mut document),
+            "intro must not be dismissible before an identity exists"
+        );
+        press(&mut document, KEY_CONNECT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Connect);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
+
+        press(&mut document, KEY_BEGIN);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::NoRecovery);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
     }
 
     #[test]
