@@ -75,14 +75,19 @@ check_one() {
         errs+=("executable stack requested (PT_GNU_STACK carries X)")
     fi
 
-    grep -q 'SHSTK' <<<"$note" || errs+=("no shadow-stack property (GNU_PROPERTY_X86_FEATURE_1_SHSTK)")
+    local cet="not applicable"
+    if grep -q 'Machine:.*X86-64' <<<"$hdr"; then
+        cet="SHSTK-marked"
+        grep -q 'SHSTK' <<<"$note" \
+            || errs+=("no shadow-stack property (GNU_PROPERTY_X86_FEATURE_1_SHSTK)")
+    fi
 
     local canary="no C canaries"
     grep -q '__stack_chk_fail' <<<"$dynsyms" && canary="stack protector in linked C"
 
     checked=$((checked + 1))
     if [ ${#errs[@]} -eq 0 ]; then
-        printf '[ OK ]   %-24s PIE, full RELRO, noexecstack, SHSTK-marked (%s)\n' "$name" "$canary"
+        printf '[ OK ]   %-24s PIE, full RELRO, noexecstack, %s (%s)\n' "$name" "$cet" "$canary"
     else
         fail=1
         printf '[FAIL]   %-24s %s\n' "$name" "${errs[0]}"

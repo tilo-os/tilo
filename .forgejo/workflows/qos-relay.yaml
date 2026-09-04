@@ -1,4 +1,4 @@
-name: Build qos-relay container image (publish on tags + dispatch)
+name: Release / relay
 
 # Builds the standalone qos-relay container image (see
 # os/containers/qos-relay/Containerfile). Same publish cadence as

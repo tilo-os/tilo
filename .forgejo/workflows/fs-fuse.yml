@@ -1,4 +1,4 @@
-name: Collaborative filesystem kernel contract
+name: CI / filesystem contract
 
 on:
   push:

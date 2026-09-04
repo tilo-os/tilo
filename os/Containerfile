@@ -342,6 +342,8 @@ COPY . /build
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
 ARG QOS_WITH_BROWSER
+ARG QOS_PREBUILT_APPS=0
+ARG QOS_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
@@ -413,20 +415,29 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-windows-vm-control \
           target/release/qos-windows-rail \
           /out/ \
-    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
-       /build/os/scripts/build-thin-apps.sh \
-    && for m in /build/apps/*/qos-app.toml; do \
-           p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
-           b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
-           case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
-           [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
-       done \
     # Files is also a privileged, directly-invoked system recovery surface.
-    # Package that exact standalone binary so the launcher and /usr/bin route
-    # cannot drift and headless recovery does not depend on runtime-bundle
-    # loader setup. Other ordinary apps keep the smaller shared-runtime build.
-    && cp /out/file-explorer /out/thin-apps/file-explorer \
+    # In source mode package that standalone binary. With a release collection,
+    # every qpkg already contains its independently built app binary.
+    && if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+         mkdir -p /out/prebuilt-apps /out/browser-app \
+         && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
+         && { [ "${QOS_WITH_BROWSER}" = 0 ] \
+              || cp /out/optional/browser /out/browser-app/browser; } \
+         && CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            cargo build --profile thin-app -p runtime-dylib; \
+       else \
+         EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+         APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+           /build/os/scripts/build-thin-apps.sh \
+         && for m in /build/apps/*/qos-app.toml; do \
+              p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
+              b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
+              case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
+              [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
+            done \
+         && cp /out/file-explorer /out/thin-apps/file-explorer; \
+       fi \
     && cp target/thin-app/libruntime_dylib.so /out/ \
     && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
     && [ -n "${LIBSTD}" ] \
@@ -438,7 +449,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
 # ships — a dropped linker argument or a target change is otherwise invisible
 # until someone runs readelf on a released image. Fails the build, on purpose.
 RUN /build/os/scripts/verify-elf-hardening.sh /out \
-    && /build/os/scripts/verify-elf-hardening.sh /out/thin-apps \
+    && { [ "${QOS_PREBUILT_APPS}" = 1 ] \
+         || /build/os/scripts/verify-elf-hardening.sh /out/thin-apps; } \
     && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
@@ -503,12 +515,25 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 RUN BIN_DIR=/out/thin-apps \
+    QPKG_DIR=/out/prebuilt-apps \
+    EXPECTED_PUBKEY="${QOS_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/qos-pkg \
     INSTALL_BIN=/out/qos-install \
     BUNDLE_BIN=/out/qos-runtime-bundle \
     SHIM_BIN=/out/qos-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
-    /build/os/scripts/pack-apps.sh
+    /build/os/scripts/pack-apps.sh \
+    && { [ "${QOS_PREBUILT_APPS}" != 1 ] \
+         || [ "${QOS_WITH_BROWSER}" = 0 ] \
+         || BIN_DIR=/out/browser-app \
+            QPKG_DIR= \
+            PKG_BIN=/out/qos-pkg \
+            INSTALL_BIN=/out/qos-install \
+            BUNDLE_BIN=/out/qos-runtime-bundle \
+            SHIM_BIN=/out/qos-cli-shim \
+            REQUIRE_MIN=1 \
+            PUBKEY_OUT=/out/browser-publisher.hex \
+            /build/os/scripts/pack-apps.sh; }
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------

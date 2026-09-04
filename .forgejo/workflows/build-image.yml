@@ -1,4 +1,4 @@
-name: Build qOS image (publish on tags + dispatch)
+name: Release / OS
 
 # Builds the bootc OS container image (multi-stage, see os/Containerfile).
 # CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
@@ -21,9 +21,6 @@ on:
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
@@ -32,9 +29,6 @@ on:
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
@@ -42,6 +36,18 @@ on:
         description: "Include the browser + WPE WebKit engine stage (0 = omit, ~45min faster)"
         required: false
         default: "1"
+      app_collection_url:
+        description: "Pinned qos-apps-<arch>.tar.gz URL; empty uses vars.QOS_APP_COLLECTION_URL."
+        required: false
+        default: ""
+      app_collection_sha256:
+        description: "SHA-256 of app_collection_url; empty uses vars.QOS_APP_COLLECTION_SHA256."
+        required: false
+        default: ""
+      app_collection_publisher:
+        description: "Expected 64-hex Ed25519 publisher key; empty uses vars.QOS_APP_COLLECTION_PUBLISHER."
+        required: false
+        default: ""
 
 concurrency:
   # Generations are a single dense security series. Two tag/manual jobs must
@@ -84,6 +90,54 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Materialize the pinned app collection
+        env:
+          COLLECTION_URL: ${{ github.event.inputs.app_collection_url || vars.QOS_APP_COLLECTION_URL }}
+          COLLECTION_SHA256: ${{ github.event.inputs.app_collection_sha256 || vars.QOS_APP_COLLECTION_SHA256 }}
+          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
+        run: |
+          set -euo pipefail
+          echo 'QOS_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+          [[ -n ${COLLECTION_URL:-} ]] || exit 0
+          [[ $COLLECTION_SHA256 =~ ^[0-9a-fA-F]{64}$ ]] || {
+            printf 'a pinned app collection requires its SHA-256\n' >&2
+            exit 1
+          }
+          [[ $COLLECTION_PUBLISHER =~ ^[0-9a-fA-F]{64}$ ]] || {
+            printf 'a pinned app collection requires its publisher key\n' >&2
+            exit 1
+          }
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            "$COLLECTION_URL" -o "$work/apps.tar.gz"
+          printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
+            | sha256sum --check --strict
+          found=0
+          while IFS= read -r member; do
+            case "$member" in
+              qpkg/) ;;
+              qpkg/*.qpkg) found=1 ;;
+              index.json|SHA256SUMS) ;;
+              *) printf 'unexpected app collection member: %s\n' "$member" >&2; exit 1 ;;
+            esac
+          done < <(tar -tzf "$work/apps.tar.gz")
+          [[ $found == 1 ]]
+          tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
+            --no-same-owner --no-same-permissions
+          if find "$work/qpkg" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+            printf 'app collection contains links or special files\n' >&2
+            exit 1
+          fi
+          (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
+          cp "$work"/qpkg/*.qpkg os/app-artifacts/
+          test -n "$(find os/app-artifacts -name '*.qpkg' -print -quit)"
+          echo 'QOS_PREBUILT_APPS=1' >> "$GITHUB_ENV"
+          echo "QOS_APP_COLLECTION_SHA256=${COLLECTION_SHA256,,}" >> "$GITHUB_ENV"
+          echo "QOS_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"
+          echo '::notice::using pinned prebuilt app collection'
+
       # Log in on EVERY build: the build installs from the private, digest-pinned
       # frozen RPM repo (RPMS_REF), pulled as a stage — so even build-only runs
       # (main pushes / PRs) need registry read. Pushing the image still only
@@ -112,12 +166,34 @@ jobs:
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
 
+      # Branch/PR runs validate the OS integration boundary. Browser engine
+      # compilation has its own signed snapshot workflow and is exercised by
+      # an OS release; rebuilding it on every OS patch adds roughly 45 minutes
+      # and made PR checks fail whenever no release snapshot was promoted yet.
+      - name: Select the OS validation profile
+        env:
+          REQUESTED_BROWSER: ${{ github.event.inputs.with_browser }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) with_browser=1 ;;
+            *)
+              if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+                with_browser=${REQUESTED_BROWSER:-1}
+              else
+                with_browser=0
+              fi
+              ;;
+          esac
+          [[ $with_browser == 0 || $with_browser == 1 ]]
+          echo "QOS_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
+          echo "::notice::OS validation profile: with_browser=$with_browser"
+
       - name: Verify frozen package snapshot matches every consumer
         run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
 
       - name: Require the promoted native WPE buildroot
         env:
-          WITH_BROWSER: ${{ github.event.inputs.with_browser || '1' }}
+          WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}
         run: |
           set -euo pipefail
           . os/wpe-buildroot-snapshot.env
@@ -230,7 +306,9 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
+            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
@@ -278,7 +356,9 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
+            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000

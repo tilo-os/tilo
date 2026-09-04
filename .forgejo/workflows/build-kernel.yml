@@ -1,4 +1,4 @@
-name: Build qos-kernel image (publish on tags + dispatch)
+name: Snapshot / kernel
 
 # Rebuilds Fedora's kernel with our config fragment (statically-in boot
 # drivers + PREEMPT + HZ=1000 + THP=always + trim debuginfo) and publishes

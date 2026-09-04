@@ -72,11 +72,13 @@ trap 'rm -rf "$tmp"' EXIT
 hex="$(printf 'a%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" QOS_APP_COLLECTION_SHA256="$hex" \
+   GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.subject[0].digest.sha256 | length == 64' "$tmp/provenance.json" >/dev/null; then
-  ok 'SLSA provenance binds generation, source inputs and image digest'
+  ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi

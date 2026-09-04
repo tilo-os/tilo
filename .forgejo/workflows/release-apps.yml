@@ -1,0 +1,203 @@
+name: Release / apps
+
+# Apps are a component boundary. A change to one app builds that app, while
+# shared runtime/UI code remains covered by the affected-package test graph.
+# Tagged/manual releases produce both native architectures and publish
+# immutable qpkg collections to Forgejo's generic package registry. OS and
+# desktop releases can consume a named collection without rebuilding app
+# sources.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "release/app-collections.toml"
+      - "dist/apps/**"
+      - "os/scripts/build-thin-apps.sh"
+      - "tools/app_release.py"
+      - ".forgejo/workflows/release-apps.yml"
+  push:
+    branches: [main]
+    tags: ["apps-v*", "app-*-v*"]
+    paths:
+      - "apps/**"
+      - "release/app-collections.toml"
+      - "dist/apps/**"
+      - "os/scripts/build-thin-apps.sh"
+      - "tools/app_release.py"
+      - ".forgejo/workflows/release-apps.yml"
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: "Space/comma-separated app directory names; empty selects the collection."
+        required: false
+        default: ""
+      collection:
+        description: "Named set from release/app-collections.toml."
+        required: false
+        default: "default"
+      publish:
+        description: "Publish immutable bundles to the Forgejo package registry."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: release-apps-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  plan:
+    runs-on: runner
+    outputs:
+      apps: ${{ steps.plan.outputs.apps }}
+      packages: ${{ steps.plan.outputs.packages }}
+      features: ${{ steps.plan.outputs.features }}
+      count: ${{ steps.plan.outputs.count }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Select only the affected apps or requested collection
+        id: plan
+        shell: bash
+        env:
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+        run: |
+          set -euo pipefail
+          args=(--github-output "$GITHUB_OUTPUT")
+          case "$GITHUB_REF" in
+            refs/tags/app-*-v*) args+=(--tag "$GITHUB_REF_NAME") ;;
+            refs/tags/apps-v*) args+=(--collection "${REQUESTED_COLLECTION:-default}") ;;
+            *)
+              if [[ -n ${REQUESTED_APPS:-} ]]; then
+                args+=(--apps "$REQUESTED_APPS")
+              elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+                args+=(--collection "${REQUESTED_COLLECTION:-default}")
+              else
+                base='${{ github.event.pull_request.base.sha }}'
+                [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
+                if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
+                  args+=(--collection default)
+                else
+                  args+=(--base "$base")
+                fi
+              fi
+              ;;
+          esac
+          python3 tools/app_release.py "${args[@]}" | tee app-release-plan.json
+          if [[ $GITHUB_REF == refs/tags/* || ${REQUESTED_PUBLISH:-false} == true ]]; then
+            echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"},{"arch":"aarch64","runner":"runner-arm64"}]' >> "$GITHUB_OUTPUT"
+            if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main ]]; then
+              printf 'manual app publication is restricted to main\n' >&2
+              exit 1
+            fi
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/*) version=$GITHUB_REF_NAME ;;
+            *) version="0.0.0-${GITHUB_SHA}" ;;
+          esac
+          [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    if: needs.plan.outputs.count != '0'
+    needs: plan
+    name: apps / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v1/${{ matrix.arch }}
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate native architecture
+        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+      - name: Restore Cargo downloads
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
+      - name: Prepare compiler cache
+        run: bash tools/ci-sccache.sh prepare
+      - name: Build and verify selected qpkgs once for this architecture
+        env:
+          QOS_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
+          QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+        run: |
+          if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
+            identity="$RUNNER_TEMP/qos-app-publisher.json"
+            (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
+            export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
+            trap 'rm -f "$identity"' EXIT
+          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            printf 'QPKG_PUBLISHER_IDENTITY is required for publication\n' >&2
+            exit 1
+          fi
+          dist/apps/package-apps.sh
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-apps-${{ matrix.arch }}
+          path: |
+            dist/app-release/qos-apps-${{ matrix.arch }}.tar.gz
+            dist/app-release/qos-apps-${{ matrix.arch }}.tar.gz.sha256
+            dist/app-release/SHA256SUMS
+            dist/app-release/index.json
+          if-no-files-found: error
+      - name: Report compiler-cache effectiveness
+        if: always()
+        run: bash tools/ci-sccache.sh report || true
+
+  publish:
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
+    needs: [plan, build]
+    runs-on: runner
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Publish immutable architecture bundles
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ -n ${FORGEJO_TOKEN:-} ]] || { printf 'REGISTRY_TOKEN is required\n' >&2; exit 1; }
+          owner=${GITHUB_REPOSITORY%%/*}
+          for bundle in release/*/qos-apps-*.tar.gz release/*/qos-apps-*.tar.gz.sha256; do
+            name=${bundle##*/}
+            url="$GITHUB_SERVER_URL/api/packages/$owner/generic/qos-app-collections/$VERSION/$name"
+            status=$(curl --silent --show-error --retry 3 --retry-all-errors \
+              --output response.txt --write-out '%{http_code}' \
+              --user "$GITHUB_ACTOR:$FORGEJO_TOKEN" --request PUT --upload-file "$bundle" "$url")
+            case "$status" in
+              200|201|204) echo "published $name" ;;
+              409) printf 'immutable version already contains %s\n' "$name" >&2; exit 1 ;;
+              *) cat response.txt >&2; exit 1 ;;
+            esac
+          done

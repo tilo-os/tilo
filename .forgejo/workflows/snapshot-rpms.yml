@@ -1,4 +1,4 @@
-name: Snapshot frozen RPM repo
+name: Snapshot / RPM repository
 
 # Builds + pushes the digest-pinned frozen RPM repo that os/Containerfile
 # installs from (for cross-time-reproducible OS builds). Runs in CI — the image

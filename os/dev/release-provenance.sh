@@ -31,6 +31,12 @@ release_hash="${RELEASE_DIGEST#sha256:}"
 [ "$release_hash" != "$RELEASE_DIGEST" ] && [ "${#release_hash}" -eq 64 ] \
   && case "$release_hash" in *[!0-9a-f]*) false ;; *) true ;; esac \
   || { printf 'release provenance: invalid RELEASE_DIGEST\n' >&2; exit 1; }
+app_collection="${QOS_APP_COLLECTION_SHA256:-}"
+if [ -n "$app_collection" ]; then
+  [ "${#app_collection}" -eq 64 ] \
+    && case "$app_collection" in *[!0-9a-f]*) false ;; *) true ;; esac \
+    || { printf 'release provenance: invalid QOS_APP_COLLECTION_SHA256\n' >&2; exit 1; }
+fi
 
 jq -n \
   --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
@@ -38,6 +44,7 @@ jq -n \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
   --arg kernel "$KERNEL_RPMS_REF" \
+  --arg app_collection "$app_collection" \
   --arg generation "$QOS_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
@@ -45,9 +52,12 @@ jq -n \
       buildType: "https://qos.dev/buildtypes/bootc-os/v1",
       externalParameters: {generation: ($generation|tonumber)},
       internalParameters: {sourceDateEpoch: ($epoch|tonumber)},
-      resolvedDependencies: [
-        {uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}
-      ]
+      resolvedDependencies: (
+        [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
+        + if $app_collection == "" then []
+          else [{uri: ("qos-app-collection:sha256:" + $app_collection)}]
+          end
+      )
     },
     runDetails: {
       builder: {id: "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"},
