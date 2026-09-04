@@ -15,6 +15,76 @@
 
 use std::path::{Path, PathBuf};
 
+/// Order KMS nodes by the connectors they can actually drive.
+///
+/// `udev::all_gpus` is not a primary-display ordering. On hybrid systems it
+/// commonly returns a connectorless discrete GPU before the integrated GPU
+/// that owns the internal panel. Opening only that first node leaves the
+/// compositor running headless while the display manager's last framebuffer
+/// remains on screen.
+///
+/// Prefer the node with the greatest number of connected connectors, using a
+/// connected internal panel (`eDP`, `LVDS`, or `DSI`) as the tie-breaker. That
+/// keeps a dock with multiple live outputs ahead of a still-connected laptop
+/// panel. Remaining ties keep udev's order, and an unreadable sysfs tree keeps
+/// the complete input order as a safe fallback. This only orders scanout
+/// candidates; render-node selection remains independent.
+pub fn order_by_connected_connectors<I, P>(paths: I, drm_sysfs: &Path) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = P>,
+    P: Into<PathBuf>,
+{
+    let mut scored: Vec<(PathBuf, (usize, usize))> = paths
+        .into_iter()
+        .map(Into::into)
+        .map(|path| {
+            let score = connector_score(&path, drm_sysfs);
+            (path, score)
+        })
+        .collect();
+    // `sort_by_key` is stable, so equal scores preserve udev's deterministic
+    // ordering. Reverse each component instead of reversing the whole vector,
+    // which would also reverse ties.
+    scored.sort_by_key(|(_, (connected, internal))| {
+        (std::cmp::Reverse(*connected), std::cmp::Reverse(*internal))
+    });
+    scored.into_iter().map(|(path, _)| path).collect()
+}
+
+fn connector_score(card_path: &Path, drm_sysfs: &Path) -> (usize, usize) {
+    let Some(card_name) = card_path.file_name().and_then(|name| name.to_str()) else {
+        return (0, 0);
+    };
+    let prefix = format!("{card_name}-");
+    let Ok(entries) = std::fs::read_dir(drm_sysfs) else {
+        return (0, 0);
+    };
+    let mut internal = 0usize;
+    let mut connected = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(connector_name) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Ok(status) = std::fs::read_to_string(entry.path().join("status")) else {
+            continue;
+        };
+        if status.trim() != "connected" {
+            continue;
+        }
+        connected = connected.saturating_add(1);
+        let connector_name = connector_name.to_ascii_lowercase();
+        if connector_name.starts_with("edp-")
+            || connector_name.starts_with("lvds-")
+            || connector_name.starts_with("dsi-")
+        {
+            internal = internal.saturating_add(1);
+        }
+    }
+    (connected, internal)
+}
+
 /// Holds the subset of `drm::control::Mode` fields needed to compare two
 /// modes. Mirrors the upstream layout but stays plain-data so tests can
 /// build instances without a real DRM device.
@@ -126,6 +196,80 @@ mod tests {
                 PathBuf::from("/dev/dri/card1")
             ]
         );
+    }
+
+    #[test]
+    fn connectorless_discrete_gpu_does_not_win_by_card_number() {
+        let sysfs = tempfile::tempdir().expect("temporary sysfs");
+        std::fs::create_dir(sysfs.path().join("card0-DP-1")).expect("card0 connector");
+        std::fs::write(sysfs.path().join("card0-DP-1/status"), "disconnected\n")
+            .expect("card0 status");
+        std::fs::create_dir(sysfs.path().join("card1-eDP-1")).expect("card1 connector");
+        std::fs::write(sysfs.path().join("card1-eDP-1/status"), "connected\n")
+            .expect("card1 status");
+
+        let ordered = order_by_connected_connectors(
+            [
+                PathBuf::from("/dev/dri/card0"),
+                PathBuf::from("/dev/dri/card1"),
+            ],
+            sysfs.path(),
+        );
+        assert_eq!(
+            ordered,
+            [
+                PathBuf::from("/dev/dri/card1"),
+                PathBuf::from("/dev/dri/card0")
+            ]
+        );
+    }
+
+    #[test]
+    fn more_connected_outputs_win_before_the_internal_panel_tiebreaker() {
+        let sysfs = tempfile::tempdir().expect("temporary sysfs");
+        for connector in ["card0-DP-1", "card0-HDMI-A-1", "card1-eDP-1"] {
+            std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
+            std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
+                .expect("status");
+        }
+
+        let ordered = order_by_connected_connectors(
+            [
+                PathBuf::from("/dev/dri/card0"),
+                PathBuf::from("/dev/dri/card1"),
+            ],
+            sysfs.path(),
+        );
+        assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card0")));
+    }
+
+    #[test]
+    fn internal_panel_breaks_a_connected_output_count_tie() {
+        let sysfs = tempfile::tempdir().expect("temporary sysfs");
+        for connector in ["card0-DP-1", "card1-eDP-1"] {
+            std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
+            std::fs::write(sysfs.path().join(connector).join("status"), "connected\n")
+                .expect("status");
+        }
+
+        let ordered = order_by_connected_connectors(
+            [
+                PathBuf::from("/dev/dri/card0"),
+                PathBuf::from("/dev/dri/card1"),
+            ],
+            sysfs.path(),
+        );
+        assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card1")));
+    }
+
+    #[test]
+    fn missing_sysfs_preserves_udev_order() {
+        let original = [
+            PathBuf::from("/dev/dri/card2"),
+            PathBuf::from("/dev/dri/card0"),
+        ];
+        let ordered = order_by_connected_connectors(&original, Path::new("/definitely/missing"));
+        assert_eq!(ordered, original);
     }
 
     #[test]

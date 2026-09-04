@@ -121,6 +121,17 @@ impl ShellDriver {
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         self.fb.host_mut()
     }
+
+    /// Show the same reduced first-login ceremony used when qOS is installed
+    /// as an additional session on an existing Linux desktop. The path is
+    /// deliberately read-only/nonexistent: this visual scenario never mints
+    /// an identity, and cannot touch the developer's real first-login state.
+    pub fn show_host_desktop_onboarding(&mut self) {
+        self.fb
+            .enable_host_desktop_onboarding(std::path::PathBuf::from(
+                "/var/empty/qos-shots-identity",
+            ));
+    }
     /// The palette's current query — what a scenario typed, read back
     /// through the same accessor the overlay uses.
     #[cfg(test)]

@@ -3646,8 +3646,12 @@ pub fn run() -> ! {
         if crate::compositor::parse_install_mode_from_args()
             == crate::compositor::InstallMode::HostDesktop
         {
+            eprintln!(
+                "nirios compositor: showing host-desktop identity setup from the first frame"
+            );
             frame_builder.enable_host_desktop_onboarding(identity_dir);
         } else {
+            eprintln!("nirios compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
         }
     }
