@@ -121,10 +121,23 @@ empty list, no hint that the rest exists.
 ## Pointing Claude Code at it
 
 `scripts/qos-mcp-server.py` is an MCP stdio server exposing the typed qOS
-tools, plus every currently permitted action descriptor as a standard MCP
-resource at `qos://action/<provider>/<id>`. `resources/read` re-enumerates
-before answering, so a revoked or closed surface cannot be recovered from a
-stale resource URI. Standard library only, no SDK.
+tools and a lazy resource tree. `resources/list` returns only application
+surfaces at `qos://application/<app>`; it does not put every action schema into
+the model's initial context. Reading one application returns the objects it
+currently publishes with each object's full action descriptors nested beneath
+it.
+
+This nesting is the resource/action model rather than an MCP-only taxonomy:
+an application owns resources (the object a person would recognise, such as a
+file or document), and each resource owns the operations valid for it now.
+Shell palette providers that do not publish a resource tree remain reachable
+as one provider application with one invokable operation per object; the shim
+does not infer a fictional hierarchy from dots in their display ids.
+
+Every level re-enumerates through the visibility gate before answering. A
+closed object or revoked action therefore disappears from its parent and a
+stale URI fails as unknown; nesting changes when descriptors enter context,
+not what the caller is allowed to reach. Standard library only, no SDK.
 
 Start a compositor, then register the shim:
 
@@ -143,6 +156,26 @@ fabricates an action list or a success: if the compositor is unreachable, or
 answers `{"err": ...}`, the model receives that as a tool error with the
 compositor's own code and message intact.
 
+## Carrying one action result into the next
+
+An action sequence is a data path, not just a list of commands. The broker's
+terminal `Succeeded` update contains the declared `ActionOutput`; the agent
+retains that output for exactly the immediately following step. Content bytes
+are represented by one canonical resource address, `qos.content:<hash>`. An
+action built with `prompted_content` consumes that hash from the preceding
+application result and replaces any value the model tried to provide.
+
+Local collaborative-document actions use the same rule through the owning
+application's declared product function. The agent does not inspect a document
+and guess which bytes it represents. Missing content, the wrong resource kind,
+or more than one content result stops the sequence rather than selecting one.
+
+This is deliberately not a workflow language: there are no named variables,
+JSONPath expressions, graphs or implicit reuse of an older result. The narrow
+one-step hand-off is enough to express a real cross-app operation such as
+“rotate the photograph, then place the result in the document”, while keeping
+the origin of the content mechanically checkable.
+
 ## Source of truth
 
 | What | Where |
@@ -152,5 +185,6 @@ compositor's own code and message intact.
 | Catalogue + visibility seam | `shell/src/shell/search/action_api.rs` |
 | Capability gate + policy | `shell/src/shell/search/visibility.rs` |
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
+| Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
 | MCP shim | `scripts/qos-mcp-server.py` |
 | Socket framing, other ops | `docs/headless-testing.md` |

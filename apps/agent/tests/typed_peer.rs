@@ -356,6 +356,7 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
             ("dev.qos.word-processor", "align-center"),
             ("dev.qos.word-processor", "delete"),
             ("dev.qos.word-processor", "insert-table"),
+            ("dev.qos.word-processor", "place-image"),
             ("dev.qos.photos", "rotate-right"),
         ],
     )
@@ -416,9 +417,37 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner grants a reviewed test action");
     }
+    // App fixtures use the same agent-only endpoint as Scribe. Admission and
+    // app authority remain separate, so each host receives only its own app.
+    for (host, app) in [
+        ("ada", "dev.qos.word-processor"),
+        ("photos", "dev.qos.photos"),
+        ("files", "dev.qos.file-explorer"),
+    ] {
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::membership(
+                    ui::permissions::Subject::agent(host),
+                    workspace.room.to_string(),
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner admits an app fixture");
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::grant(
+                    ui::permissions::Subject::agent(host),
+                    ui::permissions::Scope::App(app.to_string()),
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner grants an app fixture its own surface");
+    }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.workspaces.push(workspace);
-    let trusted_devices = ["ada", "Scribe", "files"]
+    let trusted_devices = ["ada", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();

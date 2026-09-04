@@ -139,13 +139,27 @@ fn run(
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = cfg_of(sock, room);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
+        let _ = ready_tx.send(());
         let until = Instant::now()
             .checked_add(within)
             .expect("test duration does not overflow Instant");
         s.run_until(until).expect("agent session")
     });
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent never established its route subscriptions");
+    std::thread::sleep(Duration::from_millis(250));
+    typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
+    send(
+        &mut peer,
+        &CollabRequest::DocumentSnapshot {
+            data: replica.save(),
+        },
+    )
+    .unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now()
@@ -385,7 +399,9 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
         },
     )
     .unwrap();
-    let wp_replica = seed_document_with_image("Scribe: rotate the photograph right");
+    let wp_replica = seed_document_with_image(
+        "Scribe: rotate the photograph right, and then place the image in the document",
+    );
     (wp_peer, wp_replica)
 }
 
@@ -400,16 +416,19 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
             app_id: "dev.qos.photos".into(),
             cluster_id: room,
             record: None,
-            handle: Some("ada".into()),
+            handle: Some("photos".into()),
         },
     )
     .unwrap();
     let mut photo_replica = AutoCommit::new();
     photo_replica.set_actor(automerge::ActorId::from("photos-peer".as_bytes()));
     photos::doc::PhotosDoc::seed(&mut photo_replica);
+    let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
+        .expect("the source photograph encodes");
+    let content = qdoc::blobstore::put(&png);
     photos::doc::PhotosDoc::set_image(
         &mut photo_replica,
-        Some(&photos::OpenImage::from_path("photo.png", 40, 24)),
+        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&content)),
     );
     photo_replica.commit();
     (photo_peer, photo_replica)
@@ -437,9 +456,11 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
     )
 }
 
-/// Drive the photo peer's side of the exchange: answer the agent's presence
-/// with a snapshot, signal `photo_ready_tx` once that snapshot is sent, and
-/// stop once the discovered rotate lands or the 15s deadline passes.
+/// Drive the photo peer's side of the exchange: publish its real contract and
+/// snapshot after the caller has observed the agent's cluster subscription,
+/// signal `photo_ready_tx`, and stop once the discovered rotate lands or the
+/// 15s deadline passes. This explicit seed keeps the proof about cross-app
+/// action dataflow rather than coupling it to late-join presence routing.
 fn drive_photo_peer(
     mut photo_peer: UnixStream,
     mut photo_replica: AutoCommit,
@@ -447,7 +468,19 @@ fn drive_photo_peer(
 ) -> AutoCommit {
     photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut signalled = false;
+    typed_peer::publish_actions(
+        &mut photo_peer,
+        "dev.qos.photos",
+        &photos_resources(&photo_replica),
+    );
+    send(
+        &mut photo_peer,
+        &CollabRequest::DocumentSnapshot {
+            data: photo_replica.save(),
+        },
+    )
+    .unwrap();
+    let _ = photo_ready_tx.send(());
     while Instant::now() < deadline {
         let Some(event) = recv(&mut photo_peer) else {
             continue;
@@ -457,19 +490,13 @@ fn drive_photo_peer(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                typed_peer::publish_actions(
+                send(
                     &mut photo_peer,
-                    "dev.qos.photos",
-                    &photos_resources(&photo_replica),
-                );
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: photo_replica.save(),
-                };
-                send(&mut photo_peer, &snap).unwrap();
-                if !signalled {
-                    let _ = photo_ready_tx.send(());
-                    signalled = true;
-                }
+                    &CollabRequest::DocumentSnapshot {
+                        data: photo_replica.save(),
+                    },
+                )
+                .unwrap();
             }
             CollabEvent::Invocation {
                 id,
@@ -515,10 +542,10 @@ fn drive_photo_peer(
     photo_replica
 }
 
-/// Drive the word-processor peer's side: wait for the photo peer's own
-/// `Arrived` handshake before answering (pins reply order so `offers` is
-/// stable when the agent acts), then answer with a snapshot and watch for
-/// the instruction to be resolved.
+/// Drive the word-processor peer's side: wait until the photo contract and
+/// snapshot have been published (pinning reply order so `offers` is stable),
+/// then reveal the instruction and watch for its result-consuming image
+/// action to land.
 fn drive_word_processor_peer(
     mut wp_peer: UnixStream,
     mut wp_replica: AutoCommit,
@@ -527,6 +554,20 @@ fn drive_word_processor_peer(
     wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
+    photo_ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the photo peer never published its initial state");
+    // `send` queues the photo snapshot asynchronously. Let the broker deliver
+    // it before revealing the instruction and its consuming action.
+    std::thread::sleep(Duration::from_millis(250));
+    typed_peer::publish_actions(&mut wp_peer, APP, &word_processor_resources(&wp_replica));
+    send(
+        &mut wp_peer,
+        &CollabRequest::DocumentSnapshot {
+            data: wp_replica.save(),
+        },
+    )
+    .unwrap();
     while Instant::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
@@ -536,17 +577,6 @@ fn drive_word_processor_peer(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                photo_ready_rx
-                    .recv_timeout(Duration::from_secs(10))
-                    .expect("the photo peer never answered its own Arrived");
-                // `send` queues the photo snapshot asynchronously. Let the
-                // broker deliver it before revealing the instruction.
-                std::thread::sleep(Duration::from_millis(250));
-                typed_peer::publish_actions(
-                    &mut wp_peer,
-                    APP,
-                    &word_processor_resources(&wp_replica),
-                );
                 let snap = CollabRequest::DocumentSnapshot {
                     data: wp_replica.save(),
                 };
@@ -559,9 +589,42 @@ fn drive_word_processor_peer(
                 if wp_replica.load_incremental(&data).is_err() {
                     continue;
                 }
-                done = !blocks(&wp_replica)
+                done = blocks(&wp_replica)
                     .iter()
-                    .any(|x| x.text.starts_with("Scribe:"));
+                    .filter(|block| block.kind == "image")
+                    .count()
+                    >= 2;
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+                ..
+            } => {
+                let resources = word_processor_resources(&wp_replica);
+                let update = typed_peer::service_document_invocation(
+                    &mut wp_peer,
+                    &mut wp_replica,
+                    &resources,
+                    word_processor::actions::register,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
+                send(
+                    &mut wp_peer,
+                    &CollabRequest::UpdateInvocation { id, update },
+                )
+                .unwrap();
+                done = blocks(&wp_replica)
+                    .iter()
+                    .filter(|block| block.kind == "image")
+                    .count()
+                    >= 2;
             }
             _ => {}
         }
@@ -570,7 +633,7 @@ fn drive_word_processor_peer(
 }
 
 #[test]
-fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
+fn one_action_result_is_carried_into_the_next_app_without_model_authored_content() {
     let _serial = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -613,11 +676,17 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         directory: None,
         permissions,
     };
+    let (agent_ready_tx, agent_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
+        let _ = agent_ready_tx.send(());
         s.run_until(Instant::now() + Duration::from_secs(15))
             .expect("agent session")
     });
+    agent_ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("agent never established its cluster subscription");
+    std::thread::sleep(Duration::from_millis(250));
 
     // Nothing here yet waits for a late-arriving application — that is
     // `late_app_reaches_a_waiter.rs`'s concern, not this commit's — so the
@@ -625,7 +694,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // naming its operation is even readable, or this races: whichever
     // peer's reply the agent happens to read first decides what `offers`
     // holds when it acts, once, on this single non-sequence instruction.
-    // The photo peer answers first and only then signals the word
+    // The harness seeds the photo peer first and only then signals the word
     // processor to answer, which is what pins the order rather than hoping
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
@@ -634,23 +703,45 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
 
     let (wp_replica, done) = drive_word_processor_peer(wp_peer, wp_replica, &photo_ready_rx);
 
-    assert!(agent.join().unwrap(), "the agent reports having acted");
-    assert!(
-        done,
-        "the instruction was never answered; blocks: {:?}",
-        blocks(&wp_replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-
+    let acted = agent.join().unwrap();
     let photo_replica = photo_thread
         .join()
         .expect("the photo peer's thread must not panic");
+    let shown = blocks(&wp_replica)
+        .iter()
+        .map(|b| (b.kind.clone(), b.text.clone()))
+        .collect::<Vec<_>>();
+    assert!(
+        acted,
+        "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
+        photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
+    );
+    assert!(done, "the consuming action never landed; blocks: {shown:?}");
     assert_eq!(
         photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
         1,
         "the discovered operation never reached the second application's document"
+    );
+    let images = blocks(&wp_replica)
+        .into_iter()
+        .filter(|block| block.kind == "image")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        images.len(),
+        2,
+        "the photo action completed, but its product was not carried into the word processor"
+    );
+    let placed = images
+        .iter()
+        .filter_map(|block| match block.attrs.get("blob") {
+            Some(qdoc::AttrVal::Str(hash)) => Some(hash),
+            _ => None,
+        })
+        .next()
+        .expect("the carried image has a content hash");
+    assert!(
+        qdoc::blobstore::get(placed).is_some(),
+        "the plan inserted an invented or unavailable content hash"
     );
 }
 
