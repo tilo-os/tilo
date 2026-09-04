@@ -496,7 +496,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
        fi \
-    && { sccache --show-stats 2>/dev/null || true; }
+    && { sccache --show-stats 2>/dev/null || true; } \
+    # Every build product needed below now lives in /out. The target cache is
+    # deliberately disposable (sccache holds reusable compiler objects); keep
+    # it from starving the later, large Windows compatibility RPM transaction.
+    && find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
 # the flags; this is what proves they survived to the artifacts this image
