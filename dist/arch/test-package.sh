@@ -17,6 +17,8 @@ fi
 pacman -U --noconfirm "$@"
 QOS_LIBEXEC_DIR=/usr/lib/qos "$repo_root/dist/verify-payload.sh" /
 pacman -Q qos-session >/dev/null
+pacman -Qi qos-session | sed -n '/^Depends On/,/^Optional Deps/p' | grep -qw bubblewrap
+pacman -Qi qos-session | sed -n '/^Optional Deps/,/^Required By/p' | grep -qw xdg-dbus-proxy
 if (( expect_devel )); then
     QOS_LIBEXEC_DIR=/usr/lib/qos "$repo_root/dist/verify-devel-payload.sh" /
     pacman -Q qos-session-devel >/dev/null

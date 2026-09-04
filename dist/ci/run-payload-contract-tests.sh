@@ -8,6 +8,17 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 true_bin=$(type -P true)
 
+# Host packages ship only the compositor from the shell crate. Keep every FHS
+# builder explicit so adding another developer binary to that crate cannot
+# multiply release build time and disk use again.
+for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
+    grep -Eq 'cargo build .*(-p shell.*--bin shell|--bin shell.*-p shell)' \
+        "$repo_root/$builder" || {
+        echo "$builder builds every shell binary instead of only the packaged compositor" >&2
+        exit 1
+    }
+done
+
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/licenses/qos-session}
 for target in "$fhs/usr/bin/qos-shell" "$fhs/usr/bin/qos-launcher" \

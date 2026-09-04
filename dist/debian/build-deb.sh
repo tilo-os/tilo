@@ -63,8 +63,8 @@ Priority: optional
 Architecture: $arch
 Maintainer: qOS contributors <qos@code.podesta.ai>
 Installed-Size: $(installed_size "$main")
-Depends: $shlib_deps, libpam0g, libvulkan1, libegl1
-Recommends: mesa-vulkan-drivers, xdg-desktop-portal, greetd | gdm3 | sddm
+Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap
+Recommends: mesa-vulkan-drivers, xdg-desktop-portal, xdg-dbus-proxy, greetd | gdm3 | sddm
 Description: qOS collaborative compositor as a Wayland session
  Installs the qOS compositor, launcher, unlock helper, PAM policy, portal
  registration, and display-manager session entry on a Debian-family host.

@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
-%{!?qos_version:%global qos_version 0.1.3}
+%{!?qos_version:%global qos_version 0.1.4}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -45,6 +45,10 @@ ExclusiveArch:  x86_64 aarch64
 #
 # The unlock helper resolves libpam itself (see its `pam` module).
 Requires:       pam
+# Every application is launched inside a bubblewrap namespace. This is a hard
+# runtime dependency even though it is invoked by name and therefore invisible
+# to RPM's ELF dependency generator.
+Requires:       bubblewrap
 # wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
 Requires:       vulkan-loader
 # libEGL.so.1, for the DRM backend's buffer path. Require the ABI capability,
@@ -59,6 +63,10 @@ Recommends:     mesa-vulkan-drivers
 # The frontend our backend registers against. Recommends, not Requires: the
 # session runs without it, sandboxed apps just lose their file chooser.
 Recommends:     xdg-desktop-portal
+# Portal access from an app sandbox is filtered through this helper. The
+# launcher deliberately keeps the app usable without portal access when it is
+# absent, so this remains soft rather than blocking the whole session install.
+Recommends:     xdg-dbus-proxy
 # qOS network controls use NetworkManager's nmcli API. The session remains
 # usable without it and reports unavailable controls, so keep this soft for
 # hosts that deliberately use another network stack.
@@ -177,6 +185,11 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Fri Sep 04 2026 qOS <qos@code.podesta.ai> - 0.1.4-1
+- Require Bubblewrap for sandboxed application launches.
+- Recommend xdg-dbus-proxy for filtered portal access.
+- Build only the compositor binary from the shell package.
+
 * Thu Sep 03 2026 qOS <qos@code.podesta.ai> - 0.1.3-1
 - Publish release assets with a dedicated repository-scoped credential
 
