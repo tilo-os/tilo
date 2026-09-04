@@ -4287,7 +4287,11 @@ impl Widget for ImagerApp {
                     true
                 }
                 AccessAction::SetValue(value) => {
-                    let field_action = CustomizePanel::field_action(field, value.clone());
+                    let Some(value) = self.customize.canonical_value(field, value) else {
+                        self.set_status(state, &format!("Choose a listed {}", field.label()));
+                        return true;
+                    };
+                    let field_action = CustomizePanel::field_action(field, value);
                     self.actions.dispatch_with_context(
                         state,
                         crate::actions::IMAGER_ACTION_TYPE,
@@ -4824,6 +4828,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
         });
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for name in ["Language and locale", "Time zone", "Keyboard layout"] {
+            assert_eq!(
+                accessible_named(&tree, name).expect("profile chooser").role,
+                ui::a11y::Role::ComboBox,
+                "{name} is exposed as a chooser, not unrestricted text"
+            );
+        }
 
         assert!(app.perform_semantic_action(
             "imager:profile:hostname",
@@ -4832,6 +4843,35 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
+
+        for (target, chosen, expected) in [
+            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+        ] {
+            assert!(app.perform_semantic_action(
+                target,
+                &AccessAction::SetValue(chosen.into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            let profile = ImagerDoc::profile(&doc);
+            let actual = match target {
+                "imager:profile:locale" => profile.locale,
+                "imager:profile:timezone" => profile.timezone,
+                _ => profile.keyboard,
+            };
+            assert_eq!(actual, expected);
+        }
+        let timezone_before = ImagerDoc::profile(&doc).timezone;
+        assert!(app.perform_semantic_action(
+            "imager:profile:timezone",
+            &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
+        assert!(ImagerDoc::status(&doc).contains("Choose a listed Time zone"));
 
         app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
         app.scroll_y = 0.0;
@@ -5365,6 +5405,25 @@ mod tests {
             app.customize.field_value(CzField::Hostname),
             "lab01",
             "the input holds it"
+        );
+    }
+
+    #[test]
+    fn keyboard_chooser_filters_and_commits_through_the_real_event_path() {
+        use crate::customize::CzField;
+        use winit::keyboard::NamedKey;
+
+        let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
+        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+        for character in ["g", "e", "r", "m", "a", "n"] {
+            feed(&mut app, &mut doc, &char_ev(character));
+        }
+        feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
+
+        assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
+        assert_eq!(
+            app.customize.field_value(CzField::Keyboard),
+            "German (QWERTZ)"
         );
     }
 
