@@ -49,7 +49,7 @@ use crate::shell::collab_broker::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::state::{
-    CapRole, Principal, WorkspaceTask, WorkspaceTaskStatus, WorkspaceTree, WorkspaceTreeHandle,
+    CapRole, Principal, WorkspaceTaskStatus, WorkspaceTree, WorkspaceTreeHandle,
 };
 
 /// Launcher preambles are deliberately tiny: they only bind a socket to the
@@ -1436,16 +1436,17 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
         let mut tree = membership.write();
-        let workspace = tree
+        let workspace_id = tree
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
+            .map(|workspace| workspace.id)
             .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
         let actor = format!("agent:{}", run.agent_id);
         if let Some(status) = status {
-            let _ = tree.set_workspace_task_status(workspace.id, &run.task_id, status, &actor);
+            let _ = tree.set_workspace_task_status(workspace_id, &run.task_id, status, &actor);
         }
-        let _ = tree.append_workspace_task_audit(workspace.id, &run.task_id, &actor, summary);
+        let _ = tree.append_workspace_task_audit(workspace_id, &run.task_id, &actor, summary);
         Ok(())
     }
 
@@ -1717,7 +1718,10 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
-            | CollabEvent::WorkspaceControl { .. } => {
+            | CollabEvent::WorkspaceControl { .. }
+            | CollabEvent::TaskRun(_)
+            | CollabEvent::TaskActionInvocationResult { .. }
+            | CollabEvent::TaskRunCancellation { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
             }
@@ -2554,7 +2558,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .then(|| {
                     request
                         .get_argument()
-                        .and_then(|value| value.to_str().map(str::to_owned))
+                        .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
             let job = state

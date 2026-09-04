@@ -3754,7 +3754,7 @@ impl ShellOverlayHost {
     /// Turns app-launcher worker-thread failures into notifications (a clean
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
-    pub(crate) fn drain_launch_events(&self) -> bool {
+    pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
