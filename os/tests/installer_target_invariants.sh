@@ -8,8 +8,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 guided_partitioner="$repo_root/os/usr/libexec/qos-guided-partition"
-installer_sudoers="$repo_root/os/usr/share/qos/installer-sudoers"
-installer_disks="$repo_root/crates/session/installer/src/disks.rs"
 containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
@@ -347,15 +345,6 @@ if [ -x "$guided_partitioner" ] \
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only qOS partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
-fi
-
-if grep -Fq 'Command::new("sudo")' "$installer_disks" \
-   && grep -Fq '.args(["-n", &helper, "inspect", "--disk", disk.name.as_str()])' "$installer_disks" \
-   && grep -Fq '/usr/libexec/qos-guided-partition inspect --disk /dev/*' "$installer_sudoers" \
-   && ! grep -Eq 'NOPASSWD:.*qos-guided-partition[[:space:]]*(,|$)' "$installer_sudoers"; then
-  ok "unprivileged greetd can inspect pending receipts through only the read-only verb"
-else
-  bad "pending receipt discovery is unavailable to greetd or grants the create verb"
 fi
 
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then

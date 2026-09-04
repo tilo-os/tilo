@@ -89,55 +89,6 @@ invoke_helper() {
     sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" "$helper" "${helper_args[@]}" >/dev/null
   fi
 }
-invoke_interrupted() {
-  if [ "$(id -u)" -eq 0 ]; then
-    PATH="$tmp/bin:$PATH" QOS_GUIDED_TEST_STOP_AFTER_GPT=1 "$helper" "${helper_args[@]}" >/dev/null
-  else
-    sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" QOS_GUIDED_TEST_STOP_AFTER_GPT=1 \
-      "$helper" "${helper_args[@]}" >/dev/null
-  fi
-}
-inspect_pending() {
-  if [ "$(id -u)" -eq 0 ]; then
-    PATH="$tmp/bin:$PATH" "$helper" inspect --disk "$loop"
-  else
-    sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" "$helper" inspect --disk "$loop"
-  fi
-}
-
-# Simulate a complete UI/process restart at the narrowest interruption point:
-# GPT is durable, neither new partition is formatted, and the new UI has
-# generated unrelated UUIDs. It may recover the original pair only from two
-# mutually consistent raw receipts, and still requires a fresh typed disk-name
-# confirmation in the Rust UI before this helper can be called.
-set +e
-invoke_interrupted
-interrupted_status=$?
-set -e
-[ "$interrupted_status" -eq 75 ] || { echo 'FAIL  interruption hook did not stop after GPT' >&2; exit 1; }
-pending="$(inspect_pending)"
-grep -Fqx 'PENDING_GUIDED=1' <<<"$pending"
-grep -Fqx "EFI_PARTUUID=$efi_uuid" <<<"$pending"
-grep -Fqx "ROOT_PARTUUID=$root_uuid" <<<"$pending"
-regenerated_efi=30000000-0000-4000-8000-000000000004
-regenerated_root=40000000-0000-4000-8000-000000000005
-[ "$regenerated_efi" != "$(sed -n 's/^EFI_PARTUUID=//p' <<<"$pending")" ]
-[ "$regenerated_root" != "$(sed -n 's/^ROOT_PARTUUID=//p' <<<"$pending")" ]
-
-efi_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$efi_uuid")"
-root_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$root_uuid")"
-receipt_offset=$((efi_size - 65536))
-run_root dd if="$efi_partition" of="$tmp/efi.receipt" bs=1 skip="$receipt_offset" count=4096 status=none
-printf X | run_root dd of="$efi_partition" bs=1 seek="$receipt_offset" conv=notrunc status=none
-if inspect_pending >/dev/null 2>&1; then echo 'FAIL  forged receipt checksum was accepted' >&2; exit 1; fi
-run_root dd if="$tmp/efi.receipt" of="$efi_partition" bs=4096 count=1 seek=$((receipt_offset / 4096)) conv=notrunc status=none
-run_root dd if=/dev/zero of="$root_partition" bs=1 seek=$((root_size - 65536)) count=4096 conv=notrunc status=none
-if inspect_pending >/dev/null 2>&1; then echo 'FAIL  one-copy receipt was accepted' >&2; exit 1; fi
-run_root dd if="$tmp/efi.receipt" of="$root_partition" bs=4096 count=1 seek=$(((root_size - 65536) / 4096)) conv=notrunc status=none
-inspect_pending >/dev/null
-
-# Resuming uses the receipt's original random identities, not the UUIDs made by
-# the restarted UI. The exact disk path must separately have been re-confirmed.
 invoke_helper
 
 after_hash="$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)"
@@ -157,28 +108,36 @@ types="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print("\n
 grep -Fqx "$efi_uuid=c12a7328-f81f-11d2-ba4b-00a0c93ec93b" <<<"$types"
 grep -Fqx "$root_uuid=0fc63daf-8483-4772-8e79-3d69d8477de4" <<<"$types"
 
-# An exact retry must recognize the UUID/geometry-bound pair, preserve an
-# already formatted qOS ESP, and never append another partition.
+# A second invocation must refuse even the exact UUID/geometry pair. Those
+# values live on the writable target and cannot authenticate qOS ownership.
+efi_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$efi_uuid")"
+root_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$root_uuid")"
 efi_fs_uuid="$(run_root blkid -p -s UUID -o value "$efi_partition")"
-invoke_helper
+if invoke_helper; then
+  echo 'FAIL  exact on-disk identities authorized reinitialization' >&2
+  exit 1
+fi
 [ "$(run_root blkid -p -s UUID -o value "$efi_partition")" = "$efi_fs_uuid" ] \
-  || { echo 'FAIL  exact retry reformatted the existing qOS ESP' >&2; exit 1; }
+  || { echo 'FAIL  refused retry changed the existing qOS ESP' >&2; exit 1; }
 [ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 3 ] \
-  || { echo 'FAIL  exact retry appended another partition' >&2; exit 1; }
+  || { echo 'FAIL  refused retry changed the partition map' >&2; exit 1; }
 
-# Model power loss after the GPT commit but before mkfs. Removing the
-# filesystem only from the UUID-bound newly created ESP must be recoverable;
-# the root and pre-existing sentinel must remain untouched.
+# Model power loss after the GPT commit but before mkfs. Even an unformatted
+# pair with the exact reviewed UUIDs must remain ineligible: a target-local
+# transaction record or identifiers could be forged by an arbitrary disk.
 run_root wipefs -a "$efi_partition" >/dev/null
 [ -z "$(run_root blkid -p -s TYPE -o value "$efi_partition" 2>/dev/null || true)" ]
-invoke_helper
-[ "$(run_root blkid -p -s TYPE -o value "$efi_partition")" = vfat ] \
-  || { echo 'FAIL  exact interrupted plan did not restore its qOS ESP' >&2; exit 1; }
+if invoke_helper; then
+  echo 'FAIL  unformatted on-disk pair authorized reinitialization' >&2
+  exit 1
+fi
+[ -z "$(run_root blkid -p -s TYPE -o value "$efi_partition" 2>/dev/null || true)" ] \
+  || { echo 'FAIL  refused interrupted pair was formatted' >&2; exit 1; }
 [ -z "$(run_root blkid -p -s TYPE -o value "$root_partition" 2>/dev/null || true)" ] \
   || { echo 'FAIL  guided root acquired a filesystem signature' >&2; exit 1; }
 [ "$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)" = "$before_hash" ] \
-  || { echo 'FAIL  recovery changed existing partition bytes' >&2; exit 1; }
+  || { echo 'FAIL  refusal changed existing partition bytes' >&2; exit 1; }
 [ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; s=t["sectorsize"]; print("\n".join(sorted("{}:{}:{}".format(p["uuid"].lower(),p["start"]*s,p["size"]*s) for p in t["partitions"])))')" = "$expected_map" ] \
-  || { echo 'FAIL  recovery changed the reviewed PARTUUID/geometry map' >&2; exit 1; }
+  || { echo 'FAIL  refusal changed the reviewed PARTUUID/geometry map' >&2; exit 1; }
 
-printf 'ok    guided alongside preserves existing bytes/map and safely resumes its exact partition plan\n'
+printf 'ok    guided alongside preserves existing bytes/map and refuses unauthenticated restart recovery\n'
