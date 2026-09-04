@@ -3,9 +3,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 mod geom;
+mod interaction;
 mod key;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
+pub use interaction::{
+    ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
+};
 pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
@@ -433,6 +437,8 @@ pub enum RemotePresenceEffect {
     PeerViewChanged,
     /// A peer arrived on a non-tab scope — possibly a late joiner needing full state.
     PeerArrived,
+    /// A valid, in-scope semantic interaction advanced to a newer phase.
+    InteractionAdvanced,
 }
 
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
@@ -463,6 +469,11 @@ pub struct PresenceCtx {
     /// use this in addition to colour so an agent cannot be mistaken for a
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
+    /// Broker-authenticated semantic activity, keyed by invocation. Unlike
+    /// pointer/caret presence this never pretends an action caller has an
+    /// input device: applications may project its stable resource anchor to
+    /// native geometry, while the generic painter shows a compact fallback.
+    interactions: HashMap<qos_actions::InvocationId, interaction::InteractionPresenceEntry>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.
@@ -1182,6 +1193,7 @@ impl PresenceCtx {
     // pass.
     #[allow(
         clippy::needless_pass_by_value,
+        clippy::too_many_lines,
         reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
     )]
     pub fn apply_remote_presence(
@@ -1191,7 +1203,7 @@ impl PresenceCtx {
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Caret, Following, Left, Pointer, Selection, Typing,
+            Arrived, Caret, Following, Interaction, Left, Pointer, Selection, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1277,6 +1289,37 @@ impl PresenceCtx {
                     SelectionRange { start, end },
                     Instant::now(),
                 );
+            }
+            Interaction(update) => {
+                // Semantic action presence has its own resource/anchor model.
+                // Applying it must never synthesize a pointer, caret, or text
+                // selection for an actor that used no such input device. The
+                // resource key also selects exactly one app surface: presence
+                // is fanned across a room, but an action in Writer must not
+                // paint an activity card in Files and every other window.
+                let belongs_here = match &key {
+                    PresenceKey::Resource { app, id, kind } => {
+                        self.surface.as_deref() == Some(app.as_str())
+                            && update.resource.id == *id
+                            && update.resource.kind == *kind
+                            && update
+                                .action
+                                .app
+                                .as_ref()
+                                .is_none_or(|owner| owner.id == *app)
+                    }
+                    PresenceKey::Widget { .. }
+                    | PresenceKey::Tab { .. }
+                    | PresenceKey::Workspace { .. }
+                    | PresenceKey::App { .. }
+                    | PresenceKey::View { .. }
+                    | PresenceKey::Pointer { .. } => false,
+                };
+                if belongs_here {
+                    if self.apply_interaction(*update).unwrap_or(false) {
+                        return RemotePresenceEffect::InteractionAdvanced;
+                    }
+                }
             }
             Following { target } => {
                 // A follow relationship is only meaningful within a room.

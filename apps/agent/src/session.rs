@@ -27,7 +27,10 @@ const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskAction {
     peer_id: u64,
+    app: String,
     resource: String,
+    resource_kind: String,
+    resource_label: String,
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
@@ -80,7 +83,10 @@ fn task_action_from_offer(
         .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
     Ok(TaskAction {
         peer_id,
+        app: offer.app.clone(),
         resource: offer.descriptor.address.resource.clone(),
+        resource_kind: offer.descriptor.resource_kind.clone(),
+        resource_label: offer.descriptor.resource_label.clone(),
         action: offer.descriptor.address.action.clone(),
         arguments,
         label: offer.descriptor.action_label.clone(),
@@ -585,6 +591,8 @@ impl Session {
             Ok(result) => result,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
+        let mut interaction_sequence = 0_u64;
+        self.publish_task_interaction(run, action, &update, interaction_sequence);
         let deadline = Instant::now() + TASK_ACTION_WAIT;
         while !update.is_terminal() && Instant::now() < deadline {
             if self.task_cancelled(run)? {
@@ -594,6 +602,12 @@ impl Session {
                     id,
                 })?;
                 let _ = self.wait_for_broker_result(cancel_request)?;
+                interaction_sequence = interaction_sequence.saturating_add(1);
+                let cancelled = qos_actions::InvocationUpdate::Cancelled {
+                    invocation: update.invocation(),
+                    message: Some("Cancelled from Task Center".into()),
+                };
+                self.publish_task_interaction(run, action, &cancelled, interaction_sequence);
                 return Ok(Err(TaskActionStop::Cancelled));
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -604,6 +618,8 @@ impl Session {
                 Ok((_, update)) => update,
                 Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
             };
+            interaction_sequence = interaction_sequence.saturating_add(1);
+            self.publish_task_interaction(run, action, &update, interaction_sequence);
         }
         match update {
             qos_actions::InvocationUpdate::Succeeded { .. } => Ok(Ok(())),
@@ -611,10 +627,113 @@ impl Session {
             qos_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(TaskActionStop::Failed(error.message)))
             }
-            _ => Ok(Err(TaskActionStop::Failed(
-                "Task action did not reach a terminal state before its deadline".into(),
-            ))),
+            other => {
+                let message = "Task action did not reach a terminal state before its deadline";
+                interaction_sequence = interaction_sequence.saturating_add(1);
+                self.publish_task_interaction(
+                    run,
+                    action,
+                    &qos_actions::InvocationUpdate::Failed {
+                        invocation: other.invocation(),
+                        error: qos_actions::ActionFailure {
+                            code: "timeout".into(),
+                            message: message.into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                    interaction_sequence,
+                );
+                Ok(Err(TaskActionStop::Failed(message.into())))
+            }
         }
+    }
+
+    /// Project a real broker invocation into semantic presence. No pointer,
+    /// caret, focus, or viewport mutation is synthesized: peers receive the
+    /// resource/action lifecycle and resolve its stable anchor natively.
+    fn publish_task_interaction(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &TaskAction,
+        update: &qos_actions::InvocationUpdate,
+        sequence: u64,
+    ) {
+        let phase = match update {
+            qos_actions::InvocationUpdate::Accepted { .. } => {
+                qos_actions::InteractionPhase::Applying
+            }
+            qos_actions::InvocationUpdate::Progress {
+                phase,
+                completed,
+                total,
+                ..
+            } => qos_actions::InteractionPhase::Progress {
+                label: phase.clone(),
+                completed: *completed,
+                total: *total,
+            },
+            qos_actions::InvocationUpdate::Item { .. } => qos_actions::InteractionPhase::Applying,
+            qos_actions::InvocationUpdate::Succeeded { .. } => {
+                qos_actions::InteractionPhase::Committed
+            }
+            qos_actions::InvocationUpdate::Failed { error, .. } => {
+                qos_actions::InteractionPhase::Failed {
+                    code: Some(error.code.clone()),
+                    message: error.message.clone(),
+                }
+            }
+            qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                qos_actions::InteractionPhase::Cancelled {
+                    message: message.clone(),
+                }
+            }
+        };
+        let context =
+            serde_json::from_value::<qos_actions::ActionContext>(run.action_context.clone()).ok();
+        let interaction = qos_actions::SemanticInteraction {
+            version: qos_actions::INTERACTION_VERSION,
+            invocation: update.invocation(),
+            sequence,
+            // The local broker replaces these fields from the authenticated
+            // admission before fan-out. They are populated only so the
+            // strongly typed value is valid before crossing that boundary.
+            actor: qos_actions::InteractionActor {
+                id: self.cfg.name.clone(),
+                kind: qos_actions::InteractionActorKind::Agent,
+            },
+            phase,
+            action: qos_actions::InteractionAction {
+                id: action.action.clone(),
+                label: action.label.clone(),
+                app: Some(qos_actions::ActionApp {
+                    id: action.app.clone(),
+                    label: action.app.clone(),
+                }),
+            },
+            resource: qos_actions::ActionResource {
+                id: action.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+            },
+            anchor: if let Some(id) = action.resource.strip_prefix("ui:") {
+                qos_actions::InteractionAnchor::SemanticControl { id: id.into() }
+            } else if action.resource_kind.contains("entry")
+                || action.resource_kind.contains("file")
+            {
+                qos_actions::InteractionAnchor::ListItems {
+                    ids: vec![action.resource.clone()],
+                }
+            } else {
+                qos_actions::InteractionAnchor::Resource
+            },
+            group: context.and_then(|context| context.group),
+        };
+        let key = PresenceKey::resource(&action.app, &action.resource, &action.resource_kind);
+        let _ = self.link.send(&CollabRequest::Presence {
+            key,
+            payload: PresencePayload::Interaction(Box::new(interaction)),
+        });
     }
 
     fn wait_for_task_action_result(
@@ -1630,6 +1749,50 @@ impl Session {
     /// pause so the room can see it happen.
     fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
+        let invocation = qos_actions::InvocationId::new();
+        let resource_id = "word-processor.document".to_string();
+        let agent_name = self.cfg.name.clone();
+        let app_id = self.cfg.app_id.clone();
+        let resource_label = self
+            .cfg
+            .record
+            .clone()
+            .unwrap_or_else(|| "Open document".into());
+        let group = self.task_context().and_then(|context| context.group);
+        let semantic = |phase, sequence| qos_actions::SemanticInteraction {
+            version: qos_actions::INTERACTION_VERSION,
+            invocation,
+            sequence,
+            actor: qos_actions::InteractionActor {
+                id: agent_name.clone(),
+                kind: qos_actions::InteractionActorKind::Agent,
+            },
+            phase,
+            action: qos_actions::InteractionAction {
+                id: "word-processor.edit".into(),
+                label: describe(action),
+                app: Some(qos_actions::ActionApp {
+                    id: app_id.clone(),
+                    label: "Word Processor".into(),
+                }),
+            },
+            resource: qos_actions::ActionResource {
+                id: resource_id.clone(),
+                kind: "word-processor.document".into(),
+                label: resource_label.clone(),
+            },
+            anchor: word_action_anchor(action, focus),
+            group: group.clone(),
+        };
+        let interaction_key =
+            PresenceKey::resource(&self.cfg.app_id, &resource_id, "word-processor.document");
+        let _ = self.link.send(&CollabRequest::Presence {
+            key: interaction_key.clone(),
+            payload: PresencePayload::Interaction(Box::new(semantic(
+                qos_actions::InteractionPhase::Applying,
+                0,
+            ))),
+        });
         let caret_pos = self
             .editor
             .as_ref()
@@ -1653,6 +1816,26 @@ impl Session {
         if let Some(data) = delta {
             self.link
                 .send(&CollabRequest::DocumentIncremental { data })?;
+            if let WordProcessorAction::SpliceText { at, ins, .. } = action
+                && !ins.is_empty()
+            {
+                let end = at.saturating_add(ins.chars().count());
+                self.link.send(&CollabRequest::Presence {
+                    key: block_key(focus),
+                    payload: PresencePayload::Typing { start: *at, end },
+                })?;
+                self.link.send(&CollabRequest::Presence {
+                    key: block_key(focus),
+                    payload: PresencePayload::Caret { pos: end },
+                })?;
+            }
+            let _ = self.link.send(&CollabRequest::Presence {
+                key: interaction_key,
+                payload: PresencePayload::Interaction(Box::new(semantic(
+                    qos_actions::InteractionPhase::Committed,
+                    1,
+                ))),
+            });
             tracing::info!(block = %focus, "applied {}", describe(action));
             if let Some(end) = self.editor.as_mut().and_then(Editor::latest_entry_id)
                 && Some(end) != before
@@ -1662,10 +1845,73 @@ impl Session {
                 self.capture_step(&app, &record, describe(action), end);
             }
         } else {
+            let _ = self.link.send(&CollabRequest::Presence {
+                key: interaction_key,
+                payload: PresencePayload::Interaction(Box::new(semantic(
+                    qos_actions::InteractionPhase::Failed {
+                        code: Some("no_change".into()),
+                        message: "The operation made no change".into(),
+                    },
+                    1,
+                ))),
+            });
             tracing::warn!(block = %focus, "{} changed nothing", describe(action));
         }
         std::thread::sleep(self.cfg.pace);
         Ok(())
+    }
+}
+
+fn word_action_anchor(
+    action: &WordProcessorAction,
+    _focus: &str,
+) -> qos_actions::InteractionAnchor {
+    match action {
+        WordProcessorAction::SpliceText {
+            block,
+            at,
+            del,
+            ins,
+            ..
+        } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: vec![qos_actions::InteractionTextRange {
+                block: block.clone(),
+                start: u64::try_from(*at).unwrap_or(u64::MAX),
+                end: u64::try_from(at.saturating_add((*del).max(ins.chars().count())))
+                    .unwrap_or(u64::MAX),
+            }],
+        },
+        WordProcessorAction::SetMark { spans, .. } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: spans
+                .iter()
+                .map(|span| qos_actions::InteractionTextRange {
+                    block: span.block.clone(),
+                    start: u64::try_from(span.start).unwrap_or(u64::MAX),
+                    end: u64::try_from(span.end).unwrap_or(u64::MAX),
+                })
+                .collect(),
+        },
+        WordProcessorAction::SetParagraphStyle { blocks, .. }
+        | WordProcessorAction::ApplyNamedStyle { blocks, .. }
+        | WordProcessorAction::SetBlockAttr { blocks, .. }
+        | WordProcessorAction::RemoveBlocks { blocks } => qos_actions::InteractionAnchor::Objects {
+            ids: blocks.clone(),
+        },
+        WordProcessorAction::InsertParagraph { after, .. }
+        | WordProcessorAction::InsertTable { after, .. } => {
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec![after.clone()],
+            }
+        }
+        WordProcessorAction::InsertImage { block, .. }
+        | WordProcessorAction::InsertPageBreak { block, .. } => {
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec![block.clone()],
+            }
+        }
+        WordProcessorAction::ReplaceBody { .. } => qos_actions::InteractionAnchor::Resource,
     }
 }
 

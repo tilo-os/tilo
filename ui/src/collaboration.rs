@@ -370,6 +370,10 @@ pub enum CollabEvent {
         action: String,
         argument: Option<String>,
         actor: String,
+        /// Broker-owned task/session provenance. The concrete application
+        /// resource and action remain authoritative; this only supplies the
+        /// surrounding purpose and work-group for durable history.
+        context: Option<qos_actions::ActionContext>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
@@ -443,6 +447,10 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
+    /// Truthful action/resource activity. Identity is supplied by the
+    /// authenticated event envelope; this payload never describes a mouse or
+    /// keyboard gesture and therefore cannot create a synthetic cursor.
+    Interaction(Box<qos_actions::SemanticInteraction>),
 }
 
 #[derive(Debug, Clone)]
@@ -829,6 +837,11 @@ impl CollaborationManager {
     /// Connect a headless participant as a first-class workspace agent.
     /// Its friendly id is both the visible handle and the principal whose
     /// scoped capabilities the broker evaluates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the collaboration
+    /// service or certified join identity is unavailable.
     pub fn for_agent_route(
         app_id: impl Into<String>,
         cluster_id: Uuid,
@@ -849,6 +862,11 @@ impl CollaborationManager {
     /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
     /// still requires a certified endpoint identity; this method merely
     /// preserves the agent principal kind for diagnostic transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the socket cannot be
+    /// joined or the route identity cannot be established.
     pub fn for_agent_route_fd(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -869,6 +887,11 @@ impl CollaborationManager {
 
     /// Certified explicit-socket agent connection used by out-of-process
     /// runtimes that do not inherit the launcher's service descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the socket or certified
+    /// route join fails.
     pub fn for_agent_route_fd_with_identity(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -1778,6 +1801,7 @@ async fn spawn_invocation_stream(
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
                 let id = invocation.id;
+                let context = parse_invocation_context(id, &invocation.context_json);
                 if tx
                     .send(CollabEvent::Invocation {
                         id,
@@ -1785,6 +1809,7 @@ async fn spawn_invocation_stream(
                         action: invocation.action,
                         argument: invocation.argument,
                         actor: invocation.actor,
+                        context,
                     })
                     .is_err()
                 {
@@ -1810,6 +1835,19 @@ async fn spawn_invocation_stream(
                 });
             }
         });
+    }
+}
+
+fn parse_invocation_context(id: u64, json: &str) -> Option<qos_actions::ActionContext> {
+    if json.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str(json) {
+        Ok(context) => Some(context),
+        Err(error) => {
+            tracing::warn!(%error, id, "collab: ignoring invalid invocation context");
+            None
+        }
     }
 }
 
@@ -1886,7 +1924,9 @@ async fn spawn_presence_stream(
                 let tx = inbound_tx.clone();
                 tokio::task::spawn_local(async move {
                     while let Ok(event) = stream.read().await {
-                        if tx.send(translate_presence_event(event)).is_err() {
+                        if let Some(event) = translate_presence_event(event)
+                            && tx.send(event).is_err()
+                        {
                             break;
                         }
                     }
@@ -2078,6 +2118,11 @@ async fn dispatch_sdk_request(
                 // directly on the peer-presence route. Apps cannot turn it
                 // into a viewport command through this generic SDK bridge.
                 PresencePayload::Following { .. } => {}
+                PresencePayload::Interaction(update) => {
+                    if let Ok(json) = serde_json::to_string(&update) {
+                        let _ = presence.publish_interaction(&key_bytes, &json).await;
+                    }
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -2373,21 +2418,20 @@ fn unpack_color(packed: u32) -> [f32; 3] {
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
 /// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
-fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
+fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<CollabEvent> {
     // Cursor keeps the legacy `user_id + x + y` shape; every other
-    // variant carries the decoded `PresenceKey`, falling back to a
-    // synthetic key if decoding fails.
+    // variant must carry a decodable semantic `PresenceKey`.
     match evt.payload {
-        runtime_collab::PresencePayload::Cursor { x, y } => CollabEvent::RemoteCursorMoved {
+        runtime_collab::PresencePayload::Cursor { x, y } => Some(CollabEvent::RemoteCursorMoved {
             user_id: evt.user_id,
             x,
             y,
-        },
+        }),
         other => {
-            let key: PresenceKey =
-                postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| PresenceKey::Tab {
-                    id: String::from("<undecodable>"),
-                });
+            // An undecodable scope cannot truthfully identify a target. Drop
+            // it instead of inventing a tab and making malformed presence
+            // look like a collaborator left some unrelated surface.
+            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).ok()?;
             let payload = match other {
                 runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
                     // A wire-supplied offset that doesn't fit `usize` on this
@@ -2408,6 +2452,12 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 runtime_collab::PresencePayload::Following { target } => {
                     PresencePayload::Following { target }
                 }
+                runtime_collab::PresencePayload::InteractionJson(json) => {
+                    let update: qos_actions::SemanticInteraction =
+                        serde_json::from_str(&json).ok()?;
+                    update.validate().ok()?;
+                    PresencePayload::Interaction(Box::new(update))
+                }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this
@@ -2420,11 +2470,11 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     PresencePayload::Pointer { x, y }
                 }
             };
-            CollabEvent::RemotePresenceUpdate {
+            Some(CollabEvent::RemotePresenceUpdate {
                 user_id: evt.user_id,
                 key,
                 payload,
-            }
+            })
         }
     }
 }
@@ -3514,7 +3564,7 @@ mod tests {
     #[test]
     fn translate_presence_event_is_symmetric_over_all_payload_variants() {
         // Straight unit test of `translate_presence_event` — no broker or
-        // threading needed. Covers every payload variant + the undecodable-key fallback.
+        // threading needed. Malformed scopes are deliberately not projected.
         let key = PresenceKey::Widget {
             path: vec![crate::presence::PathSegment::Field("body".into())],
         };
@@ -3524,14 +3574,16 @@ mod tests {
             user_id: "peer".into(),
             key_bytes: key_bytes.clone(),
             payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
-        });
+        })
+        .expect("cursor event");
         matches!(e, CollabEvent::RemoteCursorMoved { .. });
 
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
             key_bytes,
             payload: SdkPayload::Caret { pos: 3 },
-        });
+        })
+        .expect("caret event");
         if let CollabEvent::RemotePresenceUpdate {
             key: k, payload, ..
         } = e
@@ -3547,10 +3599,20 @@ mod tests {
             key_bytes: vec![0xFF, 0xFF, 0xFF],
             payload: SdkPayload::Arrived,
         });
-        if let CollabEvent::RemotePresenceUpdate { key: k, .. } = e {
-            assert!(matches!(k, PresenceKey::Tab { .. }));
-        } else {
-            panic!("expected RemotePresenceUpdate on undecodable key");
-        }
+        assert!(
+            e.is_none(),
+            "an undecodable target is not semantic presence"
+        );
+    }
+
+    #[test]
+    fn invocation_context_json_is_optional_and_fail_closed() {
+        let context = qos_actions::ActionContext::default()
+            .with_purpose("Review the proposal")
+            .with_group("task:review", "Review", "task");
+        let json = serde_json::to_string(&context).unwrap();
+        assert_eq!(parse_invocation_context(7, &json), Some(context));
+        assert_eq!(parse_invocation_context(8, "  "), None);
+        assert_eq!(parse_invocation_context(9, "{not-json"), None);
     }
 }
