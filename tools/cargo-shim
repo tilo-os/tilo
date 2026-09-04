@@ -62,8 +62,14 @@ derive_cache_size() {
 use_sccache() {
   [ -n "${RUSTC_WRAPPER:-}" ] && return 0          # caller already chose; leave it alone
   command -v sccache >/dev/null 2>&1 || return 0   # not installed; a plain build is fine
-  export RUSTC_WRAPPER=sccache
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$(derive_cache_size)}"
+  # qOS's project wrapper composes sccache with an optional native mold linker.
+  # Let Cargo select it from .cargo/config.toml; other projects still get the
+  # ordinary transparent sccache wrapper from this system-wide cargo shim.
+  if [ -n "${marker_dir:-}" ] && [ -x "$marker_dir/tools/rustc-wrapper" ]; then
+    return 0
+  fi
+  export RUSTC_WRAPPER=sccache
 }
 
 # Never set CARGO_TARGET_DIR. sccache hashes it into the Rust cache key: measured, a

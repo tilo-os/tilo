@@ -1308,6 +1308,11 @@ impl Widget for Table {
     fn children(&self) -> Vec<&dyn Widget> {
         self.cells.iter().map(|c| c as &dyn Widget).collect()
     }
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for cell in &self.cells {
+            visitor(cell);
+        }
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.cells
             .iter_mut()

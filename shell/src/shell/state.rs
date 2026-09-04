@@ -203,8 +203,10 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
 
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(acl.clone());
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl.clone()),
+            ..WorkspaceTree::default()
+        };
         let started = Instant::now();
         tree.export_fs_capabilities();
         assert!(
@@ -269,8 +271,10 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(acl);
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl),
+            ..WorkspaceTree::default()
+        };
         tree.export_fs_capabilities();
         for _ in 0..300 {
             if log.exists() {
@@ -393,14 +397,14 @@ mod identity_fs_tests {
         let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
         let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
         let room_a_id = room_a.room;
-        let room_a_scope = room_a.room.to_string();
-        let room_b_scope = room_b.room.to_string();
+        let first_room_scope = room_a.room.to_string();
+        let second_room_scope = room_b.room.to_string();
         let relay_a = crate::shell::network::room_topic_id(room_a.room).to_string();
         let relay_b = crate::shell::network::room_topic_id(room_b.room).to_string();
         room_a.capabilities.extend([
             CapOverride::new(
                 Subject::User(alice),
-                Scope::Room(room_a_scope),
+                Scope::Room(first_room_scope),
                 Effect::Grant,
                 Verb::Read,
             ),
@@ -421,13 +425,15 @@ mod identity_fs_tests {
         ]);
         room_b.capabilities.push(CapOverride::new(
             Subject::User(bob),
-            Scope::Room(room_b_scope),
+            Scope::Room(second_room_scope),
             Effect::Grant,
             Verb::Read,
         ));
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(output.clone());
-        tree.workspaces = vec![room_a, room_b];
+        let mut tree = WorkspaceTree {
+            fs_acl_path: Some(output.clone()),
+            workspaces: vec![room_a, room_b],
+            ..WorkspaceTree::default()
+        };
         tree.export_fs_capabilities();
 
         let exported: Vec<CapOverride> =
@@ -2833,6 +2839,10 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "room projection keeps the document mutation transaction in one scope"
+    )]
     pub fn sync_room_doc(&mut self, room: RoomId) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -6114,6 +6124,10 @@ impl WorkspaceTree {
     /// Materialize another device's continuation as synchronized placeholder
     /// tabs. This never activates a workspace, strip, or group; the compositor
     /// opens the matching local apps through its normal authorized launch path.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "continuation materialization preserves one ordered topology transaction"
+    )]
     pub fn materialize_continuation_workspace(
         &mut self,
         _source_device: &str,
@@ -6135,7 +6149,7 @@ impl WorkspaceTree {
             let mut apps = continuation.apps.clone();
             apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
             for app in apps {
-                let (title, tile) = match &app.launch {
+                let (title, tile_content) = match &app.launch {
                     crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
                         // A newer app winner may reuse the durable tab id of
                         // an earlier file-reference card.  Do not let the
@@ -6217,7 +6231,9 @@ impl WorkspaceTree {
                         .strips
                         .push(Strip::new(StripId::new(), "Available elsewhere"));
                 }
-                let strip = &mut workspace.strips[app.placement.strip as usize];
+                let Some(strip) = workspace.strips.get_mut(app.placement.strip as usize) else {
+                    continue;
+                };
                 while strip.window_groups.len() <= app.placement.group as usize {
                     strip.window_groups.push(WindowGroup {
                         id: next_id(),
@@ -6227,11 +6243,13 @@ impl WorkspaceTree {
                         maximized: false,
                     });
                 }
-                let group = &mut strip.window_groups[app.placement.group as usize];
+                let Some(group) = strip.window_groups.get_mut(app.placement.group as usize) else {
+                    continue;
+                };
                 let tab = Tab {
                     id: app.id.0,
                     title,
-                    tile,
+                    tile: tile_content,
                 };
                 if !existing_continuation_tabs.contains(&app.id.0) {
                     inserted_continuation_tabs.push(app.id.0);

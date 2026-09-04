@@ -391,6 +391,10 @@ struct UndoApply {
 }
 
 /// The room-activity sheet.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent pane interaction flags model orthogonal UI state"
+)]
 pub struct RoomActivityPane {
     timeline: ActivityTimeline,
     source: HistorySource,
@@ -530,6 +534,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "constructor wires the pane's callback-backed interaction state"
+    )]
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
@@ -2437,6 +2445,13 @@ impl RoomActivityPane {
         y + 28.0
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "bounded UI geometry uses small display counts and cohesive layout inputs"
+    )]
     fn draw_detail_comparison(
         &self,
         scene: &mut Scene,
@@ -2554,6 +2569,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as the comparison renderer's state-adjacent fallback"
+    )]
     fn draw_unavailable_comparison(
         &self,
         scene: &mut Scene,
@@ -2720,6 +2739,11 @@ impl RoomActivityPane {
         );
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        reason = "bounded activity-card counts are converted solely for pixel layout"
+    )]
     fn draw_catch_up(
         &mut self,
         scene: &mut Scene,
@@ -2865,6 +2889,11 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::too_many_lines,
+        reason = "replay controls and preview are one bounded rendering pass"
+    )]
     fn draw_replay(
         &mut self,
         scene: &mut Scene,
@@ -3037,6 +3066,11 @@ impl RoomActivityPane {
         );
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        reason = "task rows use bounded indices for pixel layout in one rendering pass"
+    )]
     fn draw_task_center(
         &mut self,
         scene: &mut Scene,
@@ -3283,6 +3317,10 @@ impl RoomActivityPane {
     }
 
     /// Paint the sheet's title, factual scope/count, and latest outcome.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "title copy and status derivation vary together by activity mode"
+    )]
     fn draw_title_and_subtitle(
         &self,
         scene: &mut Scene,
@@ -3765,6 +3803,11 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::match_same_arms,
+        clippy::too_many_lines,
+        reason = "task transitions remain centralized so authorization and outcomes stay aligned"
+    )]
     fn apply_task_action(
         &mut self,
         action: TaskAction,
@@ -5284,6 +5327,11 @@ fn draw_task_button(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "task card rendering consumes the complete immutable card context"
+)]
 fn draw_task_card(
     scene: &mut Scene,
     transform: Affine,
@@ -5518,7 +5566,7 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
 }
 
 fn humanize_field(field: &str) -> String {
-    let words = field.replace('_', " ").replace('-', " ");
+    let words = field.replace(['_', '-'], " ");
     if words.trim().is_empty() {
         "content".to_string()
     } else {
@@ -5526,6 +5574,12 @@ fn humanize_field(field: &str) -> String {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "bounded replay topology counts are converted solely to pixel coordinates"
+)]
 fn draw_replay_layout(
     scene: &mut Scene,
     transform: Affine,
@@ -5675,6 +5729,10 @@ fn draw_replay_layout(
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "bounded frame and pointer indices are converted solely to pixel coordinates"
+)]
 fn draw_presence_trail(
     scene: &mut Scene,
     transform: Affine,
@@ -5772,6 +5830,12 @@ fn draw_replay_pointers(
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "brief card rendering uses bounded collection sizes and complete card context"
+)]
 fn draw_brief_card(
     scene: &mut Scene,
     transform: Affine,

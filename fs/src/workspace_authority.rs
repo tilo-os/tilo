@@ -28,8 +28,7 @@ pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 /// exposed to the desktop publisher.
 pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
     std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/qos"))
+        .map_or_else(|| PathBuf::from("/run/qos"), PathBuf::from)
         .join(format!("workspace-authority-{workspace}.sock"))
 }
 
@@ -37,8 +36,7 @@ pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
 /// authenticated relay discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
     std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/qos"))
+        .map_or_else(|| PathBuf::from("/run/qos"), PathBuf::from)
         .join(format!("workspace-content-{workspace}.sock"))
 }
 
@@ -80,6 +78,11 @@ impl PersistedContentPeer {
         Ok(())
     }
 
+    /// Decode the optional record-plane bootstrap ticket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored ticket is malformed.
     pub fn decoded_ticket(&self) -> anyhow::Result<Option<Ticket>> {
         self.ticket.as_deref().map(Ticket::decode).transpose()
     }
@@ -94,12 +97,18 @@ enum PersistedContentPeersFile {
     Legacy(Vec<iroh_base::EndpointAddr>),
 }
 
+/// Load, validate, and deduplicate the durable content-peer catalogue.
+///
+/// # Errors
+///
+/// Returns an error if the catalogue cannot be read or decoded, exceeds its
+/// bounded size, or contains a malformed ticket.
 pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<PersistedContentPeer>> {
     let path = content_peers_path(cache_dir);
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let mut peers = match serde_json::from_slice(&std::fs::read(&path)?)? {
+    let peers = match serde_json::from_slice(&std::fs::read(&path)?)? {
         PersistedContentPeersFile::Current(peers) => peers,
         PersistedContentPeersFile::Legacy(peers) => peers
             .into_iter()
@@ -115,7 +124,7 @@ pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<Pers
         "persisted content peers exceed {MAX_PERSISTED_CONTENT_PEERS}"
     );
     let mut unique = Vec::with_capacity(peers.len());
-    for peer in peers.drain(..) {
+    for peer in peers {
         peer.validate()?;
         if !unique
             .iter()
@@ -211,6 +220,11 @@ mod serde_bytes_64 {
 }
 
 impl WorkspaceAuthorityEnvelope {
+    /// Create a governor-signed authority envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the signed payload cannot be serialized.
     pub fn sign(
         workspace: uuid::Uuid,
         revision: u64,
@@ -230,6 +244,12 @@ impl WorkspaceAuthorityEnvelope {
         Ok(envelope)
     }
 
+    /// Verify the workspace, governor, and signature of this envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an identity does not match, the governor key is
+    /// invalid, payload serialization fails, or signature verification fails.
     pub fn verify(&self, expected_workspace: uuid::Uuid, governor: [u8; 32]) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace == expected_workspace,
@@ -266,6 +286,12 @@ pub struct WorkspaceAuthority {
 }
 
 impl WorkspaceAuthority {
+    /// Open the durable authority projection for a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisted authority cannot be read, decoded, or
+    /// verified.
     pub fn open(
         path: impl Into<PathBuf>,
         workspace: uuid::Uuid,
@@ -314,6 +340,11 @@ impl WorkspaceAuthority {
     /// Load an atomically-published signed revision written by the local
     /// governor process. This is the bridge from a desktop capability change
     /// into the already-running network authority service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the revision cannot be read, decoded, verified, or
+    /// applied.
     pub fn reload(&self) -> anyhow::Result<bool> {
         let bytes = std::fs::read(&self.path)?;
         let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
@@ -323,6 +354,11 @@ impl WorkspaceAuthority {
     /// Verify, durably replace, and publish a strictly newer authority state.
     /// Equal revisions are accepted only when byte-identical, making retries
     /// idempotent while refusing equivocation at one revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if verification fails, the revision regresses or
+    /// equivocates, serialization fails, or the durable write fails.
     pub fn apply(&self, next: WorkspaceAuthorityEnvelope) -> anyhow::Result<bool> {
         next.verify(self.workspace, self.governor)?;
         let mut current = self
@@ -347,6 +383,7 @@ impl WorkspaceAuthority {
         self.handle
             .replace(project(self.subject, &self.principals, Some(&next)));
         *current = Some(next);
+        drop(current);
         Ok(true)
     }
 }
@@ -406,8 +443,14 @@ pub struct ContentPeerResponse {
 }
 
 #[cfg(unix)]
-pub async fn serve_local_content_peer(
-    socket: PathBuf,
+/// Bind the local content-peer control socket and spawn its accept loop.
+///
+/// # Errors
+///
+/// Returns an error if a stale socket cannot be removed, the new socket cannot
+/// be bound, or its permissions cannot be restricted.
+pub fn serve_local_content_peer(
+    socket: &Path,
     hydrator: std::sync::Arc<crate::Hydrator>,
     cache_dir: Option<PathBuf>,
     active_workspace: uuid::Uuid,
@@ -416,10 +459,10 @@ pub async fn serve_local_content_peer(
     use std::os::unix::fs::PermissionsExt;
 
     if socket.exists() {
-        std::fs::remove_file(&socket)?;
+        std::fs::remove_file(socket)?;
     }
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     Ok(tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -487,10 +530,12 @@ pub async fn serve_local_content_peer(
                 .is_ok();
                 // The client needs a successful acknowledgement before the
                 // service exits and systemd starts the joined record plane.
-                if response_sent && accepted && restart_scheduled {
-                    if let Some(rebind) = rebind {
-                        let _ = rebind.send(());
-                    }
+                if response_sent
+                    && accepted
+                    && restart_scheduled
+                    && let Some(rebind) = rebind
+                {
+                    let _ = rebind.send(());
                 }
             });
         }
@@ -498,6 +543,12 @@ pub async fn serve_local_content_peer(
 }
 
 #[cfg(unix)]
+/// Register a direct content endpoint with the local filesystem daemon.
+///
+/// # Errors
+///
+/// Returns an error if the socket exchange fails or the daemon rejects the
+/// endpoint.
 pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
@@ -525,6 +576,11 @@ pub async fn register_local_content_peer(
 /// Remove every direct content endpoint discovered through `relay_service_id`.
 /// This is intentionally separate from registration so removal cannot be
 /// confused with an endpoint refresh.
+///
+/// # Errors
+///
+/// Returns an error if the socket exchange fails or the daemon rejects the
+/// removal.
 #[cfg(unix)]
 pub async fn remove_local_content_peers(
     socket: &std::path::Path,
@@ -548,18 +604,23 @@ pub async fn remove_local_content_peers(
 /// placing the socket in a `root:qos-identity` directory; the socket itself is
 /// group writable so an enrolled desktop can submit a governor-signed update
 /// without being able to alter the root-owned durable cache directly.
+///
+/// # Errors
+///
+/// Returns an error if a stale socket cannot be removed, the new socket cannot
+/// be bound, or its permissions cannot be restricted.
 #[cfg(unix)]
-pub async fn serve_local_authority(
-    socket: PathBuf,
+pub fn serve_local_authority(
+    socket: &Path,
     authority: std::sync::Arc<WorkspaceAuthority>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     use std::os::unix::fs::PermissionsExt;
 
     if socket.exists() {
-        std::fs::remove_file(&socket)?;
+        std::fs::remove_file(socket)?;
     }
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     Ok(tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -589,6 +650,11 @@ pub async fn serve_local_authority(
 
 /// Submit or query a local authority service.  The Unix permissions are the
 /// first gate; the signed envelope remains the authority gate.
+///
+/// # Errors
+///
+/// Returns an error if the local socket cannot be reached or the request or
+/// response cannot be framed.
 #[cfg(unix)]
 pub async fn local_authority_request(
     socket: &std::path::Path,
@@ -599,7 +665,13 @@ pub async fn local_authority_request(
     read_frame(&mut stream).await
 }
 
-pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin, T: Serialize>(
+/// Write one bounded postcard frame.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails, the frame exceeds the protocol
+/// limit, or the writer fails.
+pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> anyhow::Result<()> {
@@ -614,7 +686,13 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin, T: Serialize>(
     Ok(())
 }
 
-pub async fn read_frame<R: tokio::io::AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+/// Read and decode one bounded postcard frame.
+///
+/// # Errors
+///
+/// Returns an error if the reader fails, the frame exceeds the protocol limit,
+/// or its payload cannot be decoded.
+pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {
     use tokio::io::AsyncReadExt;
@@ -760,9 +838,7 @@ mod tests {
             .unwrap(),
         );
         let socket = temp.path().join(LOCAL_AUTHORITY_SOCKET);
-        let task = serve_local_authority(socket.clone(), authority.clone())
-            .await
-            .unwrap();
+        let task = serve_local_authority(&socket, authority.clone()).unwrap();
         let first =
             WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &governor).unwrap();
         let first_response = local_authority_request(
@@ -823,13 +899,12 @@ mod tests {
         let active_workspace = Ticket::workspace_id_for_topic([0x71; 32]);
         let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
         let task = serve_local_content_peer(
-            socket.clone(),
+            &socket,
             hydrator.clone(),
             Some(cache.clone()),
             active_workspace,
             Some(rebind_tx),
         )
-        .await
         .unwrap();
         let discovered =
             iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
@@ -873,13 +948,12 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         let workspace = Ticket::workspace_id_for_topic([0x71; 32]);
         let task = serve_local_content_peer(
-            socket.clone(),
+            &socket,
             hydrator.clone(),
             Some(cache.clone()),
             workspace,
             None,
         )
-        .await
         .unwrap();
         let discovered =
             iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
@@ -942,13 +1016,12 @@ mod tests {
         let remote_workspace = [0x22; 32];
         let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
         let task = serve_local_content_peer(
-            socket.clone(),
+            &socket,
             hydrator.clone(),
             Some(cache.clone()),
             active_workspace,
             Some(rebind_tx),
         )
-        .await
         .unwrap();
         let nas = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
         let owner = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x43; 32]).public());

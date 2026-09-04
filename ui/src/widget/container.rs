@@ -305,6 +305,12 @@ impl Widget for Container {
             .collect()
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(child) = &self.child {
+            visitor(child.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.child
             .as_mut()

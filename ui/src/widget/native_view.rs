@@ -600,6 +600,14 @@ impl Widget for NativeView {
         }
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if !self.mounted
+            && let Some(fallback) = self.fallback.as_deref()
+        {
+            visitor(fallback);
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.mounted {
             Vec::new()

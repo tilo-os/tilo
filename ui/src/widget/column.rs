@@ -11,8 +11,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent invalidation and cache flags model orthogonal retained-widget state"
+)]
 pub struct Column {
     children: Vec<Box<dyn Widget>>,
+    /// Retained Taffy identities for `children`. Rebuilt only with the layout
+    /// tree; hot event/layout traversal must not allocate `taffy.children()`.
+    child_nodes: Vec<NodeId>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -38,6 +45,8 @@ pub struct Column {
     /// mismatch → rebuild; pure translation → reuse with a
     /// `translate(delta)` on the outer append.
     cache_rect: vello::kurbo::Rect,
+    cache_present: bool,
+    descendant_caches_released: bool,
 }
 
 impl Default for Column {
@@ -50,6 +59,7 @@ impl Column {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
+            child_nodes: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -64,6 +74,8 @@ impl Column {
             fill_remaining_height: false,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
+            cache_present: false,
+            descendant_caches_released: false,
         }
     }
 
@@ -195,7 +207,7 @@ impl Widget for Column {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let child_nodes: Vec<NodeId> = self
+        self.child_nodes = self
             .children
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
@@ -254,7 +266,7 @@ impl Widget for Column {
                 flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
                 ..Default::default()
             },
-            &child_nodes,
+            &self.child_nodes,
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -278,8 +290,7 @@ impl Widget for Column {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        let children = taffy.children(node).unwrap_or_default();
-        for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
+        for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
     }
@@ -306,16 +317,15 @@ impl Widget for Column {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
+        _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
         // A child with a latched drag (e.g. a slider's knob) gets ALL
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's
         // CursorMoved handler could set `handled` first.
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            let Some(&cnode) = child_nodes.get(idx) else {
+            let Some(&cnode) = self.child_nodes.get(idx) else {
                 return;
             };
             let Some(child) = self.children.get_mut(idx) else {
@@ -334,7 +344,7 @@ impl Widget for Column {
             );
             return;
         }
-        for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+        for (child_widget, &child_node) in self.children.iter_mut().zip(&self.child_nodes) {
             child_widget.handle_event(
                 event,
                 scale_factor,
@@ -364,8 +374,13 @@ impl Widget for Column {
     /// `Vec` via `children()`, which the subtree-cache check
     /// hits per frame.
     fn needs_redraw(&self) -> bool {
-        self.cache_rect == vello::kurbo::Rect::ZERO
-            || self.children.iter().any(|c| c.needs_redraw())
+        self.children.iter().any(|c| c.needs_redraw())
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        for child in &self.children {
+            child.collect_damage(regions);
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -377,6 +392,12 @@ impl Widget for Column {
             .iter()
             .map(std::convert::AsRef::as_ref)
             .collect()
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for child in &self.children {
+            visitor(child.as_ref());
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -457,8 +478,7 @@ impl Widget for Column {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild =
-            self.cache_rect == vello::kurbo::Rect::ZERO || size_changed || any_child_dirty;
+        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
 
         if needs_rebuild {
             // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
@@ -489,6 +509,8 @@ impl Widget for Column {
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
+            self.cache_present = true;
+            self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);
         } else {
             let dx = self.rect.x0 - self.cache_rect.x0;
@@ -501,6 +523,12 @@ impl Widget for Column {
             )]
             let cache_transform = transform * Affine::translate((dx, dy));
             scene.append(&self.subtree_cache, Some(cache_transform));
+            if !self.descendant_caches_released {
+                for child in &mut self.children {
+                    child.release_scene_cache();
+                }
+                self.descendant_caches_released = true;
+            }
         }
 
         if let Some(scope) = self.permission_scope()
@@ -521,6 +549,15 @@ impl Widget for Column {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.subtree_cache = Scene::new();
+        self.cache_present = false;
+        self.descendant_caches_released = true;
+        for child in &mut self.children {
+            child.release_scene_cache();
         }
     }
 }

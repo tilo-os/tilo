@@ -113,6 +113,11 @@ pub struct ContinuationRegistry {
 }
 
 impl ContinuationRegistry {
+    /// Records validated, syncable resume state for an application instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application id or resume payload is invalid.
     pub fn report(
         &mut self,
         room: RoomId,
@@ -132,7 +137,7 @@ impl ContinuationRegistry {
         let report = AppContinuationReport {
             room,
             app_id: app_id.clone(),
-            instance_id: instance_id.clone(),
+            instance_id,
             resume,
         };
         let key = (room, app_id, instance_id);
@@ -287,6 +292,10 @@ impl ContinuationRegistry {
 
     pub fn len(&self) -> usize {
         self.reports.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reports.is_empty()
     }
 }
 

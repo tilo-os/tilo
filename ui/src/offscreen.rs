@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::gpu::RenderContext;
 use pollster::FutureExt;
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
@@ -40,6 +41,31 @@ static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::ne
 /// two-growth case with one spare attempt, while remaining strictly bounded
 /// for intentionally transparent scenes.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+
+struct DamageTexture {
+    width: u32,
+    height: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OffscreenMemoryStats {
+    pub output_target_bytes: u64,
+    pub damage_target_bytes: u64,
+    pub readback_bytes: u64,
+    pub vello: vello::RendererMemoryStats,
+}
+
+impl OffscreenMemoryStats {
+    pub fn known_gpu_bytes(self) -> u64 {
+        self.output_target_bytes
+            .saturating_add(self.damage_target_bytes)
+            .saturating_add(self.vello.pooled_buffer_bytes)
+            .saturating_add(self.vello.live_buffer_bytes)
+            .saturating_add(self.vello.image_bytes)
+    }
+}
 
 fn shared_render_context() -> Arc<Mutex<RenderContext>> {
     SHARED_RENDER_CONTEXT
@@ -138,12 +164,37 @@ pub struct OffscreenRenderer {
     dev_id: usize,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    readback_buf: wgpu::Buffer,
+    /// Allocated only for screenshot/pixel callers. GPU timing benchmarks
+    /// never read the target back and therefore should not carry a second
+    /// full-resolution host-visible allocation.
+    readback_buf: Option<wgpu::Buffer>,
     padded_bytes_per_row: u32,
     renderer: Renderer,
+    damage_textures: Vec<DamageTexture>,
+    damage_scene: Scene,
+    last_damage_signature: Option<(usize, u32, u32, u64)>,
+    target_valid: bool,
 }
 
 impl OffscreenRenderer {
+    pub fn memory_stats(&self) -> OffscreenMemoryStats {
+        let rgba_bytes = |width: u32, height: u32| {
+            u64::from(width)
+                .saturating_mul(u64::from(height))
+                .saturating_mul(4)
+        };
+        OffscreenMemoryStats {
+            output_target_bytes: rgba_bytes(self.width, self.height),
+            damage_target_bytes: self
+                .damage_textures
+                .iter()
+                .map(|target| rgba_bytes(target.width, target.height))
+                .sum(),
+            readback_bytes: self.readback_buf.as_ref().map_or(0, wgpu::Buffer::size),
+            vello: self.renderer.memory_stats(),
+        }
+    }
+
     /// Panics if no suitable adapter exists. **Do not try to soften that
     /// with `std::panic::catch_unwind`** — the shipping release profile
     /// sets `panic = "abort"`, under which a panic kills the process at the
@@ -212,7 +263,9 @@ impl OffscreenRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -222,18 +275,10 @@ impl OffscreenRenderer {
         let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
-        let readback_size = u64::from(padded_bytes_per_row.saturating_mul(height));
-        let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quick-ui-offscreen-readback"),
-            size: readback_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
         let renderer = Renderer::new(
             device,
             RendererOptions {
-                use_cpu: false,
+                use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
                 // Only `Area` is ever asked for; `all()` would also build
                 // the msaa8/msaa16 pipelines nothing selects.
                 antialiasing_support: AaSupport::area_only(),
@@ -252,10 +297,79 @@ impl OffscreenRenderer {
             dev_id,
             texture,
             view,
-            readback_buf,
+            readback_buf: None,
             padded_bytes_per_row,
             renderer,
+            damage_textures: Vec::with_capacity(4),
+            damage_scene: Scene::new(),
+            last_damage_signature: None,
+            target_valid: false,
         })
+    }
+
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "pixel-test readback cannot recover from a failed GPU mapping"
+    )]
+    fn read_target(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
+        let readback_buf = self.readback_buf.get_or_insert_with(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("quick-ui-offscreen-readback"),
+                size: u64::from(self.padded_bytes_per_row.saturating_mul(self.height)),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: readback_buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_bytes_per_row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback_buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv()
+            .expect("map_async channel")
+            .expect("buffer map failed");
+
+        let mapped = slice.get_mapped_range();
+        let row_bytes = (self.width as usize).saturating_mul(4);
+        let mut tight = Vec::with_capacity((self.height as usize).saturating_mul(row_bytes));
+        for row in 0..self.height as usize {
+            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let end = start.saturating_add(row_bytes);
+            let row_slice = mapped
+                .get(start..end)
+                .expect("readback row out of range of the mapped buffer");
+            tight.extend_from_slice(row_slice);
+        }
+        drop(mapped);
+        readback_buf.unmap();
+        tight
     }
 
     /// Returns raw RGBA pixels, tight-packed at `4 * width` bytes per row
@@ -310,63 +424,277 @@ impl OffscreenRenderer {
                 },
             )
             .expect("render_to_texture");
+        self.target_valid = true;
+        self.last_damage_signature = Some((
+            1,
+            self.width,
+            self.height,
+            u64::from(self.width).saturating_mul(u64::from(self.height)),
+        ));
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback_buf,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(std::iter::once(encoder.finish()));
-
-        // `map_async` is async but `poll(Wait)` drives it to completion
-        // without an executor for our purposes.
-        let slice = self.readback_buf.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            tx.send(r).ok();
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .expect("map_async channel")
-            .expect("buffer map failed");
-
-        let mapped = slice.get_mapped_range();
-        let row_bytes = (self.width as usize).saturating_mul(4);
-        let mut tight = Vec::with_capacity((self.height as usize).saturating_mul(row_bytes));
-        for row in 0..self.height as usize {
-            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
-            let end = start.saturating_add(row_bytes);
-            let row_slice = mapped
-                .get(start..end)
-                .expect("readback row out of range of the mapped buffer");
-            tight.extend_from_slice(row_slice);
-        }
-        drop(mapped);
-        self.readback_buf.unmap();
+        let tight = self.read_target(&device, &queue);
         let overflowed = self.renderer.settle_bump_budget(&device);
         (tight, overflowed)
     }
 
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         self.render_with_overflow(scene, bg).0
+    }
+
+    /// Read the already-rendered retained target without submitting another
+    /// Vello frame. Used to verify partial-damage composition pixel-for-pixel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared GPU context or target readback fails.
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "pixel-test readback cannot recover from unavailable shared GPU state"
+    )]
+    pub fn readback_current(&mut self) -> Vec<u8> {
+        let (device, queue) = {
+            let ctx = self.context.lock().expect("shared RenderContext poisoned");
+            let handle = ctx
+                .devices
+                .get(self.dev_id)
+                .expect("this renderer's device entry is missing from the shared RenderContext");
+            (handle.device.clone(), handle.queue.clone())
+        };
+        self.read_target(&device, &queue)
+    }
+
+    /// Submit a render and wait for its GPU work without copying the target
+    /// back to CPU memory.
+    ///
+    /// Performance harnesses use this to measure Vello rather than PCIe/shared
+    /// memory readback plus row repacking. Screenshot and visual-regression
+    /// callers should continue to use [`Self::render`].
+    ///
+    /// # Panics
+    /// If shared GPU state is poisoned/missing or Vello rejects the render.
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
+        let (device, queue) = {
+            let ctx = self.context.lock().expect("shared RenderContext poisoned");
+            let handle = ctx
+                .devices
+                .get(self.dev_id)
+                .expect("this renderer's device entry is missing from the shared RenderContext");
+            (handle.device.clone(), handle.queue.clone())
+        };
+
+        self.renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                scene,
+                &self.view,
+                &RenderParams {
+                    base_color: bg,
+                    width: self.width,
+                    height: self.height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .expect("render_to_texture");
+        self.target_valid = true;
+        self.last_damage_signature = Some((
+            1,
+            self.width,
+            self.height,
+            u64::from(self.width).saturating_mul(u64::from(self.height)),
+        ));
+
+        // `settle_bump_budget` waits for the submitted work and consumes the
+        // tiny allocator-counter readback when Vello requested one. It never
+        // reads the rendered target image back to the host.
+        let _ = self.renderer.settle_bump_budget(&device);
+    }
+
+    /// Update one native-resolution rectangle in the retained target and
+    /// wait for completion. Pixels outside `damage` are preserved exactly;
+    /// no resizing or upscaling is involved.
+    ///
+    /// Returns the number of pixels actually rasterized. An invalid or
+    /// full-size damage rectangle falls back to a complete target render.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared GPU context is unavailable or Vello rejects the
+    /// render. This is a benchmark/test primitive and cannot produce a valid
+    /// timing sample after either failure.
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
+        self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
+    }
+
+    /// Batched form of [`Self::render_damage_gpu_wait`]. Disconnected regions
+    /// remain separate, but all submissions are completed by one final wait.
+    /// Damage covering at least half the output falls back to one full render
+    /// to bound pass count and scratch-texture memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    pub fn render_damage_regions_gpu_wait(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        damage: &[Rect],
+    ) -> u64 {
+        let full_pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
+        let mut damage_pixels = 0u64;
+        let mut scratch_width = 0u32;
+        let mut scratch_height = 0u32;
+        for rect in damage {
+            let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
+            let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
+            let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
+            let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
+            let width = x1.saturating_sub(x0);
+            let height = y1.saturating_sub(y0);
+            damage_pixels =
+                damage_pixels.saturating_add(u64::from(width).saturating_mul(u64::from(height)));
+            scratch_width = scratch_width.max(width);
+            scratch_height = scratch_height.max(height);
+        }
+        if !self.target_valid
+            || damage_pixels == 0
+            || damage_pixels >= full_pixels.saturating_div(2)
+        {
+            self.render_gpu_wait(scene, bg);
+            return full_pixels;
+        }
+
+        let (device, queue) = {
+            let ctx = self.context.lock().expect("shared RenderContext poisoned");
+            let handle = ctx
+                .devices
+                .get(self.dev_id)
+                .expect("this renderer's device entry is missing from the shared RenderContext");
+            (handle.device.clone(), handle.queue.clone())
+        };
+        let signature = (damage.len(), scratch_width, scratch_height, damage_pixels);
+        if self
+            .last_damage_signature
+            .is_some_and(|previous| previous != signature)
+        {
+            self.renderer.trim_pooled_buffers();
+        }
+        self.last_damage_signature = Some(signature);
+
+        let mut target_index = 0usize;
+        for rect in damage {
+            let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
+            let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
+            let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
+            let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
+            let width = x1.saturating_sub(x0);
+            let height = y1.saturating_sub(y0);
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let recreate = self
+                .damage_textures
+                .get(target_index)
+                .is_none_or(|target| target.width != width || target.height != height);
+            if recreate {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("quick-ui-native-damage-target"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let replacement = DamageTexture {
+                    width,
+                    height,
+                    texture,
+                    view,
+                };
+                if let Some(target) = self.damage_textures.get_mut(target_index) {
+                    *target = replacement;
+                } else {
+                    self.damage_textures.push(replacement);
+                }
+            }
+            let target = self
+                .damage_textures
+                .get(target_index)
+                .expect("damage target was inserted above");
+            self.damage_scene.reset();
+            self.damage_scene.append(
+                scene,
+                Some(Affine::translate((-(f64::from(x0)), -(f64::from(y0))))),
+            );
+            self.renderer
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    &self.damage_scene,
+                    &target.view,
+                    &RenderParams {
+                        base_color: bg,
+                        width,
+                        height,
+                        antialiasing_method: AaConfig::Area,
+                    },
+                )
+                .expect("render_to_texture");
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("quick-ui-copy-native-damage"),
+            });
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            target_index = target_index.saturating_add(1);
+        }
+        self.damage_textures.truncate(target_index);
+        let _ = self.renderer.settle_bump_budget(&device);
+        damage_pixels
     }
 
     /// [`render`](Self::render) with a transparent background.
@@ -480,6 +808,9 @@ impl OffscreenRenderer {
 #[cfg(test)]
 mod tests {
     use super::OffscreenRenderer;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
 
     /// A `static Mutex<Option<OffscreenRenderer>>` (see the module docs)
     /// only compiles while this holds, so a field that quietly gave up
@@ -526,6 +857,53 @@ mod tests {
             OffscreenRenderer::pixels_differing_beyond_aa(&base, &base[..4]),
             1,
             "a size mismatch must count the pixels that have no counterpart"
+        );
+    }
+
+    #[test]
+    fn native_damage_matches_a_full_render_and_preserves_untouched_pixels() {
+        const W: u32 = 96;
+        const H: u32 = 64;
+        let mut initial = Scene::new();
+        initial.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(24, 32, 48),
+            None,
+            &Rect::new(8.0, 8.0, 88.0, 56.0),
+        );
+        let mut updated = initial.clone();
+        updated.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(80, 220, 120),
+            None,
+            &Rect::new(28.0, 20.0, 68.0, 44.0),
+        );
+
+        let mut retained = OffscreenRenderer::new(W, H);
+        let before = retained.render(&initial, Color::BLACK);
+        assert_eq!(
+            retained.render_damage_gpu_wait(
+                &updated,
+                Color::BLACK,
+                Rect::new(26.0, 18.0, 70.0, 46.0),
+            ),
+            44 * 28,
+        );
+        let partial = retained.readback_current();
+
+        let mut reference = OffscreenRenderer::new(W, H);
+        let full = reference.render(&updated, Color::BLACK);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&partial, &full),
+            0,
+            "native damage composition must match a complete frame",
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&before, W, 12, 12),
+            OffscreenRenderer::sample(&partial, W, 12, 12),
+            "pixels outside damage stay byte-identical",
         );
     }
 }

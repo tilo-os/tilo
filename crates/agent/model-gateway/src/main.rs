@@ -1,8 +1,8 @@
 //! Per-user hosted model gateway.
 //!
 //! This intentionally is a narrow OpenAI-compatible/Anthropic relay, not a
-//! general LiteLLM deployment. qOS needs one profile-selected planning call;
-//! adding LiteLLM would introduce an unpinned Python control plane and more
+//! general `LiteLLM` deployment. qOS needs one profile-selected planning call;
+//! adding `LiteLLM` would introduce an unpinned Python control plane and more
 //! provider surface than is audited here.
 
 use std::fs;
@@ -150,7 +150,7 @@ fn handle(app_id: &str, request: Request) -> Response {
             profile_id,
             model_id,
             body,
-        } if app_id == AGENT_APP => plan(&profile_id, &model_id, body).map(|output| Response {
+        } if app_id == AGENT_APP => plan(&profile_id, &model_id, &body).map(|output| Response {
             ok: true,
             output: Some(output),
             configured: None,
@@ -248,7 +248,7 @@ fn remove_key(profile_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn plan(profile_id: &str, model_id: &str, body: serde_json::Value) -> Result<String, String> {
+fn plan(profile_id: &str, model_id: &str, body: &serde_json::Value) -> Result<String, String> {
     let profile = configured_profile(profile_id)?;
     if !profile.models.iter().any(|model| model.id == model_id) {
         return Err("model is not configured for this provider".into());
@@ -278,10 +278,10 @@ fn plan(profile_id: &str, model_id: &str, body: serde_json::Value) -> Result<Str
         }
     }
     let result = request
-        .json(&body)
+        .json(body)
         .send()
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
         .map_err(|_| "provider request failed".to_string());
     secret.zeroize();
     result
@@ -299,7 +299,9 @@ fn provider_url(profile: &ProviderProfile) -> String {
 
 fn same_user(stream: &UnixStream) -> bool {
     let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
+        return false;
+    };
     // SAFETY: getsockopt writes into a correctly sized ucred buffer.
     let result = unsafe {
         libc::getsockopt(
@@ -307,7 +309,7 @@ fn same_user(stream: &UnixStream) -> bool {
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             credentials.as_mut_ptr().cast(),
-            &mut length,
+            &raw mut length,
         )
     };
     result == 0

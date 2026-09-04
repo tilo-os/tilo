@@ -308,9 +308,9 @@ fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_b
             // snapshot for this process becoming reachable.
             if current_process_joined
                 && current.full_content_replication
-                && !current.filesystem_endpoints.is_empty()
+                && let Some(endpoint) = current.filesystem_endpoints.first()
             {
-                return current.filesystem_endpoints[0].clone();
+                return endpoint.clone();
             }
             last_status = Some(current);
         }
@@ -936,6 +936,10 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
 /// exported production bundle, receives an update and deletion, then remains
 /// the only reachable source across both owner loss and its own restart.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end process-boundary scenario preserves lifecycle state across every phase"
+)]
 fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() {
     if !real_fuse_available("owner/NAS/collaborator lifecycle") {
         return;

@@ -3,6 +3,29 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Resource kind for bytes addressed by their content hash.
+///
+/// Producers return `qos.content:<hash>` in [`ActionOutput::resources`]; a
+/// content-collecting action may then consume the hash without asking a model
+/// to copy or invent it.
+pub const CONTENT_RESOURCE_KIND: &str = "qos.content";
+
+/// Build the canonical resource address for content-addressed bytes.
+///
+/// Empty hashes and hashes containing the address separator are refused so a
+/// malformed producer cannot create an ambiguous resource address.
+pub fn content_resource(hash: &str) -> Option<String> {
+    (!hash.is_empty() && !hash.contains(':')).then(|| format!("{CONTENT_RESOURCE_KIND}:{hash}"))
+}
+
+/// Read a content hash from its canonical resource address.
+pub fn content_hash(address: &str) -> Option<&str> {
+    address
+        .strip_prefix(CONTENT_RESOURCE_KIND)?
+        .strip_prefix(':')
+        .filter(|hash| !hash.is_empty() && !hash.contains(':'))
+}
+
 /// Stable key carried from admission through completion and used to
 /// deduplicate retry-safe calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -92,5 +115,20 @@ impl InvocationUpdate {
             self,
             Self::Succeeded { .. } | Self::Failed { .. } | Self::Cancelled { .. }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_resource_addresses_round_trip_without_guessing() {
+        let address = content_resource("abc123").expect("a content hash has an address");
+        assert_eq!(address, "qos.content:abc123");
+        assert_eq!(content_hash(&address), Some("abc123"));
+        assert_eq!(content_resource(""), None);
+        assert_eq!(content_resource("two:parts"), None);
+        assert_eq!(content_hash("files.entry:/tmp/a"), None);
     }
 }
