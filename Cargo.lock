@@ -13521,6 +13521,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "accesskit_unix",
  "app-state",
  "atomic-file",
  "automerge",

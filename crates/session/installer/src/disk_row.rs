@@ -63,6 +63,47 @@ impl DiskRow {
     fn disabled(&self) -> bool {
         self.disk.is_system || self.disk.read_only || !self.disk.identity_ready()
     }
+
+    /// The short, spoken identity of this candidate. Keep the hardware model,
+    /// human-formatted capacity, and currently displayed device path, but do
+    /// not expose serial numbers, WWNs, or kernel device numbers to assistive
+    /// technology. Those identifiers are useful for the backend's safety
+    /// binding, not for choosing a disk.
+    fn accessible_name(&self) -> String {
+        let model = self.disk.model.trim();
+        if model.is_empty() {
+            format!(
+                "{} storage device, device {}",
+                self.disk.size.trim(),
+                self.disk.name.trim()
+            )
+        } else {
+            format!(
+                "{model}, {}, device {}",
+                self.disk.size.trim(),
+                self.disk.name.trim()
+            )
+        }
+    }
+
+    fn accessible_description(&self) -> String {
+        let mut sentences = vec![format!("{}.", self.disk.contents_summary())];
+        if self.disk.is_system {
+            sentences.push(
+                "Unavailable because this is the disk the live system is running from.".to_string(),
+            );
+        }
+        if self.disk.read_only {
+            sentences.push("Unavailable because this disk is read-only.".to_string());
+        }
+        if !self.disk.identity_ready() {
+            sentences.push(
+                "Unavailable because the installer could not verify which physical disk this is. Refresh the disk list or reconnect it."
+                    .to_string(),
+            );
+        }
+        sentences.join(" ")
+    }
 }
 
 impl Widget for DiskRow {
@@ -269,6 +310,56 @@ impl Widget for DiskRow {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+
+    fn is_enabled(&self) -> bool {
+        !self.disabled()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self.select_path.clone(),
+            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.select_path.clone()),
+        }]
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        if self.disabled()
+            || !matches!(
+                action,
+                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+            )
+        {
+            return false;
+        }
+        self.fire(state, root);
+        true
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        Some(
+            AccessNode::new(Role::RadioButton)
+                .with_semantic_key(self.select_path.as_str())
+                .with_name(self.accessible_name())
+                .with_description(self.accessible_description())
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused,
+                    disabled: self.disabled(),
+                    // For a radio button, `checked` is the platform selection
+                    // state. Setting the generic `selected` state too would
+                    // make screen readers announce the choice twice.
+                    checked: Some(self.selected),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -355,5 +446,80 @@ mod tests {
         target.major_minor.clear();
         let row = DiskRow::new(target, "select", false);
         assert!(!row.is_focusable());
+    }
+
+    #[test]
+    fn accessibility_names_the_human_disk_without_hardware_identifiers() {
+        let mut target = disk();
+        target.model = "QEMU Fast Storage".into();
+        target.wwn = "secret-wwn".into();
+        let mut row = DiskRow::new(target, "select", true);
+        row.set_focus(true);
+
+        let node = row.accessibility().expect("disk selection semantics");
+        assert_eq!(node.role, ui::a11y::Role::RadioButton);
+        assert_eq!(
+            node.name.as_deref(),
+            Some("QEMU Fast Storage, 40.0 GiB, device /dev/vdb")
+        );
+        assert_eq!(node.description.as_deref(), Some("Empty disk."));
+        assert_eq!(node.state.checked, Some(true));
+        assert!(node.state.focusable);
+        assert!(node.state.focused);
+        assert!(!node.state.disabled);
+        assert!(
+            !node
+                .name
+                .as_deref()
+                .unwrap_or_default()
+                .contains("secret-wwn")
+        );
+    }
+
+    #[test]
+    fn accessibility_uses_a_clear_fallback_when_model_is_missing() {
+        let node = DiskRow::new(disk(), "select", false)
+            .accessibility()
+            .expect("disk selection semantics");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("40.0 GiB storage device, device /dev/vdb")
+        );
+        assert_eq!(node.state.checked, Some(false));
+    }
+
+    #[test]
+    fn disabled_semantics_explain_every_safety_barrier() {
+        let mut target = disk();
+        target.is_system = true;
+        target.read_only = true;
+        target.major_minor.clear();
+        let mut row = DiskRow::new(target, "select", false);
+
+        let node = row.accessibility().expect("disabled disk semantics");
+        let description = node.description.as_deref().expect("disabled reason");
+        assert!(node.state.disabled);
+        assert!(!node.state.focusable);
+        assert!(description.contains("live system is running from"));
+        assert!(description.contains("disk is read-only"));
+        assert!(description.contains("could not verify which physical disk"));
+
+        let mut doc = AutoCommit::new();
+        assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(doc.get(&ROOT, "select").unwrap().is_none());
+    }
+
+    #[test]
+    fn assistive_activation_uses_the_same_selection_flag() {
+        let mut row = DiskRow::new(disk(), "select", false);
+        let mut doc = AutoCommit::new();
+
+        assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+        assert_eq!(
+            doc.get(&ROOT, "select")
+                .unwrap()
+                .and_then(|(value, _)| value.to_bool()),
+            Some(true)
+        );
     }
 }
