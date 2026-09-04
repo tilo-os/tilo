@@ -14,10 +14,13 @@ Release hosts produce this matrix (architecture is part of every filename):
 
 The protected tag workflow also builds the live installer on native x86-64 and
 ARM64 runners, converts the tested qcow2 to `qos-installer-linux-ARCH.img.zst`,
-and publishes a digest-bound catalog. The catalog is embedded into every signed
-Imager package. Selecting its qOS release downloads the compressed image into a
-per-user cache and verifies both the transport SHA-256 and expanded-image
-SHA-256/size before the raw image is offered to the writer.
+and publishes a digest-bound catalog. Both installer images and the catalog
+receive detached OpenPGP signatures from the independently pinned Linux release
+identity, so direct downloads can be authenticated as well as checksum-checked.
+The catalog is also embedded into every signed Imager package. Selecting its qOS
+release downloads the compressed image into a per-user cache and verifies both
+the transport SHA-256 and expanded-image SHA-256/size before the raw image is
+offered to the writer.
 
 Every package launches the wizard as the signed-in user. Only after the exact
 external device name is typed does it request polkit, macOS administrator, or
@@ -109,3 +112,9 @@ so the site recommends the signed setup EXE instead of showing a command that
 cannot resolve yet. Re-running the idempotent site promotion after Microsoft
 accepts the exact version detects the public manifest and changes WinGet to
 `available`.
+
+Forgejo releases remain drafts while artifacts are uploaded. Publication reads
+every attachment back and compares its exact bytes, then makes the complete
+release public in one final API update. A failed upload therefore leaves a
+recoverable private draft; an already-public release is immutable and cannot be
+filled in or changed by a rerun.

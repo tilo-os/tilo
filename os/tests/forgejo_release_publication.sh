@@ -22,6 +22,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+release = None
 assets = []
 asset_bytes = {}
 
@@ -38,9 +39,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        global release
         path = urlsplit(self.path).path
         if path.endswith("/releases/tags/imager-v1.2.3"):
-            self.send_json(200, {"id": 1})
+            if release is None:
+                self.send_json(404, {"message": "not found"})
+            else:
+                self.send_json(200, release)
         elif path.endswith("/releases/1/assets"):
             self.send_json(200, assets)
         elif path.startswith("/download/"):
@@ -54,7 +59,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"message": "not found"})
 
     def do_POST(self):
+        global release
         parsed = urlsplit(self.path)
+        if parsed.path.endswith("/releases"):
+            length = int(self.headers["Content-Length"])
+            request = json.loads(self.rfile.read(length))
+            if request.get("draft") is not True:
+                self.send_json(400, {"message": "release must begin as a draft"})
+                return
+            release = {"id": 1, **request}
+            self.send_json(201, release)
+            return
         if not parsed.path.endswith("/releases/1/assets"):
             self.send_json(404, {"message": "not found"})
             return
@@ -85,6 +100,20 @@ class Handler(BaseHTTPRequestHandler):
         assets.append(asset)
         self.send_json(201, asset)
 
+    def do_PATCH(self):
+        global release
+        parsed = urlsplit(self.path)
+        if not parsed.path.endswith("/releases/1") or release is None:
+            self.send_json(404, {"message": "not found"})
+            return
+        length = int(self.headers["Content-Length"])
+        request = json.loads(self.rfile.read(length))
+        if request.get("draft") is not False or not assets:
+            self.send_json(400, {"message": "cannot publish an empty release"})
+            return
+        release = {"id": 1, **request}
+        self.send_json(200, release)
+
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 with open(sys.argv[1], "w", encoding="utf-8") as target:
     target.write(str(server.server_port))
@@ -112,6 +141,8 @@ publish() {
 first="$(publish)"
 grep -Fq 'published and verified qos-imager-test.bin' <<<"$first" \
   || { printf 'first publication was not uploaded and verified\n' >&2; exit 1; }
+grep -Fq 'published complete release imager-v1.2.3' <<<"$first" \
+  || { printf 'verified draft was not promoted after upload\n' >&2; exit 1; }
 
 second="$(publish)"
 grep -Fq 'verified existing qos-imager-test.bin' <<<"$second" \

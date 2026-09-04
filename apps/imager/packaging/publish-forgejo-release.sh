@@ -69,7 +69,7 @@ print(json.dumps({
     "tag_name": tag,
     "name": f"qOS Imager {tag}",
     "body": "Signed qOS Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with qos-release-key.asc after comparing qos-release-key.fingerprint with the fingerprint published through an independent qOS channel.",
-    "draft": False,
+    "draft": True,
     "prerelease": False,
 }))
 PY
@@ -82,12 +82,16 @@ elif [ "$release_status" != 200 ]; then
   exit 1
 fi
 
-release_id="$(python3 - "$release_json" <<'PY'
+read -r release_id release_state < <(python3 - "$release_json" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
-    print(json.load(source)["id"])
+    release = json.load(source)
+draft = release.get("draft")
+if not isinstance(draft, bool):
+    raise SystemExit("Forgejo release response has no boolean draft state")
+print(release["id"], "draft" if draft else "published")
 PY
-)"
+)
 api_get "$api/releases/$release_id/assets" >"$assets_json"
 
 # Different artifact jobs may use nested directories. Refuse ambiguous local
@@ -103,6 +107,27 @@ while IFS= read -r -d '' artifact; do
   fi
   local_names["$name"]="$artifact"
 done < <(find "$asset_root" -type f -print0 | sort -z)
+
+# A resumed draft may contain uploads from an earlier failed attempt. Publish
+# only when its remote name set is a subset of this run's exact local set;
+# otherwise an obsolete or injected attachment could become public unnoticed.
+while IFS= read -r -d '' remote_name; do
+  if [[ ! -v "local_names[$remote_name]" ]]; then
+    printf 'release draft contains unexpected asset %s; refusing publication\n' \
+      "$remote_name" >&2
+    exit 1
+  fi
+done < <(python3 - "$assets_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    assets = json.load(source)
+for asset in assets:
+    name = asset.get("name")
+    if not isinstance(name, str) or not name or "\0" in name:
+        raise SystemExit("release contains an invalid asset name")
+    sys.stdout.buffer.write(name.encode() + b"\0")
+PY
+)
 
 processed=0
 index=0
@@ -146,6 +171,11 @@ PY
     fi
     printf 'verified existing %s\n' "$name"
   else
+    if [ "$release_state" != draft ]; then
+      printf 'published release is missing immutable asset %s; refusing to modify it\n' \
+        "$name" >&2
+      exit 1
+    fi
     uploaded_json="$work/uploaded-$index.json"
     encoded_name="$(python3 - "$name" <<'PY'
 import sys
@@ -193,3 +223,32 @@ done < <(find "$asset_root" -type f -print0 | sort -z)
   printf 'no release assets found under %s\n' "$asset_root" >&2
   exit 1
 }
+
+# Keep a newly created or resumed release private until every local artifact
+# has been uploaded and read back byte-for-byte. A failed run therefore leaves
+# a recoverable draft rather than a partially visible public release.
+if [ "$release_state" = draft ]; then
+  publish_payload="$(python3 - "$GITHUB_REF_NAME" <<'PY'
+import json, sys
+tag = sys.argv[1]
+print(json.dumps({
+    "tag_name": tag,
+    "name": f"qOS Imager {tag}",
+    "body": "Signed qOS Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with qos-release-key.asc after comparing qos-release-key.fingerprint with the fingerprint published through an independent qOS channel.",
+    "draft": False,
+    "prerelease": False,
+}))
+PY
+)"
+  curl --fail --silent --show-error -X PATCH \
+    -H "$auth" -H 'Content-Type: application/json' \
+    --data "$publish_payload" "$api/releases/$release_id" >"$release_json"
+  python3 - "$release_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    release = json.load(source)
+if release.get("draft") is not False:
+    raise SystemExit("Forgejo did not publish the fully verified release")
+PY
+  printf 'published complete release %s\n' "$GITHUB_REF_NAME"
+fi
