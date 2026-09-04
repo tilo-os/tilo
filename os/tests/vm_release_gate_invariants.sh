@@ -12,11 +12,48 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 if grep -Fq "printf -- '-machine q35,smm=on'" "$common" \
   && grep -Fq "printf -- '-machine q35'" "$common" \
+  && grep -Fq "printf -- '-machine virt,gic-version=max'" "$common" \
   && ! grep -Eq -- '-machine q35[^[:space:]'\"']*accel=kvm' "$common" \
   && grep -Fq -- '-accel tcg,thread=multi -cpu max' "$common"; then
-  ok 'machine type does not override the selected KVM/TCG accelerator'
+  ok 'x86 q35 and ARM virt machines do not override the selected accelerator'
 else
   bad 'VM can request conflicting KVM and TCG accelerators'
+fi
+
+platform_probe() {
+  local arch="$1"
+  QOS_DISTROBOX='' QOS_VM_ARCH="$arch" bash -c '
+    source "$1"
+    printf "arch=%s\nqemu=%s\nmachine=%s\ndisplay=%s\ninput=%s\n" \
+      "$QOS_VM_ARCH" "$QOS_QEMU_SYSTEM" "$(machine_args)" \
+      "$(display_qemu_args 2d)" "$(input_qemu_args)"
+  ' _ "$common"
+}
+if x86_platform="$(platform_probe amd64)" \
+  && arm_platform="$(platform_probe arm64)" \
+  && grep -Fq 'arch=x86_64' <<<"$x86_platform" \
+  && grep -Fq 'qemu=qemu-system-x86_64' <<<"$x86_platform" \
+  && grep -Fq 'machine=-machine q35' <<<"$x86_platform" \
+  && grep -Fq 'display=-device virtio-vga,' <<<"$x86_platform" \
+  && grep -Fq 'input=-usb -device usb-tablet' <<<"$x86_platform" \
+  && grep -Fq 'arch=aarch64' <<<"$arm_platform" \
+  && grep -Fq 'qemu=qemu-system-aarch64' <<<"$arm_platform" \
+  && grep -Fq 'machine=-machine virt,gic-version=max' <<<"$arm_platform" \
+  && grep -Fq 'display=-device virtio-gpu-pci,' <<<"$arm_platform" \
+  && grep -Fq 'input=-device qemu-xhci -device usb-tablet' <<<"$arm_platform"; then
+  ok 'VM platform selection maps x86 and ARM to native QEMU machines and devices'
+else
+  bad 'VM platform selection can mix a release medium with another architecture'
+fi
+
+if grep -Fq 'QEMU_EFI-pflash.raw' "$common" \
+  && grep -Fq 'vars-template-pflash.raw' "$common" \
+  && grep -Fq 'AAVMF_CODE.fd' "$common" \
+  && grep -Fq 'AAVMF_VARS.fd' "$common" \
+  && grep -Fq 'aarch64 VM cycle has no verified measured-AAVMF profile yet' "$common"; then
+  ok 'ARM firmware supports Fedora and Debian AAVMF layouts and rejects unproved TPM claims'
+else
+  bad 'ARM firmware selection is incomplete or can claim unverified measurement'
 fi
 
 if grep -Fq 'QOS_VM_CYCLE=' "$common" \
@@ -53,6 +90,27 @@ tmp="$(mktemp -d)"
 cleanup() { rm -r "$tmp"; }
 trap cleanup EXIT
 mkdir "$tmp/bin"
+
+mkdir -p "$tmp/aavmf-fedora" "$tmp/aavmf-debian"
+: > "$tmp/aavmf-fedora/QEMU_EFI-pflash.raw"
+: > "$tmp/aavmf-fedora/vars-template-pflash.raw"
+: > "$tmp/aavmf-debian/AAVMF_CODE.fd"
+: > "$tmp/aavmf-debian/AAVMF_VARS.fd"
+if fedora_fw="$(QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 \
+    QOS_AAVMF_DIRS="$tmp/aavmf-fedora" "$vm" firmware --no-tpm 2>/dev/null)" \
+  && debian_fw="$(QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 \
+    QOS_AAVMF_DIRS="$tmp/aavmf-debian" "$vm" firmware --no-tpm 2>/dev/null)" \
+  && grep -Fq "code       $tmp/aavmf-fedora/QEMU_EFI-pflash.raw" <<<"$fedora_fw" \
+  && grep -Fq "vars       $tmp/aavmf-fedora/vars-template-pflash.raw" <<<"$fedora_fw" \
+  && grep -Fq "code       $tmp/aavmf-debian/AAVMF_CODE.fd" <<<"$debian_fw" \
+  && grep -Fq "vars       $tmp/aavmf-debian/AAVMF_VARS.fd" <<<"$debian_fw" \
+  && ! QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 QOS_AAVMF_DIRS="$tmp/aavmf-fedora" \
+    "$vm" firmware --tpm >/dev/null 2>&1; then
+  ok 'ARM firmware resolution works for both package families and TPM fails closed'
+else
+  bad 'ARM firmware resolution does not match installed AAVMF layouts'
+fi
+
 cat > "$tmp/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$QOS_TEST_ARGS"
