@@ -57,6 +57,32 @@ impl CzField {
         CzField::Timezone,
         CzField::Keyboard,
     ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Hostname => "Hostname",
+            Self::FullName => "Full name",
+            Self::Username => "Username",
+            Self::Locale => "Language and locale",
+            Self::Timezone => "Time zone",
+            Self::Keyboard => "Keyboard layout",
+        }
+    }
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Hostname => "hostname",
+            Self::FullName => "full-name",
+            Self::Username => "username",
+            Self::Locale => "locale",
+            Self::Timezone => "timezone",
+            Self::Keyboard => "keyboard",
+        }
+    }
+
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.key() == key)
+    }
 }
 
 /// The exact rects of the panel for one frame — computed once from the content
@@ -146,6 +172,17 @@ impl CustomizePanel {
         }
     }
 
+    fn input_ref(&self, f: CzField) -> &TextInput {
+        match f {
+            CzField::Hostname => &self.hostname,
+            CzField::FullName => &self.full_name,
+            CzField::Username => &self.username,
+            CzField::Locale => &self.locale,
+            CzField::Timezone => &self.timezone,
+            CzField::Keyboard => &self.keyboard,
+        }
+    }
+
     fn profile_value(profile: &InstallProfile, f: CzField) -> &str {
         match f {
             CzField::Hostname => &profile.hostname,
@@ -159,7 +196,7 @@ impl CustomizePanel {
 
     /// The [`ImagerAction`] that sets `f` to `value`. The single source of truth
     /// shared with the Ctrl+K field specs in [`crate::actions`].
-    fn field_action(f: CzField, value: String) -> ImagerAction {
+    pub(crate) fn field_action(f: CzField, value: String) -> ImagerAction {
         match f {
             CzField::Hostname => ImagerAction::SetHostname { value },
             CzField::FullName => ImagerAction::SetFullName { value },
@@ -812,5 +849,47 @@ impl CustomizePanel {
             .get(slot)
             .map(|field| geom.field(*field))
             .or_else(|| (slot == CzField::ALL.len()).then_some(geom.export))
+    }
+
+    /// Semantic controls in the same order as keyboard traversal: six real
+    /// text editors followed by the profile preview action.
+    pub(crate) fn accessibility(&self, content: Rect) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let geom = Self::geom(content);
+        let mut controls = CzField::ALL
+            .into_iter()
+            .map(|field| {
+                let rect = geom.field(field);
+                let target = format!("imager:profile:{}", field.key());
+                self.input_ref(field)
+                    .accessibility()
+                    .unwrap_or_else(|| AccessNode::new(Role::TextInput))
+                    .with_name(field.label())
+                    .with_state(AccessState {
+                        focused: self.focused == Some(field),
+                        focusable: true,
+                        required: matches!(field, CzField::Hostname | CzField::Username),
+                        invalid: matches!(field, CzField::Hostname | CzField::Username)
+                            && self.input_ref(field).value().trim().is_empty(),
+                        ..Default::default()
+                    })
+                    .with_bounds(rect)
+                    .with_action_target(target)
+            })
+            .collect::<Vec<_>>();
+        controls.push(
+            AccessNode::new(Role::Button)
+                .with_name("Preview embedded setup")
+                .with_description("Review the non-secret setup profile stored on this medium")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.export_focused),
+                )
+                .with_bounds(geom.export)
+                .with_action_target("imager:profile:preview"),
+        );
+        controls
     }
 }
