@@ -488,11 +488,15 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return handler(&args);
     }
 
+    run_native_app(spec, &args)
+}
+
+fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
     let (state, autosave) = spec.open_state_with_args.map_or_else(
         || (spec.open_state)(spec.app_id),
-        |open| open(spec.app_id, &args),
+        |open| open(spec.app_id, args),
     );
-    let mut app = App::new(state, spec.live_root(&args)?).with_autosave(autosave);
+    let mut app = App::new(state, spec.live_root(args)?).with_autosave(autosave);
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
