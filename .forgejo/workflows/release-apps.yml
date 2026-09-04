@@ -126,7 +126,9 @@ jobs:
               ;;
           esac
           echo "collection=$collection" >> "$GITHUB_OUTPUT"
-          if [[ $GITHUB_REF == refs/tags/* || $GITHUB_REF == refs/heads/main || ${REQUESTED_PUBLISH:-false} == true ]]; then
+          if [[ $GITHUB_REF == refs/tags/* \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
+                || ${REQUESTED_PUBLISH:-false} == true ]]; then
             matrix=$(python3 tools/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \

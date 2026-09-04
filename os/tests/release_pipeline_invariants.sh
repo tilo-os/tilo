@@ -67,7 +67,8 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'dist/app-release/runtime/**' "$apps" \
   && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
-  && grep -Fq '$GITHUB_REF == refs/heads/main' "$apps" \
+  && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
+  && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
