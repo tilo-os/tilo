@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch queued qOS BootPack stage requests
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=local-fs.target systemd-tmpfiles-setup.service
+
+[Path]
+# A request may have been queued while the path unit was inactive (including
+# across a reboot). PathExists starts one terminal consume attempt in that
+# case; stage-pending removes the item only after it projects staged/failed.
+PathExists=/var/lib/qos/system-extensions/boot-pack-request
+PathChanged=/var/lib/qos/system-extensions/boot-pack-request
+Unit=qos-system-extension-boot-pack-stage.service
+
+[Install]
+WantedBy=multi-user.target

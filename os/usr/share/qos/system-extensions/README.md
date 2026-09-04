@@ -26,7 +26,39 @@ There are two deliberately different activation classes:
   immutable deployment builder must call `ExtensionState::accepted_for` with
   the exact new deployment digest and kernel ABI before consuming it. The
   resulting deployment is rebooted and covered by ordinary qOS boot-health and
-  rollback handling.
+rollback handling.
+
+## BootPack catalogue consumer
+
+Unprivileged code does not translate PCI IDs to a driver pack. It may ask only
+for `boot-pack-recommend`; the root-owned manager reads the local PCI sysfs
+facts and verifies a separate image-owned PCI recommendation catalogue signed
+by its own pinned public key. Each rule requires an exact vendor/device pair;
+an exact subsystem pair wins over a generic device rule, and duplicate rules
+are rejected. The response contains only exact BootPack catalogue ids. Settings
+or the unprivileged model manager can then enqueue only
+`boot-pack-stage <catalog-id>` on the fixed request socket. The catalog id is
+an identifier, not a path or image reference. The root-owned
+`qos-system-extension-manager` resolves only
+`catalog.d/<catalog-id>.json` and `trust.d/<key-id>.json` from the signed base
+image, verifies the manifest signature and exact running image/kernel
+compatibility, and accepts only reboot-bound entries whose `artifact.source`
+is a `bootc://registry/path@sha256:<digest>` reference matching the signed
+artifact digest.
+
+The staging manager repeats the PCI match, so an exact id from another machine
+is not authorization to stage a pack here. The socket worker writes only that
+id to a root-owned fixed queue and returns `queued`; it has no network. A
+separate path-activated manager re-verifies the catalog and then runs the one
+fixed operation `bootc switch --transport=registry` with that exact digest
+reference. This stages an immutable deployment; it never hot-loads a driver,
+runs package-manager commands, or reboots the machine. qOS never hot-installs a
+driver. The non-secret status projection reports `queued`,
+`staging`, `staged`, `failed`, or
+`active`, plus `activation_class: boot_pack`, the exact extension id, staging
+generation, a bounded error if any, and whether a reboot is still required. On
+the next boot it is recomputed from the booted deployment digest, so qOS never
+claims a staged driver is already active without evidence.
 
 `/var/lib/qos/local-models/staging` is root-only transfer workspace.
 `verified` is root-owned and group-readable by the local-model runtime; only a
@@ -43,10 +75,12 @@ writing exactly one line to the group-connectable Unix socket
 
 * `userspace-stage`
 * `boot-stage`
+* `boot-pack-recommend`
+* `boot-pack-stage <catalog-id>`
 
 The socket is `root:qos-identity` mode `0660` inside a root-owned non-writable
 directory. Its `Accept=yes` systemd service runs in the background and accepts
 no other words or fields. In particular there is no `restart` request: a boot
 stage only writes `reboot-required`. A future deployment composer may restart
-only after it has verified and staged a BootPack from the signed desired state
-against the exact target deployment digest and kernel ABI.
+only after it has verified and staged a BootPack from the signed catalogue
+against the exact running deployment digest and kernel ABI.
