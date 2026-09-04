@@ -2392,7 +2392,7 @@ mod own_identity_tests {
         ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
 
         assert!(ctx.is_agent(&agent));
-        assert_eq!(ctx.display_name(&agent), "Release assistant");
+        assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
 
         ctx.unregister_peer(&agent.0);
         assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
