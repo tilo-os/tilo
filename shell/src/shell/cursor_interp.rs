@@ -127,14 +127,31 @@ impl CursorInterpolator {
     /// event) leaves an arrow parked on screen forever. Peers this
     /// interpolator has never seen are left untouched, so it coexists with
     /// the toolkit's own socket-driven presence pump.
-    pub fn apply_to(&mut self, ctx: &mut PresenceCtx, now: Instant) {
+    /// Returns whether the window-owned cursor projection actually changed.
+    /// Callers use this to avoid turning a quiet networking pump into a full
+    /// scene redraw on every event-loop tick.
+    #[allow(
+        clippy::float_cmp,
+        reason = "cursor redraw detection compares the exact projected coordinates and alpha written to PresenceCtx"
+    )]
+    pub fn apply_to(&mut self, ctx: &mut PresenceCtx, now: Instant) -> bool {
         let live = self.sample_at(now);
+        let mut changed = false;
         for cursor in &live {
             let label = if cursor.label.is_empty() {
                 None
             } else {
                 Some(cursor.label.as_str())
             };
+            changed |= ctx
+                .remote_cursors
+                .iter()
+                .find(|existing| existing.user_id == cursor.user_id)
+                .is_none_or(|existing| {
+                    existing.position != cursor.position
+                        || existing.color[3] != cursor.alpha
+                        || label.is_some_and(|label| existing.label != label)
+                });
             ctx.upsert_remote_cursor_faded(
                 cursor.user_id.clone(),
                 cursor.position,
@@ -151,8 +168,10 @@ impl CursorInterpolator {
             .collect();
         for uid in faded {
             ctx.remove_remote_cursor(&uid);
+            changed = true;
         }
         self.gc(now);
+        changed
     }
 }
 
@@ -340,6 +359,16 @@ mod tests {
     }
 
     // --- apply_to: the path the compositor's frame tick actually runs ---
+
+    #[test]
+    fn unchanged_projection_does_not_request_another_frame() {
+        let t0 = Instant::now();
+        let mut ctx = PresenceCtx::empty();
+        let mut i = CursorInterpolator::new();
+        i.push_sample("alice", "Alice", [40.0, 20.0], t0);
+        assert!(i.apply_to(&mut ctx, t0));
+        assert!(!i.apply_to(&mut ctx, t0 + Duration::from_millis(16)));
+    }
 
     #[test]
     fn apply_to_smooths_the_cursor_the_overlay_reads() {

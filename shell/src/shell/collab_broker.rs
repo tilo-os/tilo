@@ -505,6 +505,11 @@ impl AppActionBroker {
 
     /// Dispatch a task to its assigned live agent. There is intentionally no
     /// offline queue or application launch fallback in this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the task, workspace, or assigned live agent is no
+    /// longer available, or the task cannot be dispatched.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
         self.state.dispatch_workspace_task(room, task_id)
     }
@@ -1095,7 +1100,7 @@ fn spawn_inner(
         Arc::clone(publisher),
         membership,
         trusted_devices,
-        peer_sync.cloned(),
+        peer_sync,
         Arc::clone(&capnp_quit),
     )?;
 

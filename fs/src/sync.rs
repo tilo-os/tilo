@@ -460,7 +460,9 @@ async fn prefetch_namespace_thumbnails(
         if let Some((attempts, retry_at)) = pending.get_mut(&thumbnail) {
             *attempts = attempts.saturating_add(1).min(4);
             let delay = 3_u64.saturating_mul(1_u64 << u32::from(*attempts));
-            *retry_at = now + Duration::from_secs(delay.min(30));
+            *retry_at = now
+                .checked_add(Duration::from_secs(delay.min(30)))
+                .unwrap_or(now);
         }
     }
     Ok(())
@@ -1536,7 +1538,11 @@ impl Workspace {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "workspace startup assembles the complete protocol/router state in one transaction"
+    )]
     async fn start(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1829,6 +1835,13 @@ async fn pull_workspace_authority_from_peer(
     Ok(())
 }
 
+/// Submit a signed workspace authority revision to a remote filesystem peer,
+/// or query its current revision when `publish` is `None`.
+///
+/// # Errors
+///
+/// Returns an error if the peer cannot be reached or authenticated, framing
+/// fails, or the returned authority cannot be verified and applied.
 pub async fn submit_workspace_authority(
     endpoint: &Endpoint,
     remote: EndpointAddr,
@@ -2096,7 +2109,11 @@ fn persist_workspace_replica_observation(
     registry.observe_replica(revision.record_id, local_device, observation, observed_at)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the long-lived reconciliation worker owns each independent service handle"
+)]
 async fn reconcile_loop(
     endpoint: Endpoint,
     namespace: Arc<Mutex<Namespace>>,
@@ -2470,6 +2487,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one authority integration scenario verifies update, targeted revoke, and owner retention"
+    )]
     async fn signed_authority_alpn_updates_nas_and_targeted_revoke_keeps_owner() {
         use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
         use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
@@ -2614,6 +2635,10 @@ mod tests {
     /// authority while that certified relationship is live must deny the
     /// collaborator's *next* request while preserving governor access.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one authenticated integration scenario carries the same live session across authority replacement"
+    )]
     async fn signed_targeted_revoke_denies_an_authenticated_collaborator_blob_request() {
         use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
         use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
@@ -2946,22 +2971,24 @@ mod tests {
             observation.observed_at_ms,
         )
         .unwrap();
-        let mut registry = registry.lock().unwrap();
-        assert_eq!(
-            registry.get(record_id).unwrap().current_version,
-            Some(version_id),
-            "the shipped whole-workspace ACK path creates the ordinary record row first"
-        );
-        assert!(matches!(
-            registry.observe_replica(
-                record_id,
-                Ed25519PublicKey(client_identity.device_public_key()),
-                observation.clone(),
-                observation.observed_at_ms,
-            ),
-            Err(crate::availability::AvailabilityError::ReplicaReplay)
-        ));
-        drop(registry);
+        {
+            let mut locked_registry = registry.lock().unwrap();
+            assert_eq!(
+                locked_registry.get(record_id).unwrap().current_version,
+                Some(version_id),
+                "the shipped whole-workspace ACK path creates the ordinary record row first"
+            );
+            assert!(matches!(
+                locked_registry.observe_replica(
+                    record_id,
+                    Ed25519PublicKey(client_identity.device_public_key()),
+                    observation.clone(),
+                    observation.observed_at_ms,
+                ),
+                Err(crate::availability::AvailabilityError::ReplicaReplay)
+            ));
+            drop(locked_registry);
+        }
         let reopened = crate::availability::AvailabilityRegistry::open(path).unwrap();
         assert_eq!(
             reopened.get(record_id).unwrap().replica_observations.len(),

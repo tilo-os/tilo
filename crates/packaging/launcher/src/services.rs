@@ -335,6 +335,10 @@ pub fn resolve_service_binds_for_launch(
     resolve_service_binds_inner(services, no_services, Some(context))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "service validation, authenticated handoff, and child-fd allocation are one ordered transaction"
+)]
 fn resolve_service_binds_inner(
     services: &BTreeMap<String, String>,
     no_services: bool,
