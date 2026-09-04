@@ -1,4 +1,4 @@
-name: Check affected workspace packages
+name: CI / affected packages
 
 # Pull requests and pushes compile/test only packages touched by the change and
 # their transitive workspace dependants. Full target and test coverage remains
@@ -126,6 +126,7 @@ jobs:
           bash os/tests/generation_series_security.sh
           bash os/tests/system_extension_invariants.sh
           bash os/tests/local_model_catalog_invariants.sh
+          bash os/tests/release_pipeline_invariants.sh
 
       - name: Select and balance affected packages
         id: plan

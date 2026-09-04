@@ -31,6 +31,18 @@ release_hash="${RELEASE_DIGEST#sha256:}"
 [ "$release_hash" != "$RELEASE_DIGEST" ] && [ "${#release_hash}" -eq 64 ] \
   && case "$release_hash" in *[!0-9a-f]*) false ;; *) true ;; esac \
   || { printf 'release provenance: invalid RELEASE_DIGEST\n' >&2; exit 1; }
+app_collection="${QOS_APP_COLLECTION_SHA256:-}"
+if [ -n "$app_collection" ]; then
+  [ "${#app_collection}" -eq 64 ] \
+    && case "$app_collection" in *[!0-9a-f]*) false ;; *) true ;; esac \
+    || { printf 'release provenance: invalid QOS_APP_COLLECTION_SHA256\n' >&2; exit 1; }
+fi
+desktop_payload="${QOS_DESKTOP_PAYLOAD_SHA256:-}"
+if [ -n "$desktop_payload" ]; then
+  [ "${#desktop_payload}" -eq 64 ] \
+    && case "$desktop_payload" in *[!0-9a-f]*) false ;; *) true ;; esac \
+    || { printf 'release provenance: invalid QOS_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
+fi
 
 jq -n \
   --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
@@ -38,21 +50,34 @@ jq -n \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
   --arg kernel "$KERNEL_RPMS_REF" \
+  --arg app_collection "$app_collection" \
+  --arg desktop_payload "$desktop_payload" \
   --arg generation "$QOS_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
     buildDefinition: {
       buildType: "https://qos.dev/buildtypes/bootc-os/v1",
       externalParameters: {generation: ($generation|tonumber)},
-      internalParameters: {sourceDateEpoch: ($epoch|tonumber)},
-      resolvedDependencies: [
-        {uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}
-      ]
+      internalParameters: {
+        sourceDateEpoch: ($epoch|tonumber),
+        expectedReleaseDigest: $digest
+      },
+      resolvedDependencies: (
+        [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
+        + if $app_collection == "" then []
+          else [{uri: ("qos-app-collection:sha256:" + $app_collection)}]
+          end
+        + if $desktop_payload == "" then []
+          else [{uri: ("qos-desktop-payload:sha256:" + $desktop_payload)}]
+          end
+      )
     },
     runDetails: {
       builder: {id: "https://code.sandbox.example/qos/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
-      byproducts: [{name: "independent-rebuild", content: "manifest-digest-equal"}]
-    },
-    subject: [{name: "code.sandbox.example/qos/qos", digest: {sha256: ($digest|sub("^sha256:"; ""))}}]
+      byproducts: [{
+        name: "independent-rebuild",
+        uri: "urn:qos:verification:manifest-digest-equal"
+      }]
+    }
   }' > "$out"
