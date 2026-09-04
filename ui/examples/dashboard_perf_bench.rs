@@ -211,13 +211,54 @@ struct ResourceSnapshot {
     known_gpu_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct AllocationBreakdown {
+    handle: crate::AllocationSnapshot,
+    layout: crate::AllocationSnapshot,
+    draw: crate::AllocationSnapshot,
+    damage: crate::AllocationSnapshot,
+    render: crate::AllocationSnapshot,
+}
+
+fn allocation_delta(
+    after: crate::AllocationSnapshot,
+    before: crate::AllocationSnapshot,
+) -> crate::AllocationSnapshot {
+    crate::AllocationSnapshot {
+        calls: after.calls.saturating_sub(before.calls),
+        bytes: after.bytes.saturating_sub(before.bytes),
+        realloc_calls: after.realloc_calls.saturating_sub(before.realloc_calls),
+        realloc_bytes: after.realloc_bytes.saturating_sub(before.realloc_bytes),
+    }
+}
+
+fn add_allocations(total: &mut crate::AllocationSnapshot, sample: crate::AllocationSnapshot) {
+    total.calls = total.calls.saturating_add(sample.calls);
+    total.bytes = total.bytes.saturating_add(sample.bytes);
+    total.realloc_calls = total.realloc_calls.saturating_add(sample.realloc_calls);
+    total.realloc_bytes = total.realloc_bytes.saturating_add(sample.realloc_bytes);
+}
+
 struct BenchRun {
     histo: Vec<Phase>,
     total_redraws: usize,
     total_skipped: usize,
     allocations: Option<crate::AllocationSnapshot>,
+    allocation_breakdown: Option<AllocationBreakdown>,
     resources_before: ResourceSnapshot,
     resources_after: ResourceSnapshot,
+}
+
+#[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent benchmark modes are clearer as named flags than a combinatorial enum"
+)]
+struct BenchLoopOptions {
+    scroll_mode: bool,
+    frozen: bool,
+    profile_allocations: bool,
+    profile_allocation_breakdown: bool,
 }
 
 /// Everything one bench frame needs to lay out, dispatch events to, and
@@ -239,7 +280,18 @@ struct BenchState<'a> {
     canvas_h: u32,
 }
 
-fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the benchmark keeps layout, scene, damage, and render timing/allocation boundaries together"
+)]
+fn full_draw(
+    state: &mut BenchState<'_>,
+    phase: &mut Phase,
+    mut allocation_breakdown: Option<&mut AllocationBreakdown>,
+) {
+    let allocation_before_layout = allocation_breakdown
+        .as_ref()
+        .map(|_| crate::allocation_profile_snapshot());
     let t_layout = Instant::now();
     let layout_dirty = state.root.is_layout_dirty();
     if layout_dirty {
@@ -264,7 +316,19 @@ fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
             .apply_layout(state.taffy, state.root_node, Point::ZERO);
     }
     phase.layout_us = t_layout.elapsed().as_micros();
+    if let (Some(before), Some(breakdown)) = (
+        allocation_before_layout,
+        allocation_breakdown.as_deref_mut(),
+    ) {
+        add_allocations(
+            &mut breakdown.layout,
+            allocation_delta(crate::allocation_profile_snapshot(), before),
+        );
+    }
 
+    let allocation_before_draw = allocation_breakdown
+        .as_ref()
+        .map(|_| crate::allocation_profile_snapshot());
     let t_draw = Instant::now();
     state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
@@ -288,8 +352,19 @@ fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
     );
     state.presence.pop_viewport(prev_vp);
     phase.draw_us = t_draw.elapsed().as_micros();
+    if let (Some(before), Some(breakdown)) =
+        (allocation_before_draw, allocation_breakdown.as_deref_mut())
+    {
+        add_allocations(
+            &mut breakdown.draw,
+            allocation_delta(crate::allocation_profile_snapshot(), before),
+        );
+    }
 
     let t_render = Instant::now();
+    let allocation_before_damage = allocation_breakdown
+        .as_ref()
+        .map(|_| crate::allocation_profile_snapshot());
     // Layout can expose both old and new pixels, so it conservatively damages
     // the complete native target. Visual-only changes use the union of dirty
     // leaves plus a 16px safety margin for AA, focus rings, and small shadows.
@@ -309,12 +384,28 @@ fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
     if std::env::var_os("QUICK_UI_DASH_DAMAGE").is_some() {
         println!("damage regions: {:?}", state.damage_regions);
     }
+    let allocation_before_render = allocation_breakdown
+        .as_ref()
+        .map(|_| crate::allocation_profile_snapshot());
+    if let (Some(before), Some(after), Some(breakdown)) = (
+        allocation_before_damage,
+        allocation_before_render,
+        allocation_breakdown.as_deref_mut(),
+    ) {
+        add_allocations(&mut breakdown.damage, allocation_delta(after, before));
+    }
     phase.raster_pixels = state.renderer.render_damage_regions_gpu_wait(
         state.scene,
         state.theme.tokens.colors.surfaces.base,
         state.damage_regions,
     );
     phase.render_us = t_render.elapsed().as_micros();
+    if let (Some(before), Some(breakdown)) = (allocation_before_render, allocation_breakdown) {
+        add_allocations(
+            &mut breakdown.render,
+            allocation_delta(crate::allocation_profile_snapshot(), before),
+        );
+    }
 
     state.root.mark_drawn();
 }
@@ -504,14 +595,14 @@ fn prime_frozen_cursor(state: &mut BenchState<'_>, doc: &mut AutoCommit) {
     let p = frozen_cursor_pos(state);
     dispatch(state, doc, &make_cursor(p.0, p.1));
     let mut warm = Phase::default();
-    full_draw(state, &mut warm);
+    full_draw(state, &mut warm, None);
 }
 
 /// Two warm-up frames: first `compute_layout`, second post-cache.
 fn warm_up(state: &mut BenchState<'_>) {
     for _ in 0..2 {
         let mut warm = Phase::default();
-        full_draw(state, &mut warm);
+        full_draw(state, &mut warm, None);
     }
 }
 
@@ -599,9 +690,7 @@ fn run_bench_loop(
     state: &mut BenchState<'_>,
     doc: &mut AutoCommit,
     iters: usize,
-    scroll_mode: bool,
-    frozen: bool,
-    profile_allocations: bool,
+    options: BenchLoopOptions,
 ) -> BenchRun {
     let positions = [
         (400.0, 300.0),
@@ -617,23 +706,44 @@ fn run_bench_loop(
     // keeps harness-owned pages out of the measured heap-growth delta.
     let mut histo = vec![Phase::default(); iters];
     let resources_before = resource_snapshot(state.renderer);
-    if profile_allocations {
+    if options.profile_allocations {
         // The timing histogram is harness storage, not framework work.
         crate::begin_allocation_profile();
     }
+    let mut allocation_breakdown = options
+        .profile_allocation_breakdown
+        .then(AllocationBreakdown::default);
 
     for (i, sample) in (0..iters).zip(&mut histo) {
         let t_total = Instant::now();
         let mut phase = Phase::default();
 
+        let allocation_before_handle = allocation_breakdown
+            .as_ref()
+            .map(|_| crate::allocation_profile_snapshot());
         let t_handle = Instant::now();
-        dispatch_bench_event(state, doc, i, scroll_mode, frozen, positions);
+        dispatch_bench_event(
+            state,
+            doc,
+            i,
+            options.scroll_mode,
+            options.frozen,
+            positions,
+        );
         phase.handle_us = t_handle.elapsed().as_micros();
+        if let (Some(before), Some(breakdown)) =
+            (allocation_before_handle, allocation_breakdown.as_mut())
+        {
+            add_allocations(
+                &mut breakdown.handle,
+                allocation_delta(crate::allocation_profile_snapshot(), before),
+            );
+        }
 
         // App-style gate: only draw if the tree signals dirty.
         if state.root.needs_redraw() {
             total_redraws = total_redraws.saturating_add(1);
-            full_draw(state, &mut phase);
+            full_draw(state, &mut phase, allocation_breakdown.as_mut());
         } else {
             total_skipped = total_skipped.saturating_add(1);
         }
@@ -641,13 +751,16 @@ fn run_bench_loop(
         *sample = phase;
     }
 
-    let allocations = profile_allocations.then(crate::end_allocation_profile);
+    let allocations = options
+        .profile_allocations
+        .then(crate::end_allocation_profile);
     let resources_after = resource_snapshot(state.renderer);
     BenchRun {
         histo,
         total_redraws,
         total_skipped,
         allocations,
+        allocation_breakdown,
         resources_before,
         resources_after,
     }
@@ -965,8 +1078,12 @@ fn enforce_resource_budgets(
 )]
 fn report_and_enforce_allocations(
     snapshot: crate::AllocationSnapshot,
+    breakdown: Option<AllocationBreakdown>,
     iters: usize,
+    total_redraws: usize,
     budget_per_1000: Option<u64>,
+    call_budget_per_redraw: Option<u64>,
+    byte_budget_per_redraw: Option<u64>,
 ) {
     let denominator = u64::try_from(iters).unwrap_or(u64::MAX).max(1);
     let calls_per_1000 = snapshot
@@ -988,6 +1105,39 @@ fn report_and_enforce_allocations(
         calls_per_1000,
         bytes_per_1000,
     );
+
+    let redraw_denominator = u64::try_from(total_redraws).unwrap_or(u64::MAX).max(1);
+    if let Some(breakdown) = breakdown {
+        let mut classified = crate::AllocationSnapshot::default();
+        for phase in [
+            breakdown.handle,
+            breakdown.layout,
+            breakdown.draw,
+            breakdown.damage,
+            breakdown.render,
+        ] {
+            add_allocations(&mut classified, phase);
+        }
+        let unclassified = allocation_delta(snapshot, classified);
+        println!("allocation breakdown (calls / bytes; total over measured loop):");
+        for (label, phase) in [
+            ("handle_event", breakdown.handle),
+            ("layout", breakdown.layout),
+            ("draw_to_scene", breakdown.draw),
+            ("damage_collect", breakdown.damage),
+            ("vello_render", breakdown.render),
+            ("unclassified", unclassified),
+        ] {
+            println!("  {label:<16} {:>10} / {:>12}", phase.calls, phase.bytes);
+        }
+    }
+    let calls_per_redraw = snapshot.calls.checked_div(redraw_denominator).unwrap_or(0);
+    let bytes_per_redraw = snapshot.bytes.checked_div(redraw_denominator).unwrap_or(0);
+    if total_redraws > 0 {
+        println!(
+            "allocation redraw rate: calls_per_redraw={calls_per_redraw} bytes_per_redraw={bytes_per_redraw}"
+        );
+    }
     if let Some(budget) = budget_per_1000 {
         println!(
             "allocation-budget: {} budget={}calls/1000 observed={}calls/1000",
@@ -1003,8 +1153,38 @@ fn report_and_enforce_allocations(
             std::process::exit(2);
         }
     }
+    if let Some(budget) = call_budget_per_redraw {
+        let passed = total_redraws > 0 && calls_per_redraw <= budget;
+        println!(
+            "allocation-call-redraw-budget: {} budget={}calls/redraw observed={}calls/redraw redraws={}",
+            if passed { "PASS" } else { "FAIL" },
+            budget,
+            calls_per_redraw,
+            total_redraws,
+        );
+        if !passed {
+            std::process::exit(2);
+        }
+    }
+    if let Some(budget) = byte_budget_per_redraw {
+        let passed = total_redraws > 0 && bytes_per_redraw <= budget;
+        println!(
+            "allocation-byte-redraw-budget: {} budget={}B/redraw observed={}B/redraw redraws={}",
+            if passed { "PASS" } else { "FAIL" },
+            budget,
+            bytes_per_redraw,
+            total_redraws,
+        );
+        if !passed {
+            std::process::exit(2);
+        }
+    }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "scenario setup intentionally remains linear so every acceptance setting is visible in one place"
+)]
 pub fn run(_args: &[String]) {
     init_i18n_resources();
 
@@ -1078,15 +1258,28 @@ pub fn run(_args: &[String]) {
     let allocation_budget = std::env::var("QUICK_UI_DASH_ALLOC_BUDGET_PER_1000")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok());
+    let allocation_call_redraw_budget = std::env::var("QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let allocation_byte_redraw_budget = std::env::var("QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let profile_allocation_breakdown = allocation_call_redraw_budget.is_some()
+        || allocation_byte_redraw_budget.is_some()
+        || std::env::var_os("QUICK_UI_DASH_ALLOC_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
     let profile_allocations = allocation_budget.is_some()
+        || profile_allocation_breakdown
         || std::env::var_os("QUICK_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
     let run = run_bench_loop(
         &mut state,
         &mut doc,
         iters,
-        scroll_mode,
-        frozen,
-        profile_allocations,
+        BenchLoopOptions {
+            scroll_mode,
+            frozen,
+            profile_allocations,
+            profile_allocation_breakdown,
+        },
     );
 
     print_final_report(
@@ -1099,7 +1292,15 @@ pub fn run(_args: &[String]) {
         run.resources_after,
     );
     if let Some(snapshot) = run.allocations {
-        report_and_enforce_allocations(snapshot, iters, allocation_budget);
+        report_and_enforce_allocations(
+            snapshot,
+            run.allocation_breakdown,
+            iters,
+            run.total_redraws,
+            allocation_budget,
+            allocation_call_redraw_budget,
+            allocation_byte_redraw_budget,
+        );
     }
 
     if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_FRAME_BUDGET_US")

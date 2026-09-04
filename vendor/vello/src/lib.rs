@@ -126,8 +126,8 @@ pub mod low_level {
 
     pub use crate::debug::DebugLayers;
     pub use crate::recording::{
-        BindType, BufferProxy, Command, ImageFormat, ImageProxy, Recording, ResourceId,
-        ResourceProxy, ShaderId,
+        BindType, BufferProxy, Command, ImageFormat, ImageProxy, Recording, ResourceBindings,
+        ResourceId, ResourceProxy, ShaderId,
     };
     pub use crate::render::Render;
     pub use crate::shaders::FullShaders;
@@ -326,6 +326,8 @@ pub struct Renderer {
     engine: WgpuEngine,
     resolver: Resolver,
     image_atlas: Option<recording::ImageProxy>,
+    recording: Recording,
+    packed_scene: Vec<u8>,
     shaders: FullShaders,
     /// How much bump-allocated scratch to reserve, and the per-frame
     /// readback that decides it. See [`crate::bump_budget`].
@@ -455,6 +457,8 @@ impl Renderer {
             engine,
             resolver: Resolver::new(),
             image_atlas: None,
+            recording: Recording::default(),
+            packed_scene: Vec::new(),
             shaders,
             budget: bump_budget::BudgetTracker::new(),
             #[cfg(feature = "debug_layers")]
@@ -484,6 +488,13 @@ impl Renderer {
     /// transition and prevents obsolete size classes living forever.
     pub fn trim_pooled_buffers(&mut self) {
         self.engine.clear_pool();
+    }
+
+    /// Release cached bind groups referencing a scratch texture that its
+    /// owner is about to replace. Other bind groups and GPU buffer pools stay
+    /// warm, so animated damage resizing does not become a global cache flush.
+    pub fn invalidate_texture_bindings(&mut self, texture: &TextureView) {
+        self.engine.invalidate_texture_bindings(texture);
     }
 
     /// Renders a scene to the target texture.
@@ -522,11 +533,13 @@ impl Renderer {
         // coarse buffers are host allocations and do not need GPU-side bump
         // measurement.
         let measure = !self.options.use_cpu && self.budget.wants_readback();
-        let (recording, target, bump_buf) = render::render_full(
+        let (target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
+            &mut self.recording,
+            &mut self.packed_scene,
             params,
             self.budget.budget(),
             measure,
@@ -538,7 +551,7 @@ impl Renderer {
         self.engine.run_recording(
             device,
             queue,
-            &recording,
+            &self.recording,
             &external_resources,
             "render_to_texture",
             #[cfg(feature = "wgpu-profiler")]
@@ -797,6 +810,8 @@ impl Renderer {
         params: &RenderParams,
     ) -> Result<RenderResult> {
         let mut render = Render::new();
+        let mut recording = Recording::default();
+        let mut packed_scene = Vec::new();
         let encoding = scene.encoding();
         self.budget.set_viewport(params.width, params.height);
         let capture_debug = cfg!(feature = "debug_layers");
@@ -805,11 +820,13 @@ impl Renderer {
         // rendering do not need it for sizing.
         let measure_bump =
             capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
-        let recording = render.render_encoding_coarse(
+        render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
+            &mut recording,
+            &mut packed_scene,
             params,
             self.budget.budget(),
             measure_bump,

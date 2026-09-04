@@ -42,6 +42,37 @@ static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::ne
 /// for intentionally transparent scenes.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
+/// Damage targets change by a handful of pixels during animation. Keeping
+/// their allocations on a small grid avoids a texture allocation for every
+/// slightly different progress-bar segment while wasting at most 31 pixels
+/// per dimension.
+const DAMAGE_TEXTURE_GRANULARITY: u32 = 32;
+
+pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
+    required
+        .div_ceil(DAMAGE_TEXTURE_GRANULARITY)
+        .saturating_mul(DAMAGE_TEXTURE_GRANULARITY)
+        .min(device_limit)
+        .max(required)
+}
+
+pub(crate) fn damage_texture_needs_replacement(
+    allocated_width: u32,
+    allocated_height: u32,
+    required_width: u32,
+    required_height: u32,
+) -> bool {
+    if allocated_width < required_width || allocated_height < required_height {
+        return true;
+    }
+
+    // Release a one-off large target after a substantial topology-preserving
+    // shrink, but keep ordinary animation jitter allocation-free.
+    let allocated_pixels = u64::from(allocated_width).saturating_mul(u64::from(allocated_height));
+    let required_pixels = u64::from(required_width).saturating_mul(u64::from(required_height));
+    allocated_pixels > required_pixels.saturating_mul(2)
+}
+
 struct DamageTexture {
     width: u32,
     height: u32,
@@ -172,7 +203,10 @@ pub struct OffscreenRenderer {
     renderer: Renderer,
     damage_textures: Vec<DamageTexture>,
     damage_scene: Scene,
-    last_damage_signature: Option<(usize, u32, u32, u64)>,
+    /// Zero means the retained target was last updated by a full render;
+    /// non-zero values are the number of active damage passes. Exact animated
+    /// dimensions are deliberately excluded so they cannot flush GPU caches.
+    last_damage_region_count: Option<usize>,
     target_valid: bool,
 }
 
@@ -302,7 +336,7 @@ impl OffscreenRenderer {
             renderer,
             damage_textures: Vec::with_capacity(4),
             damage_scene: Scene::new(),
-            last_damage_signature: None,
+            last_damage_region_count: None,
             target_valid: false,
         })
     }
@@ -425,12 +459,14 @@ impl OffscreenRenderer {
             )
             .expect("render_to_texture");
         self.target_valid = true;
-        self.last_damage_signature = Some((
-            1,
-            self.width,
-            self.height,
-            u64::from(self.width).saturating_mul(u64::from(self.height)),
-        ));
+        if self
+            .last_damage_region_count
+            .is_some_and(|count| count != 0)
+        {
+            self.renderer.trim_pooled_buffers();
+        }
+        self.damage_textures.clear();
+        self.last_damage_region_count = Some(0);
 
         let tight = self.read_target(&device, &queue);
         let overflowed = self.renderer.settle_bump_budget(&device);
@@ -503,12 +539,14 @@ impl OffscreenRenderer {
             )
             .expect("render_to_texture");
         self.target_valid = true;
-        self.last_damage_signature = Some((
-            1,
-            self.width,
-            self.height,
-            u64::from(self.width).saturating_mul(u64::from(self.height)),
-        ));
+        if self
+            .last_damage_region_count
+            .is_some_and(|count| count != 0)
+        {
+            self.renderer.trim_pooled_buffers();
+        }
+        self.damage_textures.clear();
+        self.last_damage_region_count = Some(0);
 
         // `settle_bump_budget` waits for the submitted work and consumes the
         // tiny allocator-counter readback when Vello requested one. It never
@@ -561,8 +599,7 @@ impl OffscreenRenderer {
     ) -> u64 {
         let full_pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
         let mut damage_pixels = 0u64;
-        let mut scratch_width = 0u32;
-        let mut scratch_height = 0u32;
+        let mut damage_region_count = 0usize;
         for rect in damage {
             let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
             let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
@@ -572,8 +609,8 @@ impl OffscreenRenderer {
             let height = y1.saturating_sub(y0);
             damage_pixels =
                 damage_pixels.saturating_add(u64::from(width).saturating_mul(u64::from(height)));
-            scratch_width = scratch_width.max(width);
-            scratch_height = scratch_height.max(height);
+            damage_region_count =
+                damage_region_count.saturating_add(usize::from(width != 0 && height != 0));
         }
         if !self.target_valid
             || damage_pixels == 0
@@ -591,14 +628,15 @@ impl OffscreenRenderer {
                 .expect("this renderer's device entry is missing from the shared RenderContext");
             (handle.device.clone(), handle.queue.clone())
         };
-        let signature = (damage.len(), scratch_width, scratch_height, damage_pixels);
         if self
-            .last_damage_signature
-            .is_some_and(|previous| previous != signature)
+            .last_damage_region_count
+            .is_some_and(|previous| previous != damage_region_count)
         {
             self.renderer.trim_pooled_buffers();
         }
-        self.last_damage_signature = Some(signature);
+        self.last_damage_region_count = Some(damage_region_count);
+
+        let texture_limit = device.limits().max_texture_dimension_2d;
 
         let mut target_index = 0usize;
         for rect in damage {
@@ -611,16 +649,20 @@ impl OffscreenRenderer {
             if width == 0 || height == 0 {
                 continue;
             }
-            let recreate = self
-                .damage_textures
-                .get(target_index)
-                .is_none_or(|target| target.width != width || target.height != height);
+            let recreate = self.damage_textures.get(target_index).is_none_or(|target| {
+                damage_texture_needs_replacement(target.width, target.height, width, height)
+            });
             if recreate {
+                if let Some(target) = self.damage_textures.get(target_index) {
+                    self.renderer.invalidate_texture_bindings(&target.view);
+                }
+                let allocated_width = damage_texture_extent(width, texture_limit);
+                let allocated_height = damage_texture_extent(height, texture_limit);
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("quick-ui-native-damage-target"),
                     size: wgpu::Extent3d {
-                        width,
-                        height,
+                        width: allocated_width,
+                        height: allocated_height,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -632,8 +674,8 @@ impl OffscreenRenderer {
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let replacement = DamageTexture {
-                    width,
-                    height,
+                    width: allocated_width,
+                    height: allocated_height,
                     texture,
                     view,
                 };
@@ -807,7 +849,7 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::OffscreenRenderer;
+    use super::{OffscreenRenderer, damage_texture_extent, damage_texture_needs_replacement};
     use vello::Scene;
     use vello::kurbo::{Affine, Rect};
     use vello::peniko::{Color, Fill};
@@ -819,6 +861,21 @@ mod tests {
     fn offscreen_renderer_stays_send() {
         fn assert_send<T: Send>() {}
         assert_send::<OffscreenRenderer>();
+    }
+
+    #[test]
+    fn damage_texture_extent_is_quantized_and_device_bounded() {
+        assert_eq!(damage_texture_extent(1, 8_192), 32);
+        assert_eq!(damage_texture_extent(801, 8_192), 832);
+        assert_eq!(damage_texture_extent(8_191, 8_192), 8_192);
+    }
+
+    #[test]
+    fn damage_texture_reuses_animation_jitter_but_releases_large_outliers() {
+        assert!(!damage_texture_needs_replacement(832, 128, 809, 96));
+        assert!(damage_texture_needs_replacement(832, 128, 400, 96));
+        assert!(damage_texture_needs_replacement(832, 128, 833, 96));
+        assert!(damage_texture_needs_replacement(1_024, 1_024, 128, 128));
     }
 
     /// Without this guard the tolerance could be widened later — turning
