@@ -933,6 +933,74 @@ impl ImagerApp {
         );
     }
 
+    /// Wrap a terminal failure into a small, measured block. Error strings can
+    /// contain long device paths or platform diagnostics, so character-count
+    /// truncation is not enough: every returned line is measured in the same
+    /// font used to paint it and is guaranteed to fit `max_width`.
+    fn failure_detail_lines(
+        tr: &mut TextRenderer,
+        detail: &str,
+        max_width: f32,
+        max_lines: usize,
+    ) -> Vec<String> {
+        const SIZE: f32 = 13.5;
+        const WEIGHT: TextWeight = TextWeight::Regular;
+        let mut remaining = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut lines = Vec::new();
+        while !remaining.is_empty() && lines.len() < max_lines {
+            if tr.measure_weighted(&remaining, SIZE, None, WEIGHT).0 <= max_width {
+                lines.push(remaining);
+                break;
+            }
+
+            let last_line = lines.len() + 1 == max_lines;
+            let ellipsis_width = if last_line {
+                tr.measure_weighted("…", SIZE, None, WEIGHT).0
+            } else {
+                0.0
+            };
+            let allowed = (max_width - ellipsis_width).max(1.0);
+            let mut fitting_end = 0;
+            let mut whitespace_end = None;
+            for (index, character) in remaining.char_indices() {
+                let end = index + character.len_utf8();
+                let Some(candidate) = remaining.get(..end) else {
+                    break;
+                };
+                if tr.measure_weighted(candidate, SIZE, None, WEIGHT).0 > allowed {
+                    break;
+                }
+                fitting_end = end;
+                if character.is_whitespace() {
+                    whitespace_end = Some(index);
+                }
+            }
+            if fitting_end == 0 {
+                // Even one glyph does not fit; returning no line is safer than
+                // painting outside the card at extreme accessibility scales.
+                break;
+            }
+            let split_at = whitespace_end
+                .filter(|index| *index > 0)
+                .unwrap_or(fitting_end);
+            let Some(prefix) = remaining.get(..split_at) else {
+                break;
+            };
+            let mut line = prefix.trim_end().to_string();
+            if last_line {
+                line.push('…');
+                lines.push(line);
+                break;
+            }
+            lines.push(line);
+            let Some(rest) = remaining.get(split_at..) else {
+                break;
+            };
+            remaining = rest.trim_start().to_string();
+        }
+        lines
+    }
+
     fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
         scene.fill(
             Fill::NonZero,
@@ -3158,31 +3226,19 @@ impl ImagerApp {
             cyp + 66.0,
             TextWeight::Bold,
         );
-        if compact {
-            for (line, y) in [
-                ("The drive may be incomplete.", cyp + 100.0),
-                ("Review the plan before trying again.", cyp + 120.0),
-            ] {
-                Self::txt_center(
-                    scene,
-                    tr,
-                    line,
-                    13.5,
-                    c.text_dim,
-                    cxp,
-                    y,
-                    TextWeight::Regular,
-                );
-            }
-        } else {
+        let max_width = (content.width() - if compact { 20.0 } else { 80.0 }).max(40.0) as f32;
+        for (index, line) in Self::failure_detail_lines(tr, copy.1, max_width, 2)
+            .iter()
+            .enumerate()
+        {
             Self::txt_center(
                 scene,
                 tr,
-                copy.1,
-                14.0,
+                line,
+                13.5,
                 c.text_dim,
                 cxp,
-                cyp + 100.0,
+                cyp + 100.0 + index as f64 * 20.0,
                 TextWeight::Regular,
             );
         }
@@ -5390,5 +5446,36 @@ mod tests {
             "retry requires fresh destructive consent"
         );
         assert_eq!(app.progress.phase, JobPhase::Idle);
+    }
+
+    #[test]
+    fn failure_detail_is_measured_bounded_and_visible_at_compact_width() {
+        let mut renderer = TextRenderer::new();
+        let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
+        let max_width = 280.0;
+        let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "compact failure copy uses both visible lines"
+        );
+        assert!(
+            lines.iter().all(|line| {
+                renderer
+                    .measure_weighted(line, 13.5, None, TextWeight::Regular)
+                    .0
+                    <= max_width
+            }),
+            "no failure-detail line paints beyond its content bounds"
+        );
+        assert!(
+            lines.join(" ").contains("authorized writer"),
+            "the actionable cause is visible rather than replaced by generic compact copy"
+        );
+        assert!(
+            lines.last().is_some_and(|line| line.ends_with('…')),
+            "bounded overflow is signalled"
+        );
     }
 }
