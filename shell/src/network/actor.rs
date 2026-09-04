@@ -135,6 +135,15 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Publish live workspace-control traffic over the route selected by the
+    /// canonical device mesh. Direct input uses the authenticated exact-target
+    /// QUIC surface/control plane. Workspace-wide relay publication is refused
+    /// because input must never be fanned out to other room participants.
+    PublishWorkspaceControl {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        route: WorkspaceControlRoute,
+    },
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -155,6 +164,13 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
+}
+
+/// Concrete data-plane route for one workspace-control session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceControlRoute {
+    Direct { target: EndpointId },
+    Relayed { via: EndpointId },
 }
 
 #[derive(Debug, Clone)]
@@ -278,13 +294,18 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                     tracing::warn!(peer = %peer, "invalid dedicated surface frame");
                     continue;
                 };
-                if !matches!(frame.message, NeighbourMsg::SurfaceFrame { .. }) {
-                    tracing::warn!(peer = %peer, "non-frame message on surface stream ALPN");
+                if !matches!(
+                    frame.message,
+                    NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::RemoteInput { .. }
+                ) {
+                    tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
                 }
                 #[cfg(test)]
-                DEDICATED_SURFACE_FRAMES_RECEIVED
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if matches!(&frame.message, NeighbourMsg::SurfaceFrame { .. }) {
+                    DEDICATED_SURFACE_FRAMES_RECEIVED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 let Ok(message_bytes) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
@@ -409,6 +430,9 @@ impl ActorState {
                     gossip_fallback,
                 )
                 .await;
+            }
+            Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
+                self.publish_workspace_control(ws, msg, route).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true).await;
@@ -567,6 +591,76 @@ impl ActorState {
         workspace_peer_count > 0 && sent == workspace_peer_count
     }
 
+    /// Send consented input to one exact authenticated device. Gossip has no
+    /// addressed-send primitive, so using its broadcast here would disclose
+    /// keyboard and pointer events to every participant in the workspace.
+    async fn publish_workspace_control(
+        &mut self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        route: WorkspaceControlRoute,
+    ) {
+        if !matches!(msg, NeighbourMsg::RemoteInput { .. }) {
+            tracing::warn!(ws, "refused non-input workspace-control publication");
+            return;
+        }
+        match route {
+            WorkspaceControlRoute::Direct { target } => {
+                if !self.peers_seen.contains_key(&(ws, target)) {
+                    tracing::warn!(ws, peer = %target, "direct workspace-control route is no longer live");
+                    return;
+                }
+                let wire = SurfaceWireFrame {
+                    workspace: ws,
+                    message: msg,
+                };
+                let Ok(bytes) = postcard::to_allocvec(&wire) else {
+                    return;
+                };
+                let addr = self
+                    .peers
+                    .get(&target)
+                    .cloned()
+                    .unwrap_or_else(|| EndpointAddr::new(target));
+                let connection = if let Some(connection) = self.surface_connections.get(&target) {
+                    connection.clone()
+                } else {
+                    let Ok(Ok(connection)) = tokio::time::timeout(
+                        Duration::from_millis(300),
+                        self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
+                    )
+                    .await
+                    else {
+                        tracing::warn!(ws, peer = %target, "direct workspace-control connection failed");
+                        return;
+                    };
+                    self.surface_connections.insert(target, connection.clone());
+                    connection
+                };
+                let send = async {
+                    let mut stream = connection.open_uni().await.map_err(|_| ())?;
+                    stream.write_all(&bytes).await.map_err(|_| ())?;
+                    stream.finish().map_err(|_| ())?;
+                    Ok::<(), ()>(())
+                };
+                if !matches!(
+                    tokio::time::timeout(Duration::from_millis(40), send).await,
+                    Ok(Ok(()))
+                ) {
+                    self.surface_connections.remove(&target);
+                    tracing::warn!(ws, peer = %target, "direct workspace-control publish failed");
+                }
+            }
+            WorkspaceControlRoute::Relayed { via } => {
+                tracing::warn!(
+                    ws,
+                    relay = %via,
+                    "refused workspace-control input on a workspace-wide relay"
+                );
+            }
+        }
+    }
+
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
@@ -651,7 +745,10 @@ impl ActorState {
                     return true;
                 }
                 self.peers_seen.insert((ws, peer), Instant::now());
-                if mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                // Input has no event id or timestamp, so two deliberate
+                // identical key/button events must not be content-deduped.
+                if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
+                    || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
                     && let Some(tx) = self.subscribers.get(&ws)
                 {
                     let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
@@ -1685,6 +1782,103 @@ mod tests {
                 > dedicated_before,
             "surface frame should arrive through the dedicated QUIC ALPN"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn direct_workspace_control_input_reaches_only_the_exact_target() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let (c, lookup_c) = endpoint().await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let c_id = c.id();
+        let b_addr = b.addr();
+        let c_addr = c.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        let (event_c, mut rx_c) = mpsc::channel(16);
+        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+            cmd.send(NetCmd::JoinWorkspace {
+                ws: 43,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+
+        let mut a_saw_b = false;
+        let mut a_saw_c = false;
+        while !(a_saw_b && a_saw_c) {
+            match timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
+                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
+                _ => {}
+            }
+        }
+        for receiver in [&mut rx_b, &mut rx_c] {
+            loop {
+                let event = timeout(Duration::from_secs(10), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                    break;
+                }
+            }
+        }
+
+        for _ in 0..2 {
+            cmd_a
+                .send(NetCmd::PublishWorkspaceControl {
+                    ws: 43,
+                    msg: NeighbourMsg::RemoteInput {
+                        peer: crate::network::behaviour::peer_liveness_handle(&a_id),
+                        surface: 7,
+                        event: vec![0x51, 0x4f, 0x53],
+                    },
+                    route: WorkspaceControlRoute::Direct { target: b_id },
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut delivered = 0;
+        while delivered < 2 {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::RemoteInput { surface: 7, .. },
+                    ..
+                }
+            ) {
+                delivered += 1;
+            }
+        }
+        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
+            assert!(
+                !matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::RemoteInput { .. },
+                        ..
+                    }
+                ),
+                "direct input leaked to a non-target workspace peer"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

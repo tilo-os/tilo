@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+# Print the narrowly owned boot artifacts for one installed qOS root.
+# The ESP itself is selected and mounted by the caller; ownership is proven by
+# the sealed root=UUID= command line inside each UKI/loader entry.
+set -euo pipefail
+
+[ "$#" -eq 2 ] || { echo "usage: $0 ESP_ROOT ROOT_FILESYSTEM_UUID" >&2; exit 2; }
+esp="$(readlink -f "$1")"
+root_uuid="$2"
+[ -d "$esp" ] || { echo "error: ESP root is not a directory: $1" >&2; exit 1; }
+case "$root_uuid" in ''|*[!A-Fa-f0-9-]*) echo "error: invalid root filesystem UUID" >&2; exit 1;; esac
+
+emit_if_owned() {
+  local file="$1" relative
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  grep -aFq -- "root=UUID=$root_uuid" "$file" || return 0
+  relative="${file#"$esp"/}"
+  case "$relative" in
+    /*|*..*) return 1 ;;
+    EFI/Linux/*.efi|loader/entries/*.conf) printf '%s\n' "$relative" ;;
+    *) return 1 ;;
+  esac
+}
+
+while IFS= read -r -d '' file; do
+  emit_if_owned "$file"
+done < <(find "$esp/EFI/Linux" -xdev -maxdepth 4 -type f -name '*.efi' -print0 2>/dev/null)
+while IFS= read -r -d '' file; do
+  emit_if_owned "$file"
+done < <(find "$esp/loader/entries" -xdev -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null)

@@ -240,6 +240,10 @@ struct NamingState {
 }
 
 /// Scrolling, filterable, groupable activity pane. See module-level docs.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag tracks an independent interaction, rendering, or invalidation state"
+)]
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,

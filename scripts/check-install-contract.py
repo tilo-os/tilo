@@ -23,6 +23,20 @@ assert contract["completeSystem"]["alongside"] == {
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
 for runner, architecture in (("runner", "x86_64"), ("runner-arm64", "aarch64")):
     assert f"arch: {architecture}\n            runner: {runner}" in imager_workflow
+    medium = f"qos-installer-linux-{architecture}.img.zst"
+    assert f"            {medium}" in imager_workflow
+assert """      - name: Verify the installer-medium release payload
+        run: |
+          set -euo pipefail
+          medium="qos-installer-linux-${{ matrix.arch }}.img.zst"
+""" in imager_workflow
+assert """            dist/qos-installer/qos-installer-linux-${{ matrix.arch }}.img.zst
+            dist/qos-installer/qos-installer-linux-${{ matrix.arch }}.img.zst.sha256
+            dist/qos-installer/catalog-${{ matrix.arch }}.json
+          if-no-files-found: error
+""" in imager_workflow
+assert """            (cd "$(dirname "$path")" && sha256sum --check --strict "$(basename "$path").sha256")""" in imager_workflow
+assert 'qos-installer-*.asc' in imager_workflow
 for host in ("linux", "windows", "macos"):
     assert f"  {host}:" in imager_workflow
 

@@ -44,8 +44,32 @@ if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
   exit 1
 fi
+
+# Opening a WinGet submission makes the release reviewable, not installable.
+# Probe the exact version manifest in Microsoft's accepted index so the landing
+# page exposes the command only when `winget install` can really resolve it.
+# A transient GitHub failure stays fail-safe as "submitted" and a later rerun
+# of this idempotent promotion can advance the same release to "available".
+winget_state=submitted
+winget_manifest="$work/qOS.Imager.yaml"
+winget_url="https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/qOS/Imager/${version}/qOS.Imager.yaml"
+winget_http="$(curl --silent --show-error --location \
+    --retry 3 --retry-all-errors --retry-max-time 45 \
+    --connect-timeout 10 --max-time 20 \
+    --output "$winget_manifest" --write-out '%{http_code}' "$winget_url" || true)"
+if [ "$winget_http" = 200 ] \
+  && grep -Fxq 'PackageIdentifier: qOS.Imager' "$winget_manifest" \
+  && grep -Fxq "PackageVersion: $version" "$winget_manifest"; then
+  winget_state=available
+fi
+
 jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
-  '.tag = $tag | .published = true | .linuxSigningFingerprint = $fingerprint' \
+   --arg winget_state "$winget_state" \
+  '.tag = $tag
+   | .published = true
+   | .linuxSigningFingerprint = $fingerprint
+   | .channels.homebrew = "available"
+   | .channels.winget = $winget_state' \
   "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 cp docs/install-contract.json "$contract"

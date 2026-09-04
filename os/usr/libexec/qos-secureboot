@@ -121,6 +121,8 @@ artefacts() {
   local f
   for f in "$ESP/EFI/systemd/systemd-bootx64.efi" \
            "$ESP/EFI/BOOT/BOOTX64.EFI" \
+           "$ESP/EFI/systemd/systemd-bootaa64.efi" \
+           "$ESP/EFI/BOOT/BOOTAA64.EFI" \
            "$ESP/EFI/systemd/systemd-bootia32.efi"; do
     if [ -f "$f" ]; then printf '%s\n' "$f"; fi
   done

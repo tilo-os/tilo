@@ -22,6 +22,7 @@ use vello::peniko::{
     ImageFormat, Mix,
 };
 use winit::event::{Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::compositor::foreign::ForeignSurfaceWidget;
 use crate::shell::build_nirios_overlay_host_with_chrome;
@@ -186,6 +187,10 @@ use crate::shell::overlay_host::OutputGeometry;
 /// catalogues stay in `bin/shots/driver.rs`; the compositor gets input
 /// through the smithay seat layer and translates it into mutations on
 /// the same `Chrome` instead.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent compositor state flags describe unrelated display, input, and accessibility features"
+)]
 pub struct FrameBuilder {
     host: ShellOverlayHost,
     chrome: Chrome,
@@ -235,6 +240,15 @@ pub struct FrameBuilder {
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
     osk_anchor_x: Option<f64>,
     osk_active: bool,
+    /// A layout rebuild invalidates every Taffy node id held by the native
+    /// input loop. Re-seat its external focus cursor before the next event;
+    /// otherwise the first-login wizard starts unfocused and a step change
+    /// can leave keyboard input pointing at a widget that no longer exists.
+    focus_tree_changed: bool,
+    /// Stable position used to preserve focus across incidental rebuilds,
+    /// matching `ui::App`; an explicit focus-reset ignores it and starts the
+    /// replacement wizard step at its first enabled control.
+    native_focus_ordinal: Option<usize>,
 }
 
 impl FrameBuilder {
@@ -354,6 +368,8 @@ impl FrameBuilder {
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
+            focus_tree_changed: true,
+            native_focus_ordinal: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -430,6 +446,148 @@ impl FrameBuilder {
                 self.root_node = None;
             }
         }
+        self.focus_tree_changed = true;
+    }
+
+    /// Enabled keyboard controls in the same parent-before-children DFS used
+    /// by `ui::App`. Disabled controls are deliberately absent so Tab can
+    /// never land on an unavailable OOBE action.
+    fn focusable_order(&self) -> Vec<NodeId> {
+        fn collect(
+            node: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+            order: &mut Vec<NodeId>,
+        ) {
+            if widget.is_focusable() && widget.is_enabled() {
+                order.push(node);
+            }
+            let children = widget.children();
+            if let Ok(child_nodes) = taffy.children(node) {
+                for (child, &child_node) in children.iter().zip(child_nodes.iter()) {
+                    collect(child_node, *child, taffy, order);
+                }
+            }
+        }
+
+        fn deepest_trap(
+            node: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+        ) -> Option<Vec<NodeId>> {
+            let children = widget.children();
+            if let Ok(child_nodes) = taffy.children(node) {
+                for (child, &child_node) in children.iter().zip(child_nodes.iter()) {
+                    if let Some(order) = deepest_trap(child_node, *child, taffy) {
+                        return Some(order);
+                    }
+                }
+            }
+            if widget.traps_focus() {
+                let mut order = Vec::new();
+                collect(node, widget, taffy, &mut order);
+                return Some(order);
+            }
+            None
+        }
+
+        let mut order = Vec::new();
+        if let Some(root) = self.host_node {
+            if let Some(trapped) = deepest_trap(root, &self.host, &self.taffy) {
+                return trapped;
+            }
+            collect(root, &self.host, &self.taffy, &mut order);
+        }
+        order
+    }
+
+    fn set_native_focus(&mut self, focus: &mut Option<NodeId>, target: Option<NodeId>) {
+        if *focus == target {
+            return;
+        }
+        if let Some(old) = *focus
+            && let Some(&widget) = self.node_map.get(&old)
+        {
+            unsafe { (*widget).set_focus(false) };
+        }
+        if let Some(new) = target
+            && let Some(&widget) = self.node_map.get(&new)
+        {
+            unsafe { (*widget).set_focus(true) };
+        }
+        *focus = target;
+        self.native_focus_ordinal = target.and_then(|id| {
+            self.focusable_order()
+                .iter()
+                .position(|candidate| *candidate == id)
+        });
+    }
+
+    fn focus_first(&mut self, focus: &mut Option<NodeId>) {
+        // After a rebuild the old id belongs to the discarded Taffy tree and
+        // must not be dereferenced against the new pointer map.
+        if self.focus_tree_changed {
+            *focus = None;
+        }
+        let first = self.focusable_order().first().copied();
+        self.set_native_focus(focus, first);
+        self.focus_tree_changed = false;
+    }
+
+    fn restore_focus_after_tree_change(&mut self, focus: &mut Option<NodeId>) {
+        *focus = None;
+        let order = self.focusable_order();
+        let target = self.native_focus_ordinal.map_or_else(
+            || order.first().copied(),
+            |ordinal| {
+                order
+                    .get(ordinal)
+                    .copied()
+                    .or_else(|| order.last().copied())
+            },
+        );
+        self.set_native_focus(focus, target);
+        self.focus_tree_changed = false;
+    }
+
+    /// Keep the native compositor's external cursor attached to the live
+    /// widget tree. Called after layout as well as before input so initial
+    /// focus and wizard-step focus are visible without a sacrificial key.
+    pub(crate) fn reconcile_native_focus(&mut self, focus: &mut Option<NodeId>) {
+        let reset = self.host.take_focus_reset();
+        if reset {
+            self.relayout();
+        }
+        if reset {
+            self.focus_first(focus);
+        } else if self.focus_tree_changed {
+            self.restore_focus_after_tree_change(focus);
+        } else if focus.is_none() {
+            self.focus_first(focus);
+        }
+    }
+
+    fn focus_tab(&mut self, focus: &mut Option<NodeId>, backwards: bool) -> bool {
+        let order = self.focusable_order();
+        if order.is_empty() {
+            return false;
+        }
+        let current = (*focus).and_then(|id| order.iter().position(|candidate| *candidate == id));
+        let next = match current {
+            Some(0) if backwards => order.len().saturating_sub(1),
+            Some(index) if backwards => index.saturating_sub(1),
+            Some(index) => {
+                let candidate = index.saturating_add(1);
+                if candidate < order.len() {
+                    candidate
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        };
+        self.set_native_focus(focus, order.get(next).copied());
+        true
     }
 
     /// Run `compute_layout` + `apply_layout` against the current tree. Animation
@@ -1314,6 +1472,116 @@ impl FrameBuilder {
         self.host_node
     }
 
+    /// Build the semantic tree for compositor-owned chrome.
+    ///
+    /// Hosted applications get this through [`ui::App`]'s winit adapter. The
+    /// native shell has no application window, so its AT-SPI bridge calls this
+    /// equivalent projection directly after layout. Keeping the projection in
+    /// [`ui::accesskit_bridge`] means first-use surfaces expose the same roles,
+    /// names, state and stable node ids as every other qOS UI.
+    pub fn build_a11y_tree_update(
+        &self,
+        focus: Option<NodeId>,
+        scale: f64,
+    ) -> ui::accesskit::TreeUpdate {
+        ui::accesskit_bridge::build_tree_update(&self.host, &self.node_map, focus, scale)
+    }
+
+    /// Route an assistive-technology action back through the live compositor
+    /// widget tree. Returns `true` only when the request addressed a current
+    /// semantic node and was handled (directly or through the standard pointer
+    /// fallback used by [`ui::App`]).
+    pub fn dispatch_a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        use ui::a11y::Action;
+        use ui::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let Some(resolved) = resolve_node_id(&self.host, &self.node_map, target) else {
+            return false;
+        };
+        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+            A11yTarget::Root => return false,
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Synthetic {
+                owner,
+                key_path,
+                ordinal_path,
+                semantic_target,
+            } => (owner, key_path, ordinal_path, semantic_target, true),
+        };
+        let Some(&widget) = self.node_map.get(&taffy_id) else {
+            return false;
+        };
+
+        let handled = unsafe {
+            if let Some(target) = semantic_target.as_deref() {
+                (*widget).perform_semantic_action(target, action, state, root_obj)
+            } else if synthetic {
+                (*widget).perform_action_at(action, &key_path, state, root_obj)
+            } else {
+                (*widget).perform_action(action, state, root_obj)
+            }
+        };
+        if handled {
+            if matches!(action, Action::Focus) {
+                self.set_native_focus(focus, Some(taffy_id));
+            }
+            if self.host.take_focus_reset() {
+                self.relayout();
+                self.focus_first(focus);
+            }
+            return true;
+        }
+
+        match action {
+            Action::Focus => {
+                if synthetic && !ordinal_path.is_empty() {
+                    unsafe { (*widget).focus_synthetic_accessibility(&ordinal_path) };
+                }
+                self.set_native_focus(focus, Some(taffy_id));
+                true
+            }
+            Action::Activate | Action::ToggleCheck => {
+                let rect = if synthetic {
+                    unsafe { (*widget).synthetic_accessibility_rect(&ordinal_path) }
+                        .unwrap_or_else(|| unsafe { (*widget).get_rect() })
+                } else {
+                    unsafe { (*widget).get_rect() }
+                };
+                let center = rect.center();
+                let events = [
+                    WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                    },
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                    },
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                    },
+                ];
+                let mut handled = false;
+                for event in events {
+                    handled |=
+                        self.dispatch_event(&event, &Modifiers::default(), state, root_obj, focus);
+                }
+                handled
+            }
+            _ => false,
+        }
+    }
+
     /// Read-only access to the taffy tree — also for input dispatch.
     pub fn taffy(&self) -> &TaffyTree<()> {
         &self.taffy
@@ -1356,14 +1624,19 @@ impl FrameBuilder {
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
-        // OOBE transitions replace the whole focusable subtree. Clear the
-        // native focus cursor before it can retain a node removed by the
-        // structural rebuild.
-        if self.host.take_focus_reset()
-            && let Some(old_id) = focus.take()
-            && let Some(&widget) = self.node_map.get(&old_id)
+        self.reconcile_native_focus(focus);
+
+        // Match `ui::App`: unmodified Tab owns the global DFS focus order.
+        // Ctrl+Tab and other modified chords remain shell shortcuts and must
+        // continue through `ShellOverlayHost`.
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+            && matches!(event.logical_key, Key::Named(NamedKey::Tab))
+            && !modifiers.state().control_key()
+            && !modifiers.state().alt_key()
+            && !modifiers.state().super_key()
         {
-            unsafe { (*widget).set_focus(false) };
+            return self.focus_tab(focus, modifiers.state().shift_key());
         }
         let Some(child) = self.host_node() else {
             // No layout tree yet (see `host_node`'s doc) — nothing to
@@ -1396,19 +1669,15 @@ impl FrameBuilder {
         if let Some(new_id) = focus_target
             && prior_focus != Some(new_id)
         {
-            if let Some(old_id) = prior_focus
-                && let Some(&w_ptr) = self.node_map.get(&old_id)
-            {
-                unsafe {
-                    (*w_ptr).set_focus(false);
-                }
-            }
-            if let Some(&w_ptr) = self.node_map.get(&new_id) {
-                unsafe {
-                    (*w_ptr).set_focus(true);
-                }
-            }
-            *focus = Some(new_id);
+            self.set_native_focus(focus, Some(new_id));
+        }
+
+        // Wizard actions can replace the entire subtree during this event.
+        // Rebuild and expose a visible first focus immediately, rather than
+        // waiting for a second physical key press to repair focus.
+        if self.host.take_focus_reset() {
+            self.relayout();
+            self.focus_first(focus);
         }
         handled
     }
@@ -1567,6 +1836,242 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable;
+    use winit::event::{ElementState, KeyEvent};
+    use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+
+    fn key_press(key: Key) -> WindowEvent {
+        // SAFETY: winit keeps platform-private key metadata inaccessible to
+        // constructors. The production path under test reads only the public
+        // fields initialized immediately below.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
+        let ptr = fb.node_map.get(&focus?)?;
+        unsafe { (**ptr).accessibility()?.name }
+    }
+
+    fn exported_node_named(
+        update: &ui::accesskit::TreeUpdate,
+        name: &str,
+    ) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .cloned()
+    }
+
+    fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
+        let identity_dir = tempfile::tempdir().expect("temporary identity directory");
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.enable_onboarding(identity_dir.path().to_path_buf());
+        fb.relayout();
+        (fb, identity_dir)
+    }
+
+    #[test]
+    fn native_oobe_initializes_focus_without_test_control() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+    }
+
+    #[test]
+    fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (existing_id, existing) = exported_node_named(&update, "Use existing")
+            .expect("existing-identity action reaches the external tree");
+        let (_, create) = exported_node_named(&update, "Create identity")
+            .expect("create-identity action reaches the external tree");
+        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 3: Choose")
+            .expect("the OOBE progress state reaches the external tree");
+
+        assert_eq!(existing.role(), ui::accesskit::Role::Button);
+        assert_eq!(create.role(), ui::accesskit::Role::Button);
+        assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
+        assert!(existing.supports_action(ui::accesskit::Action::Focus));
+        assert!(existing.supports_action(ui::accesskit::Action::Click));
+        assert_eq!(update.focus, existing_id);
+        assert_eq!(
+            update.tree.as_ref().map(|tree| tree.root),
+            Some(ui::accesskit_bridge::ROOT_ID)
+        );
+    }
+
+    #[test]
+    fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let intro = fb.build_a11y_tree_update(focus, 1.0);
+
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+            .expect("begin identity setup");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        let protect = fb.build_a11y_tree_update(focus, 1.0);
+
+        assert!(
+            exported_node_named(&protect, "Use existing").is_none(),
+            "nodes from the replaced step must leave the exported tree"
+        );
+        assert!(
+            exported_node_named(&intro, crate::onboarding::ACKNOWLEDGEMENT).is_none(),
+            "the next step must not leak into the initial tree"
+        );
+        let (ack_id, acknowledgement) =
+            exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
+                .expect("the recovery acknowledgement reaches the external tree");
+        let (_, create) = exported_node_named(&protect, "Create")
+            .expect("the gated create action reaches the external tree");
+        assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
+        assert_eq!(
+            acknowledgement.toggled(),
+            Some(ui::accesskit::Toggled::False)
+        );
+        assert!(create.is_disabled());
+        assert_eq!(protect.focus, ack_id);
+
+        assert!(fb.dispatch_a11y_action(
+            ack_id,
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        // The first pump observes the parent flow change; layout rebuilds the
+        // composition just as the production frame loop does before its next
+        // refresh. The second pump then syncs the newly-created checkbox from
+        // the CRDT. Omitting the intervening layout would test two reducer
+        // passes against the old tree, which cannot occur in the live loop.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
+        let (_, acknowledgement) =
+            exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
+        let (_, create) = exported_node_named(&acknowledged, "Create").unwrap();
+        assert_eq!(
+            acknowledgement.toggled(),
+            Some(ui::accesskit::Toggled::True),
+            "the rebuilt checkbox must preserve its visible and spoken state"
+        );
+        assert!(
+            !create.is_disabled(),
+            "the externally-operated acknowledgement must enable the gated action"
+        );
+    }
+
+    #[test]
+    fn native_oobe_tab_and_shift_tab_follow_dfs_order() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let tab = key_press(Key::Named(NamedKey::Tab));
+
+        assert!(fb.dispatch_event(
+            &tab,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+    }
+
+    #[test]
+    fn native_oobe_focus_order_excludes_disabled_controls() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut doc = AutoCommit::new();
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+            .expect("begin identity setup");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+
+        let names: Vec<_> = fb
+            .focusable_order()
+            .into_iter()
+            .filter_map(|id| focused_name(&fb, Some(id)))
+            .collect();
+        assert!(names.iter().any(|name| name.contains("I understand")));
+        assert!(names.iter().any(|name| name == "Back"));
+        assert!(
+            !names.iter().any(|name| name == "Create"),
+            "the gated Create action must not become a Tab stop: {names:?}"
+        );
+    }
+
+    #[test]
+    fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+            .expect("begin identity setup");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+
+        assert!(
+            focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
+            "focus must move into the replacement OOBE step"
+        );
+    }
+
+    #[test]
+    fn native_oobe_incidental_rebuild_preserves_focus_ordinal() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let tab = key_press(Key::Named(NamedKey::Tab));
+        assert!(fb.dispatch_event(
+            &tab,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+
+        fb.rebuild_layout_tree();
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(
+            focused_name(&fb, focus).as_deref(),
+            Some("Create identity"),
+            "an unrelated structure refresh must preserve the focused ordinal"
+        );
+    }
 
     #[test]
     fn transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist() {

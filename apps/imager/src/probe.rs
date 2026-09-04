@@ -16,7 +16,7 @@ use std::process::Stdio;
 
 use serde_json::Value;
 
-use crate::model::{Source, SourceKind, TargetDrive, TargetKind, TargetPartition};
+use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
 #[cfg(not(target_os = "linux"))]
 pub fn pick_image_native() -> ui::PortalChannel {
@@ -165,7 +165,21 @@ pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
 
 #[cfg(target_os = "windows")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
-    let script = "Get-Disk | Select-Object Number,FriendlyName,UniqueId,Size,BusType,IsBoot,IsSystem,IsReadOnly | ConvertTo-Json -Compress";
+    // Keep disk identity and safety fields in the same snapshot as the volume
+    // details shown on the destructive review screen. A partition without a
+    // mountable volume still appears by number and size instead of making a
+    // populated drive look empty.
+    let script = r#"$disks = @(Get-Disk | ForEach-Object {
+  $disk = $_
+  $partitions = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | ForEach-Object {
+    $partition = $_
+    $volume = $partition | Get-Volume -ErrorAction SilentlyContinue | Select-Object -First 1
+    $name = if ($partition.DriveLetter) { "$($partition.DriveLetter):" } else { "Partition $($partition.PartitionNumber)" }
+    [PSCustomObject]@{Name=$name;Size=$partition.Size;FileSystem=$volume.FileSystem;Label=$volume.FileSystemLabel}
+  })
+  [PSCustomObject]@{Number=$disk.Number;FriendlyName=$disk.FriendlyName;UniqueId=$disk.UniqueId;Size=$disk.Size;BusType=$disk.BusType;IsBoot=$disk.IsBoot;IsSystem=$disk.IsSystem;IsReadOnly=$disk.IsReadOnly;Partitions=$partitions}
+})
+$disks | ConvertTo-Json -Compress -Depth 4"#;
     let out = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
@@ -205,6 +219,7 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
             let removable = matches!(bus.to_ascii_lowercase().as_str(), "usb" | "sd" | "mmc");
+            let partitions = windows_partitions(disk);
             Some(TargetDrive {
                 name: format!("PhysicalDrive{number}"),
                 model: str_field(disk, "FriendlyName").unwrap_or_else(|| format!("Disk {number}")),
@@ -214,11 +229,37 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
                 tran: Some(bus.to_ascii_lowercase()),
                 removable,
                 is_system,
-                partitions: Vec::new(),
+                partitions,
             })
         })
         .collect::<Vec<_>>();
     (!drives.is_empty()).then_some(drives)
+}
+
+fn windows_partitions(disk: &Value) -> Vec<TargetPartition> {
+    let Some(value) = disk.get("Partitions") else {
+        return Vec::new();
+    };
+    let mut partitions = Vec::new();
+    let mut push = |partition: &Value| {
+        let Some(name) = str_field(partition, "Name") else {
+            return;
+        };
+        partitions.push(TargetPartition {
+            name,
+            size: partition.get("Size").and_then(as_u64).unwrap_or(0),
+            fstype: str_field(partition, "FileSystem"),
+            label: str_field(partition, "Label"),
+        });
+    };
+    if let Some(items) = value.as_array() {
+        items.iter().for_each(&mut push);
+    } else if value.is_object() {
+        // Accept singleton objects too, so fixtures and older PowerShell JSON
+        // producers do not need to preserve a one-element array wrapper.
+        push(value);
+    }
+    partitions
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -363,6 +404,8 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: is_qos,
+        identity: SourceIdentity::from_metadata(&meta),
+        expected_sha256: None,
     })
 }
 
@@ -564,13 +607,44 @@ mod tests {
     fn parses_windows_get_disk_and_flags_system_disk() {
         let json: Value = serde_json::from_str(r#"[
           {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
-          {"Number":2,"FriendlyName":"USB Stick","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false},
+          {"Number":2,"FriendlyName":"USB Stick","UniqueId":"usb-stick-serial","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
+           "Partitions":[
+             {"Name":"E:","Size":16000000000,"FileSystem":"exFAT","Label":"TRANSFER"},
+             {"Name":"Partition 2","Size":"15900000000","FileSystem":null,"Label":null}
+           ]},
           {"Number":3,"FriendlyName":"Locked card","Size":16000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":true}
         ]"#).unwrap();
         let drives = parse_windows_disks(&json).unwrap();
         assert_eq!(drives.len(), 2, "read-only disks are not write targets");
         assert!(drives[0].is_system);
         assert_eq!(drives[1].name, "PhysicalDrive2");
+        assert_eq!(drives[1].stable_id.as_deref(), Some("usb-stick-serial"));
         assert!(drives[1].removable);
+        assert_eq!(drives[1].partitions.len(), 2);
+        assert_eq!(drives[1].partitions[0].name, "E:");
+        assert_eq!(drives[1].partitions[0].fstype.as_deref(), Some("exFAT"));
+        assert_eq!(drives[1].partitions[0].label.as_deref(), Some("TRANSFER"));
+        assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
+        assert_eq!(
+            drives[1].contents_summary(),
+            "2 partition(s): TRANSFER, data"
+        );
+    }
+
+    #[test]
+    fn parses_windows_single_partition_object_from_older_json_producer() {
+        let json: Value = serde_json::from_str(
+            r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
+                "Partitions":{"Name":"F:","Size":63900000000,"FileSystem":"FAT32","Label":"CAMERA"}}"#,
+        )
+        .unwrap();
+
+        let drives = parse_windows_disks(&json).unwrap();
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0].name, "PhysicalDrive7");
+        assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
+        assert_eq!(drives[0].partitions.len(), 1);
+        assert_eq!(drives[0].partitions[0].name, "F:");
+        assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
     }
 }
