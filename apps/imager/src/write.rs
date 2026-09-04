@@ -641,6 +641,14 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
 
 const WRITE_HELPER_ARG: &str = "--qos-write-helper";
 
+// `Start-Process` flattens its `ArgumentList` into a native command line. A
+// literal double quote must therefore surround each path so spaces remain in
+// the same argv element when the elevated process starts. PowerShell's
+// single-quoted `'"'` is exactly one double-quote character; `\"` would be a
+// backslash followed by a quote and would not group the path.
+#[cfg(any(test, target_os = "windows"))]
+const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3]); exit $p.ExitCode"#;
+
 /// Execute the privileged helper mode when `args` requests it. This is called
 /// before the windowing runtime is initialized.
 ///
@@ -928,10 +936,14 @@ fn elevated_helper_command(
 ) -> io::Result<Command> {
     // Values are positional PowerShell arguments, never interpolated into the
     // script. ArgumentList receives individually quoted native arguments.
-    const SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('\"' + $args[1].Replace('\"','\\\"') + '\"'), ('\"' + $args[2].Replace('\"','\\\"') + '\"'), $args[3]); exit $p.ExitCode"#;
     let mut command = Command::new("powershell.exe");
     command
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            WINDOWS_ELEVATION_SCRIPT,
+        ])
         .arg(exe)
         .arg(request)
         .arg(progress)
@@ -1227,6 +1239,16 @@ mod tests {
         assert_eq!(args[0], "/opt/qos-imager-bin");
         assert_eq!(args[1], WRITE_HELPER_ARG);
         assert_eq!(args.len(), 5);
+    }
+
+    #[test]
+    fn windows_elevation_script_native_quotes_paths_with_spaces() {
+        // PowerShell single-quoted strings do not treat backslash as an
+        // escape. The wrapper must concatenate a literal `"`, not `\"`,
+        // around both paths before Start-Process flattens ArgumentList.
+        assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
+        assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
+        assert!(!WINDOWS_ELEVATION_SCRIPT.contains(r#"('\"' +"#));
     }
 
     #[test]

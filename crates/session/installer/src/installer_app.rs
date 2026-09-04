@@ -139,6 +139,7 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. qOS cannot make these Windows changes and will not resize NTFS.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
@@ -1922,6 +1923,7 @@ impl InstallerApp {
                 )));
             }
         }
+        children.extend(self.windows_alongside_preparation(theme));
         let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
         let guided_plans = self.guided_alongside_plans();
         if self.install_method == InstallMethod::Alongside && guided_plans.len() > 1 {
@@ -1970,6 +1972,20 @@ impl InstallerApp {
             "Next",
             self.selected_disk.is_none() || unavailable,
         ));
+    }
+
+    fn windows_alongside_preparation(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
+        (self.install_method == InstallMethod::Alongside
+            && self
+                .selected_disk_ref()
+                .is_some_and(Disk::has_windows_storage))
+        .then(|| {
+            Box::new(
+                Text::new(WINDOWS_ALONGSIDE_PREPARATION)
+                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_color(theme.tokens.colors.semantic.warning),
+            ) as Box<dyn Widget>
+        })
     }
 
     fn compose_guided_extent_choices(
@@ -4078,6 +4094,28 @@ mod tests {
                 "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
             )
             .is_some()
+        );
+    }
+
+    #[test]
+    fn alongside_surfaces_windows_preparation_before_leaving_storage() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+
+        assert!(
+            find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_some(),
+            "Windows preparation must be actionable before the user leaves storage selection"
+        );
+
+        app.disks[0].partitions[1].filesystem = "ext4".into();
+        app.disks[0].partitions[1].label = "Existing Linux".into();
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_none(),
+            "Linux-only alongside disks must not receive Windows-specific instructions"
         );
     }
 
