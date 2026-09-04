@@ -37,6 +37,9 @@ winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 

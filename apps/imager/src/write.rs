@@ -327,6 +327,155 @@ fn cancelled_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "image write cancelled")
 }
 
+/// A stable hardware identity is the rendezvous key shared by separately
+/// elevated helpers, falling back to the canonical device path when probing
+/// cannot provide one. The helper owns the lock, so the kernel releases it if
+/// either the UI or helper crashes.
+fn target_lock_name(target: &TargetDrive) -> String {
+    let identity = target
+        .stable_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || format!("path:{}", target.dev_path()),
+            |id| format!("id:{id}"),
+        );
+    format!("{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct TargetWriteLock(std::fs::File);
+
+#[cfg(unix)]
+impl Drop for TargetWriteLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // Closing also releases flock, but an explicit unlock makes the
+        // lifetime obvious and permits deterministic contention tests.
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if status != 0 {
+        let error = io::Error::last_os_error();
+        return if error
+            .raw_os_error()
+            .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
+        {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another qOS Imager helper is already using this drive",
+            ))
+        } else {
+            Err(error)
+        };
+    }
+    Ok(TargetWriteLock(file))
+}
+
+#[cfg(unix)]
+fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[cfg(target_os = "linux")]
+    let directory = Path::new("/run/lock/qos-imager");
+    #[cfg(not(target_os = "linux"))]
+    let directory = Path::new("/var/run/qos-imager");
+
+    if !directory.exists() {
+        std::fs::create_dir(directory)?;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let metadata = directory.symlink_metadata()?;
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the privileged qOS Imager lock directory is not root-owned and private",
+        ));
+    }
+    try_lock_file(&directory.join(target_lock_name(target)))
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct TargetWriteLock(*mut std::ffi::c_void);
+
+#[cfg(target_os = "windows")]
+impl Drop for TargetWriteLock {
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CreateMutexW(
+        mutex_attributes: *const std::ffi::c_void,
+        initial_owner: i32,
+        name: *const u16,
+    ) -> *mut std::ffi::c_void;
+    fn GetLastError() -> u32;
+    fn ReleaseMutex(handle: *mut std::ffi::c_void) -> i32;
+    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock> {
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    let name = format!("Global\\qOS-Imager-target-{}", target_lock_name(target));
+    let wide = name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 1, wide.as_ptr()) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "another qOS Imager helper is already using this drive",
+        ));
+    }
+    Ok(TargetWriteLock(handle))
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+struct TargetWriteLock;
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn acquire_target_write_lock(_target: &TargetDrive) -> io::Result<TargetWriteLock> {
+    Err(io::Error::other(
+        "exclusive media writes are unsupported on this platform",
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // The real engine. `stream_copy` + `verify_readback` are the exact loops that
 // flash a device; tests point them at temp files so the byte path is proven
@@ -689,34 +838,40 @@ fn run_system_job(
     let mut prepared = false;
     let mut write_frac = 0.0;
     let mut verify_frac = 0.0;
-    let mut result = {
-        let mut relay_progress = |progress: Progress| {
-            write_frac = progress.write_frac;
-            verify_frac = progress.verify_frac;
-            on_progress(progress);
-        };
-        if should_cancel() {
-            JobResult::Cancelled
-        } else if let Err(error) = revalidate_target(&req.target) {
-            JobResult::WriteFailed(format!(
-                "the selected drive changed or was disconnected: {error}"
-            ))
-        } else if let Err(error) = prepare_target(&req.target) {
-            JobResult::WriteFailed(format!(
-                "the drive is still in use and could not be prepared: {error}"
-            ))
-        } else {
-            prepared = true;
-            run_job_paths_bound(
-                &src,
-                &dst,
-                req.source.size,
-                req.source.identity,
-                req.source.expected_sha256.as_deref(),
-                should_cancel,
-                &mut relay_progress,
-            )
-        }
+    // Retain this guard until after finish_target. Separate elevated helpers
+    // rendezvous here before either one unmounts, offlines, writes, verifies,
+    // embeds a profile, or ejects the same physical target.
+    let mut target_lock = None;
+    let mut relay_progress = |progress: Progress| {
+        write_frac = progress.write_frac;
+        verify_frac = progress.verify_frac;
+        on_progress(progress);
+    };
+    let mut result = if should_cancel() {
+        JobResult::Cancelled
+    } else if let Err(error) = revalidate_target(&req.target) {
+        JobResult::WriteFailed(format!(
+            "the selected drive changed or was disconnected: {error}"
+        ))
+    } else if let Err(error) = acquire_target_write_lock(&req.target).map(|lock| {
+        target_lock = Some(lock);
+    }) {
+        JobResult::WriteFailed(format!("could not exclusively reserve the drive: {error}"))
+    } else if let Err(error) = prepare_target(&req.target) {
+        JobResult::WriteFailed(format!(
+            "the drive is still in use and could not be prepared: {error}"
+        ))
+    } else {
+        prepared = true;
+        run_job_paths_bound(
+            &src,
+            &dst,
+            req.source.size,
+            req.source.identity,
+            req.source.expected_sha256.as_deref(),
+            should_cancel,
+            &mut relay_progress,
+        )
     };
     if prepared {
         if result.is_success()
@@ -737,6 +892,9 @@ fn run_system_job(
         }
         finish_target(&req.target, &result);
     }
+    // Keep the per-device exclusion through platform finalization, then make
+    // its release point explicit before reporting the terminal event.
+    drop(target_lock);
     let error = match &result {
         JobResult::Verified => None,
         JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
@@ -1325,6 +1483,45 @@ mod tests {
     /// Serialises tests which change process environment, since it is shared
     /// across parallel test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn target_lock_prefers_stable_hardware_identity_then_falls_back_to_path() {
+        let mut original = sample_targets().remove(0);
+        original.stable_id = Some("usb-serial-123".into());
+        let mut renumbered = original.clone();
+        renumbered.name = "renumbered-device".into();
+        assert_eq!(target_lock_name(&original), target_lock_name(&renumbered));
+
+        original.stable_id = None;
+        renumbered.stable_id = None;
+        assert_ne!(target_lock_name(&original), target_lock_name(&renumbered));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_lock_excludes_another_helper_handle_until_the_owner_releases_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("target.lock");
+        let first = try_lock_file(&path).expect("first helper reserves target");
+        let contention = try_lock_file(&path).expect_err("second helper must be excluded");
+        assert_eq!(contention.kind(), io::ErrorKind::WouldBlock);
+
+        drop(first);
+        try_lock_file(&path).expect("kernel releases lock with its owner");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn target_lock_excludes_another_helper_handle_until_the_owner_releases_it() {
+        let target = sample_targets().remove(0);
+        let first = acquire_target_write_lock(&target).expect("first helper reserves target");
+        let contention =
+            acquire_target_write_lock(&target).expect_err("second helper must be excluded");
+        assert_eq!(contention.kind(), io::ErrorKind::WouldBlock);
+
+        drop(first);
+        acquire_target_write_lock(&target).expect("kernel releases lock with its owner");
+    }
 
     fn req() -> WriteRequest {
         WriteRequest {
