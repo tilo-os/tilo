@@ -37,4 +37,7 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/run/qos/system-extension-api /run/qos/system-extensions /var/lib/qos/system-extensions
-ReadOnlyPaths=/usr/share/qos/system-extensions
+# `boot-pack-recommend` is a zero-input query. The manager reads PCI ids from
+# sysfs itself, so a desktop peer can neither spoof another device nor select
+# a pack by vendor-name folklore.
+ReadOnlyPaths=/usr/share/qos/system-extensions /sys/bus/pci/devices
