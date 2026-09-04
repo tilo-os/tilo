@@ -47,11 +47,10 @@ qos-reference = { path = "../../crates/collab/reference" }
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
+# The descriptor client for the desktop-owned hosted model gateway. This has
+# no vault access and never exposes a bearer token to the agent process.
+qos-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
-# The decision — which exported action answers an instruction — is a model
-# call. Blocking, because the agent's loop is a plain blocking loop; rustls so
-# no OS TLS stack is needed inside the image.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 automerge.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
