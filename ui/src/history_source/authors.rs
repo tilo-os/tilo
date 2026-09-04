@@ -105,23 +105,28 @@ impl AuthorDirectory {
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    let id = runtime_identity::load().ok().or_else(|| {
-        config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
-    })?;
-    let key_hex = hex_lower(&id.group_public_key());
-    let name = if id.display_name().is_empty() {
-        // First boot writes an empty display name and the user names
-        // themselves later. An empty string would render as a blank row, so
-        // fall back to the honest label rather than to a guess.
-        UNKNOWN_AUTHOR_NAME.to_string()
-    } else {
-        id.display_name().to_string()
-    };
-    Some(HistoryAuthor::new(
-        name,
-        rgb_to_hue(id.avatar_color()),
-        short_id(&key_hex),
-    ))
+    #[cfg(not(unix))]
+    return None;
+    #[cfg(unix)]
+    {
+        let id = runtime_identity::load().ok().or_else(|| {
+            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+        })?;
+        let key_hex = hex_lower(&id.group_public_key());
+        let name = if id.display_name().is_empty() {
+            // First boot writes an empty display name and the user names
+            // themselves later. An empty string would render as a blank row, so
+            // fall back to the honest label rather than to a guess.
+            UNKNOWN_AUTHOR_NAME.to_string()
+        } else {
+            id.display_name().to_string()
+        };
+        Some(HistoryAuthor::new(
+            name,
+            rgb_to_hue(id.avatar_color()),
+            short_id(&key_hex),
+        ))
+    }
 }
 
 /// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
