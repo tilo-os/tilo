@@ -176,7 +176,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v1/${{ matrix.arch }}
+      # v2 retires a malformed archive written by the original app namespace.
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v2/${{ matrix.arch }}
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -223,7 +224,15 @@ jobs:
             [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
           }
           trap cleanup_identities EXIT
-          dist/apps/package-apps.sh
+          build_log=$(mktemp "$RUNNER_TEMP/qos-app-build.XXXXXX")
+          if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
+            if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
+              exit 1
+            fi
+            echo '::warning::discarding malformed compiler-cache output and rebuilding it once'
+            find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
+            SCCACHE_RECACHE=1 dist/apps/package-apps.sh
+          fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-apps-${{ matrix.arch }}

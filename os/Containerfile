@@ -73,6 +73,37 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 FROM github-assets AS github-assets
 
 
+# ---- Minimal Windows paravirtual driver media -----------------------------
+# Fedora's pinned virtio-win RPM expands to almost 2 GiB because it contains
+# the same driver tree in several layouts. qOS only consumes the bootable ISO
+# and the signed guest-tools installer. Extract and authenticate those exact
+# payloads in a throwaway stage instead of installing all duplicated files in
+# the immutable OS. Keep the RPM in the frozen snapshot so this remains an
+# offline, digest-pinned build input.
+# qos-rpm-snapshot-package: virtio-win
+FROM ${BASE_REF} AS virtio-win-media
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
+    /bin/bash -euo pipefail -c '\
+      rpm_path=$(find /repo -maxdepth 1 -type f -name "virtio-win-*.rpm" -print -quit); \
+      test -n "$rpm_path"; \
+      mkdir -p /tmp/virtio /out/installer; \
+      cd /tmp/virtio; \
+      rpm2cpio "$rpm_path" \
+        | cpio -idm --quiet \
+            ./usr/share/virtio-win/virtio-win-0.1.302.iso \
+            ./usr/share/virtio-win/installer/virtio-win-guest-tools.exe; \
+      printf "%s  %s\n%s  %s\n" \
+        303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d \
+        usr/share/virtio-win/virtio-win-0.1.302.iso \
+        d8ae9ea1e943384ac195e012cd36f82c3161620e5fc9529be4e42e6f420e222d \
+        usr/share/virtio-win/installer/virtio-win-guest-tools.exe \
+        | sha256sum --check --strict; \
+      mv usr/share/virtio-win/virtio-win-0.1.302.iso /out/virtio-win.iso; \
+      mv usr/share/virtio-win/installer/virtio-win-guest-tools.exe \
+        /out/installer/virtio-win-guest-tools.exe; \
+      chmod 0644 /out/virtio-win.iso /out/installer/virtio-win-guest-tools.exe'
+
+
 # ---- Pinned Windows compatibility runtimes -------------------------------
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
 # launcher and the default Proton build as independently pinned artifacts:
@@ -1514,8 +1545,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     echo "scudo wired: $scudo"
 
 # Windows compatibility is intentionally assembled at the end of the rootfs.
-# The pinned VirtIO driver payload is large; placing it earlier makes rootless
-# Podman rescan that immutable 1.6 GiB layer for every subsequent COPY/RUN and
+# The compacted VirtIO media payload is large; placing it earlier makes
+# rootless Podman rescan that immutable layer for every subsequent COPY/RUN and
 # turns safe installer iteration into hours of avoidable layer commits.
 # Wine is the tested desktop-program baseline; UMU + its pinned Proton build are
 # copied below for non-Steam games. The appliance packages provide one
@@ -1532,7 +1563,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     swtpm \
     swtpm-tools \
     edk2-ovmf \
-    virtio-win \
     freerdp \
     xwayland-satellite \
     virt-viewer \
@@ -1540,6 +1570,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     genisoimage \
     udftools \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
+COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
 
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py

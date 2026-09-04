@@ -367,6 +367,10 @@ fn write_clock(path: &Path, now_ms: u64) {
 #[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
+    if std::env::var("QOS_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping real FUSE lifecycle outside the dedicated mandatory FUSE job");
+        return;
+    }
     let fuse = std::fs::metadata("/dev/fuse").expect("mandatory test requires /dev/fuse");
     assert!(std::os::unix::fs::FileTypeExt::is_char_device(
         &fuse.file_type()
