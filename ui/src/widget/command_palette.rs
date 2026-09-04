@@ -10,7 +10,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -470,6 +470,10 @@ pub struct CommandPalette {
     /// geometry accessor reads this so hit-testing, scrolling and painting
     /// cannot disagree.
     rows: Vec<VisualRow>,
+    /// Last pointer position in logical coordinates. The palette paints its
+    /// rows itself, so it owns hover hit testing rather than asking an
+    /// overlay host to translate row clicks back into a cursor update.
+    last_cursor: Point,
     platform: PlatformConventions,
 }
 
@@ -515,6 +519,7 @@ impl CommandPalette {
             host_filter_strip: false,
             host_filter_strip_rows: 1,
             rows: Vec::new(),
+            last_cursor: Point::ZERO,
             platform: PlatformConventions::default(),
         }
     }
@@ -1074,6 +1079,62 @@ impl CommandPalette {
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
         (0..self.visible.len()).find(|&i| self.row_rect(i).is_some_and(|r| r.contains(p)))
+    }
+
+    /// The ordinal in the synthetic list is deliberately relative to the
+    /// currently painted rows. This keeps the semantic tree bounded exactly
+    /// like painting while each row still reports its absolute result
+    /// position to assistive technology.
+    fn painted_entry_at(&self, ordinal: usize) -> Option<usize> {
+        (0..self.visible.len())
+            .filter(|&index| self.row_rect(index).is_some())
+            .nth(ordinal)
+    }
+
+    fn palette_result_target(entry_id: &str) -> String {
+        format!("command-palette:result:{entry_id}")
+    }
+
+    fn visible_entry_for_target(&self, target: &str) -> Option<usize> {
+        self.visible
+            .iter()
+            .position(|&entry_index| {
+                self.entries
+                    .get(entry_index)
+                    .is_some_and(|entry| target == Self::palette_result_target(&entry.id))
+            })
+            .filter(|&visible_index| self.row_rect(visible_index).is_some())
+    }
+
+    fn handle_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            if let Some(row) = self.row_at(self.last_cursor) {
+                self.set_cursor(row);
+                *handled = true;
+            }
+            return true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some(row) = self.row_at(self.last_cursor)
+        {
+            self.set_cursor(row);
+            self.activate_selected(state, path);
+            *handled = true;
+            return true;
+        }
+        false
     }
 
     /// `rounded-3xl` = 24 px (Tailwind).
@@ -2018,7 +2079,7 @@ impl Widget for CommandPalette {
     fn handle_event(
         &mut self,
         event: &WindowEvent,
-        _scale_factor: f64,
+        scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
@@ -2028,6 +2089,9 @@ impl Widget for CommandPalette {
         _taffy: &TaffyTree<()>,
     ) {
         if !self.is_focused {
+            return;
+        }
+        if self.handle_pointer_event(event, scale_factor, state, path, handled) {
             return;
         }
         if matches!(event, WindowEvent::Ime(_)) {
@@ -2140,6 +2204,14 @@ impl Widget for CommandPalette {
         self.is_focused
     }
 
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.is_open() && self.row_at(point).is_some() {
+            Some(winit::window::CursorIcon::Pointer)
+        } else {
+            None
+        }
+    }
+
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.arg_state.as_ref().map_or_else(
             || self.query_composition.ime_cursor_rect(),
@@ -2165,20 +2237,167 @@ impl Widget for CommandPalette {
         }
     }
 
-    /// The query string is transient input, not a stable value, so it is
-    /// not surfaced in `value`.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::Dialog)
-                .with_name("Command palette")
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    modal: true,
-                    ..Default::default()
-                }),
-        )
+        let open = self.is_open();
+        let mut node = AccessNode::new(Role::Dialog)
+            .with_name("Command palette")
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                // Match the actual capture contract: command chrome opens
+                // modal by default, while search chrome is an ordinary
+                // overlay. A closed dialog cannot be modal to AT.
+                modal: open && self.modal,
+                expanded: Some(open),
+                hidden: !open,
+                ..Default::default()
+            });
+        if !open {
+            return Some(node);
+        }
+
+        let query = self
+            .arg_state
+            .as_ref()
+            .map_or((&self.query_placeholder, &self.query), |arg| {
+                (&arg.placeholder, &arg.buffer)
+            });
+        let query_node = AccessNode::new(Role::TextInput)
+            .with_action_target("command-palette:query")
+            .with_name(query.0.clone())
+            .with_value(query.1.clone())
+            .with_bounds(self.input_row_rect())
+            .with_state(AccessState {
+                focusable: true,
+                focused: self.is_focused,
+                ..Default::default()
+            });
+
+        let total = self.visible.len();
+        let result_children = (0..total)
+            .filter_map(|visible_index| {
+                let rect = self.row_rect(visible_index)?;
+                let entry = self
+                    .visible
+                    .get(visible_index)
+                    .and_then(|&entry_index| self.entries.get(entry_index))?;
+                let mut item = AccessNode::new(Role::ListItem)
+                    .with_action_target(Self::palette_result_target(&entry.id))
+                    .with_name(entry.label.clone())
+                    .with_position(visible_index.saturating_add(1), total)
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.is_focused && visible_index == self.cursor,
+                        selected: visible_index == self.cursor,
+                        ..Default::default()
+                    });
+                if let Some(description) = &entry.description {
+                    item = item.with_description(description.clone());
+                }
+                Some(item)
+            })
+            .collect();
+        node = node.with_children(vec![
+            query_node,
+            AccessNode::new(Role::List)
+                .with_name("Results")
+                .with_bounds(Rect::new(
+                    self.rect.x0 + PADDING,
+                    self.list_top_y(),
+                    self.rect.x1 - PADDING,
+                    self.footer_rect().y0,
+                ))
+                .with_children(result_children),
+        ]);
+        Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [0] => Some(self.input_row_rect()),
+            [1] => Some(Rect::new(
+                self.rect.x0 + PADDING,
+                self.list_top_y(),
+                self.rect.x1 - PADDING,
+                self.footer_rect().y0,
+            )),
+            [1, ordinal] => self
+                .painted_entry_at(*ordinal)
+                .and_then(|visible_index| self.row_rect(visible_index)),
+            _ => None,
+        }
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        match path {
+            [0] => {
+                self.is_focused = true;
+                true
+            }
+            [1, ordinal] => {
+                let Some(visible_index) = self.painted_entry_at(*ordinal) else {
+                    return false;
+                };
+                self.set_cursor(visible_index);
+                self.is_focused = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        match action {
+            crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
+                self.is_focused = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        if target == "command-palette:query" {
+            return match action {
+                Action::Focus | Action::Activate => {
+                    self.is_focused = true;
+                    true
+                }
+                _ => false,
+            };
+        }
+        let Some(visible_index) = self.visible_entry_for_target(target) else {
+            return false;
+        };
+        match action {
+            Action::Focus => {
+                self.set_cursor(visible_index);
+                self.is_focused = true;
+                true
+            }
+            Action::Activate => {
+                self.set_cursor(visible_index);
+                self.is_focused = true;
+                self.activate_selected(state, path);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -2658,16 +2877,74 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_modal_dialog_role() {
+    fn accessibility_reports_open_state_modal_mode_and_painted_result_children() {
         use crate::a11y::Role;
-        let p = CommandPalette::new();
-        let node = Widget::accessibility(&p).expect("palette is a modal dialog");
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("alpha", "Alpha"));
+        p.push(CommandEntry::new("bravo", "Bravo").description("Second result"));
+        p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
+
+        let closed = Widget::accessibility(&p).expect("palette is semantic while closed");
+        assert!(
+            closed.state.hidden,
+            "closed palettes leave the reading order"
+        );
+        assert_eq!(closed.state.expanded, Some(false));
+        assert!(!closed.state.modal, "search chrome is not modal");
+        assert!(
+            closed.children.is_empty(),
+            "closed palettes expose no stale rows"
+        );
+
+        p.open();
+        let node = Widget::accessibility(&p).expect("open palette is semantic");
         assert_eq!(node.role, Role::Dialog);
         assert_eq!(node.name.as_deref(), Some("Command palette"));
-        assert!(node.state.modal, "the palette traps focus while open");
+        assert!(!node.state.hidden);
+        assert_eq!(node.state.expanded, Some(true));
+        assert!(!node.state.modal, "search chrome is an ordinary overlay");
         assert!(node.state.focusable);
-        assert!(!node.state.focused, "fresh palette is not focused");
-        assert_eq!(node.value, None, "the query is not surfaced as a value");
+        assert!(node.state.focused, "open palette owns its query focus");
+        assert_eq!(node.children.len(), 2, "query plus its result list");
+        let query = &node.children[0];
+        assert_eq!(query.role, Role::TextInput);
+        assert_eq!(query.value.as_deref(), Some(""));
+        assert!(
+            query.action_target.is_some(),
+            "query has a stable synthetic id"
+        );
+        assert_eq!(query.bounds, Some(p.input_row_rect().into()));
+
+        let results = &node.children[1];
+        assert_eq!(results.role, Role::List);
+        assert_eq!(
+            results.children.len(),
+            2,
+            "one synthetic item per painted row"
+        );
+        let selected = &results.children[0];
+        assert_eq!(selected.name.as_deref(), Some("Alpha"));
+        assert!(selected.state.selected);
+        assert_eq!(selected.pos_in_set, Some(1));
+        assert_eq!(selected.set_size, Some(2));
+        assert_eq!(selected.bounds, p.row_rect(0).map(Into::into));
+        assert_eq!(
+            selected.action_target.as_deref(),
+            Some("command-palette:result:alpha"),
+            "row ids are model-stable rather than paint ordinals"
+        );
+        assert_eq!(
+            p.synthetic_accessibility_rect(&[0]),
+            Some(p.input_row_rect())
+        );
+        assert_eq!(p.synthetic_accessibility_rect(&[1, 1]), p.row_rect(1));
+
+        let mut commands = CommandPalette::commands();
+        commands.open();
+        assert!(
+            Widget::accessibility(&commands).unwrap().state.modal,
+            "command chrome advertises its focus trap as modal"
+        );
     }
 
     #[test]
@@ -2676,6 +2953,88 @@ mod tests {
         p.set_focus(true);
         let node = Widget::accessibility(&p).unwrap();
         assert!(node.state.focused);
+    }
+
+    #[test]
+    fn pointer_hover_and_click_select_the_painted_row_through_enter_path() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("alpha", "Alpha"));
+        p.push(CommandEntry::new("bravo", "Bravo"));
+        p.open();
+        p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
+        let row = p.row_rect(1).expect("second result is painted");
+        let modifiers = Modifiers::default();
+        let mut doc = AutoCommit::new();
+
+        assert!(p.handle_overlay_key(
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.cursor(), 1, "hover highlights the hit-tested row");
+        assert_eq!(
+            Widget::cursor_shape(&p, row.center()),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+        assert!(p.handle_overlay_key(
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            p.take_outcome(),
+            Some(CommandOutcome {
+                id: "bravo".into(),
+                argument: None
+            })
+        );
+    }
+
+    #[test]
+    fn semantic_result_focus_and_activation_use_the_same_selected_entry_path() {
+        let mut p = CommandPalette::commands();
+        p.push(CommandEntry::new("alpha", "Alpha"));
+        p.push(CommandEntry::new("bravo", "Bravo"));
+        p.open();
+        p.set_rect(Rect::new(0.0, 0.0, 480.0, 260.0));
+        let target = Widget::accessibility(&p).unwrap().children[1].children[1]
+            .action_target
+            .clone()
+            .expect("result has a stable semantic target");
+        let mut doc = AutoCommit::new();
+
+        assert!(Widget::perform_semantic_action(
+            &mut p,
+            &target,
+            &crate::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.selected_id(), Some("bravo"));
+        assert!(Widget::perform_semantic_action(
+            &mut p,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            p.take_outcome(),
+            Some(CommandOutcome {
+                id: "bravo".into(),
+                argument: None
+            })
+        );
+        assert!(!p.is_open(), "command activation closes exactly like Enter");
     }
 
     #[test]

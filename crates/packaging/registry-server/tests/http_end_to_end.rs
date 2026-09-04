@@ -20,7 +20,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use registry_server::{
-    AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
+    AppState, ModerationService, PublisherAllowlist, PublisherRow, ServerIdentity, Storage,
+    bind_and_run,
 };
 use registry_types::{
     EntryAction, RegistryEntry, RegistryHandshake, RegistryVersion, sign_change_request,
@@ -33,6 +34,8 @@ use registry_types::{
 struct Harness {
     _tmp: tempfile::TempDir,
     addr: SocketAddr,
+    storage: Storage,
+    allowlist: PublisherAllowlist,
     publisher: SigningKey,
     /// Second publisher who is NOT allowlisted — used for the
     /// negative test.
@@ -64,7 +67,7 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     });
     storage.save_allowlist(&allow).expect("save allowlist");
 
-    let state = AppState::new(storage, identity, allow);
+    let state = AppState::new(storage.clone(), identity, allow.clone());
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let bound = bind_and_run(addr, state).await.expect("bind");
 
@@ -76,9 +79,19 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     Harness {
         _tmp: tmp,
         addr: bound,
+        storage,
+        allowlist: allow,
         publisher,
         outsider,
     }
+}
+
+fn approve(h: &Harness, package_id: &str) {
+    let moderation = ModerationService::new(h.storage.clone());
+    let pending = moderation.pending(package_id).unwrap().unwrap();
+    moderation
+        .approve(&pending, "test-owner", "reviewed", 500, &h.allowlist)
+        .expect("approve queued submission");
 }
 
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
@@ -140,7 +153,7 @@ async fn registry_handshake_uses_stored_identity() {
 }
 
 #[tokio::test]
-async fn signed_post_adds_entry_and_list_returns_it() {
+async fn signed_post_stays_private_until_approval() {
     let h = spawn_server(true).await;
     let entry = sample_entry(&h.publisher, 100);
     let req = sign_change_request(EntryAction::Add, entry.clone(), &h.publisher);
@@ -152,9 +165,26 @@ async fn signed_post_adds_entry_and_list_returns_it() {
         .send()
         .await
         .expect("send");
-    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 
-    let list: Vec<RegistryEntry> = client
+    let pending: serde_json::Value = resp.json().await.expect("pending response");
+    assert_eq!(pending["status"], "pending_review");
+    assert_eq!(pending["id"], entry.package_id);
+
+    let retry = client
+        .post(url(h.addr, "/entries"))
+        .json(&req)
+        .send()
+        .await
+        .expect("retry submission");
+    assert_eq!(retry.status(), reqwest::StatusCode::ACCEPTED);
+    assert_eq!(
+        h.storage.load_pending_submissions().unwrap().len(),
+        1,
+        "network retries must not create duplicate review work"
+    );
+
+    let before: Vec<RegistryEntry> = client
         .get(url(h.addr, "/entries"))
         .send()
         .await
@@ -162,6 +192,19 @@ async fn signed_post_adds_entry_and_list_returns_it() {
         .json()
         .await
         .expect("decode");
+    assert!(before.is_empty(), "pending apps must not enter search");
+    assert!(h.storage.load_entry(&entry.package_id).unwrap().is_none());
+    assert!(h.storage.load_pending(&entry.package_id).unwrap().is_some());
+
+    approve(&h, &entry.package_id);
+    let list: Vec<RegistryEntry> = client
+        .get(url(h.addr, "/entries"))
+        .send()
+        .await
+        .expect("list approved")
+        .json()
+        .await
+        .expect("decode approved");
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].package_id, entry.package_id);
     assert_eq!(
@@ -197,6 +240,7 @@ async fn add_then_update_bumps_stored_entry() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
+    approve(&h, "dev.qos.editor");
 
     // updated_at bumped, description changed.
     let mut entry_v2 = sample_entry(&h.publisher, 200);
@@ -208,7 +252,20 @@ async fn add_then_update_bumps_stored_entry() {
         .send()
         .await
         .expect("v2 send");
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let still_v1: RegistryEntry = client
+        .get(url(h.addr, "/entries/dev.qos.editor"))
+        .send()
+        .await
+        .expect("get still-public v1")
+        .json()
+        .await
+        .expect("decode still-public v1");
+    assert_eq!(still_v1.updated_at_unix, 100);
+    assert_ne!(still_v1.description, "improved editor");
+
+    approve(&h, "dev.qos.editor");
 
     let stored: RegistryEntry = client
         .get(url(h.addr, "/entries/dev.qos.editor"))
@@ -236,6 +293,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
+    approve(&h, "dev.qos.editor");
 
     // Same timestamp — server must reject with 409.
     let v_same = sample_entry(&h.publisher, 100);
@@ -253,7 +311,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
 }
 
 #[tokio::test]
-async fn delete_removes_entry() {
+async fn delete_keeps_entry_public_until_approval() {
     let h = spawn_server(true).await;
     let client = reqwest::Client::new();
 
@@ -270,8 +328,9 @@ async fn delete_removes_entry() {
         .expect("add")
         .error_for_status()
         .expect("add accepted");
+    approve(&h, "dev.qos.editor");
 
-    client
+    let delete = client
         .post(url(h.addr, "/entries"))
         .json(&sign_change_request(
             EntryAction::Delete,
@@ -280,9 +339,17 @@ async fn delete_removes_entry() {
         ))
         .send()
         .await
-        .expect("delete")
-        .error_for_status()
-        .expect("delete accepted");
+        .expect("delete");
+    assert_eq!(delete.status(), reqwest::StatusCode::ACCEPTED);
+
+    let before = client
+        .get(url(h.addr, "/entries/dev.qos.editor"))
+        .send()
+        .await
+        .expect("get before approval");
+    assert_eq!(before.status(), reqwest::StatusCode::OK);
+
+    approve(&h, "dev.qos.editor");
 
     let resp = client
         .get(url(h.addr, "/entries/dev.qos.editor"))
@@ -309,6 +376,7 @@ async fn unauthorised_publisher_gets_403() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -330,6 +398,7 @@ async fn tampered_signature_gets_403() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -405,4 +474,18 @@ async fn bad_json_returns_400() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn oversized_change_request_returns_413_without_touching_disk() {
+    let h = spawn_server(true).await;
+    let response = reqwest::Client::new()
+        .post(url(h.addr, "/entries"))
+        .body(vec![b'x'; 1024 * 1024 + 1])
+        .send()
+        .await
+        .expect("send oversized request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }

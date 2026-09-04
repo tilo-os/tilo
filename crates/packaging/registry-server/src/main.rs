@@ -30,9 +30,10 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, default_data_dir,
-    run_server,
+    AppState, InspectionPolicy, ModerationService, PublisherAllowlist, PublisherRow,
+    ServerIdentity, Storage, default_data_dir, inspect_entry, run_server,
 };
+use registry_types::EntryAction;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -117,6 +118,62 @@ enum Cmd {
     },
     /// Print the current `publishers.toml` to stdout.
     ListPublishers,
+    /// Review signed publisher changes before they enter the public catalogue.
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReviewCommand {
+    /// List submissions waiting for a decision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify package bytes and show the exact signed request and capabilities.
+    Show {
+        package_id: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, hide = true)]
+        allow_insecure_local: bool,
+    },
+    /// Verify package bytes and publish the exact signed request.
+    Approve {
+        package_id: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long, hide = true)]
+        allow_insecure_local: bool,
+    },
+    /// Reject a request while retaining an audit record.
+    Reject {
+        package_id: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Immediately hide a public entry while retaining a recoverable copy.
+    Quarantine {
+        package_id: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Restore a quarantined entry after current trust checks pass.
+    Restore {
+        package_id: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[tokio::main]
@@ -158,7 +215,136 @@ async fn main() -> anyhow::Result<()> {
         } => cmd_add_publisher(&storage, &pubkey, can_add_new, note),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
+        Cmd::Review { command } => cmd_review(&storage, command),
     }
+}
+
+fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
+    let moderation = ModerationService::new(storage.clone());
+    match command {
+        ReviewCommand::List { json } => {
+            let mut pending = moderation.pending_submissions()?;
+            pending.sort_by(|left, right| left.submission_id.cmp(&right.submission_id));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pending)?);
+            } else if pending.is_empty() {
+                println!("No submissions waiting for review.");
+            } else {
+                for item in pending {
+                    println!(
+                        "{}\t{:?}\t{}\t{}",
+                        item.submission_id,
+                        item.change.action,
+                        item.change.entry.name,
+                        item.change.entry.publisher_pubkey_hex
+                    );
+                }
+            }
+        }
+        ReviewCommand::Show {
+            package_id,
+            json,
+            allow_insecure_local,
+        } => {
+            let pending = require_pending(&moderation, &package_id)?;
+            let inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "submission": pending,
+                        "verified_packages": inspection,
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}: {:?} {} ({})",
+                    pending.submission_id,
+                    pending.change.action,
+                    pending.change.entry.name,
+                    pending.change.entry.publisher_pubkey_hex
+                );
+                for version in inspection {
+                    println!("\n{} · {} bytes", version.version, version.size_bytes);
+                    println!("{}", serde_json::to_string_pretty(&version.sandbox)?);
+                }
+            }
+        }
+        ReviewCommand::Approve {
+            package_id,
+            reviewer,
+            reason,
+            allow_insecure_local,
+        } => {
+            let pending = require_pending(&moderation, &package_id)?;
+            let _inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let allowlist = storage.load_allowlist()?;
+            let record = moderation.approve(&pending, reviewer, reason, now_unix(), &allowlist)?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+        ReviewCommand::Reject {
+            package_id,
+            reviewer,
+            reason,
+        } => {
+            let record = moderation.reject(&package_id, reviewer, reason, now_unix())?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+        ReviewCommand::Quarantine {
+            package_id,
+            reviewer,
+            reason,
+        } => {
+            let record = moderation.quarantine(&package_id, reviewer, reason, now_unix())?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+        ReviewCommand::Restore {
+            package_id,
+            reviewer,
+            reason,
+        } => {
+            let allowlist = storage.load_allowlist()?;
+            let record = moderation.restore_quarantined(
+                &package_id,
+                reviewer,
+                reason,
+                now_unix(),
+                &allowlist,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+    }
+    Ok(())
+}
+
+fn require_pending(
+    moderation: &ModerationService,
+    package_id: &str,
+) -> anyhow::Result<registry_server::PendingSubmission> {
+    moderation
+        .pending(package_id)?
+        .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
+}
+
+fn inspect_for_decision(
+    pending: &registry_server::PendingSubmission,
+    allow_insecure_local: bool,
+) -> anyhow::Result<Vec<registry_server::InspectedVersion>> {
+    if pending.change.action == EntryAction::Delete {
+        return Ok(Vec::new());
+    }
+    let policy = InspectionPolicy {
+        allow_insecure_local,
+        ..InspectionPolicy::default()
+    };
+    inspect_entry(&pending.change.entry, policy).map_err(Into::into)
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// `Cmd::Serve` — load the identity + allowlist and serve until ctrl-c.

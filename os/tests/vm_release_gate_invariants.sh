@@ -76,6 +76,8 @@ fi
 
 if ! grep -Eq 'list-tags .*--creds|--creds .*list-tags' "$generation" \
   && grep -Fq 'REGISTRY_AUTH_FILE="$auth" skopeo list-tags' "$generation" \
+  && grep -Fq 'run --rm --interactive' "$generation" \
+  && grep -Fq 'cat > "$REGISTRY_AUTH_FILE"' "$generation" \
   && ! grep -Eq 'skopeo list-tags .*2>&1' "$generation" \
   && grep -Fq "printf '{\"auths\":{\"%s\":{\"auth\":\"%s\"}}}" "$generation" \
   && grep -Fq 'chmod 0600 "$auth"' "$generation"; then
