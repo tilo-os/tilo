@@ -1,4 +1,4 @@
-name: Snapshot frozen RPM repo
+name: Snapshot / RPM repository
 
 # Builds + pushes the digest-pinned frozen RPM repo that os/Containerfile
 # installs from (for cross-time-reproducible OS builds). Runs in CI — the image
@@ -85,6 +85,11 @@ jobs:
           registry: code.podesta.ai
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Set up buildx for registry cache export
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
 
       - name: Build + push the frozen RPM repo image
         id: rpms

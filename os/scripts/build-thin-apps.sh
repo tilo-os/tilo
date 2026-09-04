@@ -7,6 +7,7 @@ set -euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
+INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
 
@@ -22,6 +23,12 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac
+    if [ "$INCLUDE_PACKAGES" != "  " ]; then
+        case "$INCLUDE_PACKAGES" in
+            *" $package "*) ;;
+            *) continue ;;
+        esac
+    fi
     packages+=("-p" "$package")
     features+=("$package/thin")
     binary_crates+=("${binary//-/_}")
@@ -37,7 +44,7 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 cd "$REPO"
 QOS_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/rustc-thin-app-wrapper.sh" \
-cargo build --profile "$PROFILE" --features "$feature_csv" \
+cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
     -p runtime-dylib "${packages[@]}"
 
 printf 'built %s thin qpkg apps with %s\n' \
