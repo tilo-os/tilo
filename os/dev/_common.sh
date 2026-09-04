@@ -32,13 +32,37 @@ QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2
 # Writable overlay used by VM install cycles. The live installer needs scratch
 # space for its offline image copy, but a test must never mutate the pristine
 # release artifact it is validating.
-QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
+# A named cycle isolates every mutable VM artifact while preserving it between
+# boot-installer and boot-target. CI must use a unique value (run id + arch) and
+# remove that exact directory before starting the cycle; stale target, TPM or
+# firmware state must never make a release test pass.
+QOS_VM_CYCLE="${QOS_VM_CYCLE:-}"
+if [ -n "$QOS_VM_CYCLE" ]; then
+  case "$QOS_VM_CYCLE" in
+    *[!a-zA-Z0-9._-]*|.|..)
+      printf 'QOS_VM_CYCLE must contain only letters, digits, dot, underscore or dash\n' >&2
+      exit 1
+      ;;
+  esac
+  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-$QOS_INSTALLER_OUTPUT/vm-cycles/$QOS_VM_CYCLE}"
+else
+  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-}"
+fi
+if [ -n "$QOS_CYCLE_DIR" ]; then
+  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_CYCLE_DIR/installer-work.qcow2}"
+else
+  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
+fi
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
 # at 108 bytes, and a deep scratch path overflows it. Prefer the per-user runtime
 # directory: unlike shared /tmp it is private and cannot consume or inherit an
 # unrelated per-user quota. Fall back to /tmp for non-desktop/CI sessions.
-QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
+if [ -n "$QOS_VM_CYCLE" ]; then
+  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE}"
+else
+  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
+fi
 QOS_MON="$QOS_RUN/mon.sock"
 QOS_SERIAL="$QOS_RUN/serial.log"
 QOS_QEMU_LOG="$QOS_RUN/qemu.log"
@@ -51,7 +75,11 @@ QOS_PIDFILE="$QOS_RUN/qemu.pid"
 # filesystem, not QOS_RUN's commonly-tmpfs /tmp directory, or a realistic
 # encrypted install can exhaust RAM-backed storage and surface as guest I/O
 # errors. 40 GiB also matches the installer's supported whole-disk envelope.
-QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+if [ -n "$QOS_CYCLE_DIR" ]; then
+  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_CYCLE_DIR/target.qcow2}"
+else
+  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+fi
 QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
@@ -319,14 +347,15 @@ firmware_setup() {
 }
 
 # Seed and echo the working variable store for this VM. `none` is re-seeded every
-# boot so a boot is reproducible; every other selection is kept, because an
+# boot for ad-hoc VM use, but is persisted inside a named installation cycle;
+# every other selection is kept, because an
 # enrolment a restart silently threw away is indistinguishable from one that
 # never happened. $1 = run dir (defaults to QOS_RUN).
 firmware_varstore() {
   local run="${1:-$QOS_RUN}" tag out
   tag="$(printf '%s' "$QOS_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
   out="$run/vars-$QOS_FW_FMT-$tag.img"
-  if [ "$QOS_SECBOOT_KEYS" = "none" ]; then
+  if [ "$QOS_SECBOOT_KEYS" = "none" ] && [ -z "$QOS_VM_CYCLE" ]; then
     inenv "mkdir -p '$run' && cp -f '$QOS_FW_VARS' '$out'"
   else
     inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$QOS_FW_VARS' '$out'; }"
@@ -352,9 +381,9 @@ secboot_qemu_args() {
 # q35 machine options; SMM is required by the Secure-Boot firmware.
 machine_args() {
   if [ "$QOS_FW_SMM" = "1" ]; then
-    printf -- '-machine q35,accel=kvm,smm=on'
+    printf -- '-machine q35,smm=on'
   else
-    printf -- '-machine q35,accel=kvm'
+    printf -- '-machine q35'
   fi
 }
 
