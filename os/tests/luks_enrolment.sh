@@ -12,9 +12,9 @@
 # works on a file and needs no device-mapper, so this runs in an ordinary
 # rootless container.
 #
-# A container has no /dev/tpm*, so this exercises the no-TPM path — the one a
-# machine without a TPM depends on, where the passphrase the user supplies is
-# the only thing standing between them and their data.
+# The supplied secret is always enrolled as a strong LUKS passphrase, whether
+# or not the test host exposes a TPM. This prevents a host capability from
+# silently changing what the same installer input means.
 #
 # The checks exist because `enrol` once added no passphrase key slot at all on
 # that path: it captured the recovery key by matching a pattern that did not fit
@@ -40,20 +40,6 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 for t in cryptsetup systemd-cryptenroll; do
   command -v "$t" >/dev/null 2>&1 || { bad "missing required tool: $t"; exit 1; }
 done
-
-# Every case below is the *no-TPM* branch — `qos-disk-encrypt` picks it by
-# `[ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]`. On a machine that has a TPM it takes
-# the other branch instead and enrols the supplied secret as a TPM2+PIN token,
-# which a bare `--key-file` cannot open by design — so the passphrase assertion
-# fails and says the fix is broken when the fix is fine and the environment is
-# wrong. Refuse rather than mislead. The image build, where this runs, has no
-# TPM device; a host may.
-if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
-  bad "a TPM is present, so enrol will take the TPM2+PIN branch and these no-TPM
-      assertions would test the wrong path. Run this where /dev/tpm* is absent —
-      the image build, or a container with those nodes removed."
-  exit 1
-fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -91,7 +77,7 @@ recovery_key_from() {
   sed -nE 's/^[[:space:]]*([a-z]{4,}(-[a-z]{4,}){3,})[[:space:]]*$/\1/p' "$1" | tail -1
 }
 
-printf '## no-TPM path, passphrase supplied\n'
+printf '## universal strong-passphrase path\n'
 IMG="$WORK/pin.luks"; KEY="$WORK/pin.key"
 new_volume "$IMG" "$KEY" || { bad "could not create the test volume"; exit 1; }
 ( umask 0077; printf '%s' "$PASSPHRASE" > "$WORK/pin" )
@@ -140,7 +126,7 @@ else
   bad "enrol printed no recovery key — the recovery factor cannot be used"
 fi
 
-printf '## no-TPM path, no passphrase (the recovery key is the boot secret)\n'
+printf '## no passphrase (the recovery key is the boot secret)\n'
 IMG2="$WORK/rec.luks"; KEY2="$WORK/rec.key"
 new_volume "$IMG2" "$KEY2" || { bad "could not create the second test volume"; exit 1; }
 if "$DISK_ENCRYPT" enrol "$IMG2" --key-file "$KEY2" > "$WORK/rec.out" 2>&1; then

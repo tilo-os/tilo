@@ -136,13 +136,16 @@ are never guessed when more than one extent is safe.
 
 Encryption remains available in alongside mode. qOS uses LUKS2 for its root;
 Windows/macOS partitions retain their own protection. A recovery key is always
-created and verified. TPM2, TPM2+PIN, and FIDO2 are convenience factors layered
-on top, never replacements for recovery. Save the displayed recovery key away
-from the computer before rebooting.
+created and verified, and a strong boot passphrase is required. FIDO2 can be
+enrolled as an additional convenience factor, never a replacement for recovery.
+A TPM device does not weaken the passphrase requirement in this release:
+automatic TPM unlock remains disabled until it can be bound to signed, measured
+qOS boot artifacts. Save the displayed recovery key away from the computer
+before rebooting.
 
 ## Account setup and first boot
 
-The account password and optional disk PIN stay outside collaborative document
+The account password and mandatory disk passphrase stay outside collaborative document
 state, travel to the backend on standard input rather than the process command
 line, and are cleared from the live UI at installation start. The backend writes
 only a salted password hash into a private, atomic first-boot seed. It also
