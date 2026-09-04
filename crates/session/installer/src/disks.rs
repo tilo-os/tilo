@@ -441,9 +441,14 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 .and_then(Value::as_array)
                 .map(|children| children.iter().filter_map(parse_partition).collect())
                 .unwrap_or_default();
-            let is_system = partitions
-                .iter()
-                .any(|partition: &DiskPartition| is_live_system_mount(&partition.mountpoint));
+            // A normal encrypted Fedora/qOS root is not mounted directly from
+            // the partition: lsblk reports disk -> part -> crypt (and often
+            // -> lvm) before the node carrying `/` or `/sysroot`. Keep only
+            // direct partitions in the install plan, but inspect the complete
+            // holder tree when deciding whether the whole disk is the running
+            // system. Otherwise the UI offers a disk that the privileged
+            // backend correctly rejects only after the user has reviewed it.
+            let is_system = device_tree_has_live_system_mount(d);
             Some(Disk {
                 name,
                 size: format_bytes(size_bytes),
@@ -508,6 +513,14 @@ fn mountpoints(value: &Value) -> String {
     // Compatibility with older fixtures and callers that still provide the
     // singular field.
     field(value, "mountpoint")
+}
+
+fn device_tree_has_live_system_mount(value: &Value) -> bool {
+    is_live_system_mount(&mountpoints(value))
+        || value
+            .get("children")
+            .and_then(Value::as_array)
+            .is_some_and(|children| children.iter().any(device_tree_has_live_system_mount))
 }
 
 fn is_live_system_mount(mountpoints: &str) -> bool {
@@ -594,6 +607,37 @@ mod tests {
             disks[0].is_system,
             "the root mount must not be hidden by another mount of the same partition"
         );
+    }
+
+    #[test]
+    fn encrypted_and_lvm_descendants_mark_the_running_disk_unavailable() {
+        for holder in [
+            r#"{"name":"/dev/mapper/cryptroot","size":900000000000,"type":"crypt","fstype":"btrfs","mountpoints":["/sysroot","/var/home"]}"#,
+            r#"{"name":"/dev/mapper/system-root","size":900000000000,"type":"lvm","fstype":"ext4","mountpoints":["/"]}"#,
+        ] {
+            let fixture = format!(
+                r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"serial":"SYSTEM-DISK","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p3","size":900000000000,"start":2048,"type":"part","fstype":"crypto_LUKS","mountpoints":[null],"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003","children":[{holder}]}}]}}]}}"#
+            );
+            let disks = parse_lsblk(&fixture);
+
+            assert_eq!(disks.len(), 1);
+            assert_eq!(disks[0].partitions.len(), 1);
+            assert!(
+                disks[0].is_system,
+                "a live mount below a partition holder must disable its physical disk"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_non_system_mount_does_not_hide_an_installable_data_disk() {
+        let fixture = format!(
+            r#"{{"blockdevices":[{{"name":"/dev/sdb","size":1000000000000,"model":"Data","type":"disk","rm":false,"ro":false,"serial":"DATA-DISK","maj:min":"8:16","children":[{{"name":"/dev/sdb1","size":900000000000,"start":2048,"type":"part","fstype":"crypto_LUKS","mountpoints":[null],"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004","children":[{{"name":"/dev/mapper/data","size":900000000000,"type":"crypt","fstype":"ext4","mountpoints":["/run/media/qos/data"]}}]}}]}}]}}"#
+        );
+        let disks = parse_lsblk(&fixture);
+
+        assert_eq!(disks.len(), 1);
+        assert!(!disks[0].is_system);
     }
 
     #[test]
