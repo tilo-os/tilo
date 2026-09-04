@@ -134,6 +134,22 @@ distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
 | `--secboot` | keep the variable store across boots, so keys enrolled in the guest survive a restart of qemu |
 | `--attach PATH` | a blank second virtio disk (`/dev/vdb`), created if missing — lets a booted image install onto a fresh disk without building the installer medium |
 
+For a reproducible installer-to-target cycle, give the run a unique, portable
+name and initialize it once:
+
+```bash
+export QOS_VM_CYCLE="release-${CI_RUN_ID:-local}-x86_64"
+./os/dev/vm.sh init-cycle
+./os/dev/vm.sh boot-installer --no-tpm
+# After installation and power-off, retain the same environment:
+./os/dev/vm.sh boot-target --no-tpm
+```
+
+`init-cycle` removes only that validated cycle's mutable overlay, target, TPM,
+runtime and firmware state. Subsequent boots with the same name preserve them,
+while the release-medium qcow2 remains read-only behind its overlay. A named
+cycle also keeps the OVMF variable store across the installer-to-target reboot.
+
 ### Firmware: only the 4 MB OVMF build can measure
 
 Fedora ships two. `OVMF_CODE_4M.secboot.qcow2` has TPM support compiled in;
@@ -149,7 +165,7 @@ carries keys. `QOS_SECBOOT_KEYS` picks the store:
 
 | Value | Store |
 |-------|-------|
-| `none` (default) | `OVMF_VARS_4M.qcow2` — no keys, setup mode. Measures into PCR 7, accepts an owner-signed UKI, re-seeded every boot |
+| `none` (default) | `OVMF_VARS_4M.qcow2` — no keys, setup mode. Measures into PCR 7, accepts an owner-signed UKI; re-seeded on ad-hoc boots and persisted within a named VM cycle |
 | `persist` (`--secboot`) | the same pristine store, kept across boots so an enrolment in the guest sticks |
 | `microsoft` | `OVMF_VARS_4M.secboot.qcow2` — Microsoft's KEK/db. **Rejects owner-signed images**, so nothing boots; for testing vendor-key enforcement on purpose |
 | *path* | a prepared store |
@@ -275,7 +291,7 @@ in that same signature-required repository; the backend rejects other origins.
 ## Configuration (env vars)
 
 `QOS_DISTROBOX` `QOS_IMAGE` `QOS_OUTPUT` `QOS_DISK` `QOS_RUN`
-`QOS_RENDERNODE` `QOS_USER` `QOS_PASS` `QOS_MEM` `QOS_SMP` — see `_common.sh`.
+`QOS_VM_CYCLE` `QOS_RENDERNODE` `QOS_USER` `QOS_PASS` `QOS_MEM` `QOS_SMP` — see `_common.sh`.
 Custom installer: `QOS_INSTALLER_IMAGE` `QOS_INSTALLER_OUTPUT`
 `QOS_INSTALLER_DISK` `QOS_TARGET_DISK` `QOS_TARGET_SIZE` `QOS_TARGET_IMGREF`.
 `QOS_INSTALLER_DEV_PASSWORD` is required only with `--dev-login`.
