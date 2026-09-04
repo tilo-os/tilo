@@ -101,3 +101,11 @@ release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
+
+The landing-page manifest records package-channel state separately from signed
+download availability. Homebrew is marked available only after its native
+install matrix passes. A newly opened WinGet submission is marked `submitted`,
+so the site recommends the signed setup EXE instead of showing a command that
+cannot resolve yet. Re-running the idempotent site promotion after Microsoft
+accepts the exact version detects the public manifest and changes WinGet to
+`available`.
