@@ -150,6 +150,16 @@ runtime and firmware state. Subsequent boots with the same name preserve them,
 while the release-medium qcow2 remains read-only behind its overlay. A named
 cycle also keeps the OVMF variable store across the installer-to-target reboot.
 
+The same commands run natively on ARM64. `QOS_VM_ARCH` defaults to the normalized
+runner architecture (`x86_64` or `aarch64`); set it only for a deliberate TCG
+cross-architecture diagnostic. ARM uses `qemu-system-aarch64 -machine
+virt,gic-version=max`, AAVMF/QEMU_EFI pflash, `virtio-gpu-pci`, and an explicit
+xHCI tablet. Install `edk2-aarch64` on Fedora or `qemu-efi-aarch64` on
+Debian/Ubuntu. The ARM full cycle currently supports the strong-passphrase
+`--no-tpm` scenario. It rejects `--tpm` and Secure Boot key-store selection
+until one exact measured AAVMF build and its PCR behavior have a release proof;
+merely finding a TPM-capable firmware is not evidence of measured boot.
+
 ### Firmware: only the 4 MB OVMF build can measure
 
 Fedora ships two. `OVMF_CODE_4M.secboot.qcow2` has TPM support compiled in;

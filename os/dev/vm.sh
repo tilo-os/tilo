@@ -38,10 +38,10 @@
 #   ./os/dev/vm.sh capture-boot [DIR]          boot->greeter->login->desktop demo
 #
 # DISPLAY MODES (important):
-#   --2d (default): -device virtio-vga -display none. screendump works for GRUB,
-#       the kernel console, and the tuigreet greeter. The compositor falls back
-#       to software GL (llvmpipe) and may not start.
-#   --gl: -device virtio-vga-gl -display egl-headless,rendernode=<iGPU>. Gives
+#   --2d (default): virtio VGA (x86) or virtio-gpu-pci (ARM), with no host
+#       window. screendump works for firmware, the kernel console, and greeter.
+#       The compositor falls back to software GL (llvmpipe) and may not start.
+#   --gl: the corresponding virtio GL device with egl-headless. Gives
 #       the guest hardware GL (virgl) so the compositor can run — BUT screendump
 #       only captures GL scanouts, so the 2D greeter/console show "no surface".
 #   There is no single headless mode that screenshots both the 2D greeter and the
@@ -112,31 +112,17 @@ cmd_boot() {
     msg "attaching $attach as /dev/vdb"
   fi
 
-  local varstore rn display
+  local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  local res="xres=$QOS_XRES,yres=$QOS_YRES"
-  case "$mode" in
-    gl)
-      rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn"
-      msg "boot (GL headless, rendernode=$rn, ${QOS_XRES}x${QOS_YRES}) disk=$disk" ;;
-    window)
-      # On-screen GTK window, GL-accelerated: virtio-vga-gl + gtk,gl=on give
-      # the guest hardware GL (virgl) so the compositor's wgpu/Vello scene
-      # paint runs on the GPU. (screendump can't read a GL surface, so verify
-      # resolution via the scanout log over SSH rather than a framebuffer dump.)
-      display="-device virtio-vga-gl,$res -display gtk,gl=on"
-      msg "boot (gtk window, GL, ${QOS_XRES}x${QOS_YRES}) disk=$disk" ;;
-    *)
-      display="-device virtio-vga,$res -display none"
-      msg "boot (2D headless, ${QOS_XRES}x${QOS_YRES}) disk=$disk" ;;
-  esac
+  display="$(display_qemu_args "$mode")"
+  msg "boot ($mode, $QOS_VM_ARCH, ${QOS_XRES}x${QOS_YRES}) disk=$disk"
 
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos"
   swtpm_start
@@ -167,25 +153,20 @@ cmd_boot_installer() {
   if [ ! -f "$work_disk" ]; then
     inenv "qemu-img create -f qcow2 -F qcow2 -b '$disk' '$work_disk'" >/dev/null
   fi
-  local varstore display rn
+  local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
   local target="$QOS_TARGET_DISK"
   inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$QOS_TARGET_SIZE'" >/dev/null
-  local res="xres=$QOS_XRES,yres=$QOS_YRES"
-  case "$mode" in
-    gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
-    window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
-    *) display="-device virtio-vga,$res -display none";;
-  esac
+  display="$(display_qemu_args "$mode")"
   msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$work_disk,format=qcow2,if=virtio,serial=qos-installer-medium \
     -drive file=$target,format=qcow2,if=virtio,serial=qos-install-target \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-custom-installer"
   swtpm_start
@@ -205,25 +186,20 @@ cmd_boot_target() {
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   vm_running && die "VM already running; stop it first"
-  local varstore display rn
+  local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  local res="xres=$QOS_XRES,yres=$QOS_YRES"
-  case "$mode" in
-    gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
-    window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
-    *) display="-device virtio-vga,$res -display none";;
-  esac
+  display="$(display_qemu_args "$mode")"
   msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
   if [ "$mode" = 2d ]; then
-    warn "2D proves the boot/unlock path, but virtio-vga exposes no virgl GPU to the qOS compositor."
+    warn "2D proves the boot/unlock path, but the non-GL virtio display exposes no virgl GPU to the qOS compositor."
     warn "The framebuffer can go black after Plymouth even when greetd and the session are healthy; use --gl to validate the desktop."
   fi
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio,serial=qos-install-target \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-target"
   swtpm_start
