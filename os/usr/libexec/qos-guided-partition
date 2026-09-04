@@ -9,11 +9,8 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 lower() { tr '[:upper:]' '[:lower:]'; }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
-MODE="${1:-}"
-case "$MODE" in
-  create|inspect) shift ;;
-  *) die "usage: $0 create [reviewed plan arguments] | inspect --disk /dev/…" ;;
-esac
+[ "${1:-}" = create ] || die "usage: $0 create [reviewed plan arguments]"
+shift
 
 DISK="" EXPECT_PTUUID="" EXPECT_SECTOR="" EXPECT_DISK_SIZE="" EXPECT_DEVNUM=""
 EXPECT_WWN="" EXPECT_SERIAL=""
@@ -42,115 +39,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for tool in awk blkid blockdev dd findmnt flock fsck.vfat lsblk mkfs.vfat partx python3 readlink sfdisk sha256sum sort; do need "$tool"; done
+for tool in blkid blockdev findmnt flock lsblk mkfs.vfat partx python3 readlink sfdisk sort; do need "$tool"; done
 case "$DISK" in /dev/*) : ;; *) die "disk must be an absolute /dev path" ;; esac
 [ -b "$DISK" ] || die "$DISK is not a block device"
 DISK="$(readlink -f "$DISK")"
 [ "$(lsblk -dno TYPE "$DISK" 2>/dev/null | xargs)" = disk ] || die "$DISK is not a whole disk"
-
-# A pending receipt lives 64 KiB before the end of each newly-created
-# partition. It is outside GPT metadata and outside the headers written by the
-# subsequent FAT/LUKS setup. The same canonical, checksum-protected record is
-# written into both members. It is a narrowly scoped recovery hint, not proof
-# against a privileged forger: discovery accepts it only when both copies, disk
-# identity, byte extents, and the complete pre-install GPT map agree, then the
-# UI demands new exact typed consent. Names and labels are never evidence.
-RECEIPT_FROM_END=65536
-RECEIPT_BYTES=4096
-RECEIPT_MAGIC=qos-guided-receipt-v1
-
-partition_rows() {
-  sfdisk --json "$DISK" | python3 -c '
-import json, sys
-t = json.load(sys.stdin)["partitiontable"]
-s = int(t["sectorsize"])
-for p in t.get("partitions", []):
-    print("\t".join((str(p.get("uuid", "")).lower(), str(int(p.get("start", 0))*s),
-                     str(int(p.get("size", 0))*s), str(p.get("type", "")).lower(),
-                     str(p.get("node", "")))))
-'
-}
-
-read_receipt() {
-  local part="$1" size="$2" raw payload claimed actual
-  [ "$size" -gt $((RECEIPT_FROM_END + RECEIPT_BYTES)) ] || return 1
-  raw="$(dd if="$part" bs=1 skip=$((size - RECEIPT_FROM_END)) count="$RECEIPT_BYTES" status=none 2>/dev/null | tr -d '\000')"
-  [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "$RECEIPT_MAGIC" ] || return 1
-  claimed="$(printf '%s\n' "$raw" | sed -n 's/^sha256=//p')"
-  [[ "$claimed" =~ ^[0-9a-f]{64}$ ]] || return 1
-  payload="$(printf '%s\n' "$raw" | sed '/^sha256=/d')"
-  actual="$(printf '%s\n' "$payload" | sha256sum | awk '{print $1}')"
-  [ "$actual" = "$claimed" ] || return 1
-  printf '%s\nsha256=%s\n' "$payload" "$claimed"
-}
-
-receipt_value() {
-  local key="$1"
-  printf '%s\n' "$2" | sed -n "s/^${key}=//p"
-}
-
-inspect_receipt() {
-  local found="" receipt="" copies=0 uuid start size type node candidate
-  while IFS=$'\t' read -r uuid start size type node; do
-    [ -b "$node" ] || continue
-    candidate="$(read_receipt "$node" "$size" || true)"
-    [ -n "$candidate" ] || continue
-    if [ -z "$found" ]; then found="$candidate"; elif [ "$found" != "$candidate" ]; then return 1; fi
-    copies=$((copies + 1))
-  done < <(partition_rows)
-  [ "$copies" -eq 2 ] || return 1
-  receipt="$found"
-
-  local r_ptuuid r_disk_size r_sector r_efi_uuid r_efi_start r_efi_size
-  local r_root_uuid r_root_start r_root_size actual_map expected_final prior
-  r_ptuuid="$(receipt_value disk_ptuuid "$receipt")"
-  r_disk_size="$(receipt_value disk_size "$receipt")"
-  r_sector="$(receipt_value logical_sector "$receipt")"
-  r_efi_uuid="$(receipt_value efi_partuuid "$receipt")"
-  r_efi_start="$(receipt_value efi_start "$receipt")"
-  r_efi_size="$(receipt_value efi_size "$receipt")"
-  r_root_uuid="$(receipt_value root_partuuid "$receipt")"
-  r_root_start="$(receipt_value root_start "$receipt")"
-  r_root_size="$(receipt_value root_size "$receipt")"
-  for value in r_disk_size r_sector r_efi_start r_efi_size r_root_start r_root_size; do
-    [[ "${!value}" =~ ^[0-9]+$ ]] || return 1
-  done
-  [[ "$r_ptuuid" =~ ^[0-9A-Fa-f-]{8,64}$ ]] || return 1
-  [[ "$r_efi_uuid" =~ ^[0-9a-f-]{36}$ ]] || return 1
-  [[ "$r_root_uuid" =~ ^[0-9a-f-]{36}$ ]] || return 1
-  [ "$(blockdev --getsize64 "$DISK")" = "$r_disk_size" ] || return 1
-  [ "$(lsblk -dno PTUUID "$DISK" | xargs | lower)" = "${r_ptuuid,,}" ] || return 1
-  [ "$(lsblk -dno LOG-SEC "$DISK" | xargs)" = "$r_sector" ] || return 1
-  prior="$(printf '%s\n' "$receipt" | sed -n 's/^prior=//p' | sort -t: -k2,2n)"
-  actual_map="$(partition_rows | awk -F '\t' '{print $1 ":" $2 ":" $3}' | sort -t: -k2,2n)"
-  expected_final="$({
-    [ -z "$prior" ] || printf '%s\n' "$prior"
-    printf '%s:%s:%s\n' "$r_efi_uuid" "$r_efi_start" "$r_efi_size"
-    printf '%s:%s:%s\n' "$r_root_uuid" "$r_root_start" "$r_root_size"
-  } | sort -t: -k2,2n)"
-  [ "$actual_map" = "$expected_final" ] || return 1
-  local efi_seen=0 root_seen=0
-  while IFS=$'\t' read -r uuid start size type node; do
-    case "$uuid" in
-      "$r_efi_uuid") [ "$start:$size:$type" = "$r_efi_start:$r_efi_size:c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] || return 1; efi_seen=$((efi_seen + 1)) ;;
-      "$r_root_uuid") [ "$start:$size:$type" = "$r_root_start:$r_root_size:0fc63daf-8483-4772-8e79-3d69d8477de4" ] || return 1; root_seen=$((root_seen + 1)) ;;
-    esac
-  done < <(partition_rows)
-  [ "$efi_seen" -eq 1 ] && [ "$root_seen" -eq 1 ] || return 1
-
-  printf 'PENDING_GUIDED=1\nDISK_PTUUID=%s\nDISK_SIZE=%s\nLOGICAL_SECTOR=%s\n' "$r_ptuuid" "$r_disk_size" "$r_sector"
-  printf 'EFI_PARTUUID=%s\nEFI_START=%s\nEFI_SIZE=%s\n' "$r_efi_uuid" "$r_efi_start" "$r_efi_size"
-  printf 'ROOT_PARTUUID=%s\nROOT_START=%s\nROOT_SIZE=%s\n' "$r_root_uuid" "$r_root_start" "$r_root_size"
-  while IFS= read -r item; do [ -z "$item" ] || printf 'PRIOR=%s\n' "$item"; done <<<"$prior"
-}
-
-if [ "$MODE" = inspect ]; then
-  exec 8<"$DISK"
-  flock -s 8
-  inspect_receipt || exit 2
-  exit 0
-fi
-
 [[ "$EXPECT_PTUUID" =~ ^[0-9A-Fa-f-]{8,64}$ ]] || die "invalid expected GPT UUID"
 [[ "$EXPECT_DISK_SIZE" =~ ^[0-9]+$ ]] && [ "$EXPECT_DISK_SIZE" -gt 0 ] \
   || die "invalid expected disk size"
@@ -230,28 +123,18 @@ fi
 [ "$(lsblk -dno LOG-SEC "$DISK" | xargs)" = "$EXPECT_SECTOR" ] \
   || die "logical sector size changed after review"
 ACTUAL_MAP="$(canonical_actual | sort -t: -k2,2n)"
-if [ "$ACTUAL_MAP" = "$EXPECTED_MAP" ]; then
-  NEEDS_APPEND=1
-elif [ "$ACTUAL_MAP" = "$FINAL_EXPECTED_MAP" ]; then
-  # An interrupted invocation may have committed the exact reviewed GPT pair
-  # before formatting its ESP. Resume only when every UUID and byte extent is
-  # identical; no name or filesystem-label heuristic establishes ownership.
-  NEEDS_APPEND=0
-else
-  die "partition map changed after review"
-fi
+[ "$ACTUAL_MAP" = "$EXPECTED_MAP" ] \
+  || die "partition map changed after review; automatic reinitialization is unavailable"
 
 # The complete-map equality above is the TOCTOU binding. Repeat the geometric
 # assertion explicitly so this safety property remains obvious and testable.
-if [ "$NEEDS_APPEND" -eq 1 ]; then
-  while IFS=: read -r _ start size; do
-    [ -n "${start:-}" ] || continue
-    end=$((start + size))
-    free_end=$((FREE_START + FREE_SIZE))
-    [ "$end" -le "$FREE_START" ] || [ "$start" -ge "$free_end" ] \
-      || die "reviewed free extent now overlaps an existing partition"
-  done <<<"$EXPECTED_MAP"
-fi
+while IFS=: read -r _ start size; do
+  [ -n "${start:-}" ] || continue
+  end=$((start + size))
+  free_end=$((FREE_START + FREE_SIZE))
+  [ "$end" -le "$FREE_START" ] || [ "$start" -ge "$free_end" ] \
+    || die "reviewed free extent now overlaps an existing partition"
+done <<<"$EXPECTED_MAP"
 
 disk_bytes="$(blockdev --getsize64 "$DISK")"
 [ $((FREE_START + FREE_SIZE)) -le $((disk_bytes - 1048576)) ] \
@@ -261,32 +144,10 @@ efi_sector=$((EFI_START / EXPECT_SECTOR))
 efi_sectors=$((EFI_SIZE / EXPECT_SECTOR))
 root_sector=$((ROOT_START / EXPECT_SECTOR))
 root_sectors=$((ROOT_SIZE / EXPECT_SECTOR))
-if [ "$NEEDS_APPEND" -eq 1 ]; then
-  # Persist the transaction before the GPT points at it. Consequently every
-  # durable state in which either new GPT entry is visible already has the
-  # self-consistency receipt needed by a freshly booted installer. The receipt
-  # is not authorization: Review requires a new exact typed confirmation before
-  # this helper can format anything. Writes stay in the reviewed free extent.
-  receipt_payload="$({
-    printf '%s\n' "$RECEIPT_MAGIC"
-    printf 'disk_ptuuid=%s\ndisk_size=%s\nlogical_sector=%s\n' "${EXPECT_PTUUID,,}" "$EXPECT_DISK_SIZE" "$EXPECT_SECTOR"
-    printf 'efi_partuuid=%s\nefi_start=%s\nefi_size=%s\n' "${EFI_UUID,,}" "$EFI_START" "$EFI_SIZE"
-    printf 'root_partuuid=%s\nroot_start=%s\nroot_size=%s\n' "${ROOT_UUID,,}" "$ROOT_START" "$ROOT_SIZE"
-    while IFS= read -r item; do [ -z "$item" ] || printf 'prior=%s\n' "$item"; done <<<"$EXPECTED_MAP"
-  })"
-  receipt_hash="$(printf '%s\n' "$receipt_payload" | sha256sum | awk '{print $1}')"
-  receipt="$(printf '%s\nsha256=%s\n' "$receipt_payload" "$receipt_hash")"
-  [ "${#receipt}" -lt "$RECEIPT_BYTES" ] || die "pending receipt exceeds reserved space"
-  dd if=/dev/zero of="$DISK" bs=1 seek=$((EFI_START + EFI_SIZE - RECEIPT_FROM_END)) count="$RECEIPT_BYTES" conv=notrunc status=none
-  dd if=/dev/zero of="$DISK" bs=1 seek=$((ROOT_START + ROOT_SIZE - RECEIPT_FROM_END)) count="$RECEIPT_BYTES" conv=notrunc status=none
-  printf '%s' "$receipt" | dd of="$DISK" bs=1 seek=$((EFI_START + EFI_SIZE - RECEIPT_FROM_END)) conv=notrunc status=none
-  printf '%s' "$receipt" | dd of="$DISK" bs=1 seek=$((ROOT_START + ROOT_SIZE - RECEIPT_FROM_END)) conv=notrunc status=none
-  sync "$DISK"
-  printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
-    "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
-    "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
-    | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
-fi
+printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
+  "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
+  "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
+  | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
 blockdev --rereadpt "$DISK"
 partx -u "$DISK"
 
@@ -329,12 +190,6 @@ raise SystemExit(1)
   || die "reviewed EFI partition type changed"
 [ "$(partition_type_by_uuid "$ROOT_UUID")" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
   || die "reviewed root partition type changed"
-# Test-only interruption point: the production environment never sets this.
-# It models power loss after the GPT is durable but before the ESP is formatted.
-if [ "${QOS_GUIDED_TEST_STOP_AFTER_GPT:-0}" = 1 ]; then
-  printf 'PENDING_GUIDED=1\n'
-  exit 75
-fi
 findmnt -rn -S "$EFI_PARTITION" >/dev/null 2>&1 && die "reviewed EFI partition is mounted"
 findmnt -rn -S "$ROOT_PARTITION" >/dev/null 2>&1 && die "reviewed root partition is mounted"
 
@@ -350,11 +205,5 @@ case "$efi_signature" in
   *) die "reviewed EFI partition unexpectedly contains a $efi_signature signature" ;;
 esac
 
-# Formatting the ESP makes the pair an ordinary, unambiguous prepared
-# alongside target on the next boot. Retire the temporary receipt only after
-# that durable recovery route exists. Root remains signature-free.
-dd if=/dev/zero of="$EFI_PARTITION" bs=1 seek=$((EFI_SIZE - RECEIPT_FROM_END)) count="$RECEIPT_BYTES" conv=notrunc status=none
-dd if=/dev/zero of="$ROOT_PARTITION" bs=1 seek=$((ROOT_SIZE - RECEIPT_FROM_END)) count="$RECEIPT_BYTES" conv=notrunc status=none
 sync "$DISK" "$EFI_PARTITION"
-fsck.vfat -n "$EFI_PARTITION" >/dev/null || die "new EFI filesystem failed its consistency check"
 printf 'EFI_PARTITION=%s\nROOT_PARTITION=%s\n' "$EFI_PARTITION" "$ROOT_PARTITION"
