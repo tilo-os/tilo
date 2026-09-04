@@ -74,10 +74,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Render every scenario into a directory.
     if let Some(dir) = parse_value_arg(&args, "--shots-dir") {
         let dir = std::path::PathBuf::from(dir);
+        let text_scale = parse_value_arg(&args, "--text-scale")
+            .as_deref()
+            .and_then(parse_text_scale);
         std::fs::create_dir_all(&dir).ok();
         for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
             let out = dir.join(format!("{:02}-{}.png", i + 1, scenario));
-            render_scenario(scenario, viewport, &out)?;
+            render_scenario(scenario, viewport, text_scale, &out)?;
         }
         return Ok(());
     }
@@ -118,6 +121,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_scenario(
         args.scenario.as_deref().unwrap_or("source"),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        args.text_scale,
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
@@ -148,16 +152,20 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
     // so the same frame can be graded in both light and dark (default dark).
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    if let Some(scale) = text_scale {
+        theme = theme.with_text_scale(scale);
+    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -218,4 +226,22 @@ fn render_scenario(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("imager: wrote {} shot to {}", scenario, out.display());
     Ok(())
+}
+
+fn parse_text_scale(value: &str) -> Option<f32> {
+    let scale: f32 = value.parse().ok()?;
+    (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shot_text_scale_rejects_unsafe_values() {
+        assert_eq!(parse_text_scale("1.3"), Some(1.3));
+        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+            assert_eq!(parse_text_scale(value), None, "accepted {value}");
+        }
+    }
 }
