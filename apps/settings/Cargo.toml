@@ -55,6 +55,9 @@ accounts = { path = "../../crates/system/accounts" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
+# Settings uses this only over the launcher-passed service FD to put/remove a
+# key; no vault file or provider network capability is linked into the app.
+qos-model-gateway = { path = "../../crates/agent/model-gateway" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives real audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
