@@ -152,52 +152,61 @@ wait_private_screen() {
 
 die() { printf 'installer cycle: %s\n' "$*" >&2; exit 1; }
 
-# Start from genuinely blank disk, TPM and UEFI variable-store state. The
-# release qcow2 itself remains immutable behind a disposable backing overlay.
+# Start from genuinely blank disk, TPM and UEFI variable-store state.
 "$vm" init-cycle
-printf 'medium=%s\nuser=%s\nhostname=cycle-qos\nmode=no-tpm-passphrase\n' \
-  "$medium" "$QOS_USER" > "$out/scenario.txt"
+
+# Reproduce what the production Imager writes to a USB drive: preserve every
+# byte of the released source image, reserve a 64 KiB device tail, and use the
+# production profile encoder/read-back verifier to customize that tail. The
+# live installer must discover this through its real pre-greetd extractor.
+# Converting the regular-file fixture back to qcow2 makes it bootable by the
+# same VM path without ever mutating the release artifact.
+source_hash_before="$(sha256sum "$medium" | awk '{print $1}')"
+profiled_raw="$cycle_dir/profiled-medium.raw"
+profiled_medium="$cycle_dir/profiled-medium.qcow2"
+qemu-img convert -f qcow2 -O raw "$medium" "$profiled_raw"
+truncate -s "+$((64 * 1024))" "$profiled_raw"
+cargo run -q -p imager --locked --example embed-profile -- \
+  --target "$profiled_raw" \
+  --hostname cycle-qos \
+  --username "$QOS_USER" \
+  --full-name 'Cycle User' \
+  --locale en_US.UTF-8 \
+  --keyboard us \
+  --timezone UTC \
+  --filesystem btrfs
+qemu-img convert -f raw -O qcow2 "$profiled_raw" "$profiled_medium"
+rm -f -- "$profiled_raw"
+[ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
+  || die "customization modified the released installer medium"
+export QOS_INSTALLER_DISK="$profiled_medium"
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nmode=profiled-no-tpm-passphrase\n' \
+  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" > "$out/scenario.txt"
 
 "$vm" boot-installer --gl --no-tpm
-wait_screen 01-keyboard 'Keyboard[[:space:]]+layout' 120 5 \
-  || die "live graphical installer did not reach Keyboard"
-
-# Keyboard: default layout -> Next.
-"$vm" keys tab ret
-wait_screen 02-network 'Connect[[:space:]]+to[[:space:]]+a[[:space:]]+network' 60 3 \
-  || die "installer did not reach Network"
-
-# QEMU exposes wired networking but no Wi-Fi device: Refresh -> Back ->
-# Continue. This remains valid whether connectivity is already full or offline.
-"$vm" keys tab tab ret
-wait_screen 03-disk 'Install[[:space:]]+qOS' 60 3 \
-  || die "installer did not reach Disk"
+wait_screen 01-disk 'Install[[:space:]]+qOS' 120 5 \
+  || die "profiled live installer did not start at Disk"
+grep -Eqi 'setup choices are ready' "$out/01-disk.txt" \
+  || die "live installer did not acknowledge the embedded setup profile"
 
 # Erase (default) -> Refresh -> the only selectable row (/dev/vdb). The live
 # /dev/vda row is disabled by the shipped disk identity rules.
 "$vm" keys tab tab ret
 sleep 2
 "$vm" keys tab ret
-wait_screen 04-account 'Create[[:space:]]+your[[:space:]]+account' 60 3 \
+wait_screen 02-account 'Create[[:space:]]+your[[:space:]]+account' 60 3 \
   || die "installer did not select the blank target"
+grep -Fqi -- "$QOS_USER" "$out/02-account.txt" \
+  || die "embedded username did not reach the account screen"
 
-"$vm" type "$QOS_USER"
 "$vm" keys tab
 "$vm" type "$QOS_PASS"
 "$vm" keys tab
 "$vm" type "$QOS_PASS"
 "$vm" keys tab tab ret
-wait_screen 05-options 'Installation[[:space:]]+options' 60 3 \
+wait_screen 03-review 'Review[[:space:]]+your[[:space:]]+choices' 60 3 \
   || die "installer rejected the no-TPM passphrase account"
-
-# Filesystem -> FIDO choice -> hostname. Replace the default, retain UTC, then
-# choose Next. The later terminal proof verifies this value came through.
-"$vm" keys tab tab ctrl-a
-"$vm" type cycle-qos
-"$vm" keys tab tab tab ret
-wait_screen 06-review 'Review[[:space:]]+your[[:space:]]+choices' 60 3 \
-  || die "installer did not reach Review"
-grep -Eqi 'cycle.?qos' "$out/06-review.txt" \
+grep -Eqi 'cycle.?qos' "$out/03-review.txt" \
   || die "Review did not show the configured hostname"
 
 # Exact destructive confirmation -> recovery-key promise -> Begin Install.

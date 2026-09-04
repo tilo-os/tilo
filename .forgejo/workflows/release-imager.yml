@@ -106,32 +106,47 @@ jobs:
       - name: Remove native image registry credentials
         if: always()
         run: rm -f -- "${REGISTRY_AUTH_FILE:?}"
-      - name: Install full-cycle VM dependencies
-        if: matrix.arch == 'x86_64'
+      - name: Install native full-cycle VM dependencies
         run: |
           set -euo pipefail
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get update
+            if [ "${{ matrix.arch }}" = x86_64 ]; then
+              native_packages='ovmf qemu-system-x86'
+              qemu_binary=qemu-system-x86_64
+              display_device=virtio-vga-gl
+            else
+              native_packages='qemu-efi-aarch64 qemu-system-arm'
+              qemu_binary=qemu-system-aarch64
+              display_device=virtio-gpu-gl-pci
+            fi
             sudo -n apt-get install -y --no-install-recommends \
-              imagemagick ovmf qemu-system-gui qemu-system-x86 qemu-utils socat tesseract-ocr
+              imagemagick qemu-system-gui qemu-utils socat tesseract-ocr $native_packages
           elif command -v dnf >/dev/null; then
-            sudo -n dnf install -y \
-              edk2-ovmf ImageMagick qemu-device-display-virtio-vga-gl qemu-img \
-              qemu-system-x86-core qemu-ui-egl-headless qemu-ui-opengl socat tesseract
+            if [ "${{ matrix.arch }}" = x86_64 ]; then
+              native_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
+              qemu_binary=qemu-system-x86_64
+              display_device=virtio-vga-gl
+            else
+              native_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
+              qemu_binary=qemu-system-aarch64
+              display_device=virtio-gpu-gl-pci
+            fi
+            sudo -n dnf install -y ImageMagick qemu-img qemu-ui-egl-headless \
+              qemu-ui-opengl socat tesseract $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
-          command -v qemu-img qemu-system-x86_64 socat tesseract >/dev/null
+          command -v qemu-img "$qemu_binary" socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
-          qemu-system-x86_64 -display help | grep -Fq egl-headless
-          qemu-system-x86_64 -device help | grep -Fq virtio-vga-gl
+          "$qemu_binary" -display help | grep -Fq egl-headless
+          "$qemu_binary" -device help | grep -Fq "$display_device"
           test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
           compgen -G '/dev/dri/renderD*' >/dev/null
       - name: Exercise the complete graphical installation cycle
-        if: matrix.arch == 'x86_64'
         env:
           QOS_ACCEL: kvm
           QOS_BOOT_WAIT_ATTEMPTS: "600"
@@ -146,9 +161,9 @@ jobs:
             os/output/installer/qcow2/disk.qcow2 \
             --out dist/installer-cycle
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always() && matrix.arch == 'x86_64'
+        if: always()
         with:
-          name: qos-installer-full-cycle-x86_64
+          name: qos-installer-full-cycle-${{ matrix.arch }}
           path: dist/installer-cycle
           if-no-files-found: error
       - name: Verify the installer-medium release payload
