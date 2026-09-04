@@ -6,8 +6,8 @@
 //! - `GET  /health`               → `{ "ok": true }`
 //! - `GET  /entries`              → `[RegistryEntry, …]`
 //! - `GET  /entries/<pkg-id>`     → single `RegistryEntry` or 404
-//! - `POST /entries`              → `EntryChangeRequest` body, 200 on
-//!   success, 403 if the publisher isn't allowlisted or the sig
+//! - `POST /entries`              → queue an `EntryChangeRequest`, 202 on
+//!   success, 403 if the publisher isn't allowlisted or the signature
 //!   doesn't verify.
 //!
 //! The dispatcher is kept small so the wire shape is auditable at
@@ -15,13 +15,14 @@
 //! in [`apply_change`].
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode, header};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::warn;
 
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, RegistryHandshake, VerifyError,
@@ -29,7 +30,10 @@ use registry_types::{
 };
 
 use crate::allowlist::PublisherAllowlist;
+use crate::moderation::{ModerationError, ModerationService};
 use crate::storage::{ServerIdentity, Storage, StorageError};
+
+const MAX_CHANGE_REQUEST_BYTES: usize = 1024 * 1024;
 
 /// Shared per-request state — cheap to clone (an `Arc`).
 #[derive(Clone)]
@@ -39,6 +43,7 @@ pub struct AppState {
 
 struct AppStateInner {
     storage: Storage,
+    moderation: ModerationService,
     identity: ServerIdentity,
     /// Owner allowlist — hot-read on every POST, hot-write on
     /// `add-publisher`, so guard with an `RwLock`.
@@ -48,9 +53,11 @@ struct AppStateInner {
 impl AppState {
     /// Build the shared state.
     pub fn new(storage: Storage, identity: ServerIdentity, allowlist: PublisherAllowlist) -> Self {
+        let moderation = ModerationService::new(storage.clone());
         Self {
             inner: Arc::new(AppStateInner {
                 storage,
+                moderation,
                 identity,
                 allowlist: RwLock::new(allowlist),
             }),
@@ -149,12 +156,19 @@ async fn handle_post_entries(
     state: &AppState,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    let body = req
-        .into_body()
+    let body = match Limited::new(req.into_body(), MAX_CHANGE_REQUEST_BYTES)
         .collect()
         .await
-        .map_err(|e| HandlerError::Body(e.to_string()))?
-        .to_bytes();
+    {
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "change request is too large",
+            ));
+        }
+        Err(error) => return Err(HandlerError::Body(error.to_string())),
+    };
     let change: EntryChangeRequest = match serde_json::from_slice(&body) {
         Ok(c) => c,
         Err(e) => {
@@ -200,94 +214,41 @@ async fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    let existing = state
-        .inner
-        .storage
-        .load_entry(&change.entry.package_id)
-        .map_err(HandlerError::Storage)?;
+    if change.action == EntryAction::Add && !publisher_may_add_new(state, &change.entry).await {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            "publisher not allowed to submit new entries",
+        ));
+    }
+    let submitted_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    match state.inner.moderation.submit(change, submitted_at) {
+        Ok(submission) => Ok(json_response(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({
+                "status": "pending_review",
+                "id": submission.submission_id,
+            }),
+        )),
+        Err(error) => match moderation_status(&error) {
+            Some(status) => Ok(text_response(status, &error.to_string())),
+            None => Err(HandlerError::Moderation(error)),
+        },
+    }
+}
 
-    match change.action {
-        EntryAction::Add => {
-            if existing.is_some() {
-                return Ok(text_response(
-                    StatusCode::CONFLICT,
-                    "entry already exists — POST with action=update instead",
-                ));
-            }
-            // The owner's allowlist can gate "may add NEW entries" —
-            // publishers with `can_add_new = false` may only edit
-            // their own existing rows.
-            if !publisher_may_add_new(state, &change.entry).await {
-                return Ok(text_response(
-                    StatusCode::FORBIDDEN,
-                    "publisher not allowed to add new entries",
-                ));
-            }
-            state
-                .inner
-                .storage
-                .save_entry(&change.entry)
-                .map_err(HandlerError::Storage)?;
-            info!("added entry {}", change.entry.package_id);
-            Ok(json_response(
-                StatusCode::CREATED,
-                &serde_json::json!({"status": "created", "id": change.entry.package_id}),
-            ))
+fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
+    match error {
+        ModerationError::NoPublicEntry(_) => Some(StatusCode::NOT_FOUND),
+        ModerationError::WrongPublisher(_) | ModerationError::PendingOwnedByAnotherPublisher(_) => {
+            Some(StatusCode::FORBIDDEN)
         }
-        EntryAction::Update => {
-            let Some(existing) = existing else {
-                return Ok(text_response(
-                    StatusCode::NOT_FOUND,
-                    "no such entry to update",
-                ));
-            };
-            if existing.publisher_pubkey_hex != change.entry.publisher_pubkey_hex {
-                return Ok(text_response(
-                    StatusCode::FORBIDDEN,
-                    "publisher pubkey doesn't match the stored entry's — a publisher may only edit their own entries",
-                ));
-            }
-            if change.entry.updated_at_unix <= existing.updated_at_unix {
-                return Ok(text_response(
-                    StatusCode::CONFLICT,
-                    "updated_at_unix must be strictly greater than the stored value",
-                ));
-            }
-            state
-                .inner
-                .storage
-                .save_entry(&change.entry)
-                .map_err(HandlerError::Storage)?;
-            info!("updated entry {}", change.entry.package_id);
-            Ok(json_response(
-                StatusCode::OK,
-                &serde_json::json!({"status": "updated", "id": change.entry.package_id}),
-            ))
-        }
-        EntryAction::Delete => {
-            let Some(existing) = existing else {
-                return Ok(text_response(
-                    StatusCode::NOT_FOUND,
-                    "no such entry to delete",
-                ));
-            };
-            if existing.publisher_pubkey_hex != change.entry.publisher_pubkey_hex {
-                return Ok(text_response(
-                    StatusCode::FORBIDDEN,
-                    "publisher pubkey doesn't match the stored entry's",
-                ));
-            }
-            state
-                .inner
-                .storage
-                .delete_entry(&change.entry.package_id)
-                .map_err(HandlerError::Storage)?;
-            info!("deleted entry {}", change.entry.package_id);
-            Ok(json_response(
-                StatusCode::OK,
-                &serde_json::json!({"status": "deleted", "id": change.entry.package_id}),
-            ))
-        }
+        ModerationError::EntryAlreadyExists(_)
+        | ModerationError::StaleTimestamp { .. }
+        | ModerationError::PendingTimestampNotNewer { .. } => Some(StatusCode::CONFLICT),
+        _ => None,
     }
 }
 
@@ -344,4 +305,6 @@ enum HandlerError {
     Body(String),
     #[error("storage: {0}")]
     Storage(StorageError),
+    #[error("moderation: {0}")]
+    Moderation(ModerationError),
 }

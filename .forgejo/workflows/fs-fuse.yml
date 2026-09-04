@@ -89,7 +89,7 @@ jobs:
 
       - name: Require a real kernel FUSE environment
         run: |
-          # Brokered Kata runners expose the guest kernel's misc device but a
+          # Brokered Kata runners expose the guest kernel's misc device, but a
           # fresh nested job container may not carry its /dev node. Recreate
           # that node from the kernel-owned major/minor; this still fails closed
           # when the running kernel has no real FUSE device.
