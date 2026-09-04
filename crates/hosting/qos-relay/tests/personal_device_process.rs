@@ -423,8 +423,22 @@ mkdir -p /home/qosaccept
 export PKEXEC_UID=42424
 /proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /proc/self/fd/7 300 &
 requester=$!
-requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 trap 'kill "$requester" 2>/dev/null || true' EXIT
+# The background child initially retains the shell's root credentials until
+# setpriv executes. Do not race the helper's ownership validation against that
+# transition.
+requester_uid=
+attempts=0
+while [ "$requester_uid" != 42424 ]; do
+    requester_uid=$(/proc/self/fd/6 '$1 == "Uid:" { print $2; exit }' "/proc/$requester/status" 2>/dev/null) || requester_uid=
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 500 ]; then
+        echo "requester did not assume uid 42424 (observed ${requester_uid:-missing})" >&2
+        exit 1
+    fi
+    /proc/self/fd/7 0.01
+done
+requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$QOS_HELPER" approve-device --identity-root "$QOS_APPROVER_ROOT" --identity-dir "$QOS_APPROVER_IDENTITIES" --expected-device "$QOS_RECIPIENT_ID" --expected-service "$QOS_RECIPIENT_SERVICE" &
 approval=$!
 "$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
