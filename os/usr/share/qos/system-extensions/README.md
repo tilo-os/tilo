@@ -17,9 +17,10 @@ There are two deliberately different activation classes:
 
 * `local_model_runtime` is userspace-only. The constrained
   `qos-system-extension-userspace.service` creates a runtime eligibility
-  marker. The future `qos-local-model-service` binary independently validates
-  the typed local-model catalog/request and binds only a loopback endpoint. It
-  receives no shell command, URL, or ambient download authority.
+  marker. The per-user `qos-model-manager` independently validates the typed,
+  signed local-model catalog and binds vLLM only to an allocated loopback
+  endpoint. Settings reaches it through the launcher-owned `models@1` service
+  descriptor; it receives no shell command, URL, or ambient app authority.
 * `kernel_module` and `gpu_driver_stack` are boot-bound. The constrained
   `qos-system-extension-boot-stage.service` atomically creates a
   `reboot-required` marker but never touches `/boot` or loads a driver. The
@@ -59,6 +60,15 @@ driver. The non-secret status projection reports `queued`,
 generation, a bounded error if any, and whether a reboot is still required. On
 the next boot it is recomputed from the booted deployment digest, so qOS never
 claims a staged driver is already active without evidence.
+
+Settings presents those states as one accelerator-setup card. The model
+manager asks for the root-probed recommendation again when the user chooses
+setup, and stages only when exactly one signed BootPack matches. Model download
+remains disabled while the BootPack is queued or staged. Once staging finishes,
+Settings asks the user to restart through the normal system power UI; neither
+Settings nor the model service has a restart verb. After boot, local model
+setup becomes available only when the root-owned status projection says the
+digest-pinned deployment is active.
 
 `/var/lib/qos/local-models/staging` is root-only transfer workspace.
 `verified` is root-owned and group-readable by the local-model runtime; only a
