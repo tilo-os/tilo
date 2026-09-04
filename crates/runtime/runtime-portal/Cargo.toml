@@ -23,11 +23,13 @@ capnp-rpc.workspace = true
 # heavy features like `signal` or `full` belong in the binary.
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 # nix gives us `fcntl(F_GETFD)` so we can probe whether a fd is open
 # before we hand it to tokio. 0.30 is the latest line already in the
 # workspace's lock file (transitive via shell).
 nix = { version = "0.30", features = ["fs"] }
-thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
