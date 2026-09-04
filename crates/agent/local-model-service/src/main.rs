@@ -83,6 +83,13 @@ enum Action {
         #[arg(long)]
         revision: Option<String>,
     },
+    /// Durable background activation. Kept separate from download so an
+    /// already-installed model can be restarted without blocking Settings.
+    #[command(hide = true)]
+    WorkerStart {
+        #[arg(long)]
+        model: String,
+    },
     /// The launcher-owned per-user service endpoint. Sandboxed apps reach it
     /// through `QOS_SVC_MODELS_FD`; it alone has network and storage access.
     #[command(hide = true)]
@@ -470,7 +477,10 @@ impl ProcessSupervisor for SystemdSupervisor {
             .split('/')
             .next()
             .unwrap_or_default();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // Loading real model weights routinely takes minutes. This worker is
+        // already detached from Settings, so favour a truthful bounded wait
+        // over reporting a healthy large model as failed after 20 seconds.
+        let deadline = Instant::now() + Duration::from_secs(10 * 60);
         while Instant::now() < deadline {
             if std::net::TcpStream::connect_timeout(
                 &address.parse().map_err(|_| ServiceError::InvalidEndpoint)?,
@@ -815,7 +825,7 @@ fn main() {
     let cli = Cli::parse();
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
-        Action::Worker { .. } => run_local(cli),
+        Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
         _ if service_fd().is_some() => forward_to_service(&cli),
         _ => run_local(cli),
     };
@@ -870,7 +880,7 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
         Action::RequestRestart { model } => Ok(RpcAction::RequestRestart {
             model: model.clone(),
         }),
-        Action::Worker { .. } | Action::Serve { .. } => {
+        Action::Worker { .. } | Action::WorkerStart { .. } | Action::Serve { .. } => {
             Err("internal model manager action cannot be proxied".into())
         }
     }
@@ -1194,15 +1204,16 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             )?;
         }
         Action::Start { model } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| release.id == model)
-                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
+            if !catalog.models.iter().any(|release| release.id == model) {
+                return Err("model is not in the signed catalog".to_string());
+            }
             service
-                .start(runtime, release, allocate_loopback_port()?)
+                .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
+            enqueue_start_worker(&root, &catalog_path, &key_path, &model).map_err(|error| {
+                let _ = service.record_failure(&model, &error);
+                error
+            })?;
         }
         Action::Stop { model } => {
             service.stop(&model).map_err(|error| error.to_string())?;
@@ -1227,7 +1238,30 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 })
                 .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
             let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
-            if let Err(error) = service.install_with_runtime_progress(runtime, release) {
+            if let Err(error) = service
+                .install_with_runtime_progress(runtime, release)
+                .and_then(|_| {
+                    service
+                        .start(
+                            runtime,
+                            release,
+                            allocate_loopback_port().map_err(ServiceError::Backend)?,
+                        )
+                        .map(|_| ())
+                })
+            {
+                let _ = service.record_failure(&model, error.to_string());
+                return Err(error.to_string());
+            }
+        }
+        Action::WorkerStart { model } => {
+            let release = catalog
+                .models
+                .iter()
+                .find(|release| release.id == model)
+                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
+            if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
                 let _ = service.record_failure(&model, error.to_string());
                 return Err(error.to_string());
             }
@@ -1280,6 +1314,43 @@ fn enqueue_worker(
     } else {
         Err("systemd-run rejected the durable model worker".into())
     }
+}
+
+fn enqueue_start_worker(
+    root: &PathBuf,
+    catalog: &PathBuf,
+    keys: &PathBuf,
+    model: &str,
+) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let digest = hex::encode(Sha256::digest(model.as_bytes()));
+    let unit = format!("qos-model-start-{}", &digest[..16]);
+    let mut command = Command::new("systemd-run");
+    command
+        .args(["--user", "--collect", "--service-type=exec", "--unit"])
+        .arg(&unit)
+        .arg("--")
+        .arg(executable);
+    if unsafe { libc::geteuid() != 0 } {
+        command
+            .arg("--root")
+            .arg(root)
+            .arg("--catalog")
+            .arg(catalog)
+            .arg("--keys")
+            .arg(keys);
+    }
+    let status = command
+        .args(["worker-start", "--model", model])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("could not enqueue model start: {error}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "systemd-run rejected the durable model start".to_string())
 }
 
 #[cfg(test)]
