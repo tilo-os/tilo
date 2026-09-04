@@ -323,6 +323,25 @@ impl Widget for DiffView {
         true
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let changes = self.model.blocks.len();
+        Some(
+            AccessNode::new(Role::Canvas)
+                .with_name(format!(
+                    "Diff between {} and {}",
+                    self.left_label, self.right_label
+                ))
+                .with_description(format!(
+                    "{changes} change{}. Scroll to review the aligned source lines.",
+                    if changes == 1 { "" } else { "s" }
+                ))
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.rect),
+        )
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }

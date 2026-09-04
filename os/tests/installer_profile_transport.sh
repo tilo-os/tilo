@@ -47,6 +47,72 @@ QOS_INSTALLER_PROFILE_OUT_DIR="$out" \
 [ ! -e "$out/profile.json" ]
 grep -q 'damaged' "$out/profile.error"
 
+# A common live layout mounts a squashfs through /dev/loop0. findmnt therefore
+# yields a non-empty candidate list, but that loop's end is not the physical
+# media tail where the imager stored the profile. Prove that discovery also
+# merges the actual removable disk instead of treating the loop as sufficient.
+discovered_media="$work/discovered-media.img"
+cp "$media" "$discovered_media"
+python3 - "$discovered_media" <<'PY'
+import hashlib, json, sys
+payload = json.dumps({
+    "schema": 1, "hostname": "loop-backed", "username": "ada",
+    "full_name": "ada Example", "locale": "en_US.UTF-8",
+    "keyboard": "de", "timezone": "Europe/Berlin", "filesystem": "btrfs",
+}, separators=(",", ":")).encode()
+header = b"QOS_INSTALL_PROFILE_V1\n" + hashlib.sha256(payload).hexdigest().encode() + b"\n" + str(len(payload)).encode() + b"\n"
+block = (header + payload).ljust(65536, b"\0")
+with open(sys.argv[1], "r+b") as target:
+    target.seek(-65536, 2)
+    target.write(block)
+PY
+fake_bin="$work/fake-bin"
+mkdir "$fake_bin"
+loop_candidate="$work/mounted-loop.img"
+truncate -s 65536 "$loop_candidate"
+cat > "$fake_bin/findmnt" <<'SH'
+#!/bin/sh
+printf '/dev/loop0 /run/initramfs/live\n'
+SH
+cat > "$fake_bin/lsblk" <<SH
+#!/bin/sh
+case "\$*" in
+  *'/dev/loop0') printf '/dev/loop0 loop\n' ;;
+  *'NAME,TYPE,RM,TRAN'*)
+    printf '%s disk 0 usb\n' '$discovered_media'
+    [ -z "\${QOS_TEST_SECOND_PROFILE:-}" ] \
+      || printf '%s disk 1 mmc\n' "\$QOS_TEST_SECOND_PROFILE"
+    printf '%s disk 0 sata\n' '$work/internal.img'
+    ;;
+esac
+SH
+chmod +x "$fake_bin/findmnt" "$fake_bin/lsblk"
+rm -rf "$out"
+PATH="$fake_bin:$PATH" \
+QOS_INSTALLER_PROFILE_DEVICE="$loop_candidate" \
+QOS_INSTALLER_PROFILE_ALLOW_FILE=1 \
+QOS_INSTALLER_PROFILE_OUT_DIR="$out" \
+  "$extractor"
+python3 - "$out/profile.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1], encoding="utf-8"))
+assert profile["hostname"] == "loop-backed"
+PY
+
+# Broadening discovery must not make an arbitrary choice when two attached
+# removable devices both carry profiles. Preserve the exactly-one safety gate.
+second_media="$work/second-media.img"
+cp "$discovered_media" "$second_media"
+rm -rf "$out"
+PATH="$fake_bin:$PATH" \
+QOS_INSTALLER_PROFILE_DEVICE="$loop_candidate" \
+QOS_INSTALLER_PROFILE_ALLOW_FILE=1 \
+QOS_INSTALLER_PROFILE_OUT_DIR="$out" \
+QOS_TEST_SECOND_PROFILE="$second_media" \
+  "$extractor"
+[ ! -e "$out/profile.json" ]
+grep -q 'More than one attached device' "$out/profile.error"
+
 make_malformed_header() {
   local mode="$1"
   python3 - "$media" "$mode" <<'PY'

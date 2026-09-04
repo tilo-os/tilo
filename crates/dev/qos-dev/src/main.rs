@@ -354,6 +354,12 @@ struct CertifyArgs {
     /// Certify every graphical application in this qOS workspace.
     #[arg(long)]
     workspace: bool,
+
+    /// After workspace certification, render every graphical app at the
+    /// supported phone, tablet, laptop, and desktop sizes in default,
+    /// expanded-copy, 200%-text, and high-contrast modes.
+    #[arg(long, requires = "workspace", value_name = "DIR")]
+    responsive_artifacts: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -1181,6 +1187,13 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
         .context("waiting for the workspace certification build")?;
     anyhow::ensure!(status.success(), "workspace certification build failed");
 
+    let responsive_root = args.responsive_artifacts.map(|artifacts| {
+        if artifacts.is_absolute() {
+            artifacts
+        } else {
+            path.join(artifacts)
+        }
+    });
     for (app, _, binary) in &packages {
         println!(
             "[certify] {}",
@@ -1202,9 +1215,177 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
             "{} production root failed qOS-native certification",
             app.display()
         );
+        if let Some(root) = responsive_root.as_deref() {
+            let app_name = app.file_name().unwrap_or_default();
+            for run in responsive_acceptance_runs(&root.join(app_name)) {
+                println!("[responsive] {} / {}", app_name.to_string_lossy(), run.name);
+                let mut command = ProcessCommand::new(executable);
+                command.current_dir(app).args(&run.args);
+                if let Some(theme) = run.shot_theme {
+                    command.env("QOS_SHOTS_THEME", theme);
+                }
+                let status = command.status().with_context(|| {
+                    format!(
+                        "running {} responsive acceptance mode {}",
+                        executable.display(),
+                        run.name
+                    )
+                })?;
+                anyhow::ensure!(
+                    status.success(),
+                    "{} failed responsive acceptance mode {}",
+                    app.display(),
+                    run.name
+                );
+                validate_responsive_pngs(&root.join(app_name).join(run.name)).with_context(
+                    || {
+                        format!(
+                            "{} produced unusable responsive images in mode {}",
+                            app.display(),
+                            run.name
+                        )
+                    },
+                )?;
+                for (viewport_name, (width, height)) in RESPONSIVE_AUDIT_VIEWPORTS {
+                    let audit_path = root
+                        .join(app_name)
+                        .join(run.name)
+                        .join(format!("{viewport_name}.audit.json"));
+                    let mut audit = ProcessCommand::new(executable);
+                    audit.current_dir(app).args([
+                        OsString::from("--native-audit"),
+                        OsString::from("--viewport"),
+                        OsString::from(format!("{width}x{height}")),
+                    ]);
+                    audit.args(&run.audit_extra);
+                    if let Some(theme) = run.shot_theme {
+                        audit.env("QOS_SHOTS_THEME", theme);
+                    }
+                    let output = audit.output().with_context(|| {
+                        format!(
+                            "auditing {} responsive mode {} at {viewport_name}",
+                            executable.display(),
+                            run.name
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        output.status.success(),
+                        "{} failed semantic audit mode {} at {viewport_name}: {}",
+                        app.display(),
+                        run.name,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    if let Some(parent) = audit_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&audit_path, output.stdout).with_context(|| {
+                        format!("writing responsive audit {}", audit_path.display())
+                    })?;
+                }
+            }
+        }
     }
     println!("Certified {} graphical qOS applications", app_dirs.len());
     Ok(())
+}
+
+struct ResponsiveAcceptanceRun {
+    name: &'static str,
+    args: Vec<OsString>,
+    audit_extra: Vec<OsString>,
+    shot_theme: Option<&'static str>,
+}
+
+const RESPONSIVE_AUDIT_VIEWPORTS: [(&str, (u32, u32)); 4] = [
+    ("phone", (390, 844)),
+    ("tablet", (768, 1024)),
+    ("laptop", (1366, 768)),
+    ("desktop", (1920, 1080)),
+];
+
+/// Reject a renderer that merely creates PNG files without painting the app.
+///
+/// A screenshot may legitimately have a large flat background, so this is a
+/// deliberately loose sanity gate rather than a visual-diff replacement. A
+/// frame fails only when one exact colour occupies more than 99.9% of its
+/// pixels; that catches empty/first-frame captures while allowing deliberately
+/// sparse, centred empty states. Dimensions are checked too, so a stale image
+/// cannot satisfy a different viewport case.
+fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
+    for (viewport_name, expected) in RESPONSIVE_AUDIT_VIEWPORTS {
+        let suffix = format!("-{viewport_name}.png");
+        let paths = std::fs::read_dir(mode_root)
+            .with_context(|| format!("reading responsive images in {}", mode_root.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            paths.len() == 1,
+            "expected one {viewport_name} PNG in {}, found {}",
+            mode_root.display(),
+            paths.len()
+        );
+        validate_responsive_png(&paths[0], expected)?;
+    }
+    Ok(())
+}
+
+fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
+    use image::GenericImageView as _;
+
+    let image = image::open(path).with_context(|| format!("decoding {}", path.display()))?;
+    anyhow::ensure!(
+        image.dimensions() == expected,
+        "{} has dimensions {:?}, expected {:?}",
+        path.display(),
+        image.dimensions(),
+        expected
+    );
+    let pixels = image.to_rgba8();
+    let total = u64::from(expected.0) * u64::from(expected.1);
+    let mut colours = std::collections::HashMap::<[u8; 4], u64>::new();
+    for pixel in pixels.pixels() {
+        *colours.entry(pixel.0).or_default() += 1;
+    }
+    let dominant = colours.values().copied().max().unwrap_or(total);
+    anyhow::ensure!(
+        dominant.saturating_mul(10_000) <= total.saturating_mul(9_990),
+        "{} is effectively blank ({:.2}% one colour)",
+        path.display(),
+        dominant as f64 * 100.0 / total as f64
+    );
+    Ok(())
+}
+
+fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
+    let run = |name: &'static str,
+               extra: &[&str],
+               shot_theme: Option<&'static str>|
+     -> ResponsiveAcceptanceRun {
+        let mut args = vec![
+            OsString::from("--responsive-matrix"),
+            app_root.join(name).into_os_string(),
+        ];
+        let audit_extra = extra.iter().map(OsString::from).collect::<Vec<_>>();
+        args.extend(audit_extra.iter().cloned());
+        ResponsiveAcceptanceRun {
+            name,
+            args,
+            audit_extra,
+            shot_theme,
+        }
+    };
+    vec![
+        run("default", &[], None),
+        run("expanded-copy", &["--pseudo-locale"], None),
+        run("large-type", &["--text-scale", "2"], None),
+        run("high-contrast", &[], Some("high-contrast")),
+    ]
 }
 
 fn run_new(args: NewArgs) -> Result<()> {
@@ -1608,14 +1789,110 @@ mod tests {
         };
         assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
         assert!(!app.workspace);
+        assert!(app.responsive_artifacts.is_none());
 
-        let workspace = Cli::try_parse_from(["qos-dev", "certify", ".", "--workspace"])
-            .expect("workspace certification CLI");
+        let workspace = Cli::try_parse_from([
+            "qos-dev",
+            "certify",
+            ".",
+            "--workspace",
+            "--responsive-artifacts",
+            "target/acceptance",
+        ])
+        .expect("workspace certification CLI");
         let Command::Certify(workspace) = workspace.command else {
             panic!("expected certify command");
         };
         assert_eq!(workspace.path, Some(PathBuf::from(".")));
         assert!(workspace.workspace);
+        assert_eq!(
+            workspace.responsive_artifacts,
+            Some(PathBuf::from("target/acceptance"))
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "certify",
+                "apps/demo",
+                "--responsive-artifacts",
+                "target/acceptance",
+            ])
+            .is_err(),
+            "a fleet artifact request without --workspace is ambiguous"
+        );
+    }
+
+    #[test]
+    fn responsive_acceptance_covers_shape_copy_type_and_contrast() {
+        let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
+        assert_eq!(
+            runs.iter().map(|run| run.name).collect::<Vec<_>>(),
+            ["default", "expanded-copy", "large-type", "high-contrast"]
+        );
+        assert!(runs.iter().all(|run| {
+            run.args.first() == Some(&OsString::from("--responsive-matrix"))
+                && run
+                    .args
+                    .get(1)
+                    .is_some_and(|path| Path::new(path).is_absolute())
+        }));
+        assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
+        assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
+        assert!(
+            runs[2]
+                .args
+                .windows(2)
+                .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
+        );
+        assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
+        assert_eq!(
+            RESPONSIVE_AUDIT_VIEWPORTS.last(),
+            Some(&("desktop", (1920, 1080)))
+        );
+        assert_eq!(runs[3].shot_theme, Some("high-contrast"));
+    }
+
+    #[test]
+    fn responsive_png_gate_rejects_blank_or_wrong_sized_frames() {
+        let dir = tempfile::tempdir().expect("temporary screenshots");
+        let blank_path = dir.path().join("blank-phone.png");
+        image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
+            .save(&blank_path)
+            .expect("write blank PNG");
+        assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
+
+        let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
+        for x in 0..10 {
+            for y in 0..80 {
+                painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+            }
+        }
+        let painted_path = dir.path().join("painted-phone.png");
+        painted.save(&painted_path).expect("write painted PNG");
+        validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
+        assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
+
+        // A sparse but explicit empty state is useful UI. Even a compact
+        // centred title/action treatment occupies little of a desktop frame.
+        let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+        for x in 47..53 {
+            for y in 47..53 {
+                sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+            }
+        }
+        let sparse_path = dir.path().join("sparse-empty-state.png");
+        sparse.save(&sparse_path).expect("write sparse PNG");
+        validate_responsive_png(&sparse_path, (100, 100))
+            .expect("explicit sparse empty state is useful");
+
+        let mut near_blank = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+        near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
+        let near_blank_path = dir.path().join("near-blank.png");
+        near_blank
+            .save(&near_blank_path)
+            .expect("write near-blank PNG");
+        assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
     }
 
     #[test]

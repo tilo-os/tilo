@@ -885,6 +885,19 @@ pub fn role_label(role: CapRole) -> &'static str {
     }
 }
 
+/// Plain-language consequences shown before changing a person's workspace
+/// role. Keeping this next to the role vocabulary makes the chooser describe
+/// the same authority that [`role_verb`] ultimately writes.
+pub fn role_capability_preview(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "Can manage people, permissions, and workspace settings.",
+        CapRole::Editor => "Can view, comment on, and edit shared work.",
+        CapRole::Commenter => "Can view shared work and add comments, but cannot edit it.",
+        CapRole::Viewer => "Can view shared work, but cannot comment or edit it.",
+        CapRole::Denied => "Cannot access this workspace.",
+    }
+}
+
 /// The thing a device-scoped capability names.
 fn device_label(device: &str) -> &str {
     match device {
@@ -1926,7 +1939,7 @@ fn draw_member_row(
     );
 
     let can_manage_row = is_owner && !row.is_workspace_owner && &row.user != local_user;
-    draw_role_chip(
+    draw_member_role_chip(
         scene,
         transform,
         row.role_rect,
@@ -1950,13 +1963,9 @@ fn draw_member_row(
     );
 }
 
-/// A policy-backed role chip — its fill, label and the chevron affording
-/// that owners can cycle it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shared paint primitive needs geometry, policy state, and the standard render context"
-)]
-fn draw_role_chip(
+/// The role chip half of [`draw_member_row`] — its fill, label and the
+/// chevron affording that owners can open the explicit role chooser.
+fn draw_member_role_chip(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
@@ -2024,7 +2033,7 @@ fn draw_role_chip(
                 gx + glyph,
                 rect.center().y + glyph / 2.0,
             ),
-            Icon::ChevronRight,
+            Icon::ChevronDown,
             chip_tint,
             LUCIDE_DEFAULT_STROKE_PX,
         );

@@ -7,7 +7,7 @@
 #   qos-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
 #   qos-disk-encrypt prepare-partition <root-part> --efi <esp> [...]
 #   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
-#   qos-disk-encrypt enrol    <luks-part> --reseal [--pin-file F]
+#   qos-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   qos-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   qos-disk-encrypt teardown <disk> [--mnt DIR]
 #
@@ -282,19 +282,18 @@ EOF
       "$luks_uuid" "$luks_uuid"
 }
 
-have_tpm2() { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; }
-
 cmd_enrol() {
-  local dev="" key="" pin_file="" want_fido2=0 reseal=0 force_passphrase=0
+  # PCR 7 authenticates the firmware Secure Boot policy, not the selected qOS
+  # UKI/initramfs. Until signed per-generation predictions and their initramfs
+  # consumer ship together, fail closed to an ordinary strong passphrase.
+  local dev="" key="" pin_file="" want_fido2=0 reseal=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
       --fido2) want_fido2=1; shift ;;
-      # A TPM is useful only behind verified boot. The installer passes this
-      # when Secure Boot is not active so PCR 7="off" is never presented as a
-      # hardware-backed short-PIN boundary.
-      --passphrase) force_passphrase=1; shift ;;
+      # Compatibility flag for callers; passphrase mode is also the default.
+      --passphrase) shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
       # chip, or after turning Secure Boot on or off (PCR 7 changes either way).
       # No new recovery key — the existing one is what authorises this — and the
@@ -324,19 +323,7 @@ cmd_enrol() {
   fi
 
   if [ "$reseal" -eq 1 ]; then
-    have_tpm2 || die "enrol --reseal: no TPM2 device to re-seal to"
-    log "  re-sealing to the TPM (replacing the previous TPM key slot)…"
-    if [ -n "$pin_file" ]; then
-      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
-        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
-        || die "re-seal failed; the recovery key still opens the disk"
-    else
-      systemd-cryptenroll "${unlock[@]}" \
-        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
-        || die "re-seal failed; the recovery key still opens the disk"
-    fi
-    log "  re-sealed."
-    return 0
+    die "enrol --reseal: TPM enrollment is disabled until qOS unlock is bound to signed measured-boot predictions; keep the recovery key and strong passphrase"
   fi
 
   # A private scratch dir for the secrets this function has to hand to
@@ -406,57 +393,32 @@ cmd_enrol() {
     log "  FIDO2 key enrolled."
   fi
 
-  # (3) The quiet-unlock factor. PCR 7 only: it is the Secure Boot policy
-  # register, so the seal breaks if the boot policy changes, while PCR 4 (the
-  # boot artefacts themselves) would break the seal on every OS update and send
-  # the user to the recovery key each time.
-  if have_tpm2 && [ "$force_passphrase" -eq 0 ]; then
-    if [ -n "$pin_file" ]; then
-      log "  enrolling TPM2 with a PIN…"
-      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
-        --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
-        || die "TPM2+PIN enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
-      log "  TPM2+PIN enrolled."
-    else
-      log "  enrolling TPM2 (no PIN)…"
-      systemd-cryptenroll "${unlock[@]}" \
-        --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
-        || die "TPM2 enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
-      log "  TPM2 enrolled."
-    fi
+  # (3) The startup factor. Always use an ordinary LUKS passphrase until qOS
+  # ships signed measured-boot predictions and a matching early-boot consumer.
+  # Merely finding a TPM or Secure Boot is not sufficient protection for a
+  # short numeric secret.
+  if [ -n "$pin_file" ]; then
+    log "  TPM unlock is not enabled until it is bound to signed measured-boot predictions; enrolling the supplied strong passphrase as a LUKS key slot."
+    # A key file's bytes are the passphrase verbatim, trailing newline included
+    # — and a newline is exactly what the boot prompt cannot send. A file
+    # written with `echo` would otherwise enrol a secret that nobody can type,
+    # so normalise to the bytes the user will actually enter.
+    ( umask 0077; printf '%s' "$(cat "$pin_file")" > "$scratch/pin" )
+    [ -s "$scratch/pin" ] || die "enrol: the pin file $pin_file is empty"
+    # cryptsetup takes the authorising key as --key-file and the new one as
+    # --new-keyfile; with no install key it prompts for the existing secret.
+    local addkey=()
+    [ -f "$key" ] && addkey=(--key-file "$key")
+    cryptsetup luksAddKey --batch-mode \
+      "${addkey[@]}" --new-keyfile "$scratch/pin" "$dev" \
+      || die "passphrase enrolment failed"
+    # Prove that the exact secret its owner was told to remember opens the disk.
+    cryptsetup open --test-passphrase --key-file "$scratch/pin" "$dev" 2>/dev/null \
+      || die "the passphrase was added but does not open $dev — refusing to call this enrolled"
+    log "  passphrase enrolled and verified to open the volume."
   else
-    if have_tpm2; then
-      log "  Secure Boot is not active — using a passphrase instead of a misleading TPM slot."
-    else
-      log "  no TPM2 device — this machine unlocks with a disk passphrase."
-    fi
-    if [ -n "$pin_file" ]; then
-      # The PIN the caller collected becomes an ordinary passphrase slot, so the
-      # user has something short to type at boot instead of the recovery key.
-      log "  enrolling the supplied passphrase as a LUKS key slot…"
-      # A key file's bytes are the passphrase verbatim, trailing newline
-      # included — and a newline is exactly what the boot prompt cannot send. A
-      # pin file written with `echo` would otherwise enrol a secret that nobody
-      # can type, so normalise to the bytes the user will actually enter.
-      ( umask 0077; printf '%s' "$(cat "$pin_file")" > "$scratch/pin" )
-      [ -s "$scratch/pin" ] || die "enrol: the pin file $pin_file is empty"
-      # cryptsetup takes the authorising key as --key-file and the new one as
-      # --new-keyfile; with no install key it prompts for the existing secret.
-      local addkey=()
-      [ -f "$key" ] && addkey=(--key-file "$key")
-      cryptsetup luksAddKey --batch-mode \
-        "${addkey[@]}" --new-keyfile "$scratch/pin" "$dev" \
-        || die "passphrase enrolment failed"
-      # The whole point of this slot is that the secret its owner was told to
-      # remember opens the disk, so verify that rather than assume it. Without
-      # this the failure surfaces at the next boot, on a disk with data on it.
-      cryptsetup open --test-passphrase --key-file "$scratch/pin" "$dev" 2>/dev/null \
-        || die "the passphrase was added but does not open $dev — refusing to call this enrolled"
-      log "  passphrase enrolled and verified to open the volume."
-    else
-      log "  no passphrase was supplied, so the RECOVERY KEY above is the boot"
-      log "  passphrase. Keep it; there is no other way in."
-    fi
+    log "  no passphrase was supplied, so the RECOVERY KEY above is the boot"
+    log "  passphrase. Keep it; there is no other way in."
   fi
 }
 

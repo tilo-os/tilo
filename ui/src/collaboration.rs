@@ -18,7 +18,7 @@ use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
 
-use std::os::fd::RawFd;
+use runtime_portal::RawFd;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -127,6 +127,17 @@ pub enum CollabRequest {
     /// produce a safe projection.
     ClearContinuation {
         app_id: String,
+    },
+    OpenWorkspaceControl {
+        session_id: u64,
+        target_device: [u8; 32],
+    },
+    WorkspaceControlInput {
+        session_id: u64,
+        event: runtime_collab::WorkspaceControlInput,
+    },
+    CloseWorkspaceControl {
+        session_id: u64,
     },
     /// Report the terminal result of a directed invocation.
     CompleteInvocation {
@@ -383,6 +394,10 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<bool, String>,
     },
+    WorkspaceControl {
+        session_id: u64,
+        event: runtime_collab::WorkspaceControlEvent,
+    },
 }
 
 impl CollabEvent {
@@ -422,6 +437,12 @@ pub enum PresencePayload {
     },
     Arrived,
     Left,
+    /// A room-scoped, transient follow relationship announced by the
+    /// authenticated sender. It is a visual presence cue only; the local
+    /// Follow command remains private to the follower's session.
+    Following {
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -632,6 +653,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
 }
 
 enum SdkDocumentSigner {
+    #[cfg(unix)]
     Certified(runtime_identity::SigningIdentity),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
@@ -643,6 +665,7 @@ fn harness_document_signer() -> SdkDocumentSigner {
     SdkDocumentSigner::Harness(ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng))
 }
 
+#[cfg(unix)]
 fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
     let identity = runtime_identity::load()?;
     let device_certificate = identity.device_certificate().ok_or_else(|| {
@@ -671,6 +694,11 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
         participant_kind: "person",
         signer: SdkDocumentSigner::Certified(identity),
     })
+}
+
+#[cfg(not(unix))]
+fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
 pub struct CollaborationManager {
@@ -1306,11 +1334,13 @@ fn resolve_local_user_id() -> String {
     if let Some(v) = non_empty_env("QOS_USER_ID") {
         return v;
     }
-    if let Some(id) = runtime_identity::load()
-        .ok()
-        .or_else(|| config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok()))
+    #[cfg(unix)]
     {
-        return person_id_from_key(id.group_public_key());
+        if let Some(id) = runtime_identity::load().ok().or_else(|| {
+            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+        }) {
+            return person_id_from_key(id.group_public_key());
+        }
     }
     if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
         && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
@@ -1515,7 +1545,7 @@ async fn drive_shovel(
                     tracing::warn!("collab: request sent before the primary route joined");
                     continue;
                 };
-                if let Some(route) = routes.get(key) {
+                if let Some(route) = routes.get_mut(key) {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
@@ -1543,7 +1573,7 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                if let Some(route) = routes.get(&key) {
+                if let Some(route) = routes.get_mut(&key) {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
@@ -1555,6 +1585,7 @@ struct SdkRoute {
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
+    workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -1613,6 +1644,7 @@ async fn ensure_sdk_route(
             spec: spec.clone(),
             channel,
             presence,
+            workspace_controls: std::collections::HashMap::new(),
         },
     );
 }
@@ -1915,6 +1947,7 @@ async fn send_document_mutation(
     };
     let now = std::time::SystemTime::now();
     let author = match signer {
+        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
         SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
     };
@@ -1935,6 +1968,7 @@ async fn send_document_mutation(
         }
     };
     let signature = match signer {
+        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
             &workspace_id,
             &route.spec.app_id,
@@ -1984,7 +2018,7 @@ async fn send_document_mutation(
     reason = "the request variants share one ordered dispatch boundary onto the SDK route"
 )]
 async fn dispatch_sdk_request(
-    route: &SdkRoute,
+    route: &mut SdkRoute,
     request: CollabRequest,
     signer: &SdkDocumentSigner,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
@@ -2040,6 +2074,10 @@ async fn dispatch_sdk_request(
                 PresencePayload::Left => {
                     let _ = presence.publish_left(&key_bytes).await;
                 }
+                // Shell chrome originates this authenticated visual cue
+                // directly on the peer-presence route. Apps cannot turn it
+                // into a viewport command through this generic SDK bridge.
+                PresencePayload::Following { .. } => {}
             }
         }
         CollabRequest::FetchScrollback {
@@ -2116,6 +2154,54 @@ async fn dispatch_sdk_request(
         CollabRequest::ClearContinuation { app_id } => {
             if let Err(error) = route.channel.clear_continuation(&app_id).await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
+            }
+        }
+        CollabRequest::OpenWorkspaceControl {
+            session_id,
+            target_device,
+        } => match route.channel.open_workspace_control(target_device).await {
+            Ok(handle) => {
+                let reader = handle.clone();
+                let tx = inbound_tx.clone();
+                tokio::task::spawn_local(async move {
+                    while let Ok(event) = reader.read().await {
+                        let terminal =
+                            matches!(event, runtime_collab::WorkspaceControlEvent::Closed(_));
+                        if tx
+                            .send(CollabEvent::WorkspaceControl { session_id, event })
+                            .is_err()
+                            || terminal
+                        {
+                            break;
+                        }
+                    }
+                });
+                route.workspace_controls.insert(session_id, handle);
+            }
+            Err(error) => {
+                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                    session_id,
+                    event: runtime_collab::WorkspaceControlEvent::Closed(
+                        runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
+                    ),
+                });
+            }
+        },
+        CollabRequest::WorkspaceControlInput { session_id, event } => {
+            if let Some(handle) = route.workspace_controls.get(&session_id)
+                && let Err(error) = handle.send_input(&event).await
+            {
+                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                    session_id,
+                    event: runtime_collab::WorkspaceControlEvent::Closed(
+                        runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
+                    ),
+                });
+            }
+        }
+        CollabRequest::CloseWorkspaceControl { session_id } => {
+            if let Some(handle) = route.workspace_controls.remove(&session_id) {
+                let _ = handle.close().await;
             }
         }
         CollabRequest::CompleteInvocation { id, code, message } => {
@@ -2319,6 +2405,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     start: usize::try_from(start).unwrap_or(usize::MAX),
                     end: usize::try_from(end).unwrap_or(usize::MAX),
                 },
+                runtime_collab::PresencePayload::Following { target } => {
+                    PresencePayload::Following { target }
+                }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this

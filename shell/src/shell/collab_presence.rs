@@ -25,6 +25,9 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
         },
         PresencePayload::Arrived => PeerPresencePayload::Arrived,
         PresencePayload::Left => PeerPresencePayload::Left,
+        PresencePayload::Following { target } => PeerPresencePayload::Following {
+            target: target.clone(),
+        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -52,6 +55,7 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
         },
         PeerPresencePayload::Arrived => PresencePayload::Arrived,
         PeerPresencePayload::Left => PresencePayload::Left,
+        PeerPresencePayload::Following { target } => PresencePayload::Following { target },
     };
     Some((key, payload))
 }
@@ -70,6 +74,10 @@ mod tests {
             PresencePayload::Typing { start: 6, end: 8 },
             PresencePayload::Arrived,
             PresencePayload::Left,
+            PresencePayload::Following {
+                target: Some("peer@7".into()),
+            },
+            PresencePayload::Following { target: None },
         ];
         for payload in variants {
             let wire = to_peer(&key, &payload).expect("encode typed presence");

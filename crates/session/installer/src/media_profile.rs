@@ -26,7 +26,7 @@ pub struct MediaProfile {
 }
 
 impl MediaProfile {
-    fn validate(self) -> Result<Self, String> {
+    fn validate(self, zoneinfo_root: &Path) -> Result<Self, String> {
         if self.schema != 1 {
             return Err("unsupported installation profile version".into());
         }
@@ -70,6 +70,12 @@ impl MediaProfile {
         {
             return Err("invalid time zone in installation profile".into());
         }
+        if !zoneinfo_root.join(&self.timezone).is_file() {
+            return Err(format!(
+                "unknown time zone '{}' in installation profile",
+                self.timezone
+            ));
+        }
         if !matches!(self.filesystem.as_str(), "btrfs" | "ext4" | "xfs") {
             return Err("invalid filesystem in installation profile".into());
         }
@@ -93,6 +99,13 @@ impl MediaProfile {
 /// Returns an error when the profile cannot be read, exceeds the size limit,
 /// contains malformed JSON, or fails validation.
 pub fn load_from(path: &Path) -> Result<Option<MediaProfile>, String> {
+    load_from_with_zoneinfo(path, Path::new("/usr/share/zoneinfo"))
+}
+
+fn load_from_with_zoneinfo(
+    path: &Path,
+    zoneinfo_root: &Path,
+) -> Result<Option<MediaProfile>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -103,7 +116,7 @@ pub fn load_from(path: &Path) -> Result<Option<MediaProfile>, String> {
     }
     serde_json::from_slice::<MediaProfile>(&bytes)
         .map_err(|error| format!("installation profile is malformed: {error}"))?
-        .validate()
+        .validate(zoneinfo_root)
         .map(Some)
 }
 
@@ -175,5 +188,20 @@ mod tests {
                 "{field} produced an unhelpful error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_a_well_formed_but_missing_time_zone() {
+        let zones = tempfile::tempdir().unwrap();
+        let profile = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            profile.path(),
+            br#"{"schema":1,"hostname":"studio","username":"ada","full_name":"ada","locale":"en_US.UTF-8","keyboard":"de","timezone":"Europe/DefinitelyMissing","filesystem":"btrfs"}"#,
+        )
+        .unwrap();
+
+        let error = load_from_with_zoneinfo(profile.path(), zones.path())
+            .expect_err("a nonexistent IANA time zone must not enter the shortened flow");
+        assert!(error.contains("unknown time zone"), "{error}");
     }
 }

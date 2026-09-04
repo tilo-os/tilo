@@ -134,10 +134,10 @@ when the kernel is told by firmware that it booted verified. Without Secure Boot
 that karg is inert, so root can still load unsigned modules, read `/dev/mem` and
 kexec.
 
-PCR 7 measures the Secure Boot policy, and the LUKS TPM slot binds to it (below).
-With Secure Boot off, that binding records "Secure Boot is off" — which is a
-consistent measurement but not a meaningful one, since the state it attests to is
-the state in which the boot chain is unverified.
+PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
+that register; it has been removed because PCR 7 does not identify the selected
+qOS UKI. With Secure Boot off, such a binding would merely record "Secure Boot
+is off" — a consistent measurement, but not a meaningful verified-boot boundary.
 
 ### The gap this used to have, and what closing it changed
 
@@ -294,8 +294,9 @@ Two things the build does *not* do:
 `crates/system/qos-rollback` wants four things from the boot chain, and the sealed
 layout supplies all four.
 
-**PCR 7.** The firmware measures the Secure Boot policy into it on every boot, UKI
-or not, and the LUKS TPM slot already binds to it.
+**PCR 7.** The firmware measures the Secure Boot policy into it on every boot,
+UKI or not. A future TPM policy must combine it with the artifact/generation
+binding below; the current release deliberately enrolls no TPM slot.
 
 **PCR 11.** Extended by `systemd-stub`, which runs because the firmware loads a
 UKI. It carries the command line, so it distinguishes one generation from another
@@ -326,9 +327,9 @@ hook must write is:
 ```
 
 `systemd-cryptsetup` consults that path before it tries any token, so a hook that
-writes it takes precedence over the `tpm2-device=auto` slot without conflicting
-with it — the TPM slot stays as the fallback for a boot where the hook did not
-run. Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside the
+writes it takes precedence over token discovery. No TPM fallback currently
+ships; recovery-key, passphrase, and optional FIDO2 paths remain independent.
+Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside the
 initramfs is the remaining work, and it needs the `qos-rollback` binary installed
 into the initramfs by a dracut module.
 
@@ -350,9 +351,9 @@ Three prerequisites have to land as one tested change before that is safe:
 
 Calling `qos-rollback enroll` despite those facts would not add rollback
 protection: sealing against the live installer's PCRs produces an unusable target,
-while omitting PCR 11 silently reduces the policy to the existing PCR 7 boundary.
-The current `systemd-cryptenroll` PCR-7 TPM slot therefore remains the honest
-short-PIN path, with independent recovery-key and optional FIDO2 slots.
+while omitting PCR 11 silently reduces the policy to the rejected PCR 7-only
+boundary. The current release therefore retains the strong passphrase, mandatory
+recovery key, and optional FIDO2 slot and offers no short-PIN TPM path.
 
 A complete integration must either make the installed UKI independent of
 per-device command-line values, so a release-signed prediction remains valid, or
@@ -382,8 +383,7 @@ of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
-| TPM without verified boot | recovery key, passphrase | type the passphrase |
+| TPM (current release) | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
@@ -394,32 +394,75 @@ per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
 which of those handlers has enrolled material; without the FIDO2 boot option a
 security key could be successfully enrolled yet never tried by the initramfs.
 
-The installer and privileged backend both require a startup secret. A short PIN
-is accepted only when TPM2 and Secure Boot are active, the running kernel
-reports integrity or confidentiality lockdown, **and the target preflight
-proves the installed target retains that verified-boot boundary**. That
-preflight requires the owner's qOS db certificate to already be enrolled in
-firmware, verifies the running artifacts against it, signs the newly installed
-target artifacts with the same key, verifies every signature, and parses every
-target UKI to require sealed kernel, initrd, command line, OS identity,
-composefs digest, generation and hardening arguments. Enrollment happens only
-after this target-side proof succeeds. Checking the EFI variable without
-checking either its runtime consequence or the target handoff would make a
-live-medium firmware flag sufficient evidence for a security boundary.
+The installer and privileged backend both require a startup secret. This
+release always uses a strong passphrase. The former target preflight verified
+signatures and UKI contents, but its LUKS token was sealed only to PCR 7. PCR 7
+authenticates the firmware Secure Boot policy/database; it does not bind unlock
+to the selected qOS UKI or initramfs. That is not sufficient evidence for a
+short-PIN boundary, so the preflight and TPM enrollment are not shipped.
 
 This means a stock machine that has not completed owner/OEM Secure Boot
 enrollment uses the strong-passphrase path even when it has a TPM. Software
 cannot truthfully manufacture firmware trust without the owner's physical
-ceremony. Reinstalls and OEM-provisioned machines can use one short PIN because
-the trust key is already in firmware and is carried continuously into the new
-target.
+ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
+until qOS additionally ships signed measured-artifact policies and update-safe
+prediction consumption.
 TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the
 PIN and must not be presented as hardware-backed protection.
 
-The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
-PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.
+### Fresh-machine provisioning is a trust-model decision, not an installer retry
+
+The common factory-machine case cannot be turned into the short-PIN row by
+remembering installer state across a reboot. The first qOS executable has no
+signature accepted by the factory firmware: qOS intentionally has neither a
+Microsoft/OEM-trusted bootloader nor a qOS certificate in the factory `db`.
+Consequently the live medium has to start with Secure Boot disabled (or with the
+firmware already in setup mode). PCR 7 and kernel lockdown from that boot cannot
+authenticate the installer, and a TPM slot sealed there would protect a PIN from
+neither a replaced installer nor a replaced target UKI.
+
+Nor can the installer portably fix that state itself. While a factory Platform
+Key is active, changing `db`, `KEK`, or `PK` requires an authenticated update
+authorised by a private key qOS does not and must not possess. UEFI provides a
+standard request to enter firmware setup, but no standard, unattended operation
+for clearing the owner's keys, importing a new certificate, or enabling Secure
+Boot. Those controls, confirmation screens, and even support for appending a
+certificate from the ESP vary by firmware.
+
+That leaves two genuinely secure product choices:
+
+1. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
+   later guided ceremony may generate the owner keys in the encrypted target,
+   sign and verify every target UKI, ask the owner to import the public key in
+   firmware, and only after a verified reboot offer to replace the passphrase
+   slot with TPM2+PIN. The ceremony must persist only public progress on the ESP;
+   private signing keys and a pending PIN must never be placed there. It must
+   resume by re-proving the enrolled certificate, UKI signatures, Secure Boot,
+   lockdown, and recovery-key access rather than trusting a progress marker.
+   This is necessarily interactive and firmware-specific, so it cannot be the
+   default nearly-headless path on arbitrary PCs.
+2. **Add a factory-trusted qOS release chain.** This is the prerequisite for a
+   normal fresh PC to boot both installer and target under verified boot and use
+   one TPM-throttled PIN from its first installed boot. It changes the current
+   owner-only trust policy. The release bootloader and every bootable UKI need PE
+   signatures rooted in a certificate accepted by target firmware (through an
+   OEM agreement or an industry Secure Boot signing programme); installation
+   must stop generating target-specific unsigned UKI bytes, or obtain their
+   signatures from an authenticated, availability-safe signing service. Release
+   signing keys belong in an audited HSM/KMS with dual-control policy, short-lived
+   CI identity, rotation/revocation and offline recovery. The resulting media,
+   update, firmware-revocation, BitLocker-coexistence and TPM dictionary-attack
+   paths then need a physical hardware matrix before this becomes the default.
+
+Until one of those choices is deliberately made and delivered end to end, the
+secure product behaviour is the one enforced above: every machine gets a
+strong startup passphrase. `target_verified_boot_ready` must not be enabled by
+TPM presence, an EFI flag, signed files alone, or a resumable-install marker.
+
+The removed TPM slot bound to **PCR 7 only**, set explicitly rather than inherited.
+PCR 7 is the Secure Boot policy, so the seal would break if the boot policy changed.
 Binding to a register that covers the boot artefacts themselves sounds stronger and
 is unusable on its own: it changes on every OS update, so every update would send
 the user to the recovery key. That is what the signed per-generation predictions in
@@ -428,19 +471,12 @@ generation will produce, so an expected change stops being a lockout. It is also
 why the generation has to be on a measured command line: without it, a prediction
 the authority signed for one generation would be satisfied by any other.
 
-Consequences to expect:
-
-- Turning Secure Boot on or off after install changes PCR 7, so the TPM slot
-  stops opening. Unlock with the recovery key, then:
-
-  ```bash
-  sudo qos-disk-encrypt enrol /dev/<luks-partition> --reseal
-  ```
-
-  which replaces the stale TPM slot, authorising with the recovery key you just
-  typed. Add `--pin-file` to re-seal with a PIN.
-- A replaced motherboard or a cleared TPM is the same case, and has the same fix.
-  This is the reason the recovery key is mandatory rather than offered.
+There is consequently no supported `--reseal` procedure in this release.
+`qos-disk-encrypt enrol --reseal` fails closed until signed measured-boot
+predictions and their initramfs consumer ship together. A replaced motherboard
+or cleared TPM therefore does not alter the current passphrase/recovery-key boot
+path. The recovery key remains mandatory because passphrases and optional
+hardware factors can still be lost.
 
 ### An initramfs is required
 

@@ -1669,7 +1669,27 @@ impl Widget for ThemesApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        true
+        // A static theme preview used to keep the compositor repainting at
+        // vsync forever. Only request work while a child changed, a gallery
+        // reveal is still easing, or the composed structure needs rebuilding.
+        self.structure_dirty
+            || self.gallery_flap.is_animating(self.layout_class())
+            || self.gallery.needs_redraw()
+            || self.preview.needs_redraw()
+            || self.customizer.needs_redraw()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.gallery_flap.is_animating(self.layout_class())
+            || self.gallery.needs_animation_frame()
+            || self.preview.needs_animation_frame()
+            || self.customizer.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.gallery.mark_drawn();
+        self.preview.mark_drawn();
+        self.customizer.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1994,5 +2014,17 @@ mod tests {
             qos_actions::ExecutionMode::Background { cancellable: true }
         ));
         assert_eq!(apply.contract.result, qos_actions::ResultSpec::Job);
+    }
+
+    #[test]
+    fn static_theme_gallery_stops_requesting_frames_after_draw() {
+        let (mut app, _state) = seeded();
+        let layout = app.layout_class();
+        app.gallery_flap.snap(app.gallery_flap.is_open(layout));
+        app.mark_drawn();
+        assert!(
+            !app.needs_animation_frame(),
+            "an idle theme gallery must not keep the compositor at vsync"
+        );
     }
 }

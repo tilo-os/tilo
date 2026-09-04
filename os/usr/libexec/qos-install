@@ -14,14 +14,18 @@
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
 #     --encrypt                       accepted for UI compatibility; native qOS
 #                                     always uses LUKS2 full-disk encryption
-#     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
-#                                     only with verified boot + kernel lockdown,
-#                                     otherwise the boot passphrase (requires --encrypt)
+#     --pin                           legacy flag name for the required strong
+#                                     disk passphrase on stdin line 2
+#                                     (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --alongside --root-partition P --efi-partition P
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
 #                                     and reuse (never format) its existing ESP
+#     --guided-alongside [reviewed free-space geometry and partition map]
+#                                     append a dedicated ESP and root inside one
+#                                     exact unallocated GPT extent; never resize,
+#                                     move, or delete an existing partition
 #     --confirm-erase <dev>           required for whole-disk installs and must
 #                                     exactly match --disk
 #     --confirm-root <partition>      required for alongside installs and must
@@ -79,6 +83,9 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
+GUIDED_PARTITION="${QOS_GUIDED_PARTITION:-/usr/libexec/qos-guided-partition}"
+EFI_ARTIFACTS="${QOS_INSTALL_EFI_ARTIFACTS:-/usr/libexec/qos-install-efi-artifacts}"
+BOOT_MENU="${QOS_INSTALL_BOOT_MENU:-/usr/libexec/qos-install-boot-menu}"
 
 # Alongside installs share a firmware-visible FAT ESP with qOS's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -90,50 +97,6 @@ MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
-
-secure_boot_enabled() {
-  local variable value
-  for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
-    [ -f "$variable" ] || continue
-    value="$(od -An -tu1 -j4 -N1 "$variable" 2>/dev/null | tr -d ' \n')"
-    [ "$value" = "1" ] && return 0
-  done
-  return 1
-}
-
-kernel_lockdown_active() {
-  local state
-  state="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
-  case "$state" in
-    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Securely booting the live medium does not prove that the freshly installed
-# target will boot an equally sealed and trusted UKI. Short-PIN mode is enabled
-# only when a dedicated target-chain preflight exists and verifies that full
-# handoff. It is deliberately absent until installation-time UKI signing,
-# firmware trust enrollment and measured-target validation are integrated.
-target_verified_boot_ready() {
-  local preflight=/usr/libexec/qos-verified-boot-install-preflight
-  [ -x "$preflight" ] && "$preflight" "$@"
-}
-
-verified_tpm() {
-  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
-    && secure_boot_enabled \
-    && kernel_lockdown_active \
-    && target_verified_boot_ready --capability
-}
-
-verified_tpm_target() {
-  local target_root="$1"
-  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
-    && secure_boot_enabled \
-    && kernel_lockdown_active \
-    && target_verified_boot_ready --prepare-target "$target_root"
-}
 
 # Updates are signature-required only for the official qOS repository in the
 # shipped containers policy. Do not let a live-session environment override
@@ -270,6 +233,8 @@ ENCRYPT=1            # Native qOS is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
+GUIDED_ALONGSIDE=0
+PREFLIGHT_ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
 CONFIRM_ERASE=""
@@ -282,6 +247,18 @@ EXPECT_ROOT_PARTUUID=""
 EXPECT_ROOT_SIZE_BYTES=""
 EXPECT_EFI_PARTUUID=""
 EXPECT_EFI_SIZE_BYTES=""
+FREE_START_BYTES=""
+FREE_SIZE_BYTES=""
+EFI_START_BYTES=""
+EFI_SIZE_BYTES=""
+ROOT_START_BYTES=""
+ROOT_SIZE_BYTES=""
+EXPECT_DISK_PTUUID=""
+EXPECT_LOGICAL_SECTOR_SIZE=""
+NEW_EFI_PARTUUID=""
+NEW_ROOT_PARTUUID=""
+CONFIRM_FREE_SPACE=""
+EXPECTED_PARTITIONS=()
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -298,6 +275,8 @@ while [ $# -gt 0 ]; do
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --alongside) ALONGSIDE=1; shift ;;
+    --preflight-alongside) ALONGSIDE=1; PREFLIGHT_ALONGSIDE=1; shift ;;
+    --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
@@ -310,6 +289,18 @@ while [ $# -gt 0 ]; do
     --expect-root-size-bytes) EXPECT_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
     --expect-efi-partuuid) EXPECT_EFI_PARTUUID="${2:-}"; shift 2 ;;
     --expect-efi-size-bytes) EXPECT_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --free-start-bytes) FREE_START_BYTES="${2:-}"; shift 2 ;;
+    --free-size-bytes) FREE_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --efi-start-bytes) EFI_START_BYTES="${2:-}"; shift 2 ;;
+    --efi-size-bytes) EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --root-start-bytes) ROOT_START_BYTES="${2:-}"; shift 2 ;;
+    --root-size-bytes) ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --expect-disk-ptuuid) EXPECT_DISK_PTUUID="${2:-}"; shift 2 ;;
+    --expect-logical-sector-size) EXPECT_LOGICAL_SECTOR_SIZE="${2:-}"; shift 2 ;;
+    --new-efi-partuuid) NEW_EFI_PARTUUID="${2:-}"; shift 2 ;;
+    --new-root-partuuid) NEW_ROOT_PARTUUID="${2:-}"; shift 2 ;;
+    --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
+    --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -332,21 +323,37 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
 fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
-  [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
-    || die "--alongside requires --root-partition and --efi-partition"
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
-  [ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ] \
-    || die "alongside install requires --confirm-root matching --root-partition"
-  case "$EXPECT_ROOT_SIZE_BYTES" in
-    ''|*[!0-9]*|0) die "missing or invalid --expect-root-size-bytes" ;;
-  esac
-  case "$EXPECT_EFI_SIZE_BYTES" in
-    ''|*[!0-9]*|0) die "missing or invalid --expect-efi-size-bytes" ;;
-  esac
-  [[ "$EXPECT_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --expect-root-partuuid"
-  [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --expect-efi-partuuid"
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    [ -z "$ROOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
+      || die "guided alongside creates its own partitions; prepared partition arguments are not allowed"
+    [ "$CONFIRM_FREE_SPACE" = "$DISK" ] \
+      || die "guided alongside requires --confirm-free-space matching --disk"
+    for value in FREE_START_BYTES FREE_SIZE_BYTES EFI_START_BYTES EFI_SIZE_BYTES ROOT_START_BYTES ROOT_SIZE_BYTES EXPECT_LOGICAL_SECTOR_SIZE; do
+      case "${!value}" in ''|*[!0-9]*|0) die "missing or invalid guided value $value" ;; esac
+    done
+    [[ "$EXPECT_DISK_PTUUID" =~ ^[0-9A-Fa-f-]{8,64}$ ]] \
+      || die "missing or invalid --expect-disk-ptuuid"
+    [[ "$NEW_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --new-root-partuuid"
+    [[ "$NEW_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --new-efi-partuuid"
+  else
+    [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
+      || die "--alongside requires --root-partition and --efi-partition"
+    [ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ] \
+      || die "alongside install requires --confirm-root matching --root-partition"
+    case "$EXPECT_ROOT_SIZE_BYTES" in
+      ''|*[!0-9]*|0) die "missing or invalid --expect-root-size-bytes" ;;
+    esac
+    case "$EXPECT_EFI_SIZE_BYTES" in
+      ''|*[!0-9]*|0) die "missing or invalid --expect-efi-size-bytes" ;;
+    esac
+    [[ "$EXPECT_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --expect-root-partuuid"
+    [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --expect-efi-partuuid"
+  fi
 else
   [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
@@ -355,6 +362,8 @@ else
     || die "whole-disk install requires --confirm-erase matching --disk"
   [ -z "$EXPECT_ROOT_PARTUUID$EXPECT_ROOT_SIZE_BYTES$EXPECT_EFI_PARTUUID$EXPECT_EFI_SIZE_BYTES" ] \
     || die "expected partition identity arguments require --alongside"
+  [ "$GUIDED_ALONGSIDE" -eq 0 ] && [ -z "$FREE_START_BYTES$FREE_SIZE_BYTES$EFI_START_BYTES$EFI_SIZE_BYTES$ROOT_START_BYTES$ROOT_SIZE_BYTES$EXPECT_DISK_PTUUID$EXPECT_LOGICAL_SECTOR_SIZE$NEW_EFI_PARTUUID$NEW_ROOT_PARTUUID$CONFIRM_FREE_SPACE" ] \
+    && [ "${#EXPECTED_PARTITIONS[@]}" -eq 0 ] || die "guided partition arguments require --guided-alongside"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -570,6 +579,7 @@ validate_alongside() {
   case "$efi_available" in *[!0-9]*|'') die "could not read available space on $EFI_PARTITION" ;; esac
   [ "$efi_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
     || die "$EFI_PARTITION has less than 1 GiB available for qOS boot images"
+  ALONGSIDE_EFI_AVAILABLE_BYTES="$efi_available"
   [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
     || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
   mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
@@ -582,12 +592,69 @@ validate_alongside() {
     || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
 }
 
+# Read-only UI preflight. It intentionally traverses the same disk/partition
+# identity and live-medium checks above and the same prepared-partition
+# validator used again immediately before destructive installation. The
+# reviewed confirmation argument is still required, but this mode exits before
+# reading credentials, staging an image, formatting, or changing firmware.
+if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then
+  [ "$GUIDED_ALONGSIDE" -eq 0 ] || die "prepared-storage preflight does not apply to guided alongside"
+  validate_alongside
+  log "Prepared storage check passed: the EFI partition is clean FAT32 with $ALONGSIDE_EFI_AVAILABLE_BYTES bytes free."
+  exit 0
+fi
+
+if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+  step "Creating qOS partitions in the reviewed unallocated space (existing partitions are preserved)"
+  GUIDED_ARGS=(
+    create --disk "$DISK"
+    --expect-disk-size-bytes "$EXPECT_DISK_SIZE_BYTES"
+    --expect-disk-devnum "$EXPECT_DISK_DEVNUM"
+    --expect-disk-ptuuid "$EXPECT_DISK_PTUUID"
+    --expect-logical-sector-size "$EXPECT_LOGICAL_SECTOR_SIZE"
+    --free-start-bytes "$FREE_START_BYTES" --free-size-bytes "$FREE_SIZE_BYTES"
+    --efi-start-bytes "$EFI_START_BYTES" --efi-size-bytes "$EFI_SIZE_BYTES"
+    --root-start-bytes "$ROOT_START_BYTES" --root-size-bytes "$ROOT_SIZE_BYTES"
+    --new-efi-partuuid "$NEW_EFI_PARTUUID" --new-root-partuuid "$NEW_ROOT_PARTUUID"
+  )
+  [ -z "$EXPECT_DISK_WWN" ] || GUIDED_ARGS+=(--expect-disk-wwn "$EXPECT_DISK_WWN")
+  [ -z "$EXPECT_DISK_SERIAL" ] || GUIDED_ARGS+=(--expect-disk-serial "$EXPECT_DISK_SERIAL")
+  for expected_partition in "${EXPECTED_PARTITIONS[@]}"; do
+    GUIDED_ARGS+=(--expect-partition "$expected_partition")
+  done
+  GUIDED_RESULT="$("$GUIDED_PARTITION" "${GUIDED_ARGS[@]}")"
+  EFI_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^EFI_PARTITION=//p' | tail -n 1)"
+  ROOT_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^ROOT_PARTITION=//p' | tail -n 1)"
+  [ -n "$EFI_PARTITION" ] && [ -n "$ROOT_PARTITION" ] \
+    || die "guided partition helper did not report the partitions it created"
+  EXPECT_EFI_PARTUUID="$NEW_EFI_PARTUUID"
+  EXPECT_EFI_SIZE_BYTES="$EFI_SIZE_BYTES"
+  EXPECT_ROOT_PARTUUID="$NEW_ROOT_PARTUUID"
+  EXPECT_ROOT_SIZE_BYTES="$ROOT_SIZE_BYTES"
+  log "  created EFI : $EFI_PARTITION"
+  log "  created root: $ROOT_PARTITION"
+fi
+
 if [ "$ALONGSIDE" -eq 1 ]; then
   ROOT_PARTITION="$(readlink -f "$ROOT_PARTITION")"
   EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
   validate_alongside
   log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
-  log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    log "  qOS ESP     : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
+  else
+    log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+  fi
+  FIRMWARE_STATE="$(mktemp)"
+  "$BOOT_MENU" firmware-snapshot "$FIRMWARE_STATE"
+  FIRMWARE_RESTORED=0
+  restore_firmware_boot_state() {
+    [ "$FIRMWARE_RESTORED" -eq 0 ] || return 0
+    "$BOOT_MENU" firmware-restore "$FIRMWARE_STATE"
+    rm -f -- "$FIRMWARE_STATE"
+    FIRMWARE_RESTORED=1
+  }
+  trap restore_firmware_boot_state EXIT
 fi
 
 # Refuse if the target disk (or any of its partitions) is currently mounted.
@@ -598,21 +665,14 @@ fi
 # --- read the password (now that we are root) --------------------------------
 IFS= read -r PASSWORD || true
 [ -n "$PASSWORD" ] || die "no password received on stdin"
-# Second stdin line is the disk-encryption PIN (only when --pin). Kept off argv
-# so it never shows in process listings.
+# Second stdin line is the disk-encryption passphrase (when the legacy --pin
+# transport flag is present). Kept off argv so it never shows in process
+# listings.
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
-  [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
-  if verified_tpm; then
-    case "$PIN" in
-      *[!0-9]*) die "startup PIN must contain only digits" ;;
-    esac
-    [ "${#PIN}" -ge 6 ] && [ "${#PIN}" -le 12 ] \
-      || die "startup PIN must be 6 to 12 digits"
-  else
-    [ "${#PIN}" -ge 12 ] \
-      || die "disk passphrase must contain at least 12 characters without verified TPM2 boot"
-  fi
+  [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
+  [ "${#PIN}" -ge 12 ] \
+    || die "disk passphrase must contain at least 12 characters"
 fi
 
 log "qOS installer"
@@ -665,6 +725,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
   ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
   ENC_ROOT_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^ROOT_FS_UUID=//p')"
+  ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
   [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: qos-disk-encrypt prepare did not report the volume it made"
@@ -678,7 +739,11 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # sibling LUKS mappings belonging to the existing OS.
   ENC_CLEANUP_TARGET="$DISK"
   [ "$ALONGSIDE" -eq 0 ] || ENC_CLEANUP_TARGET="$ROOT_PARTITION"
-  trap '"$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
+  cleanup_encrypted_install() {
+    "$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true
+    [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
+  }
+  trap cleanup_encrypted_install EXIT
 
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
@@ -724,6 +789,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   /usr/libexec/qos-uki-cmdline replace \
     "$UNLOCK_PLACEHOLDER" "$UNLOCK_OPTIONS" "$TARGET_UKI"
   /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
+  BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
@@ -742,6 +808,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
     umount "$ALONGSIDE_MNT/boot/efi" 2>/dev/null || true
     umount "$ALONGSIDE_MNT" 2>/dev/null || true
     rmdir "$ALONGSIDE_MNT" 2>/dev/null || true
+    restore_firmware_boot_state
   }
   trap cleanup_alongside EXIT
   podman run --rm --privileged --pid=host --ipc=host \
@@ -751,6 +818,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete qos.install --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize /target
+  BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
@@ -766,6 +834,7 @@ else
       --target-imgref "$QOS_TARGET_IMGREF" \
       "$DISK"
 fi
+[ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
 log "  base system installed."
 
 # Make sure the kernel sees the freshly written partition table.
@@ -773,19 +842,15 @@ udevadm settle 2>/dev/null || true
 
 # --- 2b. multi-factor LUKS enrollment ----------------------------------------
 # The volume currently opens only with the throwaway install key. Layer the real
-# factors on: always a recovery key, then FIDO2 / TPM2(+PIN) or — with no TPM —
-# the supplied passphrase. qos-disk-encrypt aborts rather than leaving a volume
+# factors on: always a recovery key, the supplied strong passphrase, and
+# optionally FIDO2. TPM unlock remains disabled until it is bound to signed,
+# measured qOS artifacts. qos-disk-encrypt aborts rather than leaving a volume
 # whose only factor is one the user cannot reproduce.
 if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
-  if verified_tpm; then
-    verified_tpm_target "$ENC_MNT" \
-      || die "the installed target did not preserve verified boot; refusing to enroll a short PIN"
-  else
-    ENROL_ARGS+=(--passphrase)
-  fi
+  ENROL_ARGS+=(--passphrase)
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/qos-install/pin
     install -d -m 0700 /run/qos-install
@@ -865,6 +930,55 @@ fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
 
+# Publish a recovery receipt before adding any qOS-owned chainloader shortcuts
+# or target configuration. Both this provisional receipt and its final refresh
+# are atomic, so an interrupted alongside install never leaves an empty/partial
+# marker or boot-menu files which cannot be attributed to this exact root.
+install -d -m 0755 "$DEPLOY_ETC/qos"
+INSTALL_MARKER="$DEPLOY_ETC/qos/install-marker"
+write_install_marker() {
+  local marker_tmp install_mode=full-disk root_partition_uuid=""
+  [ "$ALONGSIDE" -eq 0 ] || install_mode=alongside
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    root_partition_uuid="$(blkid -s UUID -o value "$ROOT_PARTITION" 2>/dev/null || true)"
+    [ -n "$root_partition_uuid" ] || die "could not bind the recovery receipt to the qOS root partition"
+  fi
+  marker_tmp="$(mktemp "$DEPLOY_ETC/qos/.install-marker.XXXXXX")"
+  chmod 0600 "$marker_tmp"
+  {
+    printf 'version=1\nmode=%s\nroot_partition_uuid=%s\nroot_filesystem_uuid=%s\n' \
+      "$install_mode" "$root_partition_uuid" "${ROOT_FS_UUID:-}"
+    if [ "$ALONGSIDE" -eq 1 ]; then
+      EFI_UUID="$(blkid -s UUID -o value "$EFI_PARTITION" 2>/dev/null || true)"
+      [ -n "$EFI_UUID" ] || die "could not bind the recovery receipt to the qOS EFI partition"
+      printf 'efi_uuid=%s\n' "$EFI_UUID"
+      "$EFI_ARTIFACTS" "$MNT/boot/efi" "${ROOT_FS_UUID:-no-root-uuid}" \
+        | sed 's/^/efi_artifact=/'
+    fi
+  } > "$marker_tmp"
+  mv -f -- "$marker_tmp" "$INSTALL_MARKER"
+  sync -f "$DEPLOY_ETC/qos" 2>/dev/null || sync
+}
+write_install_marker
+log "  wrote provisional qOS recovery ownership marker"
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  BOOT_MENU_RESULT="$("$BOOT_MENU" install "$BOOT_ESP_ROOT" "${ROOT_FS_UUID:-no-root-uuid}")"
+  if [ -n "$BOOT_MENU_RESULT" ]; then
+    log "  boot menu   : added safe shortcuts for existing operating systems on the qOS ESP"
+  elif [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    # systemd-boot intentionally operates on its own ESP. Copying Windows or a
+    # distro shim from another ESP would break its update/BCD trust boundary;
+    # preserve firmware entries/order and keep those systems in the firmware
+    # picker instead of presenting a shortcut which cannot boot.
+    log "  boot menu   : existing systems remain in the firmware boot picker (their ESPs were not changed)"
+  else
+    log "  boot menu   : no unambiguous existing loader was present on the selected ESP; firmware entries were preserved"
+  fi
+  write_install_marker
+  log "  recorded qOS-owned boot menu files in the recovery marker"
+fi
+
 # The payload is the offline installer image, so undo its two live-medium-only
 # /etc changes in the installed deployment. The kernel argument is removed by
 # bootc above; restoring greetd and removing the transient privilege drop-in
@@ -912,7 +1026,17 @@ if [ "$COPIED_CONNECTIONS" -gt 0 ]; then
   log "  preserved $COPIED_CONNECTIONS NetworkManager connection profile(s) for first boot"
 fi
 
-install -d -m 0755 "$DEPLOY_ETC/qos"
+# Leave a machine-readable ownership receipt for live-media recovery. Removal
+# never infers ownership from a generic Linux partition type or filesystem
+# label: it requires this receipt, verifies the selected filesystem UUID, and
+# removes only EFI artifacts whose embedded command line names this exact root.
+# A full-disk install is recorded too, but the recovery tool deliberately will
+# not dismantle it partition-by-partition; whole disks belong in Disks.
+# Refresh after target configuration as a final durable checkpoint. The
+# contents normally match the post-menu receipt; rewriting atomically also
+# heals a surviving provisional marker when an install is safely resumed.
+write_install_marker
+log "  finalized qOS recovery ownership marker"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
 CONF_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user.XXXXXX")"
 chmod 0600 "$CONF_TMP"

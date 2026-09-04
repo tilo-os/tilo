@@ -108,8 +108,9 @@ pub use files::{
     FilePropertiesV1, FileProvenance, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
     HISTORY_CONTROL_VERSION, HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1,
     HistoryControlRequestV1, IndexStatus, MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES,
-    MAX_HISTORY_PREVIEW_BYTES, MAX_TRANSACTION_PARTICIPANTS, PreviewStatus, PreviewVariant,
-    prefer_conflict_resolution,
+    MAX_HISTORY_PREVIEW_BYTES, MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS,
+    MERGE_PREFLIGHT_VERSION, MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1,
+    PreviewStatus, PreviewVariant, prefer_conflict_resolution,
 };
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{

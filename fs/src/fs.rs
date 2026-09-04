@@ -1229,6 +1229,126 @@ impl QuickFS {
         Ok(bytes)
     }
 
+    /// Run the same bounded deterministic merge check used by the commit path,
+    /// but expose only a small explanation for File Explorer.  This is a
+    /// read-only operation: a failed or stale preflight leaves the conflict
+    /// exactly as it was.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded preflight keeps access checks, exact immutable-version hydration, deterministic merge classification, and the validated wire projection in one auditable read-only path"
+    )]
+    fn history_merge_preflight(&self, ino: u64, conflict_id: uuid::Uuid) -> Result<Vec<u8>, i32> {
+        self.check_access(ino, Access::Read)?;
+        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        let (record_id, source_name) = {
+            let namespace = self.ns();
+            (
+                namespace.record_id_for(ino).ok_or(ENOENT)?,
+                namespace.file_name_for(ino).ok_or(EIO)?,
+            )
+        };
+        let extension = std::str::from_utf8(source_name.as_bytes())
+            .ok()
+            .and_then(|name| {
+                name.rsplit_once('.')
+                    .map(|(_, ext)| ext.to_ascii_lowercase())
+            })
+            .ok_or(libc::ENOTSUP)?;
+        if !matches!(extension.as_str(), "txt" | "qdoc") {
+            return Err(libc::ENOTSUP);
+        }
+        let state = history.snapshot(record_id).ok_or(EINVAL)?;
+        let conflict = state
+            .conflicts
+            .iter()
+            .find(|conflict| conflict.id == conflict_id)
+            .filter(|conflict| {
+                conflict.status == collab_types::ConflictStatus::Open
+                    && conflict.versions.len() == 2
+            })
+            .ok_or(EINVAL)?;
+        let load = |version_id| -> Result<Vec<u8>, i32> {
+            let version = state
+                .versions
+                .iter()
+                .find(|value| value.id == version_id)
+                .ok_or(EINVAL)?;
+            let Some(hash) = version.content_hash else {
+                return Ok(Vec::new());
+            };
+            let hydrator = self.hydrator.clone();
+            let handle = hydrator.runtime_handle.clone();
+            let limit = u64::try_from(crate::conflict_merge::MAX_MERGE_INPUT_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1);
+            let bytes = tokio::task::block_in_place(|| {
+                handle.block_on(async move { hydrator.read(Hash::from(hash.0), 0, limit).await })
+            })
+            .map_err(|_| EIO)?;
+            if bytes.len() > crate::conflict_merge::MAX_MERGE_INPUT_BYTES {
+                return Err(libc::E2BIG);
+            }
+            Ok(bytes)
+        };
+        let first_id = *conflict.versions.first().ok_or(EINVAL)?;
+        let second_id = *conflict.versions.get(1).ok_or(EINVAL)?;
+        let first = crate::conflict_merge::ExactMergeInput {
+            version_id: first_id,
+            bytes: load(first_id)?,
+        };
+        let second = crate::conflict_merge::ExactMergeInput {
+            version_id: second_id,
+            bytes: load(second_id)?,
+        };
+        let preflight = if extension == "qdoc" {
+            crate::conflict_merge::preflight_exact(first, second, None)
+        } else {
+            let base_id =
+                crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
+                    .map_err(|_| libc::ENOTSUP)?;
+            crate::conflict_merge::preflight_exact(
+                first,
+                second,
+                Some(crate::conflict_merge::ExactMergeBase {
+                    version_id: base_id,
+                    bytes: load(base_id)?,
+                }),
+            )
+        };
+        let (safe, explanation, diff_summary) = match preflight {
+            crate::conflict_merge::MergePreflight::Safe {
+                result,
+                explanation,
+            } => (
+                true,
+                explanation.to_string(),
+                format!(
+                    "Both immutable revisions are included in a {} byte proposed result.",
+                    result.bytes.len()
+                ),
+            ),
+            crate::conflict_merge::MergePreflight::NeedsReview { explanation, .. } => (
+                false,
+                explanation.to_string(),
+                "No proposed content was produced; choose a version or keep both after reviewing the diff."
+                    .to_string(),
+            ),
+        };
+        let projection = collab_types::MergePreflightProjectionV1 {
+            schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            conflict_id,
+            safe,
+            explanation,
+            diff_summary,
+        };
+        projection.validate().map_err(|_| EIO)?;
+        let bytes = serde_json::to_vec(&projection).map_err(|_| EIO)?;
+        if bytes.len() > collab_types::MAX_MERGE_PREFLIGHT_BYTES {
+            return Err(libc::E2BIG);
+        }
+        Ok(bytes)
+    }
+
     /// Resolve an open signed conflict by copying one exact immutable member
     /// into a new, attributed result version. The request always names the
     /// member it saw: `KeepCurrent` is rejected if that member stopped being the
@@ -1508,26 +1628,33 @@ impl QuickFS {
             bytes: load(second_id)?,
         };
         let merged = if extension == "qdoc" {
-            let merged = crate::conflict_merge::merge_exact(first, second, None)
-                .map_err(|_| libc::ENOTSUP)?;
-            (merged.codec == crate::conflict_merge::DeterministicMergeCodec::QdocAutomergeV1)
-                .then_some(merged)
+            let preflight = crate::conflict_merge::preflight_exact(first, second, None);
+            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
+                // A failed preflight is deliberately indistinguishable from
+                // an unsupported merge at the FUSE boundary: the open signed
+                // conflict remains untouched for Keep Both / manual review.
+                return Err(libc::ENOTSUP);
+            };
+            (result.codec == crate::conflict_merge::DeterministicMergeCodec::QdocAutomergeV1)
+                .then_some(result)
                 .ok_or(libc::ENOTSUP)?
         } else {
             let base_id =
                 crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
                     .map_err(|_| libc::ENOTSUP)?;
-            let merged = crate::conflict_merge::merge_exact(
+            let preflight = crate::conflict_merge::preflight_exact(
                 first,
                 second,
                 Some(crate::conflict_merge::ExactMergeBase {
                     version_id: base_id,
                     bytes: load(base_id)?,
                 }),
-            )
-            .map_err(|_| libc::ENOTSUP)?;
-            (merged.codec == crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1)
-                .then_some(merged)
+            );
+            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
+                return Err(libc::ENOTSUP);
+            };
+            (result.codec == crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1)
+                .then_some(result)
                 .ok_or(libc::ENOTSUP)?
         };
         let hash = self
@@ -2013,7 +2140,11 @@ impl QuickFS {
         Ok(())
     }
 
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "retrying a transfer keeps the persisted availability transition, authorization, hydration dispatch, and error rollback in one auditable operation"
+    )]
     fn retry_transfer(&self, ino: u64) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
@@ -3577,6 +3708,10 @@ fn update_candidate_state(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the reconciliation pass intentionally keeps topology discovery, durable transfer-state repair, local-residency probing, and bounded scheduling in one ordered state-machine pass"
+)]
 async fn reconcile_pinned_hydration(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
@@ -3674,9 +3809,11 @@ async fn reconcile_pinned_hydration(
             continue;
         }
 
-        let state = hydrator
-            .sync_state(candidate.hash.expect("filtered hash"))
-            .await;
+        let Some(hash) = candidate.hash else {
+            continue;
+        };
+
+        let state = hydrator.sync_state(hash).await;
         if state == crate::syncstate::SyncState::Local {
             update_candidate_state(&registry, candidate, |record| {
                 record.residency = Residency::Resident {
@@ -3687,9 +3824,7 @@ async fn reconcile_pinned_hydration(
             });
             continue;
         }
-        let partial = hydrator
-            .residency(candidate.hash.expect("filtered hash"))
-            .await;
+        let partial = hydrator.residency(hash).await;
         let resident_bytes = partial.hydrated_bytes.min(candidate.size);
         let due = {
             let mut registry = registry
@@ -3800,7 +3935,8 @@ async fn hydrate_pinned_candidate(
             record.transfer.phase = TransferPhase::Queued;
             record.transfer.retry_count = record.transfer.retry_count.saturating_add(1);
             let delay = 1_u64 << record.transfer.retry_count.min(6);
-            record.transfer.retry_at_ms = Some(now_ms().saturating_add(delay * 1_000));
+            record.transfer.retry_at_ms =
+                Some(now_ms().saturating_add(delay.saturating_mul(1_000)));
             record.transfer.last_error = Some(crate::availability::TransferError {
                 message: "No available replica could provide this file".into(),
                 occurred_at_ms: now_ms(),
@@ -4625,6 +4761,17 @@ impl Filesystem for QuickFS {
             .map(collab_types::FileVersionId)
         {
             match self.history_version_preview(ino.0, version) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
+            return;
+        }
+        if let Some(conflict_id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(collab_types::MERGE_PREFLIGHT_XATTR_PREFIX))
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        {
+            match self.history_merge_preflight(ino.0, conflict_id) {
                 Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 Err(errno) => reply.error(to_errno(errno)),
             }

@@ -7,6 +7,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
+guided_partitioner="$repo_root/os/usr/libexec/qos-guided-partition"
 containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
@@ -170,36 +171,31 @@ fi
 
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
-   && grep -Fq 'if verified_tpm; then' "$backend" \
    && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
-   && grep -Fq '&& kernel_lockdown_active' "$backend" \
-   && grep -Fq '&& target_verified_boot_ready' "$backend" \
-   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
-   && grep -Fq -- '--prepare-target "$target_root"' "$backend" \
-   && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && ! grep -Fq 'if verified_tpm; then' "$backend" \
+   && ! grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && ! grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
    && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
-  ok "native qOS requires encryption and target-verified short-PIN startup"
+  ok "native qOS requires encryption and a strong passphrase on every machine"
 else
   bad "native qOS installer can bypass encryption or the startup secret"
 fi
 
-if [ -x "$preflight" ] \
-   && grep -Fq 'owner_db_is_enrolled' "$preflight" \
-   && grep -Fq 'qos-secureboot verify' "$preflight" \
-   && grep -Fq 'qos-secureboot sign' "$preflight" \
-   && grep -Fq 'missing sealed {required} section' "$preflight" \
-   && grep -Fq 'composefs=sha' "$preflight"; then
-  ok "TPM PIN preflight carries enrolled owner trust into sealed target UKIs"
+if [ ! -e "$preflight" ] \
+   && ! grep -Fq 'COPY os/usr/libexec/qos-verified-boot-install-preflight' "$production_containerfile"; then
+  ok "unsupported PCR-7-only TPM PIN preflight is not shipped"
 else
-  bad "target verified-boot preflight does not prove and sign the complete UKI chain"
+  bad "image still ships a TPM PIN preflight without measured qOS-artifact binding"
 fi
 
 disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
-if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
-   && grep -Fq 'have_tpm2 && [ "$force_passphrase" -eq 0 ]' "$disk_encrypt"; then
-  ok "TPM short-PIN enrollment requires a verified-boot decision"
+if grep -Fq 'TPM enrollment is disabled until qOS unlock is bound' "$disk_encrypt" \
+   && grep -Fq 'enrolling the supplied strong passphrase as a LUKS key slot' "$disk_encrypt" \
+   && ! grep -Fq -- '--tpm2-pcrs=' "$disk_encrypt" \
+   && ! grep -Fq 'force_passphrase=' "$disk_encrypt"; then
+  ok "disk helper has no dormant PCR-only TPM path and rejects resealing"
 else
-  bad "disk helper can create a misleading TPM slot while boot is unverified"
+  bad "disk helper can create a PCR-7-only TPM slot"
 fi
 
 # Generation-bound TPM enrollment cannot be enabled as a one-line replacement
@@ -215,7 +211,7 @@ rollback_enrollment_calls="$(
 if [ -z "$rollback_enrollment_calls" ] \
    && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'the directory ships empty' "$production_containerfile" \
-   && grep -Fq -- '--tpm2-pcrs=7 --tpm2-with-pin=yes' "$encryptor" \
+   && ! grep -Fq -- '--tpm2-pcrs=' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
   ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
@@ -312,7 +308,7 @@ fi
 
 if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
-   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
+   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 4 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
@@ -330,12 +326,34 @@ else
   bad "alongside install can overwrite an occupied root or shared ESP"
 fi
 
+if grep -Fq -- '--preflight-alongside)' "$backend" \
+   && grep -Fq '[ "$PREFLIGHT_ALONGSIDE" -eq 1 ]' "$backend" \
+   && grep -Fq 'Prepared storage check passed:' "$backend" \
+   && grep -A5 -F 'if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then' "$backend" \
+      | grep -Fq 'exit 0'; then
+  ok "prepared-storage preflight reuses identity/ESP validation and exits before installation"
+else
+  bad "prepared-storage preflight is missing or can fall through into destructive installation"
+fi
+
 if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
    && grep -Fq 'ROOT_FS_UUID=' "$backend" \
    && grep -Fq 'ENC_CLEANUP_TARGET="$ROOT_PARTITION"' "$backend"; then
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"
+fi
+
+if [ -x "$guided_partitioner" ] \
+   && grep -Fq -- '--guided-alongside)' "$backend" \
+   && grep -Fq 'flock -x 9' "$guided_partitioner" \
+   && grep -Fq 'partition map changed after review' "$guided_partitioner" \
+   && grep -Fq 'sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never' "$guided_partitioner" \
+   && grep -Fq 'mkfs.vfat -n QOS-EFI "$EFI_PARTITION"' "$guided_partitioner" \
+   && ! grep -Eq 'sfdisk .*--delete|parted .* (move|resize)|resize2fs|ntfsresize' "$guided_partitioner"; then
+  ok "guided alongside locks and revalidates the reviewed GPT map before appending only qOS partitions"
+else
+  bad "guided alongside can mutate storage outside its reviewed free extent"
 fi
 
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
