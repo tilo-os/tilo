@@ -34,12 +34,25 @@
 
 use std::env;
 use std::io;
-use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
+
+#[cfg(unix)]
+pub use std::os::fd::RawFd;
+#[cfg(unix)]
+use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
+/// Placeholder descriptor type on hosts that cannot receive qOS Unix-socket
+/// service descriptors. Service discovery always returns `None` there.
+#[cfg(not(unix))]
+pub type RawFd = i32;
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+#[cfg(unix)]
+use capnp_rpc::twoparty;
+use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
+#[cfg(unix)]
 use nix::fcntl::{F_GETFD, fcntl};
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(unix)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// All ways a system service can be unavailable to an app.
@@ -71,16 +84,24 @@ pub fn is_qos_native() -> bool {
 /// Look up a service fd by canonical name (e.g. "collab", "fs"). `None` if
 /// the env var is unset, not a valid integer, or the fd isn't currently open.
 pub fn service_fd(name: &str) -> Option<RawFd> {
-    let var_name = format!("QOS_SVC_{}_FD", name.to_uppercase());
-    let raw = env::var(&var_name).ok()?;
-    let fd: RawFd = raw.parse().ok()?;
-    // F_GETFD only needs to succeed; EBADF means the fd slot is empty.
-    // SAFETY: we don't mutate the fd; if the slot is closed, fcntl
-    // returns EBADF and we return None. We hand the BorrowedFd
-    // immediately back to fcntl and discard it.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    fcntl(borrowed, F_GETFD).ok()?;
-    Some(fd)
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        None
+    }
+    #[cfg(unix)]
+    {
+        let var_name = format!("QOS_SVC_{}_FD", name.to_uppercase());
+        let raw = env::var(&var_name).ok()?;
+        let fd: RawFd = raw.parse().ok()?;
+        // F_GETFD only needs to succeed; EBADF means the fd slot is empty.
+        // SAFETY: we don't mutate the fd; if the slot is closed, fcntl
+        // returns EBADF and we return None. We hand the BorrowedFd
+        // immediately back to fcntl and discard it.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        fcntl(borrowed, F_GETFD).ok()?;
+        Some(fd)
+    }
 }
 
 /// A tokio Cap'n Proto two-party RPC client wrapped around an
@@ -104,33 +125,42 @@ impl UnixCapnpClient {
         fd: RawFd,
         side: rpc_twoparty_capnp::Side,
     ) -> Result<Self, NotAvailable> {
-        // Hands exclusive ownership to tokio.
-        // SAFETY: the launcher guarantees the fd is a connected
-        // SOCK_STREAM Unix socket. We checked F_GETFD on it before
-        // this call (via service_fd) so the slot is at least open.
-        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-        let std_stream = std::os::unix::net::UnixStream::from(owned);
-        std_stream
-            .set_nonblocking(true)
-            .map_err(NotAvailable::ConnectionFailed)?;
-        let stream = UnixStream::from_std(std_stream).map_err(NotAvailable::ConnectionFailed)?;
-        let (read_half, write_half) = stream.into_split();
-        let read_compat = read_half.compat();
-        let write_compat = write_half.compat_write();
-        let network = Box::new(twoparty::VatNetwork::new(
-            read_compat,
-            write_compat,
-            side,
-            capnp::message::ReaderOptions::default(),
-        ));
-        let rpc_system = RpcSystem::new(network, None);
-        Ok(Self {
-            rpc_system,
-            bootstrap_side: match side {
-                rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
-                rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
-            },
-        })
+        #[cfg(not(unix))]
+        {
+            let _ = (fd, side);
+            Err(NotAvailable::ServiceFdMissing)
+        }
+        #[cfg(unix)]
+        {
+            // Hands exclusive ownership to tokio.
+            // SAFETY: the launcher guarantees the fd is a connected
+            // SOCK_STREAM Unix socket. We checked F_GETFD on it before
+            // this call (via service_fd) so the slot is at least open.
+            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            let std_stream = std::os::unix::net::UnixStream::from(owned);
+            std_stream
+                .set_nonblocking(true)
+                .map_err(NotAvailable::ConnectionFailed)?;
+            let stream =
+                UnixStream::from_std(std_stream).map_err(NotAvailable::ConnectionFailed)?;
+            let (read_half, write_half) = stream.into_split();
+            let read_compat = read_half.compat();
+            let write_compat = write_half.compat_write();
+            let network = Box::new(twoparty::VatNetwork::new(
+                read_compat,
+                write_compat,
+                side,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let rpc_system = RpcSystem::new(network, None);
+            Ok(Self {
+                rpc_system,
+                bootstrap_side: match side {
+                    rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
+                    rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
+                },
+            })
+        }
     }
 
     /// Take the remote bootstrap capability as a typed client, spawning the RPC
