@@ -86,15 +86,19 @@ pub(crate) fn render_full(
     resolver: &mut Resolver,
     shaders: &FullShaders,
     image_atlas: &mut Option<ImageProxy>,
+    recording: &mut Recording,
+    packed_scene: &mut Vec<u8>,
     params: &RenderParams,
     budget: &vello_encoding::BumpBudget,
     measure: bool,
-) -> (Recording, ResourceProxy, Option<BufferProxy>) {
+) -> (ResourceProxy, Option<BufferProxy>) {
     render_encoding_full(
         scene.encoding(),
         resolver,
         shaders,
         image_atlas,
+        recording,
+        packed_scene,
         params,
         budget,
         measure,
@@ -114,16 +118,20 @@ pub(crate) fn render_encoding_full(
     resolver: &mut Resolver,
     shaders: &FullShaders,
     image_atlas: &mut Option<ImageProxy>,
+    recording: &mut Recording,
+    packed_scene: &mut Vec<u8>,
     params: &RenderParams,
     budget: &vello_encoding::BumpBudget,
     measure: bool,
-) -> (Recording, ResourceProxy, Option<BufferProxy>) {
+) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
-    let mut recording = render.render_encoding_coarse(
+    render.render_encoding_coarse(
         encoding,
         resolver,
         shaders,
         image_atlas,
+        recording,
+        packed_scene,
         params,
         budget,
         measure,
@@ -131,8 +139,8 @@ pub(crate) fn render_encoding_full(
     );
     let out_image = render.out_image();
     let bump_buf = measure.then(|| render.bump_buf());
-    render.record_fine(shaders, &mut recording);
-    (recording, out_image.into(), bump_buf)
+    render.record_fine(shaders, recording);
+    (out_image.into(), bump_buf)
 }
 
 impl Default for Render {
@@ -166,16 +174,18 @@ impl Render {
         resolver: &mut Resolver,
         shaders: &FullShaders,
         persistent_image_atlas: &mut Option<ImageProxy>,
+        recording: &mut Recording,
+        packed: &mut Vec<u8>,
         params: &RenderParams,
         budget: &vello_encoding::BumpBudget,
         measure_bump: bool,
         capture_debug: bool,
-    ) -> Recording {
+    ) {
         use vello_encoding::RenderConfig;
-        let mut recording = Recording::default();
-        let mut packed = vec![];
+        recording.reset_reusing_scene_upload(packed);
+        packed.clear();
 
-        let (layout, ramps, images) = resolver.resolve(encoding, &mut packed);
+        let (layout, ramps, images) = resolver.resolve(encoding, packed);
         let gradient_image = if ramps.height == 0 {
             ResourceProxy::new_image(1, 1, ImageFormat::Rgba8)
         } else {
@@ -270,7 +280,8 @@ impl Render {
             // is zero.
             packed.resize(size_of::<u32>(), u8::MAX);
         }
-        let scene_buf = ResourceProxy::Buffer(recording.upload("vello.scene", packed));
+        let scene_buf =
+            ResourceProxy::Buffer(recording.upload("vello.scene", std::mem::take(packed)));
         let config_buf = ResourceProxy::Buffer(
             recording.upload_uniform("vello.config", bytemuck::bytes_of(&cpu_config.gpu)),
         );
@@ -597,8 +608,6 @@ impl Render {
             recording.free_resource(path_bbox_buf);
             recording.free_resource(lines_buf);
         }
-
-        recording
     }
 
     /// Run fine rasterization assuming the coarse phase succeeded.

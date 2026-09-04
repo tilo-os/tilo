@@ -5,7 +5,9 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 
+use smallvec::SmallVec;
 use wgpu::{
     BindGroup, BindGroupLayout, Buffer, BufferUsages, CommandEncoder, CommandEncoderDescriptor,
     ComputePassDescriptor, ComputePipeline, Device, PipelineCache, PipelineCompilationOptions,
@@ -33,6 +35,7 @@ pub(crate) struct WgpuEngine {
     pool: ResourcePool,
     bind_map: BindMap,
     downloads: HashMap<ResourceId, Buffer>,
+    bind_group_cache: HashMap<BindGroupKey, BindGroup>,
     #[cfg(not(target_arch = "wasm32"))]
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
     pub(crate) use_cpu: bool,
@@ -52,6 +55,20 @@ enum PipelineState {
 struct WgpuShader {
     pipeline: PipelineState,
     bind_group_layout: BindGroupLayout,
+}
+
+const BIND_GROUP_CACHE_LIMIT: usize = 128;
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+enum BoundResource {
+    Buffer(Buffer, u64, Option<NonZeroU64>),
+    Image(TextureView),
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct BindGroupKey {
+    shader: ShaderId,
+    resources: SmallVec<[BoundResource; 8]>,
 }
 
 pub(crate) enum CpuShaderType {
@@ -559,9 +576,11 @@ impl WgpuEngine {
                             let bind_group = transient_map.create_bind_group(
                                 &mut self.bind_map,
                                 &mut self.pool,
+                                &mut self.bind_group_cache,
                                 device,
                                 queue,
                                 &mut encoder,
+                                *shader_id,
                                 &wgpu_shader.bind_group_layout,
                                 bindings,
                             );
@@ -610,9 +629,11 @@ impl WgpuEngine {
                             let bind_group = transient_map.create_bind_group(
                                 &mut self.bind_map,
                                 &mut self.pool,
+                                &mut self.bind_group_cache,
                                 device,
                                 queue,
                                 &mut encoder,
+                                *shader_id,
                                 &wgpu_shader.bind_group_layout,
                                 bindings,
                             );
@@ -661,9 +682,11 @@ impl WgpuEngine {
                     let bind_group = transient_map.create_bind_group(
                         &mut self.bind_map,
                         &mut self.pool,
+                        &mut self.bind_group_cache,
                         device,
                         queue,
                         &mut encoder,
+                        draw_params.shader_id,
                         &shader.bind_group_layout,
                         &draw_params.resources,
                     );
@@ -789,7 +812,22 @@ impl WgpuEngine {
     /// Buffers in use are not in the pool, so this cannot pull one out
     /// from under a frame in flight.
     pub fn clear_pool(&mut self) {
+        self.bind_group_cache.clear();
         self.pool.bufs.clear();
+    }
+
+    /// Remove cached bind groups that keep an external texture view alive.
+    ///
+    /// Damage renderers replace scratch textures independently of Vello's
+    /// reusable buffer pool. Evicting only entries that reference the retired
+    /// view releases that texture without throwing away unrelated bind groups
+    /// or pooled buffers.
+    pub fn invalidate_texture_bindings(&mut self, texture: &TextureView) {
+        self.bind_group_cache.retain(|key, _| {
+            !key.resources
+                .iter()
+                .any(|resource| matches!(resource, BoundResource::Image(view) if view == texture))
+        });
     }
 
     pub(crate) fn tracked_memory_bytes(&self) -> (u64, u64, u64) {
@@ -1132,9 +1170,11 @@ impl<'a> TransientBindMap<'a> {
         &mut self,
         bind_map: &mut BindMap,
         pool: &mut ResourcePool,
+        bind_group_cache: &mut HashMap<BindGroupKey, BindGroup>,
         device: &Device,
         queue: &Queue,
         encoder: &mut CommandEncoder,
+        shader: ShaderId,
         layout: &BindGroupLayout,
         bindings: &[ResourceProxy],
     ) -> BindGroup {
@@ -1207,6 +1247,46 @@ impl<'a> TransientBindMap<'a> {
                 }
             }
         }
+        let resources = bindings
+            .iter()
+            .map(|proxy| match proxy {
+                ResourceProxy::Buffer(proxy) => {
+                    let buffer = match self.bufs.get(&proxy.id) {
+                        Some(TransientBuf::Gpu(buffer)) => *buffer,
+                        _ => bind_map
+                            .get_gpu_buf(proxy.id)
+                            .expect("materialized bind-group buffer"),
+                    };
+                    BoundResource::Buffer(buffer.clone(), 0, None)
+                }
+                ResourceProxy::BufferRange {
+                    proxy,
+                    offset,
+                    size,
+                } => {
+                    let buffer = match self.bufs.get(&proxy.id) {
+                        Some(TransientBuf::Gpu(buffer)) => *buffer,
+                        _ => bind_map
+                            .get_gpu_buf(proxy.id)
+                            .expect("materialized ranged bind-group buffer"),
+                    };
+                    BoundResource::Buffer(buffer.clone(), *offset, NonZeroU64::new(*size))
+                }
+                ResourceProxy::Image(proxy) => {
+                    let view = self
+                        .images
+                        .get(&proxy.id)
+                        .copied()
+                        .or_else(|| bind_map.image_map.get(&proxy.id).map(|value| &value.1))
+                        .expect("materialized bind-group image");
+                    BoundResource::Image(view.clone())
+                }
+            })
+            .collect::<SmallVec<[_; 8]>>();
+        let key = BindGroupKey { shader, resources };
+        if let Some(cached) = bind_group_cache.get(&key) {
+            return cached.clone();
+        }
         let entries = bindings
             .iter()
             .enumerate()
@@ -1235,7 +1315,7 @@ impl<'a> TransientBindMap<'a> {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: buf,
                             offset: *offset,
-                            size: core::num::NonZeroU64::new(*size),
+                            size: NonZeroU64::new(*size),
                         }),
                     }
                 }
@@ -1252,12 +1332,17 @@ impl<'a> TransientBindMap<'a> {
                     }
                 }
             })
-            .collect::<Vec<_>>();
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            .collect::<SmallVec<[_; 8]>>();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout,
             entries: &entries,
-        })
+        });
+        if bind_group_cache.len() >= BIND_GROUP_CACHE_LIMIT {
+            bind_group_cache.clear();
+        }
+        bind_group_cache.insert(key, bind_group.clone());
+        bind_group
     }
 
     fn create_cpu_resources(

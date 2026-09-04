@@ -16330,6 +16330,7 @@ dependencies = [
  "peniko",
  "png 0.18.1",
  "skrifa 0.42.1",
+ "smallvec",
  "static_assertions",
  "thiserror 2.0.18",
  "vello_encoding",
