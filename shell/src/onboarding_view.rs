@@ -2159,10 +2159,10 @@ mod tests {
     fn process_group_has_live_member(pgid: i32) -> bool {
         std::fs::read_dir("/proc").is_ok_and(|entries| {
             entries.flatten().any(|entry| {
-                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                let Ok(process_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
                     return false;
                 };
-                let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
                     return false;
                 };
                 let Some((_, tail)) = stat.rsplit_once(')') else {
