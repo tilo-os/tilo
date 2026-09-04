@@ -359,7 +359,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service" \
+    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
@@ -368,7 +368,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        cargo build --release -p windows-vm \
          --bin qos-windows-vm-control --bin qos-windows-rail \
     && missing=0 \
-    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-windows-vm-control qos-windows-rail; do \
+    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
          [ -x "target/release/$b" ] || missing=1; \
        done \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
@@ -396,6 +396,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/file-explorer \
           target/release/settings \
           target/release/qos-model-manager \
+          target/release/qos-system-extension-manager \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -801,6 +802,7 @@ COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # image where those are unreachable on real hardware.
 COPY --from=builder /out/settings /usr/bin/settings
 COPY --from=builder /out/qos-model-manager /usr/bin/qos-model-manager
+COPY --from=builder /out/qos-system-extension-manager /usr/libexec/qos-system-extension-manager
 COPY os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service
 COPY --from=builder /out/qos-relay /usr/bin/qos-relay
 COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
@@ -1391,6 +1393,9 @@ COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/sy
 COPY os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service
 COPY os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service
 COPY os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-status.service /usr/lib/systemd/system/qos-system-extension-boot-pack-status.service
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service
 COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket
 COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
@@ -1408,7 +1413,7 @@ COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 # The boot-side check, bundled so it can be re-run on a live machine. It is the
 # only place several of these facts can be established at all — see its header.
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
-RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-boot-health \
+RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-manager /usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
         /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
         /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
@@ -1570,6 +1575,8 @@ RUN systemctl enable greetd.service && \
     systemctl enable fs.service fs-identity.path && \
     systemctl enable qos-system-extension-dispatcher.socket && \
     systemctl --global enable qos-identity.service && \
+    systemctl enable qos-system-extension-boot-pack-status.service && \
+    systemctl enable qos-system-extension-boot-pack-stage.path && \
     systemctl --global enable qos-model-manager.service && \
     systemctl --global enable qos-ush.service && \
     systemctl --global enable qos-fs-recipient.service && \

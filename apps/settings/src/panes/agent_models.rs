@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::{
@@ -16,10 +16,11 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, ProgressBar, Row, Spacer, Text, Widget};
+use ui::widget::{Button, ProgressBar, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
+use zeroize::Zeroize;
 
 use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
 
@@ -394,7 +395,10 @@ fn synced_local_profile(
             endpoint: Some(endpoint),
         } if endpoint.model_id == model.package.id
             && (endpoint.url.starts_with("http://127.0.0.1:")
-                || endpoint.url.starts_with("http://[::1]:")) => Some(endpoint),
+                || endpoint.url.starts_with("http://[::1]:")) =>
+        {
+            Some(endpoint)
+        }
         _ => None,
     });
     // Do not manufacture a disabled profile holding `:8000` merely because
@@ -439,6 +443,11 @@ pub struct AgentModelsPane {
     last_poll: Instant,
     needs_seed: bool,
     structure_dirty: bool,
+    /// API keys are deliberately process-local masked-input buffers. They are
+    /// not Automerge text, never enter the settings document, and are erased
+    /// as soon as the gateway accepts or rejects submission.
+    provider_key_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
+    provider_field_buffers: Arc<Mutex<HashMap<String, HostedFieldBuffers>>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -473,6 +482,8 @@ impl AgentModelsPane {
             last_poll: Instant::now(),
             needs_seed: true,
             structure_dirty: false,
+            provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
+            provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -675,7 +686,35 @@ impl AgentModelsPane {
         )
     }
 
-    fn hosted_profiles() -> El {
+    fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
+        let mut buffers = self
+            .provider_key_buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffers
+            .entry(profile_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(String::new())))
+            .clone()
+    }
+
+    fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
+        let mut buffers = self
+            .provider_field_buffers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        buffers
+            .entry(profile.id.clone())
+            .or_insert_with(|| HostedFieldBuffers {
+                label: Arc::new(Mutex::new(profile.label.clone())),
+                endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
+                model: Arc::new(Mutex::new(
+                    profile.default_model.clone().unwrap_or_default(),
+                )),
+            })
+            .clone()
+    }
+
+    fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
         let mut body: Vec<El> = vec![caption(
             "Hosted and compatible endpoints are personal to this device. Credentials remain references in the system vault.",
@@ -705,6 +744,205 @@ impl AgentModelsPane {
             .filter(|profile| profile.location != EndpointLocation::ThisDevice)
         {
             body.push(value_row(profile.display_label(), profile.location.label()));
+            let profile_id = profile.id.clone();
+            let fields = self.field_buffers(profile);
+            let label = fields
+                .label
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            let endpoint = fields
+                .endpoint
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            let model = fields
+                .model
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-label-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.label))
+                    .with_initial_value(&label)
+                    .with_placeholder("Provider name"),
+            ));
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-url-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.endpoint))
+                    .with_initial_value(&endpoint)
+                    .with_placeholder("https://provider.example/v1"),
+            ));
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-model-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.model))
+                    .with_initial_value(&model)
+                    .with_placeholder("Model ID"),
+            ));
+            let save_id = profile_id.clone();
+            let save_fields = fields.clone();
+            let protocol_id = profile_id.clone();
+            let alternate_protocol = match profile.protocol {
+                ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
+                ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
+            };
+            let enabled_id = profile_id.clone();
+            let remove_profile_id = profile_id.clone();
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-save-provider-{profile_id}"),
+                            "Save details",
+                            None,
+                        )
+                        .on_effect(move || {
+                            let label = save_fields
+                                .label
+                                .lock()
+                                .map(|value| value.clone())
+                                .unwrap_or_default();
+                            let endpoint = save_fields
+                                .endpoint
+                                .lock()
+                                .map(|value| value.clone())
+                                .unwrap_or_default();
+                            let model = save_fields
+                                .model
+                                .lock()
+                                .map(|value| value.clone())
+                                .unwrap_or_default();
+                            let mut config = ProviderConfig::load();
+                            if let Some(profile) = config
+                                .profiles
+                                .iter_mut()
+                                .find(|profile| profile.id == save_id)
+                            {
+                                profile.label = label;
+                                profile.endpoint = endpoint;
+                                if !model.trim().is_empty() {
+                                    if !profile.models.iter().any(|candidate| candidate.id == model)
+                                    {
+                                        profile.models.push(ModelDescriptor::new(model.clone()));
+                                    }
+                                    profile.default_model = Some(model);
+                                }
+                                let _ = config.save();
+                            }
+                        }),
+                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-protocol-{profile_id}"),
+                            format!("Use {}", alternate_protocol.label()),
+                            None,
+                        )
+                        .on_effect(move || {
+                            let mut config = ProviderConfig::load();
+                            if let Some(profile) = config
+                                .profiles
+                                .iter_mut()
+                                .find(|profile| profile.id == protocol_id)
+                            {
+                                profile.protocol = alternate_protocol;
+                                let _ = config.save();
+                            }
+                        }),
+                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-enabled-{profile_id}"),
+                            if profile.enabled { "Disable" } else { "Enable" },
+                            None,
+                        )
+                        .on_effect(move || {
+                            let mut config = ProviderConfig::load();
+                            if let Some(profile) = config
+                                .profiles
+                                .iter_mut()
+                                .find(|profile| profile.id == enabled_id)
+                            {
+                                profile.enabled = !profile.enabled;
+                                let _ = config.save();
+                            }
+                        }),
+                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-remove-provider-{profile_id}"),
+                            "Remove provider",
+                            None,
+                        )
+                        .on_effect(move || {
+                            let mut config = ProviderConfig::load();
+                            config.remove(&remove_profile_id);
+                            let _ = config.save();
+                            let _ = qos_model_gateway::remove_api_key(&remove_profile_id);
+                        }),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ));
+            body.push(value_row("Protocol", profile.protocol.label()));
+            let buffer = self.key_buffer(&profile_id);
+            let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
+            let set_id = profile_id.clone();
+            let set_buffer = Arc::clone(&buffer);
+            let remove_id = profile_id.clone();
+            let configured = qos_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-models-api-key-{profile_id}"))
+                            .with_external_buffer(buffer)
+                            .with_initial_value(&initial)
+                            .with_secret(true)
+                            .with_placeholder("API key (stored in qOS vault)"),
+                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-set-api-key-{profile_id}"),
+                            if configured {
+                                "Replace key"
+                            } else {
+                                "Save key"
+                            },
+                            None,
+                        )
+                        .on_effect(move || {
+                            let mut key = set_buffer
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            let value = std::mem::take(&mut *key);
+                            let _ = qos_model_gateway::set_api_key(&set_id, value);
+                            key.zeroize();
+                        }),
+                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("agent-models-remove-api-key-{profile_id}"),
+                            "Remove key",
+                            None,
+                        )
+                        .on_effect(move || {
+                            let _ = qos_model_gateway::remove_api_key(&remove_id);
+                        }),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ));
+            body.push(caption(if configured {
+                "API key is stored in the qOS vault."
+            } else {
+                "No API key stored."
+            }));
             if profile.default_model.is_some() {
                 let profile_id = profile.id.clone();
                 body.push(Box::new(
@@ -720,6 +958,12 @@ impl AgentModelsPane {
                     .on_effect(move || select_default(profile_id.clone())),
                 ));
             }
+        }
+        for issue in config.validation_errors() {
+            body.push(caption(&format!(
+                "Provider configuration: {}",
+                issue.message
+            )));
         }
         card("Hosted and compatible providers", rows(body))
     }
@@ -751,7 +995,7 @@ impl AgentModelsPane {
                 cards.push(self.model_card(model));
             }
         }
-        cards.push(Self::hosted_profiles());
+        cards.push(self.hosted_profiles());
         crate::widgets::cards(cards)
     }
 
@@ -838,6 +1082,18 @@ impl AgentModelsPane {
 impl Default for AgentModelsPane {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for AgentModelsPane {
+    fn drop(&mut self) {
+        if let Ok(buffers) = self.provider_key_buffers.lock() {
+            for buffer in buffers.values() {
+                if let Ok(mut key) = buffer.lock() {
+                    key.zeroize();
+                }
+            }
+        }
     }
 }
 
