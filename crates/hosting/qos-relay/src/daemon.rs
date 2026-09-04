@@ -1976,7 +1976,7 @@ mod tests {
         assert!(!services.full_content_replication);
         assert!(!services.app_serving);
         assert!(!services.compute);
-        assert!(!services.remote_control_relay);
+        assert!(services.remote_control_relay);
         relay.shutdown().await;
     }
 
