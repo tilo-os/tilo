@@ -177,15 +177,15 @@ impl ServiceCapabilities {
     ///
     /// The relay durably carries authenticated workspace CRDT updates and
     /// presence. It does not run the filesystem/blob host plane, an app
-    /// runtime, a compute worker, or the remote-control tunnel endpoint, so
-    /// none of those capabilities may be advertised merely because this is
-    /// an always-on machine.
+    /// runtime, or a compute worker. Live workspace-control frames use this
+    /// daemon's already-authenticated, non-retained presence fan-out rather
+    /// than a second tunnel protocol.
     pub const fn relay_only() -> Self {
         Self {
             workspace_replication: true,
             full_content_replication: false,
             inbound_relay: true,
-            remote_control_relay: false,
+            remote_control_relay: true,
             app_serving: false,
             compute: false,
         }
@@ -197,7 +197,7 @@ impl ServiceCapabilities {
             workspace_replication: true,
             full_content_replication: true,
             inbound_relay: true,
-            remote_control_relay: false,
+            remote_control_relay: true,
             app_serving: false,
             compute: false,
         }
@@ -517,12 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn relay_only_never_claims_unstarted_host_planes() {
+    fn relay_only_claims_only_its_running_workspace_planes() {
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);
         assert!(services.inbound_relay);
         assert!(!services.full_content_replication);
-        assert!(!services.remote_control_relay);
+        assert!(services.remote_control_relay);
         assert!(!services.app_serving);
         assert!(!services.compute);
 

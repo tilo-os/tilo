@@ -222,6 +222,21 @@ interface ChannelHandle {
   # their current state no longer has a safe resume projection, so stale
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
+
+  # Open a session-local bridge to the shell's existing authenticated surface
+  # stream and input firewall. The target is the exact 32-byte certified Iroh
+  # endpoint identity. Opening never grants control; the returned stream stays
+  # waiting until that target publishes a consented SurfaceStreamStart.
+  openWorkspaceControl @27 (targetDevice :Data) -> (handle :WorkspaceControlHandle);
+}
+
+interface WorkspaceControlHandle {
+  # Postcard-encoded runtime_collab::WorkspaceControlEvent.
+  read @0 () -> (event :Data);
+  # Postcard-encoded runtime_collab::WorkspaceControlInput. Refused until the
+  # target's stream-start consent edge and after any close/revocation edge.
+  sendInput @1 (event :Data) -> ();
+  close @2 () -> ();
 }
 
 interface ActionCatalogueStream {

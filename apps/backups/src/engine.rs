@@ -108,6 +108,12 @@ pub fn repository_path(destination: &Path) -> PathBuf {
 /// Validate source and destination before creating anything in the repository.
 /// Nested paths are rejected in both directions to prevent recursive backups
 /// and a restore/backup accidentally modifying its own source.
+///
+/// # Errors
+///
+/// Returns an error when the source cannot be resolved to a directory, the
+/// destination cannot be created or resolved, or either path contains the
+/// other.
 pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, PathBuf)> {
     let source = source.canonicalize().map_err(|e| {
         BackupError::InvalidSource(format!("Cannot open source {}: {e}", source.display()))
@@ -129,6 +135,12 @@ pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, Pat
     Ok((source, destination))
 }
 
+/// Create a checksummed snapshot and report progress after each copied file.
+///
+/// # Errors
+///
+/// Returns an error when the paths are unsafe, a source entry cannot be read
+/// or represented safely, or the snapshot data or manifest cannot be written.
 pub fn create_snapshot(
     source: &Path,
     destination: &Path,
@@ -242,10 +254,10 @@ fn build_snapshot(
         version: 1,
         id: id.to_string(),
         created_unix_seconds: now,
-        source_name: source
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| source.display().to_string()),
+        source_name: source.file_name().map_or_else(
+            || source.display().to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        ),
         files: progress.files,
         bytes: progress.bytes,
         entries,
@@ -267,6 +279,12 @@ fn finish_snapshot(stage: &Path, final_path: &Path, manifest: &BackupManifest) -
     Ok(())
 }
 
+/// Read valid snapshots from a destination, newest first.
+///
+/// # Errors
+///
+/// Returns an error when repository metadata cannot be read or a stored
+/// manifest is invalid.
 pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
     let repository = repository_path(destination);
     reject_symlink(&repository, "Backup repository")?;
@@ -282,10 +300,16 @@ pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
         }
         manifests.push(read_manifest(&item.path())?);
     }
-    manifests.sort_by(|a, b| b.created_unix_seconds.cmp(&a.created_unix_seconds));
+    manifests.sort_by_key(|manifest| std::cmp::Reverse(manifest.created_unix_seconds));
     Ok(manifests)
 }
 
+/// Verify the metadata, structure, sizes, and checksums of a stored snapshot.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot identifier or manifest is invalid, its
+/// contents cannot be read, or any stored entry fails integrity validation.
 pub fn verify_snapshot(destination: &Path, id: &str) -> Result<Verification> {
     validate_id(id)?;
     let root = repository_path(destination).join(SNAPSHOTS_DIR).join(id);
@@ -319,6 +343,13 @@ pub fn verify_snapshot(destination: &Path, id: &str) -> Result<Verification> {
     Ok(result)
 }
 
+/// Restore a snapshot and verify every copied file before placing it.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot is invalid, the restore destination is
+/// unsafe or non-empty without `overwrite`, or any file operation or integrity
+/// check fails.
 pub fn restore_snapshot(
     destination: &Path,
     id: &str,
@@ -402,7 +433,7 @@ pub fn restore_snapshot(
                 fs::rename(&temporary, &to)?;
                 progress.files = progress.files.saturating_add(1);
                 progress.bytes = progress.bytes.saturating_add(size);
-                progress.current = entry.path.clone();
+                progress.current.clone_from(&entry.path);
                 on_progress(&progress);
             }
         }
@@ -514,14 +545,19 @@ fn copy_and_hash(from: &Path, to: &Path) -> Result<(u64, String)> {
     let mut output = OpenOptions::new().write(true).create_new(true).open(to)?;
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
-    let mut buf = [0_u8; 128 * 1024];
+    let mut buf = vec![0_u8; 128 * 1024].into_boxed_slice();
     loop {
         let read = input.read(&mut buf)?;
         if read == 0 {
             break;
         }
-        output.write_all(&buf[..read])?;
-        hasher.update(&buf[..read]);
+        let Some(chunk) = buf.get(..read) else {
+            return Err(BackupError::Io(io::Error::other(
+                "reader returned more bytes than the buffer can hold",
+            )));
+        };
+        output.write_all(chunk)?;
+        hasher.update(chunk);
         total = total.saturating_add(read as u64);
     }
     output.sync_all()?;
@@ -532,13 +568,18 @@ fn hash_file(path: &Path) -> Result<(u64, String)> {
     let mut input = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
-    let mut buf = [0_u8; 128 * 1024];
+    let mut buf = vec![0_u8; 128 * 1024].into_boxed_slice();
     loop {
         let read = input.read(&mut buf)?;
         if read == 0 {
             break;
         }
-        hasher.update(&buf[..read]);
+        let Some(chunk) = buf.get(..read) else {
+            return Err(BackupError::Io(io::Error::other(
+                "reader returned more bytes than the buffer can hold",
+            )));
+        };
+        hasher.update(chunk);
         total = total.saturating_add(read as u64);
     }
     Ok((total, format!("{:x}", hasher.finalize())))

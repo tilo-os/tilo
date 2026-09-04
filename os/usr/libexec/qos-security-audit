@@ -153,13 +153,9 @@ else
 fi
 
 if [ -x /usr/libexec/qos-verified-boot-install-preflight ]; then
-  if /usr/libexec/qos-verified-boot-install-preflight --capability >/dev/null 2>&1; then
-    ok "native reinstall can preserve verified boot for TPM short-PIN enrollment"
-  else
-    note "TPM short-PIN install preflight is not satisfied; native install will require a strong passphrase"
-  fi
+  warn "an unsupported TPM short-PIN preflight is installed; keep it disabled until unlock is bound to measured qOS artifacts"
 else
-  warn "verified-boot target preflight is missing; TPM short-PIN install must remain disabled"
+  ok "TPM short-PIN install is disabled; native install requires a strong passphrase until measured-artifact binding ships"
 fi
 
 # Root filesystem encryption. Walk from the root mount to its backing device and

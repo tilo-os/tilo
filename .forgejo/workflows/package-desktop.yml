@@ -2,10 +2,11 @@ name: Package the qOS desktop session
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# All work runs on the existing `runner` pool. amd64 containers execute
-# directly. ARM64 packaging remains implemented in dist/ci, but its release
-# lane is deferred until a native ARM64 runner is available; emulating the Nix
-# closure is not reliable enough to be a release gate. Pull requests build and
+# Package builds run serially on the dedicated `qos-package` runner label;
+# lightweight validation and publication use the general pool. amd64
+# containers execute directly. ARM64 packaging remains implemented in dist/ci,
+# but its release lane is deferred until a native ARM64 runner is available;
+# its emulated Nix closure is not reliable enough to be a release gate. Pull requests build and
 # install-test the affected release payload. Version tags additionally publish
 # the verified artifacts to Forgejo releases and its native package registries.
 on:
@@ -80,7 +81,9 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    runs-on: runner
+    # AX52 exposes this label at capacity one so native package builds cannot
+    # overlap each other or crowd the general-purpose check runners.
+    runs-on: qos-package
     timeout-minutes: 600
     # Forgejo 16 starts every matrix entry despite both max-parallel and job
     # concurrency groups. Model the capacity bound as one sequential lane that
@@ -227,13 +230,13 @@ jobs:
           QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#v}"
       - name: Publish checksummed, install-tested artifacts
-        uses: actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
         with:
           direction: upload
           url: ${{ github.server_url }}
           repo: ${{ github.repository }}
           tag: ${{ github.ref_name }}
-          token: ${{ secrets.REGISTRY_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           release-dir: release
           override: true
           release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."

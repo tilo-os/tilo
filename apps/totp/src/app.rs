@@ -26,6 +26,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -47,6 +48,7 @@ use crate::totp;
 
 const OUTER_PAD: f64 = 24.0;
 const ADD_BTN_W: f64 = 168.0;
+const COMPACT_ADD_BTN_W: f64 = 112.0;
 const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
@@ -349,6 +351,89 @@ impl AuthenticatorApp {
         }
     }
 
+    /// Move the selected account through the same visible, filtered order the
+    /// pointer list paints. This keeps keyboard selection in step with the
+    /// list rather than introducing a second focus model.
+    fn move_selection(&mut self, delta: isize) -> bool {
+        let visible = self.vault.search(self.search.value());
+        if visible.is_empty() {
+            return false;
+        }
+        let current = self
+            .selected
+            .and_then(|id| visible.iter().position(|account| account.id == id))
+            .unwrap_or(0);
+        let next = (current as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
+        self.selected = Some(visible[next].id);
+        self.list.set_selected(self.selected);
+        true
+    }
+
+    fn accessible_account_name(account: &crate::model::Account) -> String {
+        if account.label.trim().is_empty() {
+            account.title().to_string()
+        } else {
+            format!("{}, {}", account.title(), account.label)
+        }
+    }
+
+    /// Resolve a published canvas target to the existing list/app action.
+    /// Keeping this beside `apply_list_event` ensures assistive activation
+    /// cannot acquire a separate mutation path from pointer input.
+    fn perform_a11y_target(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if target == "totp.add" {
+            if matches!(action, A11yAction::Activate) {
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                return true;
+            }
+            return false;
+        }
+        if target == "totp.search" {
+            if matches!(action, A11yAction::Activate | A11yAction::Focus) {
+                self.search.set_focus(true);
+                return true;
+            }
+            return false;
+        }
+        let Some((verb, raw_id)) = target.rsplit_once(':') else {
+            return false;
+        };
+        let Ok(id) = raw_id.parse() else {
+            return false;
+        };
+        if self.vault.get(id).is_none() {
+            return false;
+        }
+        if matches!(action, A11yAction::Focus) {
+            if verb == "totp.select" {
+                self.apply_list_event(ListEvent::Select(id), state);
+                self.list.set_selected(self.selected);
+                return true;
+            }
+            return false;
+        }
+        if !matches!(action, A11yAction::Activate) {
+            return false;
+        }
+        let event = match verb {
+            "totp.select" => ListEvent::Select(id),
+            "totp.copy" => ListEvent::Copy(id),
+            "totp.move-up" => ListEvent::MoveUp(id),
+            "totp.move-down" => ListEvent::MoveDown(id),
+            "totp.delete" => ListEvent::Delete(id),
+            _ => return false,
+        };
+        self.apply_list_event(event, state);
+        self.list.set_selected(self.selected);
+        true
+    }
+
     /// Global keyboard shortcuts available whenever the add-panel modal
     /// isn't open: Ctrl/Cmd+N (add), Ctrl/Cmd+F and `/` (focus search),
     /// Escape (clear + unfocus search) and Enter (copy the focused code).
@@ -396,6 +481,18 @@ impl AuthenticatorApp {
             }
         }
         match logical_key {
+            Key::Named(NamedKey::ArrowDown) if !self.search.is_focused() => {
+                if self.move_selection(1) {
+                    *handled = true;
+                    return true;
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) if !self.search.is_focused() => {
+                if self.move_selection(-1) {
+                    *handled = true;
+                    return true;
+                }
+            }
             Key::Named(NamedKey::Escape) => {
                 if self.search.is_focused() {
                     self.search.set_focus(false);
@@ -579,7 +676,11 @@ impl AuthenticatorApp {
             theme.accent_primary
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let label = "+  Add account";
+        let label = if self.rect.width() < 420.0 {
+            "+ Add"
+        } else {
+            "+  Add account"
+        };
         let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
@@ -719,8 +820,13 @@ impl Widget for AuthenticatorApp {
             self.rect.x1,
             self.rect.y0 + HEADER_H,
         );
+        let add_width = if self.rect.width() < 420.0 {
+            COMPACT_ADD_BTN_W
+        } else {
+            ADD_BTN_W
+        };
         self.add_btn_rect = Rect::new(
-            self.rect.x1 - OUTER_PAD - ADD_BTN_W,
+            self.rect.x1 - OUTER_PAD - add_width,
             self.rect.y0 + 18.0,
             self.rect.x1 - OUTER_PAD,
             self.rect.y0 + 18.0 + ADD_BTN_H,
@@ -1004,6 +1110,120 @@ impl Widget for AuthenticatorApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let visible = self.vault.search(self.search.value());
+        let total = visible.len();
+        let controls = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Add account")
+                .with_description("Add an authenticator account")
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.add_btn_rect)
+                .with_action_target("totp.add"),
+            AccessNode::new(Role::TextInput)
+                .with_name("Search accounts")
+                .with_value(self.search.value())
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.search.is_focused()),
+                )
+                .with_bounds(self.search_rect)
+                .with_action_target("totp.search"),
+        ];
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Authenticator actions")
+                .with_children(controls),
+        ];
+
+        let account_rows = visible
+            .iter()
+            .enumerate()
+            .filter_map(|(index, account)| {
+                let row = self.list.account_bounds(account.id)?;
+                let name = Self::accessible_account_name(account);
+                let id = account.id;
+                let row_children = vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Copy code for {name}"))
+                        .with_description("Copies the current one-time code to the clipboard")
+                        .with_state(AccessState::new().focusable(true))
+                        .with_action_target(format!("totp.copy:{id}")),
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Move {name} up"))
+                        .with_state(AccessState::new().focusable(true).disabled(index == 0))
+                        .with_action_target(format!("totp.move-up:{id}")),
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Move {name} down"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(index + 1 == total),
+                        )
+                        .with_action_target(format!("totp.move-down:{id}")),
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Delete {name}"))
+                        .with_state(AccessState::new().focusable(true))
+                        .with_action_target(format!("totp.delete:{id}")),
+                ];
+                // The rotating code is a credential. It is deliberately not
+                // exported as a value/live region; callers opt in by using
+                // the explicit Copy control.
+                Some(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(name)
+                        .with_description("Authenticator account")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.selected == Some(id)),
+                        )
+                        .with_position(index + 1, total)
+                        .with_bounds(row)
+                        .with_action_target(format!("totp.select:{id}"))
+                        .with_children(row_children),
+                )
+            })
+            .collect();
+        children.push(
+            AccessNode::new(Role::List)
+                .with_name("Authenticator accounts")
+                .with_description(if total == 0 {
+                    "No matching accounts".to_string()
+                } else {
+                    format!("{total} visible accounts. Arrow keys change the selected account.")
+                })
+                .with_bounds(self.list_rect)
+                .with_children(account_rows),
+        );
+        if let Some((message, when, _)) = &self.toast
+            && when.elapsed() <= TOAST_TTL
+        {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message)
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Authenticator")
+                .with_bounds(self.rect)
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.perform_a11y_target(target, action, state)
+    }
+
     /// Codes + countdown rings tick every frame; keep the host redrawing.
     fn needs_animation_frame(&self) -> bool {
         true
@@ -1040,6 +1260,72 @@ mod tests {
         );
         assert_eq!(app.selected, Some(id));
         assert!(app.last_copied().is_some());
+    }
+
+    #[test]
+    fn accessibility_tree_names_accounts_without_exposing_codes() {
+        let (mut app, _state) = app_with_state();
+        let _ = layout_at(&mut app, 640.0, 700.0);
+        let tree = app.accessibility().expect("root has semantic window");
+        assert_eq!(tree.role, Role::Window);
+        assert_eq!(tree.name.as_deref(), Some("Authenticator"));
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("named account list");
+        assert!(!list.children.is_empty(), "demo accounts are exported");
+        let account = &list.children[0];
+        assert_eq!(account.role, Role::ListItem);
+        assert!(account.name.as_deref().is_some_and(|name| !name.is_empty()));
+        assert!(
+            account.value.is_none(),
+            "a TOTP credential is never a value"
+        );
+        assert!(account.children.iter().any(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Copy code for"))
+        }));
+        assert!(
+            tree.children.iter().all(|node| node.semantic_key.is_none()),
+            "root regions are consistently position-addressed"
+        );
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("authenticator actions toolbar");
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .all(|node| node.semantic_key.is_some())
+        );
+    }
+
+    #[test]
+    fn accessibility_copy_uses_the_existing_list_event_path() {
+        let (mut app, mut state) = app_with_state();
+        let _ = layout_at(&mut app, 640.0, 700.0);
+        let id = app.vault.ordered()[0].id;
+        assert!(app.perform_semantic_action(
+            &format!("totp.copy:{id}"),
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(app.selected_account(), Some(id));
+        assert!(app.last_copied().is_some());
+    }
+
+    #[test]
+    fn narrow_header_keeps_the_add_target_inside_the_window() {
+        let (mut app, _state) = app_with_state();
+        let _ = layout_at(&mut app, 320.0, 640.0);
+        assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
+        assert!(app.add_btn_rect.x0 >= app.rect.x0);
+        assert!(app.add_btn_rect.x1 <= app.rect.x1);
     }
 
     /// Run the app's real layout passes at a concrete window size, the same
