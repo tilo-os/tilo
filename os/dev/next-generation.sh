@@ -129,7 +129,7 @@ list_tags() {
 
   if command -v skopeo >/dev/null 2>&1; then
     if [ -n "${auth:-}" ]; then
-      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO"; then
         rc=0
       else
         rc=$?
@@ -137,7 +137,7 @@ list_tags() {
       rm -r "$tmp"
       return $rc
     fi
-    skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
+    skopeo list-tags "docker://$QOS_PUBLISH_REPO"
     return $?
   fi
 
@@ -165,7 +165,7 @@ list_tags() {
       -e REGISTRY_AUTH_FILE=/tmp/qos-auth.json \
       "$SKOPEO_IMAGE" -ceu \
       'umask 077; cat > "$REGISTRY_AUTH_FILE"; exec skopeo list-tags "docker://$1"' \
-      sh "$QOS_PUBLISH_REPO" < "$tmp/auth.json" 2>&1; then
+      sh "$QOS_PUBLISH_REPO" < "$tmp/auth.json"; then
     rc=0
   else
     rc=$?
