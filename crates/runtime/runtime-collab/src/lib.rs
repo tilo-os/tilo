@@ -579,6 +579,11 @@ impl ChannelHandle {
 
     /// Subscribe this admitted agent session to broker-addressed task runs.
     /// A person session and an offline agent receive no substitute queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_task_runs(&self) -> Result<TaskRunStream, NotAvailable> {
         let reply = self
             .inner
@@ -592,6 +597,10 @@ impl ChannelHandle {
     }
 
     /// Report an update for one exact broker-minted task lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when serialization or the broker call fails.
     pub async fn report_task_run(
         &self,
         run_id: u64,
@@ -611,6 +620,15 @@ impl ChannelHandle {
     }
 
     /// Invoke a published application action under a leased task context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker call fails or its update is not
+    /// valid UTF-8.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arguments mirror the fixed Cap'n Proto task-action method"
+    )]
     pub async fn invoke_task_action(
         &self,
         run_id: u64,
@@ -650,6 +668,11 @@ impl ChannelHandle {
     /// Whether Task Center requested cooperative cancellation for this exact
     /// leased run. A `true` response is advisory to a running action, but an
     /// agent must not start another action after observing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
         let mut request = self.inner.task_run_cancelled_request();
         let mut params = request.get();
@@ -1295,6 +1318,11 @@ pub struct TaskRunStream {
 impl TaskRunStream {
     /// Pull the next task run, rejecting malformed broker data rather than
     /// presenting an agent with an ambiguous authority envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the stream fails or the received envelope
+    /// is malformed.
     pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         let json = reply
@@ -1466,6 +1494,29 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish an invocation-scoped semantic interaction. The broker derives
+    /// the actor from this authenticated handle; the JSON carries only the
+    /// versioned action/target lifecycle from `qos_actions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_interaction(
+        &self,
+        key_bytes: &[u8],
+        interaction_json: &str,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_interaction_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_interaction_json(interaction_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -1546,6 +1597,10 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
+    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
+    /// caller-controlled payload.
+    InteractionJson(String),
     Arrived,
     Left,
 }
@@ -1623,6 +1678,14 @@ fn decode_presence_payload(
                 .filter(|target| !target.is_empty())
                 .map(str::to_owned),
         },
+        W::InteractionJson(value) => PresencePayload::InteractionJson(
+            value?
+                .to_str()
+                .map_err(|error| {
+                    capnp::Error::failed(format!("invalid interaction utf8: {error}"))
+                })?
+                .to_owned(),
+        ),
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })

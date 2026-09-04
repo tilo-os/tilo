@@ -68,6 +68,10 @@ pub enum PeerPresencePayload {
     Following {
         target: Option<String>,
     },
+    /// Versioned semantic action lifecycle. The peer envelope supplies the
+    /// authenticated actor; this JSON contains no identity or screen-space
+    /// coordinates.
+    InteractionJson(String),
 }
 
 #[cfg(test)]
@@ -86,6 +90,9 @@ mod tests {
                 target: Some("peer@7".into()),
             },
             PeerPresencePayload::Following { target: None },
+            PeerPresencePayload::InteractionJson(
+                r#"{"version":1,"invocation":"00000000-0000-0000-0000-000000000001"}"#.into(),
+            ),
         ]
     }
 

@@ -425,6 +425,12 @@ interface PresenceHandle {
   # from selection: receivers render it as a fading insertion highlight,
   # while a selection is durable presence until the next caret update.
   publishTyping @8 (keyBytes :Data, start :UInt64, end :UInt64) -> ();
+
+  # Publish truthful, semantic action activity for a stable resource. The
+  # authenticated channel member is always the actor; `interactionJson` must
+  # not contain (and cannot override) identity. Unlike pointer/caret presence,
+  # this describes what an action is doing without inventing input gestures.
+  publishInteraction @9 (keyBytes :Data, interactionJson :Text) -> ();
 }
 
 interface PresenceStream {
@@ -505,6 +511,11 @@ struct PresencePayload {
     # is following this participant; an empty value clears the cue. This is
     # never a request to alter the receiver's viewport.
     following @11 :Text;
+
+    # Versioned qos_actions::InteractionUpdate JSON. Kept as an additive
+    # union arm so non-Rust peers can preserve/forward evolving semantic
+    # targets without understanding app-specific anchor variants.
+    interactionJson @12 :Text;
   }
 }
 

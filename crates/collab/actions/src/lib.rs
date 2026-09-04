@@ -84,6 +84,7 @@ pub mod contract;
 pub mod door;
 pub mod envelope;
 pub mod executor;
+pub mod interaction;
 pub mod optimistic;
 pub mod outcome;
 pub mod params;
@@ -107,6 +108,12 @@ pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
     dispatch_with_context, replay,
+};
+pub use interaction::{
+    INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
+    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionTextRange,
+    InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES,
+    MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
