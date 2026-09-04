@@ -12,18 +12,53 @@ import subprocess
 import sys
 import tomllib
 
+import ci_select
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "release/app-collections.toml"
 GLOBAL_INPUTS = {
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
     "release/app-collections.toml",
     "tools/app_release.py",
     "dist/apps/package-apps.sh",
+    "dist/apps/assemble-collection.sh",
+    "tools/assemble_app_collection.py",
     "os/scripts/build-thin-apps.sh",
     ".forgejo/workflows/release-apps.yml",
 }
 GLOBAL_PREFIXES = (".cargo/",)
 OS_INTEGRATED_APPS = {"browser"}
+
+
+def architecture_matrix(
+    ref: str,
+    event: str,
+    requested: str = "",
+    main_architectures: str = "",
+) -> dict:
+    if ref.startswith("refs/tags/"):
+        raw = "x86_64 aarch64"
+    elif ref == "refs/heads/main" and event == "push":
+        raw = main_architectures or "x86_64"
+    else:
+        raw = requested or "x86_64 aarch64"
+    architectures = sorted(set(filter(None, re.split(r"[ ,]+", raw))))
+    invalid = set(architectures).difference({"x86_64", "aarch64"})
+    if not architectures or invalid:
+        detail = ", ".join(sorted(invalid)) or "empty selection"
+        raise ValueError(f"architectures must contain only x86_64 and/or aarch64: {detail}")
+    return {
+        "include": [
+            {
+                "arch": architecture,
+                "runner": "runner" if architecture == "x86_64" else "runner-arm64",
+            }
+            for architecture in architectures
+        ]
+    }
 
 
 def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
@@ -92,7 +127,12 @@ def changed_paths(base: str, root: Path = ROOT) -> list[str]:
     return output.splitlines()
 
 
-def apps_from_changes(paths: list[str], catalog: dict[str, dict]) -> list[str]:
+def apps_from_changes(
+    paths: list[str],
+    catalog: dict[str, dict],
+    metadata: dict | None = None,
+    root: Path = ROOT,
+) -> list[str]:
     if any(path in GLOBAL_INPUTS or path.startswith(GLOBAL_PREFIXES) for path in paths):
         return sorted(catalog)
     selected = {
@@ -102,6 +142,17 @@ def apps_from_changes(paths: list[str], catalog: dict[str, dict]) -> list[str]:
         and parts[0] == "apps"
         and parts[1] in catalog
     }
+    if metadata is not None:
+        packages, by_dir = ci_select.package_maps(metadata, root)
+        seeds = {
+            owner
+            for path in paths
+            if (owner := ci_select.owner_for(path, by_dir)) is not None
+        }
+        affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
+        selected.update(
+            name for name, app in catalog.items() if app["package"] in affected
+        )
     return sorted(selected.difference(OS_INTEGRATED_APPS))
 
 
@@ -134,7 +185,12 @@ def plan(args: argparse.Namespace) -> dict:
         selected = sorted(set(filter(None, re.split(r"[ ,]+", args.apps))))
         reason = "explicit app selection"
     elif args.base:
-        selected = apps_from_changes(changed_paths(args.base, args.root), catalog)
+        selected = apps_from_changes(
+            changed_paths(args.base, args.root),
+            catalog,
+            ci_select.cargo_metadata(args.root),
+            args.root,
+        )
         reason = "apps affected by the commit range"
     else:
         selected = resolve_collection(args.collection, catalog, cfg)
@@ -185,8 +241,23 @@ def main() -> int:
     parser.add_argument("--base")
     parser.add_argument("--tag", default="")
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--architecture-matrix", action="store_true")
+    parser.add_argument("--ref", default="")
+    parser.add_argument("--event", default="")
+    parser.add_argument("--architectures", default="")
+    parser.add_argument("--main-architectures", default="")
     args = parser.parse_args()
     try:
+        if args.architecture_matrix:
+            print(
+                json.dumps(
+                    architecture_matrix(
+                        args.ref, args.event, args.architectures, args.main_architectures
+                    ),
+                    separators=(",", ":"),
+                )
+            )
+            return 0
         result = plan(args)
     except (KeyError, OSError, subprocess.CalledProcessError, tomllib.TOMLDecodeError, ValueError) as error:
         print(f"app release plan: {error}", file=sys.stderr)

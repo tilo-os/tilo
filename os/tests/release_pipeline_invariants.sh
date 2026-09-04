@@ -50,9 +50,13 @@ python3 "$repo/tools/check_workflow_package_paths.py" \
   || bad 'imager dependency path filters are stale'
 
 grep -Fq 'release/app-collections.toml' "$apps" \
-  && grep -Fq '/generic/qos-app-collections/' "$apps" \
+  && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
+  && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
+  && grep -Fq 'PRIOR_X86_URL' "$apps" \
+  && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
+  && grep -Fq '$GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
-  && grep -Fq "architectures='x86_64 aarch64'" "$apps" \
+  && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
@@ -61,6 +65,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   || bad 'app release artifacts cannot be consumed by later component releases'
 
 grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
+  && grep -Fq 'QOS_APP_COLLECTION_URL_AARCH64' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
   && grep -Fq 'QOS_OS_APP_COLLECTION_AUDIENCE' "$os" \
   && grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \

@@ -94,8 +94,14 @@ jobs:
       - name: Materialize the pinned app collection
         env:
           COLLECTION_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
-          COLLECTION_URL: ${{ github.event.inputs.app_collection_url || vars.QOS_APP_COLLECTION_URL }}
-          COLLECTION_SHA256: ${{ github.event.inputs.app_collection_sha256 || vars.QOS_APP_COLLECTION_SHA256 }}
+          COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
+          COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
+          COLLECTION_URL_DEFAULT: ${{ vars.QOS_APP_COLLECTION_URL }}
+          COLLECTION_SHA256_DEFAULT: ${{ vars.QOS_APP_COLLECTION_SHA256 }}
+          COLLECTION_URL_X86_64: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 }}
+          COLLECTION_SHA256_X86_64: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 }}
+          COLLECTION_URL_AARCH64: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
+          COLLECTION_SHA256_AARCH64: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
           COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -105,6 +111,17 @@ jobs:
           # Main pushes, scheduled builds and explicit dispatches exercise the
           # immutable app/OS integration boundary instead.
           [[ $EVENT_NAME != pull_request ]] || exit 0
+          case "$(uname -m)" in
+            x86_64)
+              COLLECTION_URL=${COLLECTION_URL_INPUT:-${COLLECTION_URL_X86_64:-$COLLECTION_URL_DEFAULT}}
+              COLLECTION_SHA256=${COLLECTION_SHA256_INPUT:-${COLLECTION_SHA256_X86_64:-$COLLECTION_SHA256_DEFAULT}}
+              ;;
+            aarch64)
+              COLLECTION_URL=${COLLECTION_URL_INPUT:-$COLLECTION_URL_AARCH64}
+              COLLECTION_SHA256=${COLLECTION_SHA256_INPUT:-$COLLECTION_SHA256_AARCH64}
+              ;;
+            *) printf 'unsupported app-collection architecture\n' >&2; exit 1 ;;
+          esac
           [[ -n ${COLLECTION_URL:-} ]] || exit 0
           [[ -n ${COLLECTION_AUDIENCE:-} ]] || {
             printf 'the OS app collection Authorized Integration audience is required\n' >&2
@@ -132,12 +149,14 @@ jobs:
             | sha256sum --check --strict
           found=0
           while IFS= read -r member; do
-            case "$member" in
-              qpkg/) ;;
-              qpkg/*.qpkg) found=1 ;;
-              index.json|SHA256SUMS) ;;
-              *) printf 'unexpected app collection member: %s\n' "$member" >&2; exit 1 ;;
-            esac
+            if [[ $member == qpkg/ || $member == index.json || $member == SHA256SUMS ]]; then
+              continue
+            elif [[ $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
+              found=1
+            else
+              printf 'unexpected app collection member: %s\n' "$member" >&2
+              exit 1
+            fi
           done < <(tar -tzf "$work/apps.tar.gz")
           [[ $found == 1 ]]
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \

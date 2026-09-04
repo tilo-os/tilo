@@ -11,20 +11,36 @@ on:
     branches: [main]
     paths:
       - "apps/**"
+      - "crates/**"
+      - "ui/**"
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "release/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/assemble_app_collection.py"
+      - "dist/apps/assemble-collection.sh"
       - ".forgejo/workflows/release-apps.yml"
   push:
     branches: [main]
     tags: ["apps-v*", "app-*-v*"]
     paths:
       - "apps/**"
+      - "crates/**"
+      - "ui/**"
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - "release/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/assemble_app_collection.py"
+      - "dist/apps/assemble-collection.sh"
       - ".forgejo/workflows/release-apps.yml"
   workflow_dispatch:
     inputs:
@@ -61,6 +77,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
+      collection: ${{ steps.plan.outputs.collection }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -73,6 +90,7 @@ jobs:
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          MAIN_ARCHITECTURES: ${{ vars.QOS_APP_MAIN_ARCHITECTURES }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
@@ -96,24 +114,32 @@ jobs:
               ;;
           esac
           python3 tools/app_release.py "${args[@]}" | tee app-release-plan.json
-          if [[ $GITHUB_REF == refs/tags/* || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            architectures=${REQUESTED_ARCHITECTURES//,/ }
-            if [[ $GITHUB_REF == refs/tags/* || -z ${architectures// /} ]]; then
-              architectures='x86_64 aarch64'
-            fi
-            matrix=$(jq -cn --arg architectures "$architectures" '
-              ($architectures | split(" ") | map(select(length > 0)) | unique) as $arches
-              | if ($arches | length) == 0 or any($arches[]; . != "x86_64" and . != "aarch64")
-                then error("architectures must contain only x86_64 and/or aarch64")
-                else {include: ($arches | map({arch: ., runner: (if . == "x86_64" then "runner" else "runner-arm64" end)}))}
-                end')
+          collection=
+          case "$GITHUB_REF" in
+            refs/tags/apps-v*) collection=${REQUESTED_COLLECTION:-default} ;;
+            refs/tags/app-*-v*) ;;
+            refs/heads/main) collection=default ;;
+            *)
+              if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+                collection=${REQUESTED_COLLECTION:-default}
+              fi
+              ;;
+          esac
+          echo "collection=$collection" >> "$GITHUB_OUTPUT"
+          if [[ $GITHUB_REF == refs/tags/* || $GITHUB_REF == refs/heads/main || ${REQUESTED_PUBLISH:-false} == true ]]; then
+            matrix=$(python3 tools/app_release.py --architecture-matrix \
+              --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
+              --architectures "$REQUESTED_ARCHITECTURES" \
+              --main-architectures "$MAIN_ARCHITECTURES")
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main ]]; then
               printf 'manual app publication is restricted to main\n' >&2
               exit 1
             fi
-            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            if [[ $GITHUB_REF != refs/heads/main ]]; then
+              git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+              git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
             echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
@@ -179,8 +205,7 @@ jobs:
         with:
           name: qos-apps-${{ matrix.arch }}
           path: |
-            dist/app-release/qos-apps-${{ matrix.arch }}.tar.gz
-            dist/app-release/qos-apps-${{ matrix.arch }}.tar.gz.sha256
+            dist/app-release/qpkg/*.qpkg
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
           if-no-files-found: error
@@ -194,14 +219,22 @@ jobs:
     runs-on: runner
     enable-openid-connect: true
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
-      - name: Publish immutable architecture bundles
+      - name: Publish reusable qpkgs and assemble immutable collections
         env:
           MAIN_AUDIENCE: ${{ vars.QOS_APP_RELEASE_MAIN_AUDIENCE }}
           TAG_AUDIENCE: ${{ vars.QOS_APP_RELEASE_TAG_AUDIENCE }}
           VERSION: ${{ needs.plan.outputs.version }}
+          COLLECTION: ${{ needs.plan.outputs.collection }}
+          PRIOR_X86_URL: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 || vars.QOS_APP_COLLECTION_URL }}
+          PRIOR_X86_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 || vars.QOS_APP_COLLECTION_SHA256 }}
+          PRIOR_ARM64_URL: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
+          PRIOR_ARM64_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -215,16 +248,141 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
           echo "::add-mask::$jwt"
           owner=${GITHUB_REPOSITORY%%/*}
-          for bundle in release/*/qos-apps-*.tar.gz release/*/qos-apps-*.tar.gz.sha256; do
-            name=${bundle##*/}
-            url="$GITHUB_SERVER_URL/api/packages/$owner/generic/qos-app-collections/$VERSION/$name"
+          package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
+
+          put_immutable() {
+            local file=$1 url=$2 response remote
+            response=$(mktemp "$RUNNER_TEMP/qos-package-response.XXXXXX")
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
-              --output response.txt --write-out '%{http_code}' \
+              --output "$response" --write-out '%{http_code}' \
               --header "Authorization: Bearer $jwt" \
-              --request PUT --upload-file "$bundle" "$url")
+              --request PUT --upload-file "$file" "$url")
             case "$status" in
-              200|201|204) echo "published $name" ;;
-              409) printf 'immutable version already contains %s\n' "$name" >&2; exit 1 ;;
-              *) cat response.txt >&2; exit 1 ;;
+              200|201|204) echo "published ${file##*/}" ;;
+              409)
+                remote=$(mktemp "$RUNNER_TEMP/qos-existing-package.XXXXXX")
+                curl --fail --silent --show-error --retry 3 --retry-all-errors \
+                  --header "Authorization: Bearer $jwt" "$url" --output "$remote"
+                cmp --silent "$file" "$remote" || {
+                  printf 'immutable package version conflicts: %s\n' "$url" >&2
+                  exit 1
+                }
+                echo "already published identically: ${file##*/}"
+                ;;
+              *) cat "$response" >&2; exit 1 ;;
             esac
+          }
+
+          # Every app/version/architecture is independently addressable. A
+          # one-app update uploads one qpkg; collection assembly below fetches
+          # all unchanged members instead of rebuilding them.
+          for index in release/*/index.json; do
+            while IFS=$'\t' read -r name version file; do
+              qpkg="${index%/index.json}/qpkg/$file"
+              test -f "$qpkg"
+              put_immutable "$qpkg" \
+                "$package_api/qos-app-$name/$VERSION/$file"
+            done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
           done
+
+          [[ -n ${COLLECTION:-} ]] || exit 0
+          collection_plan="$RUNNER_TEMP/qos-collection-plan.json"
+          python3 tools/app_release.py --collection "$COLLECTION" > "$collection_plan"
+          source_epoch=$(git log -1 --format=%ct)
+          channel_url=
+          channel_sha=
+          for index in release/*/index.json; do
+            arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
+            qpkg_dir="$RUNNER_TEMP/qos-collection-$arch"
+            mkdir -p "$qpkg_dir"
+            prior_url=
+            prior_sha=
+            if [[ $GITHUB_REF == refs/heads/main && $GITHUB_EVENT_NAME == push ]]; then
+              case "$arch" in
+                x86_64) prior_url=$PRIOR_X86_URL; prior_sha=$PRIOR_X86_SHA256 ;;
+                aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;
+              esac
+            fi
+            if [[ -n $prior_url ]]; then
+              [[ $prior_sha =~ ^[0-9a-fA-F]{64}$ ]]
+              prior="$RUNNER_TEMP/qos-prior-$arch.tar.gz"
+              prior_dir="$RUNNER_TEMP/qos-prior-$arch"
+              mkdir -p "$prior_dir"
+              curl --fail --silent --show-error --retry 3 --retry-all-errors \
+                --header "Authorization: Bearer $jwt" "$prior_url" --output "$prior"
+              printf '%s  %s\n' "$prior_sha" "$prior" | sha256sum --check --strict
+              while IFS= read -r member; do
+                if [[ $member == qpkg/ || $member == index.json || $member == SHA256SUMS \
+                      || $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
+                  continue
+                fi
+                printf 'unexpected prior collection member: %s\n' "$member" >&2
+                exit 1
+              done < <(tar -tzf "$prior")
+              tar --extract --gzip --file "$prior" --directory "$prior_dir" \
+                --no-same-owner --no-same-permissions
+              if find "$prior_dir/qpkg" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+                printf 'prior app collection contains links or special files\n' >&2
+                exit 1
+              fi
+              cp "$prior_dir"/qpkg/*.qpkg "$qpkg_dir/"
+            fi
+            while IFS=$'\t' read -r name version; do
+              file="$name-$version-$arch.qpkg"
+              built="${index%/index.json}/qpkg/$file"
+              if [[ -f $built ]]; then
+                find "$qpkg_dir" -maxdepth 1 -type f -name "$name-*-$arch.qpkg" -delete
+                cp "$built" "$qpkg_dir/$file"
+              fi
+              test -f "$qpkg_dir/$file" || {
+                printf 'collection member %s was neither rebuilt nor reusable\n' "$file" >&2
+                exit 1
+              }
+            done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
+            out="dist/app-collections/$arch"
+            QOS_APP_COLLECTION_PLAN="$collection_plan" \
+              QOS_APP_ARCH="$arch" QOS_APP_QPKG_DIR="$qpkg_dir" \
+              QOS_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
+              dist/apps/assemble-collection.sh
+            bundle="$out/qos-apps-$arch.tar.gz"
+            digest_file="$bundle.sha256"
+            bundle_url="$package_api/qos-app-collections/$VERSION/${bundle##*/}"
+            put_immutable "$bundle" "$bundle_url"
+            put_immutable "$digest_file" \
+              "$package_api/qos-app-collections/$VERSION/${digest_file##*/}"
+            if [[ $arch == x86_64 ]]; then
+              channel_url=$bundle_url
+              channel_sha=$(awk '{print $1}' "$digest_file")
+            else
+              arm64_channel_url=$bundle_url
+              arm64_channel_sha=$(awk '{print $1}' "$digest_file")
+            fi
+          done
+
+          # Keep the OS input channel current after a successful default/main
+          # collection publish. The package URL remains immutable; only these
+          # two repository variables move.
+          if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
+            [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
+            variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
+            update_variable() {
+              local name=$1 value=$2 endpoint status method
+              endpoint="$variable_api/$name"
+              status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                --header "Authorization: Bearer $jwt" "$endpoint")
+              case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
+              curl --fail --silent --show-error --request "$method" \
+                --header "Authorization: Bearer $jwt" \
+                --header 'Content-Type: application/json' \
+                --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
+            }
+            update_variable QOS_APP_COLLECTION_URL "$channel_url"
+            update_variable QOS_APP_COLLECTION_SHA256 "$channel_sha"
+            update_variable QOS_APP_COLLECTION_URL_X86_64 "$channel_url"
+            update_variable QOS_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
+            if [[ -n ${arm64_channel_url:-} ]]; then
+              update_variable QOS_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
+              update_variable QOS_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
+            fi
+            echo '::notice::advanced the default OS app-collection channel'
+          fi

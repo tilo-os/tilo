@@ -5,7 +5,7 @@ does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
-| Apps | `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Selected apps once per native architecture | Verified qpkgs grouped in immutable collection bundles |
+| Apps | A relevant `main` change, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Changed apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z` | Native host packages; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows and macOS downloads |
@@ -29,10 +29,13 @@ Pull requests use the cheapest lane that proves the affected boundary:
   architectures before publication.
 
 Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
-entries are opportunistic and workflow artifacts are scoped to one run. App
-collections therefore publish immutable `.tar.gz` bundles in Forgejo's generic
-package registry; OS images and desktop distributions can pin and fetch one by
-version and architecture without compiling the apps again.
+entries are opportunistic and workflow artifacts are scoped to one run. Each
+app qpkg is therefore published independently in Forgejo's generic package
+registry. A collection build downloads unchanged qpkgs from the previously
+pinned collection, replaces only the apps selected by the dependency/change
+plan, and publishes a new immutable `.tar.gz`. OS images and desktop
+distributions can pin one by version and architecture without compiling apps
+again.
 
 Set repository variables `QOS_APP_COLLECTION_URL` and
 `QOS_APP_COLLECTION_SHA256`, and `QOS_APP_COLLECTION_PUBLISHER` to make that
@@ -42,6 +45,11 @@ The outer SHA-256 is checked before extraction, every qpkg/index checksum is
 checked again, every qpkg must carry the expected publisher identity, and
 tagged OS provenance records the collection digest. Leaving the variables empty
 preserves the source-build fallback for bootstrap work.
+Successful default-collection publications from `main` advance the URL and
+digest variables automatically. Architecture-specific
+`QOS_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
+native runners become available; the unsuffixed pair remains the x86_64
+compatibility channel.
 
 Manual app publication normally builds both native architectures. During
 bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
@@ -70,11 +78,12 @@ python3 tools/app_release.py --collection recovery
 QOS_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
 ```
 
-On a normal main push, **Release / apps** selects only directly changed apps.
-Shared UI/runtime changes are already covered by affected-package CI and do not
-allocate a fleet packaging run by themselves; a collection tag validates the
-complete requested set. Component tags are immutable publication boundaries
-and require the configured `QPKG_PUBLISHER_IDENTITY` secret.
+On a normal main push, **Release / apps** selects and publishes directly changed
+apps plus app binaries that transitively depend on a changed workspace crate,
+then assembles the default collection from those qpkgs and the unchanged
+members of the prior collection. A collection tag validates the complete
+requested set. Component tags are immutable publication boundaries and require
+the configured `QPKG_PUBLISHER_IDENTITY` secret.
 Manual desktop and imager runs with `full_native` exercise their full build
 matrices without publishing, which makes them safe release rehearsals.
 
@@ -83,10 +92,11 @@ matrices without publishing, which makes them safe release rehearsals.
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
-  integrations: app release tags and manual dispatches from `main`. Their
+  integrations: app release tags and pushes/manual dispatches from `main`. Their
   audiences are stored in `QOS_APP_RELEASE_TAG_AUDIENCE` and
   `QOS_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
-  publication job.
+  publication job. The main integration has package-write and repository-write
+  scope so it can advance only the pinned collection channel after publication.
 - Trusted OS builds read the private immutable app collection with a separate
   read-only Forgejo Actions (Local) integration. Store its audience in
   `QOS_OS_APP_COLLECTION_AUDIENCE`. Pull-request jobs never receive or use that
