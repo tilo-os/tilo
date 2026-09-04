@@ -10,7 +10,7 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside]}"
 shift
 out=""
 install_mode=erase
@@ -18,6 +18,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
     --prepared-alongside) install_mode=prepared-alongside; shift;;
+    --guided-alongside) install_mode=guided-alongside; shift;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
 done
@@ -105,27 +106,45 @@ trap cleanup EXIT
 prepare_alongside_target() {
   local raw="$cycle_dir/prepared-target.raw" esp="$cycle_dir/esp.img"
   local windows="$cycle_dir/windows.img" linux="$cycle_dir/linux.img"
-  local linux_loader
-  for tool in qemu-img sfdisk mkfs.vfat mkfs.ntfs mkfs.ext4 mcopy mmd ntfscp debugfs; do
-    command -v "$tool" >/dev/null 2>&1 || die "$tool is required for prepared-alongside cycle"
+  local linux_loader esp_size windows_offset linux_offset
+  for tool in qemu-img sfdisk mkfs.vfat mkfs.ntfs mkfs.ext4 mattrib mcopy mdir mmd mtype ntfscp debugfs; do
+    command -v "$tool" >/dev/null 2>&1 || die "$tool is required for alongside cycle"
   done
-  # MiB-aligned 40 GiB GPT: shared 2 GiB ESP, Windows and Linux sentinels,
-  # then a signature-free >=32 GiB qOS root prepared for the real installer.
+  # Both fixtures begin with a foreign shared ESP plus valid Windows and Linux
+  # filesystems. Prepared mode supplies an empty root and a reusable 2 GiB ESP;
+  # guided mode leaves the remaining >=34 GiB genuinely unallocated so the
+  # installer must append its own dedicated ESP and encrypted root.
   truncate -s 40G "$raw"
-  sfdisk "$raw" >/dev/null <<'EOF'
+  if [ "$install_mode" = prepared-alongside ]; then
+    esp_size=2G windows_offset=2049 linux_offset=2561
+    sfdisk "$raw" >/dev/null <<'EOF'
 label: gpt
 start=2048, size=4194304, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=10000000-0000-4000-8000-000000000001, name="shared EFI"
 start=4196352, size=1048576, type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=20000000-0000-4000-8000-000000000002, name="Windows sentinel"
 start=5244928, size=1048576, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=30000000-0000-4000-8000-000000000003, name="Linux sentinel"
 start=6293504, size=77590000, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=40000000-0000-4000-8000-000000000004, name="qOS prepared root"
 EOF
-  truncate -s 2G "$esp"; mkfs.vfat -n SHARED-EFI "$esp" >/dev/null
+  else
+    esp_size=512M windows_offset=513 linux_offset=1025
+    sfdisk "$raw" >/dev/null <<'EOF'
+label: gpt
+start=2048, size=1048576, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=10000000-0000-4000-8000-000000000001, name="shared EFI"
+start=1050624, size=1048576, type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=20000000-0000-4000-8000-000000000002, name="Windows sentinel"
+start=2099200, size=1048576, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=30000000-0000-4000-8000-000000000003, name="Linux sentinel"
+EOF
+  fi
+  printf '%s\n' "$windows_offset" > "$cycle_dir/windows.offset-mib"
+  printf '%s\n' "$linux_offset" > "$cycle_dir/linux.offset-mib"
+  truncate -s "$esp_size" "$esp"; mkfs.vfat -n SHARED-EFI "$esp" >/dev/null
   mmd -i "$esp" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Fedora
   printf 'windows-loader-sentinel\n' > "$cycle_dir/bootmgfw.efi"
   case "$QOS_VM_ARCH" in x86_64) linux_loader=shimx64.efi;; aarch64) linux_loader=shimaa64.efi;; esac
   printf 'linux-loader-sentinel\n' > "$cycle_dir/$linux_loader"
   mcopy -i "$esp" "$cycle_dir/bootmgfw.efi" ::/EFI/Microsoft/Boot/bootmgfw.efi
   mcopy -i "$esp" "$cycle_dir/$linux_loader" "::/EFI/Fedora/$linux_loader"
+  sha256sum "$cycle_dir/bootmgfw.efi" | awk '{print $1}' > "$cycle_dir/windows-loader.before.sha256"
+  sha256sum "$cycle_dir/$linux_loader" | awk '{print $1}' > "$cycle_dir/linux-loader.before.sha256"
+  sha256sum "$esp" | awk '{print $1}' > "$cycle_dir/foreign-esp.before.sha256"
   truncate -s 512M "$windows"; mkfs.ntfs -F -L WINDOWS-SENTINEL "$windows" >/dev/null
   truncate -s 512M "$linux"; mkfs.ext4 -q -F -L LINUX-SENTINEL "$linux"
   printf 'windows-filesystem-preservation-sentinel\n' > "$cycle_dir/windows-sentinel.txt"
@@ -135,28 +154,101 @@ EOF
   sha256sum "$windows" | awk '{print $1}' > "$cycle_dir/windows.before.sha256"
   sha256sum "$linux" | awk '{print $1}' > "$cycle_dir/linux.before.sha256"
   dd if="$esp" of="$raw" bs=1M seek=1 conv=notrunc,sparse status=none
-  dd if="$windows" of="$raw" bs=1M seek=2049 conv=notrunc,sparse status=none
-  dd if="$linux" of="$raw" bs=1M seek=2561 conv=notrunc,sparse status=none
+  dd if="$windows" of="$raw" bs=1M seek="$windows_offset" conv=notrunc,sparse status=none
+  dd if="$linux" of="$raw" bs=1M seek="$linux_offset" conv=notrunc,sparse status=none
   qemu-img convert -f raw -O qcow2 "$raw" "$QOS_TARGET_DISK"
   rm -f -- "$raw" "$esp" "$windows" "$linux" "$cycle_dir/bootmgfw.efi" \
     "$cycle_dir/$linux_loader" "$cycle_dir/windows-sentinel.txt" "$cycle_dir/linux-sentinel.txt"
 }
 
 verify_alongside_target() {
-  local raw="$cycle_dir/installed-alongside.raw" actual
+  local raw="$cycle_dir/installed-alongside.raw" actual linux_loader systemd_loader
+  local windows_offset linux_offset
   qemu-img convert -f qcow2 -O raw "$QOS_TARGET_DISK" "$raw"
-  actual="$(dd if="$raw" bs=512 skip=4196352 count=1048576 status=none | sha256sum | awk '{print $1}')"
+  windows_offset="$(cat "$cycle_dir/windows.offset-mib")"
+  linux_offset="$(cat "$cycle_dir/linux.offset-mib")"
+  actual="$(dd if="$raw" bs=1M skip="$windows_offset" count=512 status=none | sha256sum | awk '{print $1}')"
   [ "$actual" = "$(cat "$cycle_dir/windows.before.sha256")" ] \
     || die "Windows filesystem bytes changed during alongside install"
-  actual="$(dd if="$raw" bs=512 skip=5244928 count=1048576 status=none | sha256sum | awk '{print $1}')"
+  actual="$(dd if="$raw" bs=1M skip="$linux_offset" count=512 status=none | sha256sum | awk '{print $1}')"
   [ "$actual" = "$(cat "$cycle_dir/linux.before.sha256")" ] \
     || die "Linux filesystem bytes changed during alongside install"
-  MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-windows.conf \
-    | grep -Fq 'title Windows' || die "Windows chainloader entry is missing"
-  MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-linux-fedora.conf \
-    | grep -Fq 'title Linux (Fedora)' || die "Linux chainloader entry is missing"
-  printf 'windows_partition_sha256=%s\nlinux_partition_sha256=%s\nboot_entries=windows,linux-fedora\n' \
-    "$(cat "$cycle_dir/windows.before.sha256")" "$(cat "$cycle_dir/linux.before.sha256")" \
+  case "$QOS_VM_ARCH" in
+    x86_64) linux_loader=shimx64.efi; systemd_loader=systemd-bootx64.efi;;
+    aarch64) linux_loader=shimaa64.efi; systemd_loader=systemd-bootaa64.efi;;
+  esac
+  actual="$(MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/EFI/Microsoft/Boot/bootmgfw.efi | sha256sum | awk '{print $1}')"
+  [ "$actual" = "$(cat "$cycle_dir/windows-loader.before.sha256")" ] \
+    || die "Windows EFI loader bytes changed during alongside install"
+  actual="$(MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" "::/EFI/Fedora/$linux_loader" | sha256sum | awk '{print $1}')"
+  [ "$actual" = "$(cat "$cycle_dir/linux-loader.before.sha256")" ] \
+    || die "Linux EFI loader bytes changed during alongside install"
+
+  if [ "$install_mode" = prepared-alongside ]; then
+    python3 - "$raw" <<'PY' || die "prepared alongside GPT layout changed"
+import json, subprocess, sys
+
+table = json.loads(subprocess.check_output(["sfdisk", "--json", sys.argv[1]]))["partitiontable"]
+sector = int(table["sectorsize"])
+parts = table["partitions"]
+expected = [
+    ("10000000-0000-4000-8000-000000000001", 1 << 20, 2 << 30),
+    ("20000000-0000-4000-8000-000000000002", 2049 << 20, 512 << 20),
+    ("30000000-0000-4000-8000-000000000003", 2561 << 20, 512 << 20),
+    ("40000000-0000-4000-8000-000000000004", 3073 << 20, 77590000 * 512),
+]
+assert len(parts) == len(expected)
+for part, (uuid, start, size) in zip(parts, expected):
+    assert part["uuid"].lower() == uuid and part["start"] * sector == start and part["size"] * sector == size
+PY
+    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-windows.conf \
+      | grep -Fqx 'efi /EFI/Microsoft/Boot/bootmgfw.efi' \
+      || die "Windows chainloader entry has the wrong EFI target"
+    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-linux-fedora.conf \
+      | grep -Fqx "efi /EFI/Fedora/$linux_loader" \
+      || die "Linux chainloader entry has the wrong EFI target"
+    printf 'boot_entries=windows,linux-fedora\n' > "$out/alongside-boot-behavior.txt"
+  else
+    actual="$(dd if="$raw" bs=1M skip=1 count=512 status=none | sha256sum | awk '{print $1}')"
+    [ "$actual" = "$(cat "$cycle_dir/foreign-esp.before.sha256")" ] \
+      || die "foreign shared EFI partition changed during guided alongside install"
+    python3 - "$raw" <<'PY' || die "guided alongside GPT layout differs from the reviewed plan"
+import json, subprocess, sys
+
+disk = sys.argv[1]
+table = json.loads(subprocess.check_output(["sfdisk", "--json", disk]))["partitiontable"]
+sector = int(table["sectorsize"])
+parts = table["partitions"]
+assert len(parts) == 5, f"expected five GPT partitions, found {len(parts)}"
+expected = [
+    ("10000000-0000-4000-8000-000000000001", 1 << 20, 512 << 20),
+    ("20000000-0000-4000-8000-000000000002", 513 << 20, 512 << 20),
+    ("30000000-0000-4000-8000-000000000003", 1025 << 20, 512 << 20),
+]
+for part, (uuid, start, size) in zip(parts[:3], expected):
+    assert part["uuid"].lower() == uuid and part["start"] * sector == start and part["size"] * sector == size
+efi, root = parts[3:]
+assert efi["start"] * sector == 1537 << 20 and efi["size"] * sector == 2 << 30
+assert efi["type"].lower() == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+assert root["start"] * sector == 3585 << 20 and root["size"] * sector == 37374 << 20
+assert root["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+assert efi["uuid"].lower() not in {p[0] for p in expected} and root["uuid"].lower() not in {p[0] for p in expected}
+assert efi["uuid"].lower() != root["uuid"].lower()
+PY
+    MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/loader.conf >/dev/null \
+      || die "guided qOS EFI partition has no systemd-boot loader configuration"
+    MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" "::/EFI/systemd/$systemd_loader" >/dev/null \
+      || die "guided qOS EFI partition has no architecture-matched systemd-boot binary"
+    if MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/qos-windows.conf >/dev/null 2>&1 \
+      || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/qos-linux-fedora.conf >/dev/null 2>&1; then
+      die "guided qOS EFI partition contains an invalid cross-ESP chainloader shortcut"
+    fi
+    printf 'boot_entries=firmware-preserved;dedicated_qos_esp_start_mib=1537;dedicated_qos_root_start_mib=3585\n' \
+      > "$out/alongside-boot-behavior.txt"
+  fi
+  printf 'mode=%s\nwindows_partition_sha256=%s\nlinux_partition_sha256=%s\nwindows_loader_sha256=%s\nlinux_loader_sha256=%s\n' \
+    "$install_mode" "$(cat "$cycle_dir/windows.before.sha256")" "$(cat "$cycle_dir/linux.before.sha256")" \
+    "$(cat "$cycle_dir/windows-loader.before.sha256")" "$(cat "$cycle_dir/linux-loader.before.sha256")" \
     > "$out/alongside-preservation.txt"
   rm -f -- "$raw"
 }
@@ -215,7 +307,7 @@ die() { printf 'installer cycle: %s\n' "$*" >&2; exit 1; }
 
 # Start from genuinely blank disk, TPM and UEFI variable-store state.
 "$vm" init-cycle
-[ "$install_mode" != prepared-alongside ] || prepare_alongside_target
+[ "$install_mode" = erase ] || prepare_alongside_target
 
 # Reproduce what the production Imager writes to a USB drive: preserve every
 # byte of the released source image, reserve a 64 KiB device tail, and use the
@@ -254,7 +346,7 @@ grep -Eqi 'setup choices are ready' "$out/01-disk.txt" \
 # Select Alongside when requested, then Refresh -> the only selectable row
 # (/dev/vdb). The live
 # /dev/vda row is disabled by the shipped disk identity rules.
-[ "$install_mode" != prepared-alongside ] || "$vm" keys right
+[ "$install_mode" = erase ] || "$vm" keys right
 "$vm" keys tab tab ret
 sleep 2
 "$vm" keys tab ret
@@ -274,8 +366,8 @@ grep -Eqi 'cycle.?qos' "$out/03-review.txt" \
   || die "Review did not show the configured hostname"
 
 # Exact destructive confirmation -> recovery-key promise -> Begin Install.
-# Prepared alongside formats only partition 4; typing the whole disk would be
-# rejected by both the Review gate and the privileged --confirm-root binding.
+# Prepared alongside formats only partition 4; guided alongside confirms the
+# reviewed free-space operation with the whole disk because it appends p4+p5.
 confirmation=/dev/vdb
 [ "$install_mode" != prepared-alongside ] || confirmation=/dev/vdb4
 "$vm" type "$confirmation"
@@ -366,5 +458,5 @@ wait_screen 13-desktop-config 'cycle.?qos' 60 2 \
   || die "desktop terminal did not report the installed hostname"
 
 copy_evidence target
-[ "$install_mode" != prepared-alongside ] || { "$vm" stop; verify_alongside_target; }
+[ "$install_mode" = erase ] || { "$vm" stop; verify_alongside_target; }
 printf 'PASS\n' > "$out/verdict.txt"
