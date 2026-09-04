@@ -58,10 +58,9 @@ fn keyed_pointer_and_typing_survive_the_native_broker() {
     let mut bob = TypedPeer::connect(&socket);
     alice.announce(&socket, &hello("ada")).unwrap();
     bob.announce(&socket, &hello("Scribe")).unwrap();
-    // Route setup also opens four independent subscriptions. Give both
-    // shovel threads time to finish that handshake before publishing the
-    // first transient update, which is deliberately not replayed.
-    std::thread::sleep(Duration::from_millis(200));
+    // Construction is the readiness boundary: this transient update is not
+    // replayed, so receiving it proves both routes subscribed before their
+    // constructors returned. No timing sleep may stand in for that contract.
 
     let pointer_key = PresenceKey::surface_pointer("document/surface-7");
     let pointer = CollabRequest::Presence {
