@@ -186,23 +186,19 @@ else
   bad "native qOS installer can bypass encryption or the startup secret"
 fi
 
-if [ -x "$preflight" ] \
-   && grep -Fq 'owner_db_is_enrolled' "$preflight" \
-   && grep -Fq 'qos-secureboot verify' "$preflight" \
-   && grep -Fq 'qos-secureboot sign' "$preflight" \
-   && grep -Fq 'missing sealed {required} section' "$preflight" \
-   && grep -Fq 'composefs=sha' "$preflight"; then
-  ok "TPM PIN preflight carries enrolled owner trust into sealed target UKIs"
+if [ ! -e "$preflight" ] \
+   && ! grep -Fq 'COPY os/usr/libexec/qos-verified-boot-install-preflight' "$production_containerfile"; then
+  ok "unsupported PCR-7-only TPM PIN preflight is not shipped"
 else
-  bad "target verified-boot preflight does not prove and sign the complete UKI chain"
+  bad "image still ships a TPM PIN preflight without measured qOS-artifact binding"
 fi
 
 disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
-if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
-   && grep -Fq 'have_tpm2 && [ "$force_passphrase" -eq 0 ]' "$disk_encrypt"; then
-  ok "TPM short-PIN enrollment requires a verified-boot decision"
+if grep -Fq 'force_passphrase=1' "$disk_encrypt" \
+   && grep -Fq 'TPM enrollment is disabled until qOS unlock is bound' "$disk_encrypt"; then
+  ok "disk helper defaults to a strong passphrase and rejects TPM resealing"
 else
-  bad "disk helper can create a misleading TPM slot while boot is unverified"
+  bad "disk helper can create a PCR-7-only TPM slot"
 fi
 
 # Generation-bound TPM enrollment cannot be enabled as a one-line replacement
@@ -218,7 +214,7 @@ rollback_enrollment_calls="$(
 if [ -z "$rollback_enrollment_calls" ] \
    && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'the directory ships empty' "$production_containerfile" \
-   && grep -Fq -- '--tpm2-pcrs=7 --tpm2-with-pin=yes' "$encryptor" \
+   && grep -Fq 'force_passphrase=1' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
   ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
