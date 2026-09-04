@@ -47,6 +47,10 @@ pub struct ProgressBar {
     indeterminate: bool,
     rect: Rect,
     start: Instant,
+    dirty: bool,
+    reduce_motion: bool,
+    last_segment: Rect,
+    damage: [Rect; 2],
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading"). When set, the bar becomes a
@@ -66,6 +70,10 @@ impl ProgressBar {
             indeterminate: false,
             rect: Rect::ZERO,
             start: Instant::now(),
+            dirty: true,
+            reduce_motion: false,
+            last_segment: Rect::ZERO,
+            damage: [Rect::ZERO; 2],
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
@@ -80,6 +88,10 @@ impl ProgressBar {
             indeterminate: true,
             rect: Rect::ZERO,
             start: Instant::now(),
+            dirty: true,
+            reduce_motion: false,
+            last_segment: Rect::ZERO,
+            damage: [Rect::ZERO; 2],
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
@@ -104,7 +116,13 @@ impl ProgressBar {
     /// value but does not affect rendering until the bar is taken out
     /// of indeterminate mode.
     pub fn set_progress(&mut self, p: f32) {
-        self.progress = p.clamp(0.0, 1.0);
+        let progress = p.clamp(0.0, 1.0);
+        if self.progress.to_bits() != progress.to_bits() {
+            self.progress = progress;
+            if !self.indeterminate {
+                self.dirty = true;
+            }
+        }
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
@@ -186,6 +204,7 @@ impl Widget for ProgressBar {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.dirty = true;
     }
 
     fn draw(
@@ -196,6 +215,7 @@ impl Widget for ProgressBar {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         // The track is always painted: it provides the visual anchor
         // even at `progress == 0.0`. The fill is conditional — see
         // `progress_bar_at_zero_paints_no_fill` for the contract.
@@ -232,7 +252,7 @@ impl Widget for ProgressBar {
             // poke past the track edges.
             let clipped_x0 = segment_x0.max(self.rect.x0);
             let clipped_x1 = segment_x1.min(self.rect.x1);
-            if clipped_x1 > clipped_x0 {
+            let current_segment = if clipped_x1 > clipped_x0 {
                 let segment_rect = Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
                 let segment_shape = RoundedRect::from_rect(segment_rect, radius);
                 scene.fill(
@@ -242,7 +262,30 @@ impl Widget for ProgressBar {
                     None,
                     &segment_shape,
                 );
-            }
+                segment_rect
+            } else {
+                Rect::ZERO
+            };
+            self.damage = match (
+                self.last_segment.is_zero_area(),
+                current_segment.is_zero_area(),
+            ) {
+                (true, _) => [current_segment, Rect::ZERO],
+                (_, true) => [self.last_segment, Rect::ZERO],
+                (false, false) => {
+                    let union = self.last_segment.union(current_segment);
+                    if union.width() <= segment_width * 2.0 {
+                        [union, Rect::ZERO]
+                    } else {
+                        // At sweep wraparound, unioning the outgoing right-edge
+                        // segment with the incoming left-edge segment would
+                        // invalidate almost the whole bar. Keep the two small,
+                        // disconnected regions separate for that frame.
+                        [self.last_segment, current_segment]
+                    }
+                }
+            };
+            self.last_segment = current_segment;
         } else if self.progress > 0.0 {
             // Determinate fill, width `progress * track_width`. Skipped
             // entirely at `progress == 0.0` (rather than a zero-width
@@ -309,11 +352,32 @@ impl Widget for ProgressBar {
         Some(node)
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.dirty || (self.indeterminate && !self.reduce_motion)
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.dirty {
+            regions.push(self.rect);
+        } else if self.indeterminate && !self.reduce_motion {
+            regions.extend(
+                self.damage
+                    .iter()
+                    .copied()
+                    .filter(|rect| !rect.is_zero_area()),
+            );
+        }
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
     /// Indeterminate bars must keep the redraw loop pumping so the
     /// segment continues to advance — without this, the animation
     /// would freeze on the first frame after an unrelated event.
     fn needs_animation_frame(&self) -> bool {
-        self.indeterminate
+        self.indeterminate && !self.reduce_motion
     }
 
     /// Determinate bars never change size; indeterminate ones
@@ -527,6 +591,66 @@ mod tests {
             !determinate.needs_animation_frame(),
             "determinate bar must not request animation frames",
         );
+    }
+
+    #[test]
+    fn determinate_bar_redraws_only_after_a_visible_value_change() {
+        let mut bar = bar_at(0.5);
+        assert!(bar.needs_redraw(), "a new bar needs its initial paint");
+        bar.mark_drawn();
+        assert!(!bar.needs_redraw(), "a painted determinate bar is static");
+
+        bar.set_progress(0.5);
+        assert!(!bar.needs_redraw(), "setting the same value is a no-op");
+        bar.set_progress(0.75);
+        assert!(
+            bar.needs_redraw(),
+            "a visible value change invalidates the bar"
+        );
+    }
+
+    #[test]
+    fn indeterminate_damage_tracks_only_the_moving_segment() {
+        let mut bar = ProgressBar::indeterminate();
+        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        let _ = render(&mut bar);
+        bar.mark_drawn();
+
+        let mut regions = Vec::new();
+        bar.collect_damage(&mut regions);
+        assert!(!regions.is_empty(), "moving segment should report damage");
+        assert!(regions.len() <= 2);
+        assert!(regions.iter().all(|damage| {
+            damage.width() <= bar.rect.width() * INDETERMINATE_SEGMENT_FRAC * 2.0 + 1.0
+        }));
+    }
+
+    #[test]
+    fn indeterminate_wrap_keeps_disconnected_damage_regions_separate() {
+        use std::time::Duration;
+
+        let mut bar = ProgressBar::indeterminate();
+        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
+        bar.start = Instant::now() - Duration::from_millis(300);
+        bar.dirty = false;
+        let _ = render(&mut bar);
+
+        let mut regions = Vec::new();
+        bar.collect_damage(&mut regions);
+        assert_eq!(regions.len(), 2, "wraparound must not form one wide union");
+        assert!(regions.iter().all(|damage| damage.width() <= 61.0));
+    }
+
+    #[test]
+    fn reduced_motion_stops_indeterminate_frame_requests_after_paint() {
+        let mut bar = ProgressBar::indeterminate();
+        bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        let _ = render_with(&mut bar, true);
+        bar.mark_drawn();
+
+        assert!(!bar.needs_animation_frame());
+        assert!(!bar.needs_redraw());
     }
 
     /// With reduced motion an indeterminate bar holds its segment fixed:

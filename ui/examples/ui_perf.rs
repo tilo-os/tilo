@@ -63,14 +63,18 @@ pub(crate) fn begin_allocation_profile() {
     COUNT_ALLOCATIONS.store(true, Ordering::Relaxed);
 }
 
-pub(crate) fn end_allocation_profile() -> AllocationSnapshot {
-    COUNT_ALLOCATIONS.store(false, Ordering::Relaxed);
+pub(crate) fn allocation_profile_snapshot() -> AllocationSnapshot {
     AllocationSnapshot {
         calls: ALLOCATION_CALLS.load(Ordering::Relaxed),
         bytes: ALLOCATION_BYTES.load(Ordering::Relaxed),
         realloc_calls: REALLOCATION_CALLS.load(Ordering::Relaxed),
         realloc_bytes: REALLOCATION_BYTES.load(Ordering::Relaxed),
     }
+}
+
+pub(crate) fn end_allocation_profile() -> AllocationSnapshot {
+    COUNT_ALLOCATIONS.store(false, Ordering::Relaxed);
+    allocation_profile_snapshot()
 }
 
 #[path = "common/gallery_scene.rs"]

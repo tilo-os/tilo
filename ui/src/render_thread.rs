@@ -23,6 +23,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use crate::gpu::RenderContext;
+use crate::offscreen::{damage_texture_extent, damage_texture_needs_replacement};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 use vello::util::RenderSurface;
@@ -133,7 +134,7 @@ struct DamageTarget {
 struct DamageCache {
     targets: Vec<DamageTarget>,
     translated_scene: Scene,
-    last_signature: Option<(usize, u32, u32, u64)>,
+    last_region_count: Option<usize>,
 }
 
 impl RenderThreadHandle {
@@ -362,15 +363,14 @@ fn rasterize_damage(
         )
     };
     if full_redraw {
-        let signature = (1, width, height, full_pixels);
         if damage_cache
-            .last_signature
-            .is_some_and(|previous| previous != signature)
+            .last_region_count
+            .is_some_and(|previous| previous != 0)
         {
             renderer.trim_pooled_buffers();
         }
         damage_cache.targets.clear();
-        damage_cache.last_signature = Some(signature);
+        damage_cache.last_region_count = Some(0);
         render_full(renderer)?;
         return Ok(full_pixels);
     }
@@ -379,8 +379,7 @@ fn rasterize_damage(
     }
 
     let mut damage_pixels = 0u64;
-    let mut scratch_width = 0u32;
-    let mut scratch_height = 0u32;
+    let mut damage_region_count = 0usize;
     for rect in damage_regions {
         let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
         let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
@@ -390,38 +389,33 @@ fn rasterize_damage(
         let region_height = y1.saturating_sub(y0);
         damage_pixels = damage_pixels
             .saturating_add(u64::from(region_width).saturating_mul(u64::from(region_height)));
-        scratch_width = scratch_width.max(region_width);
-        scratch_height = scratch_height.max(region_height);
+        damage_region_count = damage_region_count
+            .saturating_add(usize::from(region_width != 0 && region_height != 0));
     }
     // A large union costs less as one Vello pass and must not retain a second
     // near-window-sized texture. This is both the time and memory bound.
     if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
-        let signature = (1, width, height, full_pixels);
         if damage_cache
-            .last_signature
-            .is_some_and(|previous| previous != signature)
+            .last_region_count
+            .is_some_and(|previous| previous != 0)
         {
             renderer.trim_pooled_buffers();
         }
         damage_cache.targets.clear();
-        damage_cache.last_signature = Some(signature);
+        damage_cache.last_region_count = Some(0);
         render_full(renderer)?;
         return Ok(full_pixels);
     }
 
-    let signature = (
-        damage_regions.len(),
-        scratch_width,
-        scratch_height,
-        damage_pixels,
-    );
     if damage_cache
-        .last_signature
-        .is_some_and(|previous| previous != signature)
+        .last_region_count
+        .is_some_and(|previous| previous != damage_region_count)
     {
         renderer.trim_pooled_buffers();
     }
-    damage_cache.last_signature = Some(signature);
+    damage_cache.last_region_count = Some(damage_region_count);
+
+    let texture_limit = device.limits().max_texture_dimension_2d;
 
     let mut target_index = 0usize;
     for rect in damage_regions {
@@ -434,16 +428,25 @@ fn rasterize_damage(
         if region_width == 0 || region_height == 0 {
             continue;
         }
-        let recreate = damage_cache
-            .targets
-            .get(target_index)
-            .is_none_or(|target| target.width != region_width || target.height != region_height);
+        let recreate = damage_cache.targets.get(target_index).is_none_or(|target| {
+            damage_texture_needs_replacement(
+                target.width,
+                target.height,
+                region_width,
+                region_height,
+            )
+        });
         if recreate {
+            if let Some(target) = damage_cache.targets.get(target_index) {
+                renderer.invalidate_texture_bindings(&target.view);
+            }
+            let allocated_width = damage_texture_extent(region_width, texture_limit);
+            let allocated_height = damage_texture_extent(region_height, texture_limit);
             let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
                 label: Some("ui-native-damage-target"),
                 size: vello::wgpu::Extent3d {
-                    width: region_width,
-                    height: region_height,
+                    width: allocated_width,
+                    height: allocated_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -456,8 +459,8 @@ fn rasterize_damage(
             });
             let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
             let replacement = DamageTarget {
-                width: region_width,
-                height: region_height,
+                width: allocated_width,
+                height: allocated_height,
                 texture,
                 view,
             };
