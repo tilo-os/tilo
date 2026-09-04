@@ -2237,6 +2237,11 @@ impl InstallerApp {
                     "Existing partitions",
                     "Preserved byte-for-byte; none resized, moved, or deleted",
                 ));
+                children.push(summary_row(
+                    theme,
+                    "Choose an OS",
+                    "Use the firmware boot picker; its current default and existing entries are preserved",
+                ));
             } else {
                 children.push(summary_row(
                     theme,
@@ -2249,6 +2254,11 @@ impl InstallerApp {
                     "qOS EFI partition",
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
+                ));
+                children.push(summary_row(
+                    theme,
+                    "Choose an OS",
+                    "qOS adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
         }
@@ -2342,6 +2352,17 @@ impl InstallerApp {
                         .with_size(sm)
                         .with_color(dim),
                 ));
+                if self.install_method == InstallMethod::Alongside {
+                    children.push(Box::new(
+                        Text::new(if self.uses_guided_alongside() {
+                            "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                        } else {
+                            "The qOS boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
+                        })
+                        .with_size(sm)
+                        .with_color(dim),
+                    ));
+                }
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
                 if !self.status.is_empty() {
@@ -4031,6 +4052,34 @@ mod tests {
 
         app.go_next();
         assert_eq!(app.step, Step::Account);
+    }
+
+    #[test]
+    fn guided_alongside_explains_the_firmware_picker_before_and_after_install() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(1);
+        app.step = Step::Review;
+        assert!(app.uses_guided_alongside());
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(
+                &app,
+                "Use the firmware boot picker; its current default and existing entries are preserved"
+            )
+            .is_some()
+        );
+
+        app.install_state = InstallState::Done;
+        app.step = Step::Install;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(
+                &app,
+                "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+            )
+            .is_some()
+        );
     }
 
     #[test]
