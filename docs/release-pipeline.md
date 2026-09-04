@@ -102,7 +102,9 @@ the configured `QPKG_PUBLISHER_IDENTITY` secret.
 Manual desktop and imager runs with `full_native` exercise their full build
 matrices without publishing, which makes them safe release rehearsals.
 
-OS pushes remain build-only while CI capacity is constrained. Once a
+OS pushes remain non-publishing while CI capacity is constrained, but trusted
+`main`, scheduled, and manual runs still perform the independent rebuild,
+installed-VM, desktop, app, and OS integration gates. Once a
 non-exportable `COSIGN_KEY_REF` is configured, setting
 `QOS_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
 reproducibility, installed-VM, signing, SBOM, provenance, freshness, and
@@ -113,8 +115,8 @@ updates continue to publish only their qpkg/collection boundary.
 
 A manual **Release / OS** dispatch is also build-only by default. Enable its
 `publish` input only from `main` to allocate and promote a signed generation.
-This makes the same image, reproducibility, and VM gates available as a safe
-integration rehearsal while the production signing key is unavailable.
+This runs the same image, reproducibility, and VM gates as a safe integration
+rehearsal while the production signing key is unavailable.
 
 ## Forgejo-specific rules
 

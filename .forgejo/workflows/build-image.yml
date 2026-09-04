@@ -343,13 +343,14 @@ jobs:
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
-      - name: Select build-only or publication mode
+      - name: Select build, validation, or publication mode
         id: release-mode
         env:
           CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
         run: |
           publish=false
+          validate=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                      && ${REQUESTED_PUBLISH:-false} == true ) \
@@ -357,8 +358,12 @@ jobs:
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
           fi
+          if [[ $GITHUB_EVENT_NAME != pull_request ]]; then
+            validate=true
+          fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "::notice::OS publication mode: $publish"
+          echo "validate=$validate" >> "$GITHUB_OUTPUT"
+          echo "::notice::OS integration validation: $validate; publication: $publish"
 
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
@@ -415,8 +420,8 @@ jobs:
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
-      # run buildx writes an OCI archive for that gate; ordinary build-only runs
-      # exercise the complete build and registry cache without retaining output.
+      # run buildx writes an OCI archive for that gate; pull requests exercise
+      # the complete build and registry cache without retaining output.
       - name: Build the qOS image
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -428,7 +433,7 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.publish == 'true' && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -476,7 +481,7 @@ jobs:
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
-        if: steps.release-mode.outputs.publish == 'true'
+        if: steps.release-mode.outputs.validate == 'true'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -510,9 +515,9 @@ jobs:
           provenance: false
           no-cache: true
 
-      - name: Reseal, install, boot, and publish the verified image
+      - name: Reseal, install, boot, and stage the verified image
         id: release
-        if: steps.release-mode.outputs.publish == 'true'
+        if: steps.release-mode.outputs.validate == 'true'
         timeout-minutes: 60
         env:
           QOS_IMAGE: localhost/qos:release-candidate
@@ -656,19 +661,23 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
           ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
 
-          # Upload through a non-channel candidate tag. latest, semver and genN
-          # are promoted only after signature, SBOM and provenance verification
-          # in later steps, so update clients can never observe a half-published
-          # release through a channel tag.
-          digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
-          candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
-          podman tag "$QOS_IMAGE" "$candidate"
-          podman push --digestfile "$digest_file" "$candidate"
-          digest="$(tr -d '[:space:]' < "$digest_file")"
-          test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
-          echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
+          if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+            # Upload through a non-channel candidate tag. latest, semver and
+            # genN are promoted only after signature, SBOM and provenance
+            # verification, so update clients cannot observe a half-published
+            # release through a channel tag.
+            digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
+            candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+            podman tag "$QOS_IMAGE" "$candidate"
+            podman push --digestfile "$digest_file" "$candidate"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+            test -n "$digest"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+            echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
+          else
+            echo '::notice::installed OS, desktop, and app integration passed; publication was not requested'
+          fi
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies

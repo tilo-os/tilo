@@ -20,7 +20,8 @@ publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'
 if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
    && grep -Fq '$GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main' "$workflow" \
    && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$workflow" \
-   && [ "$publication_guards" -ge 8 ] \
+   && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]; then" "$workflow" \
+   && [ "$publication_guards" -ge 6 ] \
    && ! grep -Eq "if:.*github.event_name == 'workflow_dispatch'[[:space:]]*}}" "$workflow"; then
   ok 'manual publication is explicit and restricted to main'
 else
