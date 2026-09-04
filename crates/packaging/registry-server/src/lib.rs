@@ -39,12 +39,21 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 pub mod allowlist;
+pub mod bundle_review;
+pub mod moderation;
 pub mod serve;
 pub mod storage;
 
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
+pub use bundle_review::{
+    BundleReviewError, InspectedVersion, InspectionPolicy, inspect_bytes, inspect_entry,
+};
+pub use moderation::{ModerationError, ModerationService};
 pub use serve::{AppState, handle};
-pub use storage::{ServerIdentity, Storage, StorageError};
+pub use storage::{
+    PendingSubmission, ReviewDecision, ReviewRecord, ReviewSubject, ServerIdentity, Storage,
+    StorageError,
+};
 
 /// Bind the server to `addr` and run until the listener errors or
 /// the process is killed. Public so integration tests can drive
