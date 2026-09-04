@@ -54,6 +54,9 @@ refresh_visual_image="$({
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
   && [ "$nightly_visual_image" = "$refresh_visual_image" ] \
   && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
+  && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh_workflow" \
+  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' \
+    "$visual_refresh_workflow" \
   && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
   printf 'ok    visual verification and reviewed candidates share one immutable builder\n'
 else
