@@ -40,6 +40,10 @@ use crate::onboarding::{
 
 const PANEL_MAX_WIDTH: f32 = 720.0;
 const PANEL_MAX_HEIGHT: f32 = 620.0;
+/// The introduction has much less content than the recovery and completion
+/// stages. Giving it the maximum-height scroll viewport made the first thing
+/// a new user saw look like a mostly empty dialog.
+const INTRO_PANEL_HEIGHT: f32 = 420.0;
 const VIEWPORT_GUTTER: f32 = 32.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
@@ -1864,7 +1868,10 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
             let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
-            self.finished = (self.tour_only && at_tour_end)
+            // A reopened, tour-only flow exposes “Skip tour” on every page.
+            // Its action is KEY_FINISH, so it must dismiss from every page,
+            // not only from the final hand-off page.
+            self.finished = self.tour_only
                 || ((at_tour_end || skipping_tour)
                     && self.flow.is_done()
                     && self.finish_persisted_progress());
@@ -1896,7 +1903,12 @@ impl Widget for OnboardingView {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         self.transition_duration = theme.tokens.motion.durations.slow();
-        let mut composed = self.build_composition(theme, PANEL_MAX_HEIGHT);
+        let panel_height = if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+            INTRO_PANEL_HEIGHT
+        } else {
+            PANEL_MAX_HEIGHT
+        };
+        let mut composed = self.build_composition(theme, panel_height);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -1907,7 +1919,7 @@ impl Widget for OnboardingView {
             cs.size.width = taffy::Dimension::percent(1.0);
             cs.size.height = taffy::Dimension::percent(1.0);
             cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
-            cs.max_size.height = taffy::Dimension::length(PANEL_MAX_HEIGHT);
+            cs.max_size.height = taffy::Dimension::length(panel_height);
             cs.flex_grow = 0.0;
             cs.flex_shrink = 1.0;
             let _ = taffy.set_style(child, cs);
@@ -3204,6 +3216,42 @@ mod tests {
         let panel = view.composed.as_ref().expect("composition").get_rect();
         assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
         assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
+    }
+
+    #[test]
+    fn introduction_uses_a_compact_panel_on_a_large_display() {
+        let (mut view, _) = view();
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
+                },
+                |known, available, node_id, _, _| {
+                    node_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("large setup layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let panel = view.composed.as_ref().expect("composition").get_rect();
+        assert!(
+            panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
+            "intro should not inherit the taller recovery panel: {panel:?}"
+        );
+        assert!(
+            panel.height() >= 300.0,
+            "intro content must retain a readable surface: {panel:?}"
+        );
     }
 
     #[test]

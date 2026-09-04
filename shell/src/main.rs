@@ -5,10 +5,11 @@
 //! smithay server, vello+wgpu winit backend); [`Mode::Hosted`] is an
 //! explicit dev opt-in (`--mode hosted`) for the legacy iced-on-winit path.
 //!
-//! Two side-channel modes short-circuit dispatch before `parse_mode`
-//! runs, mutually exclusive: `--portal-server-only` runs only the
-//! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
-//! for `wayland-N`); `--firstboot` runs machine setup and exits.
+//! Side-channel modes are resolved before `parse_mode`: `--portal-server-only`
+//! runs only the `xdg-desktop-portal` D-Bus backend (so it doesn't race the
+//! compositor for `wayland-N`); `--firstboot-only` runs machine setup and
+//! exits, while the host-session `--firstboot` hook performs that idempotent
+//! setup and continues into the compositor.
 
 #![cfg_attr(
     test,
