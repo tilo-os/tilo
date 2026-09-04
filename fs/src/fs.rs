@@ -4986,7 +4986,7 @@ mod availability_control_tests {
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: collab_types::FileRecordId,
-        predicate: impl Fn(&RecordAvailability) -> bool,
+        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         wait_for_availability_with_timeout(registry, record, Duration::from_secs(8), predicate)
             .await;
@@ -4996,7 +4996,7 @@ mod availability_control_tests {
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: collab_types::FileRecordId,
         timeout: Duration,
-        predicate: impl Fn(&RecordAvailability) -> bool,
+        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         tokio::time::timeout(timeout, async {
             loop {
@@ -5100,6 +5100,7 @@ mod availability_control_tests {
             let mut record = registry.get(record_id).unwrap().clone();
             record.policy = AvailabilityPolicy::Automatic;
             registry.put(record).unwrap();
+            drop(registry);
             wake.send_modify(|generation| *generation = generation.wrapping_add(1));
         });
 
@@ -5166,6 +5167,10 @@ mod availability_control_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one restart scenario verifies pin inheritance, retry, and version replacement together"
+    )]
     async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
@@ -5318,7 +5323,7 @@ mod availability_control_tests {
                 .unwrap()
                 .create_file(
                     folder,
-                    &format!("{index}.bin"),
+                    format!("{index}.bin"),
                     Some(&Hash::from([index.saturating_add(1); 32])),
                     1,
                     2,
@@ -5352,7 +5357,7 @@ mod availability_control_tests {
                 .records()
                 .filter(|record| record.kind == RecordKind::File)
                 .collect::<Vec<_>>();
-            (
+            let counts = (
                 children
                     .iter()
                     .filter(|record| record.transfer.retry_count == 1)
@@ -5364,7 +5369,9 @@ mod availability_control_tests {
                             && record.transfer.retry_count == 0
                     })
                     .count(),
-            )
+            );
+            drop(registry);
+            counts
         };
         assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
         assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);

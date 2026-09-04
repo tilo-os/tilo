@@ -234,6 +234,10 @@ impl Widget for ResourceActionHost {
         vec![self.root.as_ref()]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.root.as_ref());
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.root.as_mut()]
     }

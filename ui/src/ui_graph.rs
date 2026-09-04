@@ -909,6 +909,10 @@ impl Widget for LiveUi {
         vec![self.child.as_ref()]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.child.as_ref());
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.child.as_mut()]
     }
@@ -2554,6 +2558,10 @@ impl Widget for UiGraphEditor {
 
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.child.as_ref()]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.child.as_ref());
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

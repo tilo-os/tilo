@@ -969,6 +969,38 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "Insert table",
         &insert_table_action(&ctx.caret_block, 2, 2),
     ));
+    let image_anchor = ctx.caret_block.clone();
+    let image_offset = ctx.caret_offset;
+    root = root.with_action(
+        ActionSpec::prompted_content(
+            "place-image",
+            "Place image",
+            "Image content produced by the preceding action",
+            "content hash",
+            ExecutionLocus::ClientLocal,
+            move |hash| {
+                let Some(bytes) = qdoc::blobstore::get(hash) else {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: format!("content `{hash}` is not available on this machine")
+                            .into_bytes(),
+                    };
+                };
+                let meta = qdoc::blobstore::sniff(&bytes);
+                encode(&insert_image_action(
+                    &image_anchor,
+                    image_offset,
+                    bytes,
+                    (meta.w > 0).then(|| i64::from(meta.w)),
+                    (meta.h > 0).then(|| i64::from(meta.h)),
+                ))
+            },
+        )
+        .with_description(
+            "Place the single content result of the immediately preceding action at the caret",
+        )
+        .reversible(),
+    );
     root = root.with_action(immediate_spec(
         "insert-page-break",
         "Insert page break",
@@ -1434,6 +1466,48 @@ mod tests {
             ));
             assert!(action.contract.validate_declaration().is_empty());
         }
+    }
+
+    /// The hand-off operation consumes bytes an earlier action actually put
+    /// in the content store. The model supplies neither the hash nor image
+    /// metadata; the app resolves both while building its own document action.
+    #[test]
+    fn place_image_consumes_a_published_content_hash() {
+        let (mut state, ids) = seeded("Intro\n");
+        let block = ids[0].clone();
+        let ctx = WpResourceCtx {
+            caret_block: block,
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+        };
+        let bytes = b"content supplied by a preceding action";
+        let hash = qdoc::blobstore::put(bytes);
+        let resources = provide_resources(&ctx, &state.doc);
+        let descriptor = qos_actions::door::survey(&resources)
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == "place-image")
+            .expect("the document publishes its content hand-off action");
+        assert!(descriptor.input.wants_content());
+
+        let arguments = serde_json::Map::from_iter([(
+            qos_actions::PROMPTED_PARAM.to_string(),
+            serde_json::Value::String(hash.clone()),
+        )]);
+        qos_actions::door::invoke_json(
+            &mut state.doc,
+            &resources,
+            &descriptor.address,
+            &arguments,
+            b"agent",
+            &registry(),
+            &mut LocalTransport::new(),
+        )
+        .expect("the app resolves and places available content");
+
+        assert!(body_blocks(&state.doc).iter().any(|block| {
+            block.kind == "image"
+                && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.clone()))
+        }));
     }
 
     /// Ctrl+K publishes the document resource with its structural children: an

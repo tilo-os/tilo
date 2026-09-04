@@ -1650,6 +1650,10 @@ impl State {
 // resolves the target `WlSurface` and its tile origin for normal Wayland
 // enter/motion delivery.
 impl RemoteInputSink for State {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all remote input variants share one serial/time snapshot and seat dispatch boundary"
+    )]
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
             target: "shell::compositor::state",

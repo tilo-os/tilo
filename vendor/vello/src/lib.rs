@@ -341,6 +341,16 @@ pub struct Renderer {
     /// The results from profiling. This is *not* treated as public API.
     pub profile_result: Option<Vec<wgpu_profiler::GpuTimerQueryResult>>,
 }
+
+/// GPU allocations whose sizes Vello can account for directly. Driver,
+/// pipeline-cache, and swapchain memory are intentionally excluded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RendererMemoryStats {
+    pub bump_budget_bytes: u64,
+    pub pooled_buffer_bytes: u64,
+    pub live_buffer_bytes: u64,
+    pub image_bytes: u64,
+}
 // This is not `Send` (or `Sync`) on WebAssembly as the
 // underlying wgpu types are not. This can be enabled with the
 // `fragile-send-sync-non-atomic-wasm` feature in wgpu.
@@ -454,6 +464,26 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             profile_result: None,
         })
+    }
+
+    /// Return the GPU allocations whose byte sizes are directly known to the
+    /// renderer. This is intended for performance budgets and diagnostics.
+    pub fn memory_stats(&self) -> RendererMemoryStats {
+        let (pooled_buffer_bytes, live_buffer_bytes, image_bytes) =
+            self.engine.tracked_memory_bytes();
+        RendererMemoryStats {
+            bump_budget_bytes: self.budget.effective_size_in_bytes(),
+            pooled_buffer_bytes,
+            live_buffer_bytes,
+            image_bytes,
+        }
+    }
+
+    /// Drop transient GPU buffers held only for reuse. In-flight command
+    /// buffers keep their own references, so this is safe at a damage-shape
+    /// transition and prevents obsolete size classes living forever.
+    pub fn trim_pooled_buffers(&mut self) {
+        self.engine.clear_pool();
     }
 
     /// Renders a scene to the target texture.

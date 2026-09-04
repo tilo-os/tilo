@@ -2672,6 +2672,10 @@ impl ShellOverlayHost {
     /// Replace one matching peer-window card with a live, session-local
     /// decoder. Returns false when the remote app has no corresponding tab;
     /// the caller may retry when the replicated window description arrives.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stream negotiation fields are supplied together by the authenticated wire event"
+    )]
     pub fn mount_peer_stream(
         &mut self,
         source_peer: u64,
@@ -3252,7 +3256,6 @@ impl ShellOverlayHost {
             for tab in activated_file_tabs {
                 let _ = crate::shell::doc_open::activate_continuity_file_tab(&chrome, tab);
             }
-            return;
         }
     }
 
@@ -4172,13 +4175,18 @@ impl ShellOverlayHost {
             if len == 0 {
                 return None;
             }
-            let next =
-                (isize::try_from(current).ok()? + isize::try_from(steps).ok()?).rem_euclid(len);
-            Some((
+            let next = isize::try_from(current)
+                .ok()?
+                .checked_add(isize::try_from(steps).ok()?)?
+                .rem_euclid(len);
+            let target = (
                 strip,
                 group_id,
                 group.tabs.get(usize::try_from(next).ok()?)?.id,
-            ))
+            );
+            drop(tree);
+            drop(st);
+            Some(target)
         })();
         let Some(target) = target else {
             return false;
@@ -4215,17 +4223,23 @@ impl ShellOverlayHost {
             else {
                 return false;
             };
-            let next = i32::from(group.width.permille())
-                .saturating_add(i32::from(delta_permille))
-                .clamp(
-                    i32::from(ui::widget::WIDTH_MIN_PERMILLE),
-                    i32::from(ui::widget::WIDTH_MAX_PERMILLE),
-                ) as u16;
+            let next = u16::try_from(
+                i32::from(group.width.permille())
+                    .saturating_add(i32::from(delta_permille))
+                    .clamp(
+                        i32::from(ui::widget::WIDTH_MIN_PERMILLE),
+                        i32::from(ui::widget::WIDTH_MAX_PERMILLE),
+                    ),
+            )
+            .unwrap_or(ui::widget::WIDTH_MAX_PERMILLE);
             if next == group.width.permille() {
                 return false;
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
-            (group_id, next)
+            let result = (group_id, next);
+            drop(tree);
+            drop(st);
+            result
         };
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -6869,6 +6883,10 @@ impl ShellOverlayHost {
         }
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a host helper alongside the focus state it describes"
+    )]
     fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
         use settings_store::hardware::ShortcutAction as A;
         let config = settings_store::hardware::ShortcutConfig::load();
@@ -6902,9 +6920,12 @@ impl ShellOverlayHost {
             .shortcut_guide_focus
             .and_then(|focus| controls.iter().position(|candidate| *candidate == focus));
         let next = match (current, backwards) {
-            (Some(0), true) | (None, true) => controls.len().saturating_sub(1),
+            (Some(0) | None, true) => controls.len().saturating_sub(1),
             (Some(index), true) => index.saturating_sub(1),
-            (Some(index), false) => (index + 1) % controls.len(),
+            (Some(index), false) => index
+                .saturating_add(1)
+                .checked_rem(controls.len())
+                .unwrap_or_default(),
             (None, false) => 0,
         };
         self.shortcut_guide_focus = controls.get(next).copied();
@@ -6948,6 +6969,7 @@ impl ShellOverlayHost {
     }
 
     #[allow(
+        clippy::items_after_statements,
         clippy::too_many_lines,
         reason = "central keyboard dispatcher keeps shortcut precedence visible in one ordered match"
     )]
@@ -7860,6 +7882,10 @@ impl ShellOverlayHost {
     /// lines of one `handle_event`; the flag-gated per-overlay handlers
     /// always end in `*handled = true`, so once inside one this always
     /// returns.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered modal hit testing is intentionally centralized"
+    )]
     fn handle_shell_mouse_click_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -10018,11 +10044,10 @@ impl Widget for ShellOverlayHost {
             use settings_store::hardware::ShortcutAction;
             let shortcuts = settings_store::hardware::ShortcutConfig::load();
             let chord = |action| {
-                shortcuts
-                    .bindings
-                    .get(&action)
-                    .map(settings_store::hardware::KeyChord::display)
-                    .unwrap_or_else(|| "unassigned".to_string())
+                shortcuts.bindings.get(&action).map_or_else(
+                    || "unassigned".to_string(),
+                    settings_store::hardware::KeyChord::display,
+                )
             };
             root.children.push(
                 AccessNode::new(Role::Dialog)
@@ -11162,6 +11187,11 @@ impl ShellOverlayHost {
         );
     }
 
+    #[allow(
+        clippy::items_after_statements,
+        clippy::too_many_lines,
+        reason = "the shortcut guide is one cohesive modal rendering pass"
+    )]
     fn draw_shortcut_help(
         &mut self,
         scene: &mut Scene,

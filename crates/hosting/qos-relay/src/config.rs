@@ -171,6 +171,10 @@ mod workspace_id_serde {
         Legacy(u64),
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "Serde's serialize_with contract passes the field by reference"
+    )]
     pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

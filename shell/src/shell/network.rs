@@ -463,7 +463,7 @@ pub struct ShellNetwork {
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
-    /// Populated only after IdentityHello admission succeeds.
+    /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
     /// Authenticated host sessions whose ephemeral presence plane is ready.
     workspace_control_relays: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -711,6 +711,10 @@ impl ShellNetwork {
     /// Returns an error if the tokio runtime fails to build, the device
     /// keypair can't be loaded or generated at `keypair_path`, or the
     /// Iroh endpoint fails to bind.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "network startup wires the complete actor state"
+    )]
     pub fn spawn(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
@@ -868,7 +872,12 @@ impl ShellNetwork {
     /// Resolve and open a qOS workspace-control session over an authenticated
     /// exact-target device route. A successful route is transport reachability
     /// only: the returned session still waits for the target's authenticated
-    /// SurfaceStreamStart before allowing input.
+    /// `SurfaceStreamStart` before allowing input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is local, transport is unavailable, or
+    /// no authenticated exact-target route is currently reachable.
     pub fn open_workspace_control(
         &self,
         workspace: u64,
@@ -883,8 +892,7 @@ impl ShellNetwork {
         let direct_reachable = self
             .workspace_control_direct
             .lock()
-            .map(|peers| peers.contains(&(workspace, target)))
-            .unwrap_or(false);
+            .is_ok_and(|peers| peers.contains(&(workspace, target)));
         let relay_ids = self
             .workspace_control_relays
             .lock()
@@ -942,6 +950,11 @@ impl ShellNetwork {
 
     /// Publish one input through a session's selected route. The session gate
     /// constructs no message before consent or after revocation/disconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session gate rejects input or the transport
+    /// command queue is unavailable.
     pub fn publish_workspace_control_input(
         &self,
         session: &crate::network::WorkspaceControlSession,
@@ -967,6 +980,10 @@ impl ShellNetwork {
         rx
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct one-shot events and observers each need an owned clone"
+    )]
     fn notify_workspace_control(&self, event: WorkspaceControlNetworkEvent) {
         if let Ok(mut observers) = self.workspace_control_observers.lock() {
             observers.retain(|observer| observer.send(event.clone()).is_ok());
@@ -1549,22 +1566,21 @@ impl ShellNetwork {
                 .lock()
                 .ok()
                 .and_then(|hosts| hosts.iter().find(|known| known.id == addr.id).cloned());
-            if current.as_ref() != Some(&addr) {
-                if self
+            if current.as_ref() != Some(&addr)
+                && self
                     .cmd_tx
                     .try_send(NetCmd::ConnectHost {
                         addr: addr.clone(),
                         expectation: Some(host.expectation),
                     })
                     .is_ok()
-                {
-                    if let Ok(mut hosts) = self.host_addrs.lock() {
-                        hosts.retain(|known| known.id != addr.id);
-                        hosts.push(addr.clone());
-                    }
-                    applied_ids.insert(addr.id);
-                    changed = true;
+            {
+                if let Ok(mut hosts) = self.host_addrs.lock() {
+                    hosts.retain(|known| known.id != addr.id);
+                    hosts.push(addr.clone());
                 }
+                applied_ids.insert(addr.id);
+                changed = true;
             }
         }
         if let Ok(mut ids) = self.registered_home_peer_ids.lock() {
@@ -1767,6 +1783,10 @@ impl ShellNetwork {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "invite issuance validates and signs one atomic credential"
+    )]
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -2178,7 +2198,7 @@ impl ShellNetwork {
         let mut report =
             crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
                 &tree_handle.read(),
-                device.clone(),
+                device,
                 *counter,
                 &reports,
             );
@@ -2634,6 +2654,10 @@ impl ShellNetwork {
     /// Handle the private same-person lane before room authorization. Returns
     /// `true` for both accepted and rejected personal messages so neither can
     /// fall through into the collaboration-room replica.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "continuity admission and reconciliation form one ordered transaction"
+    )]
     fn dispatch_personal_continuity(
         &self,
         ws: u64,
@@ -2777,7 +2801,9 @@ impl ShellNetwork {
                         });
                 let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
                 let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
-                reconciled_tabs || reconciled_rooms || adopted_rooms || materialized
+                let changed = reconciled_tabs || reconciled_rooms || adopted_rooms || materialized;
+                drop(tree);
+                changed
             });
             if adopted {
                 // Joining the room topics is demand-driven by these requests;
@@ -2807,10 +2833,19 @@ impl ShellNetwork {
             NeighbourMsg::SurfaceStreamStart { source_peer, .. }
             | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
             | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
-            NeighbourMsg::ScrollbackRequest { requester, .. } => Some(*requester),
-            NeighbourMsg::ScrollbackResponse { responder, .. } => Some(*responder),
-            NeighbourMsg::PersonalContinuityRequest { requester, .. } => Some(*requester),
-            NeighbourMsg::PersonalContinuityCheckpoint { publisher, .. } => Some(*publisher),
+            NeighbourMsg::ScrollbackRequest {
+                requester: publisher,
+                ..
+            }
+            | NeighbourMsg::PersonalContinuityRequest {
+                requester: publisher,
+                ..
+            }
+            | NeighbourMsg::ScrollbackResponse {
+                responder: publisher,
+                ..
+            }
+            | NeighbourMsg::PersonalContinuityCheckpoint { publisher, .. } => Some(*publisher),
             NeighbourMsg::SyncReq { .. }
             | NeighbourMsg::SyncResp { .. }
             | NeighbourMsg::PermissionGrant { .. }
@@ -2831,8 +2866,6 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceStreamEnd { .. }
             | NeighbourMsg::RemoteInput { .. }
             | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
-            NeighbourMsg::PersonalContinuityRequest { .. }
-            | NeighbourMsg::PersonalContinuityCheckpoint { .. } => crate::shell::state::Verb::Read,
             _ => crate::shell::state::Verb::Read,
         }
     }
@@ -3491,7 +3524,7 @@ mod tests {
         user_public_key: [u8; 32],
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         let (mut net, commands) =
-            shell_network_for_test(WorkspaceTree::default().shared(), 0xC011_AB);
+            shell_network_for_test(WorkspaceTree::default().shared(), 0x00C0_11AB);
         net.personal_continuity_user = Some(user_public_key);
         net.personal_continuity_device = Some(
             crate::shell::personal_continuity::DeviceId::new("local-continuity-device")
@@ -3677,6 +3710,7 @@ mod tests {
                         .expect("shipped app metadata contract accepts the report")
                 );
             }
+            drop(reports);
         }
 
         let dir = tempfile::tempdir().expect("continuity store");
@@ -3747,6 +3781,8 @@ mod tests {
                     .iter()
                     .any(|workspace| workspace.room == room)
             );
+            drop(tree);
+            drop(replica);
         }
 
         // Model the exact peer-window -> launcher staging used before the
@@ -4026,11 +4062,11 @@ mod tests {
 
     #[test]
     fn personal_continuity_accepts_populated_same_root_checkpoint_without_changing_focus() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let signing_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
         let peer_device = iroh::SecretKey::from_bytes(&[0xD2; 32]);
-        let user_public_key = root.verifying_key().to_bytes();
+        let user_public_key = signing_root.verifying_key().to_bytes();
         let (net, _commands) = personal_continuity_network_for_test(user_public_key);
-        authenticated_personal_peer(&net, &root, &peer_device);
+        authenticated_personal_peer(&net, &signing_root, &peer_device);
 
         let active_before = net
             .replica
@@ -4044,13 +4080,13 @@ mod tests {
             peer_device.public().as_bytes(),
         ))
         .expect("endpoint id is a valid device id");
-        let room = RoomId::new();
+        let room_id = RoomId::new();
         let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
             peer_device_id.clone(),
             1,
             None,
             vec![crate::shell::personal_continuity::WorkspaceContinuation {
-                room,
+                room: room_id,
                 apps: Vec::new(),
             }],
         )
@@ -4088,12 +4124,14 @@ mod tests {
         let adopted = tree
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
+            .find(|workspace| workspace.room == room_id)
             .expect("continuation room is available for later user-directed restore");
         assert!(
             adopted.strips.is_empty(),
             "receiving a continuation must not recreate applications"
         );
+        drop(tree);
+        drop(replica);
     }
 
     #[test]

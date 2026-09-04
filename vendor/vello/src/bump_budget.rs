@@ -186,6 +186,10 @@ impl BudgetTracker {
         self.pending.is_some()
     }
 
+    pub(crate) fn effective_size_in_bytes(&self) -> u64 {
+        self.effective().size_in_bytes()
+    }
+
     /// Collect a finished readback, if there is one, and grow the budget
     /// to cover what it reports.
     ///

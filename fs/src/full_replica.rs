@@ -96,7 +96,7 @@ mod relay_workspace_ids_serde {
 /// qOS currently has one global Files namespace and one certified filesystem
 /// transport identity per device. Shell rooms are mapped through
 /// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
-/// bundles would bind competing endpoints under that same certified NodeId.
+/// bundles would bind competing endpoints under that same certified `NodeId`.
 /// Reject that unsafe topology before any worker starts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +106,10 @@ pub struct HomePeerSet {
 }
 
 /// Validate the topology before binding an authenticated filesystem endpoint.
+///
+/// # Errors
+///
+/// Returns an error unless the bundle contains exactly one workspace.
 pub fn validate_home_peer_set(bundle: &HomePeerSet) -> anyhow::Result<()> {
     anyhow::ensure!(
         bundle.workspaces.len() == 1,
@@ -157,6 +161,10 @@ impl FullReplicaStatus {
         }
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the terminal status takes ownership of the error it replaces"
+    )]
     fn failed(mut self, error: anyhow::Error) -> Self {
         self.state = "failed".into();
         self.error = Some(error.to_string());
@@ -187,8 +195,10 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
     .into();
     aggregate.error = states.iter().find_map(|status| status.error.clone());
     if aggregate.full_content_replication {
-        if states.len() == 1 {
-            aggregate.namespace_generation = states[0].namespace_generation.clone();
+        if let [status] = states {
+            aggregate
+                .namespace_generation
+                .clone_from(&status.namespace_generation);
         }
         for status in states {
             for endpoint in &status.filesystem_endpoints {
@@ -206,6 +216,10 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
 }
 
 /// Atomically write the status consumed by `qos-relay` and status tooling.
+///
+/// # Errors
+///
+/// Returns an error if the status cannot be serialized or atomically written.
 pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = unix_now_ms();
@@ -223,6 +237,10 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Read the last complete status record, if any.
+///
+/// # Errors
+///
+/// Returns an error if the status file cannot be read or decoded.
 pub fn load_status(path: &Path) -> Result<Option<FullReplicaStatus>> {
     if !path.exists() {
         return Ok(None);
@@ -241,11 +259,13 @@ pub async fn hydrate_full_workspace(
     hydrator: &Hydrator,
 ) -> FullReplicaStatus {
     let mut status = FullReplicaStatus::syncing();
-    let roots = match namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)
-    {
+    let roots_result = {
+        let namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        namespace.live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)
+    };
+    let roots = match roots_result {
         Ok(roots) => roots,
         Err(error) => return status.failed(error.into()),
     };
@@ -272,7 +292,7 @@ pub async fn hydrate_full_workspace(
             }
             let manifest = match Manifest::decode(&manifest_bytes) {
                 Ok(manifest) => manifest,
-                Err(error) => return status.failed(error.into()),
+                Err(error) => return status.failed(error),
             };
             if manifest.chunks.len() > MAX_REPLICA_CHUNKS_PER_RECORD {
                 return status.failed(anyhow::anyhow!("manifest exceeds replica chunk budget"));
@@ -351,6 +371,12 @@ pub async fn hydrate_full_workspace(
 /// selected historical bytes separately. Callers invoke this only after a
 /// stable hydration pass and withdraw readiness if the pass changes
 /// underneath it.
+///
+/// # Errors
+///
+/// Returns an error if the namespace cannot be scanned, a manifest cannot be
+/// hydrated or decoded, the content store cannot be listed, or obsolete blobs
+/// cannot be removed.
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
@@ -390,16 +416,14 @@ pub async fn prune_obsolete_workspace_content(
         // async, so drive the bounded batch on a helper thread while retaining
         // the lease instead of awaiting with a std::Mutex guard.
         let batch_removed = {
-            let mut namespace = namespace
+            let mut namespace_guard = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let current = *blake3::hash(&namespace.save()).as_bytes();
-            if current != generation {
-                None
-            } else {
+            let current = *blake3::hash(&namespace_guard.save()).as_bytes();
+            if current == generation {
                 let selected = hashes.iter().copied().collect::<HashSet<_>>();
                 let store = Arc::clone(&hydrator.store);
-                Some(std::thread::scope(|scope| {
+                let result = Some(std::thread::scope(|scope| {
                     scope
                         .spawn(|| {
                             // A dedicated runtime keeps the generation lease
@@ -415,7 +439,13 @@ pub async fn prune_obsolete_workspace_content(
                         })
                         .join()
                         .map_err(|_| anyhow::anyhow!("replica GC worker panicked"))?
-                })?)
+                })?);
+                // The guard is the generation lease: keep it through the
+                // physical deletion, then release it before yielding.
+                drop(namespace_guard);
+                result
+            } else {
+                None
             }
         };
         let Some(batch_removed) = batch_removed else {
@@ -569,7 +599,7 @@ mod tests {
         };
         assert!(validate_home_peer_set(&one).is_ok());
         let many = HomePeerSet {
-            status_file: one.status_file.clone(),
+            status_file: one.status_file,
             workspaces: vec![workspace.clone(), workspace],
         };
         assert!(validate_home_peer_set(&many).is_err());
@@ -655,6 +685,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one lifecycle scenario preserves authorization and content state across owner loss and restart"
+    )]
     async fn two_user_owner_offline_revoke_delete_and_restart_lifecycle() {
         use crate::{Access, IdentityKey};
         use collab_types::{CapOverride, Effect, Scope, Subject, Verb};

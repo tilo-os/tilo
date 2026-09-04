@@ -279,9 +279,8 @@ impl ProtocolHandler for SurfaceStreamProtocol {
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
             loop {
-                let mut recv = match connection.accept_uni().await {
-                    Ok(recv) => recv,
-                    Err(_) => return,
+                let Ok(mut recv) = connection.accept_uni().await else {
+                    return;
                 };
                 let bytes = match recv.read_to_end(MAX_SURFACE_FRAME_BYTES).await {
                     Ok(bytes) => bytes,
@@ -575,13 +574,13 @@ impl ActorState {
                 self.surface_connections.insert(peer, connection.clone());
                 connection
             };
-            let send = async {
+            let send_frame = async {
                 let mut stream = connection.open_uni().await.map_err(|_| ())?;
                 stream.write_all(&bytes).await.map_err(|_| ())?;
                 stream.finish().map_err(|_| ())?;
                 Ok::<(), ()>(())
             };
-            match tokio::time::timeout(Duration::from_millis(40), send).await {
+            match tokio::time::timeout(Duration::from_millis(40), send_frame).await {
                 Ok(Ok(())) => sent = sent.saturating_add(1),
                 _ => {
                     self.surface_connections.remove(&peer);
@@ -827,10 +826,10 @@ impl ActorState {
     ) {
         self.connecting_hosts.remove(&(ws, peer));
         if !self.topics.contains_key(&ws)
-            || !self
+            || self
                 .hosts
                 .get(&peer)
-                .is_some_and(|(current, _)| current == attempted_addr)
+                .is_none_or(|(current, _)| current != attempted_addr)
         {
             return;
         }
@@ -1148,7 +1147,7 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } => {
-            let mut route = Vec::with_capacity(20 + user_public_key.len());
+            let mut route = Vec::with_capacity(20_usize.saturating_add(user_public_key.len()));
             route.extend_from_slice(b"personal-continuity\0");
             route.extend_from_slice(user_public_key);
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
@@ -1182,6 +1181,11 @@ fn mark_new_message(
     true
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "host scheduling coordinates one deduplicated session and its associated discovery worker"
+)]
 fn schedule_host_topic(
     endpoint: &Endpoint,
     identity: &HostIdentity,
@@ -1341,6 +1345,8 @@ fn schedule_host_topic(
 /// wait on the group-restricted daemon socket but must never delay networking
 /// or the compositor. The filesystem owns persistence and hydration policy.
 async fn register_content_peer(registration: qos_relay::ContentPeerRegistration) -> bool {
+    use tokio::io::AsyncWriteExt as _;
+
     if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
@@ -1375,7 +1381,6 @@ async fn register_content_peer(registration: qos_relay::ContentPeerRegistration)
             return false;
         }
     };
-    use tokio::io::AsyncWriteExt as _;
     let Some(mut stdin) = child.stdin.take() else {
         tracing::warn!("filesystem content-peer registration has no stdin");
         return false;
@@ -1995,10 +2000,14 @@ mod tests {
     }
 
     /// Exercise the exact scheduled enrolled-home-peer route, rather than a
-    /// direct RelayClient unit call. In particular, this protects against an
+    /// direct `RelayClient` unit call. In particular, this protects against an
     /// innocuous-looking refactor that drops `HomePeerExpectation` before the
     /// relay dial.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "integration scenario exercises admission and revocation in one lifecycle"
+    )]
     async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
         use rand_core::OsRng;
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
@@ -2362,6 +2371,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "integration scenario verifies checkpoint replay across a full host lifecycle"
+    )]
     async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
         use rand_core::OsRng;
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
@@ -2444,7 +2457,7 @@ mod tests {
             Some(identity(b_restart_key, b_restart_cert)),
             Arc::new(Mutex::new(Vec::new())),
         );
-        let (events, mut replay) = mpsc::channel(16);
+        let (events, mut replay_events) = mpsc::channel(16);
         cmd_restarted
             .send(NetCmd::JoinWorkspace {
                 ws: 42,
@@ -2463,7 +2476,7 @@ mod tests {
             if let Some(NetEvent::Msg {
                 msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
                 ..
-            }) = timeout(Duration::from_secs(10), replay.recv())
+            }) = timeout(Duration::from_secs(10), replay_events.recv())
                 .await
                 .unwrap()
             {
