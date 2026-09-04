@@ -113,12 +113,12 @@ jobs:
           )
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package",targets:$targets},
+              {arch:"amd64",runner:"qos-package-optimized",targets:$targets},
               {arch:"arm64",runner:"runner-arm64",targets:$targets}
             ]}')
           else
             matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package",targets:$targets}
+              {arch:"amd64",runner:"qos-package-optimized",targets:$targets}
             ]}')
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -126,6 +126,8 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
+    # The amd64 matrix entry uses the measured optimized package class; native
+    # ARM64 tags and explicit full-native runs retain their ARM runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     # Each architecture is one sequential lane so the five userspaces reuse
