@@ -240,13 +240,13 @@ fn service_word_processor_invocation(
 
 /// Drive the peer exactly as the app would: answer the agent's Arrived with
 /// a full snapshot, apply every incremental change to the replica, and
-/// watch for the table. Returns the replica, whether it settled into the
+/// watch for the table. Returns the peer, replica, whether it settled into the
 /// table, whether Scribe's own presence was observed, and the authenticated
 /// actor attached to the broker invocation.
 fn drive_peer_to_table(
     mut peer: UnixStream,
     mut replica: AutoCommit,
-) -> (AutoCommit, bool, bool, String) {
+) -> (UnixStream, AutoCommit, bool, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_scribe_presence = false;
@@ -324,6 +324,7 @@ fn drive_peer_to_table(
         }
     }
     (
+        peer,
         replica,
         done,
         saw_scribe_presence,
@@ -424,7 +425,7 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
             .expect("agent session")
     });
 
-    let (mut replica, done, saw_scribe_presence, invocation_actor) =
+    let (mut peer, mut replica, done, saw_scribe_presence, invocation_actor) =
         drive_peer_to_table(peer, replica);
     assert!(
         saw_scribe_presence,
@@ -439,6 +440,59 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
             .collect::<Vec<_>>()
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
+
+    // The successful task is subsequently recorded as a marker in the same
+    // real document stream. Keep consuming after the visible table result:
+    // history evidence must arrive even though the user-facing work already
+    // looks complete.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
+        let Some(event) = recv(&mut peer) else {
+            continue;
+        };
+        if let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) {
+            replica.load_incremental(&data).unwrap();
+        }
+    }
+    let runs = ui::read_runs(&replica);
+    let run = runs.last().expect("the completed agent task is recorded");
+    assert_eq!(run.instruction.as_deref(), Some("insert a table"));
+    let issuer = hex::encode("quinten");
+    assert_eq!(run.issued_by.as_deref(), Some(issuer.as_str()));
+    assert!(
+        run.decision
+            .as_deref()
+            .is_some_and(|decision| decision.contains("switched off")),
+        "the fallback decision remains reviewable: {run:?}"
+    );
+    assert!(
+        !run.steps.is_empty(),
+        "the run must retain an exact change range for undo/review"
+    );
+    let history = ui::HistorySource::new().entries(&mut replica);
+    assert!(
+        history.iter().any(|entry| {
+            entry.context.as_ref().is_some_and(|context| {
+                context.purpose.as_deref() == Some("insert a table")
+                    && context
+                        .group
+                        .as_ref()
+                        .is_some_and(|group| group.kind == "agent-run")
+            })
+        }),
+        "the live history source exposes the task context for review"
+    );
+    let mut open = [(APP.to_string(), RECORD.to_string(), &mut replica)];
+    let report = ui::undo_run(
+        run,
+        Some(&hex::encode("Scribe")),
+        &ui::AuthorDirectory::new(),
+        &mut open,
+    );
+    assert!(
+        report.is_complete(),
+        "the recorded task can be undone as one run: {report:?}"
+    );
 
     assert_table_and_attribution(&mut replica, &invocation_actor);
 }

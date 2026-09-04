@@ -2870,6 +2870,18 @@ fn attach_peer_presence(
     broker: &crate::shell::collab_broker::BrokerHandle,
     net: &Arc<crate::shell::network::ShellNetwork>,
 ) {
+    let follow_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Following { target };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
     let rooms = {
         let chrome = frame_builder.chrome_handle();
         let chrome = chrome.borrow();

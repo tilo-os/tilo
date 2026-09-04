@@ -119,6 +119,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
             dispatcher.set(&room.to_string(), peer_id);
         }));
     }
+    if let Some(network) = peer_sync.as_ref() {
+        let network = Arc::clone(network);
+        host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Following { target };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
+    }
 
     // The portal's two queues, made here (before the host is boxed into the app, since attaching
     // them needs the concrete type) and unconditionally — two cheap handles, and an unfilled queue costs nothing to hold.

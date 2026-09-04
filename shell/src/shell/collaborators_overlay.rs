@@ -20,6 +20,52 @@ const ACTIONS_H: f64 = 40.0;
 const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
 
+/// A compact arrow with an explicit head. Used where a relationship must
+/// remain directional without turning a presence treatment into a label.
+fn draw_direction_arrow(
+    scene: &mut Scene,
+    transform: Affine,
+    from: Point,
+    to: Point,
+    color: Color,
+) {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        return;
+    }
+    let ux = dx / length;
+    let uy = dy / length;
+    let head = 3.5;
+    let wing = 2.3;
+    let base = Point::new(to.x - ux * head, to.y - uy * head);
+    let left = Point::new(base.x - uy * wing, base.y + ux * wing);
+    let right = Point::new(base.x + uy * wing, base.y - ux * wing);
+    let stroke = vello::kurbo::Stroke::new(1.2);
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(from, to),
+    );
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(left, to),
+    );
+    scene.stroke(
+        &stroke,
+        transform,
+        color,
+        None,
+        &vello::kurbo::Line::new(right, to),
+    );
+}
+
 #[allow(
     clippy::cast_precision_loss,
     reason = "a popover can never contain enough rows to exceed f64 integer precision"
@@ -65,12 +111,38 @@ pub struct CollaboratorsModel<'a> {
     pub unavailable: Option<&'a str>,
     pub may_invite: bool,
     pub followed_id: Option<&'a str>,
+    /// Ephemeral room-local attachments, expressed using roster ids.  The
+    /// People surface can therefore show them when cursors are off-screen.
+    pub following_pairs: &'a [(String, String)],
+}
+
+/// Direction of a transient attachment relative to one roster row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RosterFollowRelationship {
+    Follows(String),
+    FollowedBy(String),
+}
+
+impl CollaboratorsModel<'_> {
+    #[must_use]
+    pub fn relationship_for(&self, row_id: &str) -> Option<RosterFollowRelationship> {
+        self.following_pairs.iter().find_map(|(follower, target)| {
+            (follower == row_id)
+                .then(|| RosterFollowRelationship::Follows(target.clone()))
+                .or_else(|| {
+                    (target == row_id)
+                        .then(|| RosterFollowRelationship::FollowedBy(follower.clone()))
+                })
+        })
+    }
 }
 
 struct RowFrame<'a> {
     row: &'a RosterRow,
     y: f64,
     followed: bool,
+    relationship: Option<RosterFollowRelationship>,
+    relationship_partner: Option<&'a RosterRow>,
     cursor: Option<Point>,
 }
 
@@ -159,6 +231,17 @@ impl CollaboratorsOverlay {
             rect.y0 + 48.0
         };
         for (index, row) in model.rows.iter().enumerate() {
+            let relationship = model.relationship_for(&row.id);
+            let relationship_partner = relationship.as_ref().and_then(|relationship| {
+                let partner_id = match relationship {
+                    RosterFollowRelationship::Follows(id)
+                    | RosterFollowRelationship::FollowedBy(id) => id,
+                };
+                model
+                    .rows
+                    .iter()
+                    .find(|candidate| candidate.id == partner_id.as_str())
+            });
             self.draw_row(
                 scene,
                 transform,
@@ -168,6 +251,8 @@ impl CollaboratorsOverlay {
                     row,
                     y: list_top + row_count_as_f64(index) * 48.0,
                     followed: model.followed_id == Some(row.id.as_str()),
+                    relationship,
+                    relationship_partner,
                     cursor,
                 },
             );
@@ -381,6 +466,44 @@ impl CollaboratorsOverlay {
                 &spark,
             );
             scene.fill(Fill::NonZero, transform, row.color, None, &spark);
+            if let (Some(relationship), Some(partner)) =
+                (frame.relationship.as_ref(), frame.relationship_partner)
+            {
+                // Two small, physically paired avatars make the relationship
+                // legible even without a cursor. The arrowhead always lands
+                // on the followed person, so direction is not inferred from
+                // text or row order.
+                let (from, to) = match relationship {
+                    RosterFollowRelationship::Follows(_) => (
+                        Point::new(center.x + 8.0, center.y - 7.0),
+                        Point::new(center.x + 17.0, center.y - 12.0),
+                    ),
+                    RosterFollowRelationship::FollowedBy(_) => (
+                        Point::new(center.x - 17.0, center.y + 12.0),
+                        Point::new(center.x - 8.0, center.y + 7.0),
+                    ),
+                };
+                let partner_center = match relationship {
+                    RosterFollowRelationship::Follows(_) => to,
+                    RosterFollowRelationship::FollowedBy(_) => from,
+                };
+                let partner_rect = Rect::new(
+                    partner_center.x - 6.0,
+                    partner_center.y - 6.0,
+                    partner_center.x + 6.0,
+                    partner_center.y + 6.0,
+                );
+                ui::widget::Avatar::draw_at(
+                    scene,
+                    transform,
+                    partner_rect,
+                    &partner.initial.to_string(),
+                    partner.color,
+                    theme,
+                    text_renderer,
+                );
+                draw_direction_arrow(scene, transform, from, to, row.color.multiply_alpha(0.9));
+            }
         }
     }
 
@@ -690,5 +813,50 @@ mod tests {
         assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
         assert_eq!(overlay.activity_rect(), Rect::ZERO);
         assert!(overlay.row_action_rects().is_empty());
+    }
+
+    #[test]
+    fn roster_model_keeps_follow_direction_when_cursors_are_not_visible() {
+        let rows = vec![
+            RosterRow {
+                id: "ada".into(),
+                label: "Ada".into(),
+                initial: 'A',
+                color: Color::from_rgb8(1, 2, 3),
+                is_agent: false,
+                role: None,
+                invited: false,
+                activity: None,
+                followable: true,
+            },
+            RosterRow {
+                id: "bob".into(),
+                label: "Bob".into(),
+                initial: 'B',
+                color: Color::from_rgb8(4, 5, 6),
+                is_agent: false,
+                role: None,
+                invited: false,
+                activity: None,
+                followable: true,
+            },
+        ];
+        let pairs = vec![("ada".to_string(), "bob".to_string())];
+        let model = CollaboratorsModel {
+            host: Rect::ZERO,
+            rows: &rows,
+            unavailable: None,
+            may_invite: false,
+            followed_id: None,
+            following_pairs: &pairs,
+        };
+        assert_eq!(
+            model.relationship_for("ada"),
+            Some(RosterFollowRelationship::Follows("bob".into()))
+        );
+        assert_eq!(
+            model.relationship_for("bob"),
+            Some(RosterFollowRelationship::FollowedBy("ada".into()))
+        );
     }
 }

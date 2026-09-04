@@ -208,6 +208,14 @@ pub enum FileCommand {
         strategy: collab_types::ConflictStrategy,
         version_id: collab_types::FileVersionId,
     },
+    /// Open a non-committing review step for an exact merge proposal.  The
+    /// final action remains separately signed and re-runs the daemon's
+    /// deterministic preflight, so a stale menu item cannot merge new data.
+    ReviewConflictMerge {
+        conflict_id: uuid::Uuid,
+        version_id: collab_types::FileVersionId,
+        other_device: [u8; 32],
+    },
     CloseCollabPanel,
 }
 
