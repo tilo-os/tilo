@@ -19,6 +19,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
   "$repo/apps/imager/packaging/publish-winget.sh" \
+  "$repo/os/dev/test-installer-cycle.sh" \
   && ok 'imager release and promotion scripts parse' \
   || bad 'an imager release script does not parse'
 
@@ -209,10 +210,47 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
 
 grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
-  && grep -Fq 'podman login code.sandbox.example' "$workflow" \
+  && grep -Fq 'podman login \' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.sandbox.example' "$workflow" \
   && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
+
+cycle="$repo/os/dev/test-installer-cycle.sh"
+if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
+  && grep -Fq 'QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS' "$workflow" \
+  && grep -Fq 'if: always() && matrix.arch == '\''x86_64'\''' "$workflow" \
+  && grep -Fq 'qos-installer-full-cycle-x86_64' "$workflow" \
+  && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
+  && grep -Fq '"$vm" boot-target --gl --no-tpm' "$cycle" \
+  && grep -Fq '"$vm" login --passcode-only "$QOS_PASS"' "$cycle" \
+  && grep -Fq '"$vm" init-cycle' "$cycle" \
+  && grep -Fq "wait_private_screen 'qOS" "$cycle" \
+  && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
+  && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
+  && grep -Fq 'rm -f -- "$run/private-observe.png"' "$cycle" \
+  && grep -Fq '::qos-recovery-key::' "$cycle" \
+  && grep -Fq '.artifact-secret-canary.txt' "$cycle" \
+  && grep -Fq 'test ! -s "$out/.artifact-secret-canary.txt"' "$cycle" \
+  && ! grep -Fq 'QOS_INSTALLER_CYCLE_STORAGE:-$out/storage' "$cycle" \
+  && ! grep -Fq 'cp -f "$run/serial.log" "$out/installer-serial.log"' "$cycle" \
+  && grep -Fq "wait_screen 08-oobe-intro" "$cycle" \
+  && grep -Fq "wait_screen 09-oobe-ready" "$cycle" \
+  && grep -Fq "wait_screen 10-desktop-config" "$cycle" \
+  && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
+  ok 'tagged x86 medium must pass a user-driven encrypted install, boot, login, OOBE, and desktop cycle'
+else
+  bad 'release medium lacks a fail-closed full graphical installation cycle'
+fi
+
+[ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "shell/**"' "$workflow")" -eq 2 ] \
+  && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
+  && grep -Fq 'QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
+  && ! grep -Fq 'QOS_REGISTRY_CREDS:' "$workflow" \
+  && ok 'installer-medium changes trigger native, short-lived-authenticated architecture-matched builds' \
+  || bad 'installer-medium trigger, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
   && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \
