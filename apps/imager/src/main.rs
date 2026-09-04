@@ -67,6 +67,25 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(code) = imager::write::maybe_run_write_helper(&args)? {
         std::process::exit(code);
     }
+    // Packaging smoke probe: reaching this point proves the executable and
+    // all runtime-linked libraries load without starting graphics, portals,
+    // device discovery, or a privileged path.
+    if args.iter().any(|arg| arg == "--qos-package-smoke") {
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--qos-flatpak-probe-smoke") {
+        if !cfg!(feature = "flatpak-media-writer")
+            || std::env::var("QOS_IMAGER_FLATPAK").as_deref() != Ok("1")
+        {
+            return Err("the Flatpak probe smoke test is outside its sandbox".into());
+        }
+        let drives = imager::probe::probe()
+            .ok_or("the Flatpak could not reconcile lsblk with host UDisks2 inventory")?;
+        if drives.is_empty() {
+            return Err("the Flatpak returned an empty drive inventory".into());
+        }
+        return Ok(());
+    }
     let viewport = parse_value_arg(&args, "--viewport")
         .and_then(|s| parse_viewport(&s))
         .unwrap_or(DEFAULT_SHOTS_VIEWPORT);

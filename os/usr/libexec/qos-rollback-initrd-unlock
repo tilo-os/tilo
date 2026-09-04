@@ -1,0 +1,56 @@
+#!/usr/bin/bash
+# Offer a qos-rollback TPM2+PIN key before systemd-cryptsetup falls back to its
+# normal recovery-key/passphrase/FIDO2 agents. This runs only in the initramfs.
+set -uo pipefail
+
+uuid="${1:-}"
+if [[ ! "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+  printf 'qos-rollback: invalid LUKS UUID from generator\n' >&2
+  exit 0
+fi
+
+device="/dev/disk/by-uuid/$uuid"
+volume="luks-$uuid"
+runtime_root="${QOS_ROLLBACK_RUNTIME_ROOT:-}"
+output="$runtime_root/run/cryptsetup-keys.d/$volume.key"
+pin_dir="$runtime_root/run/qos-rollback"
+pin_file="$pin_dir/unlock.pin"
+
+# Do not show a redundant PIN prompt on ordinary passphrase-only installs. A
+# malformed qOS token deliberately reaches qos-rollback, which logs the problem
+# and then yields to the independent unlock path.
+has_token=0
+for ((token_id=0; token_id<32; token_id++)); do
+  token="$(cryptsetup token export --token-id "$token_id" "$device" 2>/dev/null || true)"
+  if printf '%s' "$token" | grep -Eq '"type"[[:space:]]*:[[:space:]]*"qos-rollback"'; then
+    has_token=1
+    break
+  fi
+done
+[ "$has_token" -eq 1 ] || exit 0
+
+install -d -m 0700 "$pin_dir" "$runtime_root/run/cryptsetup-keys.d"
+rm -f -- "$output" "$pin_file"
+cleanup() { rm -f -- "$pin_file"; }
+trap cleanup EXIT
+
+# -n avoids a newline becoming part of the TPM auth value. The PIN is held only
+# in initramfs tmpfs and removed immediately after the unseal attempt.
+if ! systemd-ask-password -n --echo=masked --id="qos-rollback:$uuid" \
+     "Enter the qOS disk PIN" >"$pin_file"; then
+  printf 'qos-rollback: PIN entry cancelled; offering recovery unlock\n' >&2
+  exit 0
+fi
+chmod 0600 "$pin_file"
+
+if qos-rollback unlock --device "$device" --pin-file "$pin_file" \
+     --output "$output"; then
+  exit 0
+fi
+
+# Never leave a partial key file for systemd-cryptsetup to consume. Returning
+# success here is intentional: the normal cryptsetup unit must continue and ask
+# for the independent passphrase/recovery key instead of making boot emergency.
+rm -f -- "$output"
+printf 'qos-rollback: TPM unlock unavailable; offering recovery unlock\n' >&2
+exit 0

@@ -442,11 +442,48 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
 /// not a safe reason to accept a short PIN until unlock is bound to signed,
 /// measured qOS boot artifacts.
 fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
-    if secret.trim().chars().count() >= 12 {
-        Ok(())
-    } else {
-        Err("Use at least 12 characters for the disk passphrase")
+    const COMMON_BASES: &[&str] = &[
+        "password",
+        "qwerty",
+        "letmein",
+        "welcome",
+        "administrator",
+        "admin",
+        "quickdesktop",
+        "quickdesk",
+        "qos",
+    ];
+
+    if secret.trim() != secret {
+        return Err("Do not begin or end the disk passphrase with spaces");
     }
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() < 15 {
+        return Err("Use at least 15 characters for the disk passphrase");
+    }
+    let lower = secret.to_lowercase();
+    if COMMON_BASES.iter().any(|base| {
+        lower
+            .strip_prefix(base)
+            .is_some_and(|tail| tail.chars().all(|c| !c.is_alphabetic()))
+    }) {
+        return Err("That passphrase is too easy to guess; use several unrelated words");
+    }
+    if chars.iter().all(char::is_ascii_digit) && chars.len() < 20 {
+        return Err("Use at least 20 digits for an all-numeric disk passphrase");
+    }
+    let unique: std::collections::HashSet<char> = chars.iter().copied().collect();
+    if unique.len() < 5 {
+        return Err("That passphrase is too repetitive; use several unrelated words");
+    }
+    for period in 1..=4 {
+        if chars.len().is_multiple_of(period)
+            && chars.chunks(period).all(|chunk| chunk == &chars[..period])
+        {
+            return Err("That passphrase is a repeated pattern; use several unrelated words");
+        }
+    }
+    Ok(())
 }
 
 // ===================================================================
@@ -2116,7 +2153,7 @@ impl InstallerApp {
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new("Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later.")
+            Text::new("Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later.")
                 .with_size(sm)
                 .with_color(dim),
         ));
@@ -3784,10 +3821,10 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
 
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         app.sync(&mut doc, &root);
-        assert_eq!(&*secret_copy(&app.password), "correct horse");
-        assert_eq!(app.install_options().pin.as_str(), "correct horse");
+        assert_eq!(&*secret_copy(&app.password), "correct horse battery");
+        assert_eq!(app.install_options().pin.as_str(), "correct horse battery");
     }
 
     #[test]
@@ -3833,7 +3870,7 @@ mod tests {
         app.target_verified_boot = true;
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, boot passphrase)"
@@ -3862,7 +3899,7 @@ mod tests {
             "no TPM and no passphrase must not be installable"
         );
 
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert!(app.encryption_ready(), "a passphrase unblocks it");
 
         // Whitespace is not a passphrase.
@@ -3891,15 +3928,22 @@ mod tests {
             !app.encryption_ready(),
             "a TPM must not make a six-digit LUKS passphrase acceptable"
         );
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert!(app.encryption_ready());
     }
 
     #[test]
     fn startup_secret_policy_always_requires_a_strong_passphrase() {
-        assert!(validate_startup_secret("correct horse").is_ok());
+        assert!(validate_startup_secret("correct horse battery").is_ok());
+        assert!(validate_startup_secret("correct horse").is_err());
         assert!(validate_startup_secret("246810").is_err());
         assert!(validate_startup_secret("hunter2").is_err());
+        assert!(validate_startup_secret("aaaaaaaaaaaa").is_err());
+        assert!(validate_startup_secret("password1234").is_err());
+        assert!(validate_startup_secret("abcabcabcabc").is_err());
+        assert!(validate_startup_secret("123456789012").is_err());
+        assert!(validate_startup_secret("12345678901234567890").is_ok());
+        assert!(validate_startup_secret(" correct horse battery").is_err());
     }
 
     #[test]
@@ -3915,7 +3959,7 @@ mod tests {
             !app.encryption_ready(),
             "an unverified TPM must not enable short-PIN mode"
         );
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert!(app.encryption_ready());
         assert!(
             encrypt_description(VerifiedBootState::SecureBootInactive)
@@ -3933,7 +3977,7 @@ mod tests {
 
         *app.password.lock().unwrap() = "246810".to_string();
         assert!(!app.encryption_ready());
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert!(app.encryption_ready());
         assert!(
             encrypt_description(VerifiedBootState::KernelLockdownInactive)
@@ -3955,7 +3999,7 @@ mod tests {
             !app.encryption_ready(),
             "the live medium's boundary cannot vouch for the installed target"
         );
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert!(app.encryption_ready());
         assert!(
             encrypt_description(VerifiedBootState::TargetUnverified)
@@ -3967,7 +4011,7 @@ mod tests {
     fn summary_and_description_name_the_passphrase_when_there_is_no_tpm() {
         let mut app = InstallerApp::with_disks(sample());
         app.tpm2 = false;
-        *app.password.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, boot passphrase)",
@@ -4017,7 +4061,7 @@ mod tests {
         app2.target_verified_boot = true;
         app2.recovery_ack = true;
         app2.erase_confirmation = "/dev/sda".to_string();
-        *app2.password.lock().unwrap() = "correct horse".to_string();
+        *app2.password.lock().unwrap() = "correct horse battery".to_string();
         let _ = build(&mut app2);
         let card2 = find_named(&app2, "InstallerCard").expect("review card");
         let begin_enabled = card2
@@ -4037,8 +4081,8 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         app.recovery_ack = true;
-        *app.password.lock().unwrap() = "correct horse".to_string();
-        *app.password_confirmation.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse battery".to_string();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery".to_string();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
