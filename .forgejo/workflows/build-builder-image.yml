@@ -86,6 +86,8 @@ jobs:
             code.podesta.ai/qos/qos-builder:${{ env.RUST_CHANNEL }}
             code.podesta.ai/qos/qos-builder:${{ github.sha }}
             code.podesta.ai/qos/qos-builder:latest
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-builder-buildcache:latest
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-builder-buildcache:latest,mode=max
 
   # Two separate, fresh job containers prove that an object written by the
   # first compiler process is read back from the remote S3 cache by another.

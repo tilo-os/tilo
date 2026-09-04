@@ -20,7 +20,10 @@ on:
 
 concurrency:
   group: snapshot-wpe-buildroot
-  cancel-in-progress: false
+  # Only the newest immutable snapshot is useful. In particular, do not let an
+  # older run waiting for future runner-arm64 capacity serialize newer amd64
+  # work behind it.
+  cancel-in-progress: true
 
 jobs:
   build:

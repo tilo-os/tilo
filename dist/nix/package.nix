@@ -41,6 +41,9 @@ rustPlatform.buildRustPackage rec {
     "-p" "launcher"
     "-p" "qos-unlock-helper"
     "-p" "shell"
+    "--bin" "qos-launcher"
+    "--bin" "qos-unlock-helper"
+    "--bin" "shell"
     "--no-default-features"
   ];
   cargoTestFlags = cargoBuildFlags;

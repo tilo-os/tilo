@@ -34,7 +34,7 @@ if (( run_cargo )); then
     say "cargo build --release (launcher, unlock helper)"
     ( cd "$repo_root" && cargo build --release --locked -p launcher -p qos-unlock-helper )
     say "cargo build --release (compositor, no default features)"
-    ( cd "$repo_root" && cargo build --release --locked -p shell --no-default-features )
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
 fi
 
 rel=${QOS_BIN_DIR:-$repo_root/target/release}
