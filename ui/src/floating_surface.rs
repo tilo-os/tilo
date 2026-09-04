@@ -12,9 +12,13 @@ use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::collections::VecDeque;
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
 const HANDOFF_SETTLE: std::time::Duration = std::time::Duration::from_millis(180);
@@ -220,6 +224,7 @@ pub enum FloatingSurfaceHostMessage {
 /// `QOS_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
 /// protocol inspectable and lets the compositor service evolve independently
 /// of app/widget releases.
+#[cfg(unix)]
 pub struct FloatingSurfaceServiceClient {
     stream: UnixStream,
     incoming: Vec<u8>,
@@ -227,6 +232,7 @@ pub struct FloatingSurfaceServiceClient {
     outgoing_offset: usize,
 }
 
+#[cfg(unix)]
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside qOS (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
@@ -331,6 +337,27 @@ impl FloatingSurfaceServiceClient {
             }
         }
         Ok(())
+    }
+}
+
+/// Non-Unix hosts cannot receive qOS session-service file descriptors. Keep
+/// the optional client API available so applications compile and naturally
+/// retain their attached in-window surface.
+#[cfg(not(unix))]
+pub struct FloatingSurfaceServiceClient;
+
+#[cfg(not(unix))]
+impl FloatingSurfaceServiceClient {
+    pub fn discover() -> Option<Self> {
+        None
+    }
+
+    pub fn send(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
+        Err("floating-surface service is unavailable on this platform".into())
+    }
+
+    pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
+        Err("floating-surface service is unavailable on this platform".into())
     }
 }
 
@@ -1626,6 +1653,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn nonblocking_service_client_exchanges_complete_lifecycle_frames() {
         use std::io::{BufRead, BufReader};
 

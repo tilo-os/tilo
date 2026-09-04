@@ -25,7 +25,7 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
 };
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::Widget;
 use ui::permissions::PermissionContext;
@@ -39,10 +39,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
-use crate::qos_route::{
-    QosRouteDecision, QosRouteProvider, UnavailableQosRouteProvider, short_device_id,
-};
-use crate::session::{SessionStatus, live_sessions_enabled};
+use crate::session::{SessionStatus, can_attempt_live};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
@@ -55,6 +52,7 @@ use crate::vnc::{VncConfig, VncInput, VncSession};
 enum LiveSession {
     Ssh(Box<SshSession>),
     Vnc(VncSession),
+    Qos(QosSession),
     Error(String),
     /// A fixed status with no transport, for `--shots`/preview rendering of
     /// the composed connecting/failed/closed surfaces. Never on the live path.
@@ -66,10 +64,18 @@ impl LiveSession {
         match self {
             LiveSession::Ssh(s) => s.status(),
             LiveSession::Vnc(s) => s.status(),
+            LiveSession::Qos(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
             LiveSession::Preview(s) => s.clone(),
         }
     }
+}
+
+struct QosSession {
+    id: u64,
+    status: SessionStatus,
+    size: Option<(u32, u32)>,
+    decoder: qos_callstream::H264Decoder,
 }
 
 enum PendingResourceOperation {
@@ -274,10 +280,9 @@ pub struct RemoteApp {
     focus: Option<Field>,
     /// The shared [`TextInput`] behind each editable field.
     inputs: FieldInputs,
-    /// The live transport for the open session (SSH terminal or VNC
-    /// framebuffer). `None` until a session is opened with live sessions
-    /// enabled; the default build leaves it `None` and shows the honest
-    /// "not connected" surface.
+    /// The live transport for the open session. Production qOS control always
+    /// creates one; gated SSH/VNC leave it `None` and show the honest "not
+    /// connected" surface until explicitly enabled.
     live: Option<LiveSession>,
     /// Cached GPU image of the most recent VNC frame, rebuilt only when a
     /// new framebuffer generation arrives.
@@ -295,11 +300,8 @@ pub struct RemoteApp {
     fullscreen: bool,
     /// Discoverable qOS peers for the form's device picker.
     qos_devices: Vec<QosDevice>,
-    /// Authenticated device-mesh route source injected by the shell. The live
-    /// app defaults to an explicitly unavailable provider until runtime
-    /// discovery is attached; saved host labels are never treated as proof of
-    /// reachability.
-    qos_routes: Arc<dyn QosRouteProvider>,
+    collab_outbox: Vec<ui::collaboration::CollabRequest>,
+    next_qos_session_id: u64,
 
     /// Root rect, from `apply_layout`.
     rect: Rect,
@@ -374,7 +376,8 @@ impl RemoteApp {
             scale_to_fit: true,
             fullscreen: false,
             qos_devices,
-            qos_routes: Arc::new(UnavailableQosRouteProvider),
+            collab_outbox: Vec::new(),
+            next_qos_session_id: 1,
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
@@ -387,12 +390,6 @@ impl RemoteApp {
             rail_snap: None,
             last_tick: std::time::Instant::now(),
         }
-    }
-
-    /// Attach the shell/device runtime's authenticated route source.
-    pub fn with_qos_route_provider(mut self, provider: Arc<dyn QosRouteProvider>) -> Self {
-        self.qos_routes = provider;
-        self
     }
 
     /// Stage a deterministic state for the single-frame `--shots` renderer.
@@ -438,10 +435,7 @@ impl RemoteApp {
                 );
             }
             "session-qos" => {
-                self.dev_preview_session(
-                    ConnectionKind::Qos,
-                    SessionStatus::Failed("qOS Relay is not available in qOS yet".into()),
-                );
+                self.dev_preview_session(ConnectionKind::Qos, SessionStatus::Connecting);
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -611,17 +605,15 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection. When `REMOTE_LIVE_SESSIONS`
-    /// is unset (the default) this does **not** touch the network or
-    /// fabricate a terminal/desktop: the surface shows the honest "not
-    /// connected" card. When it is set, this opens a **real** transport —
-    /// `russh` for SSH, an RFB client for VNC — and the surface tracks the
-    /// real connection state (connecting → connected, or the honest error).
+    /// Open the session surface for a connection. qOS always uses its real
+    /// shell-broker transport; SSH/VNC require `REMOTE_LIVE_SESSIONS`. Every
+    /// live path tracks real state (connecting → connected, or an honest
+    /// error), never a fabricated terminal or desktop.
     fn open_session(&mut self, id: ConnectionId) {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
-        // Older documents may contain RDP or qOS Relay profiles. Keep them
+        // Older documents may contain unavailable RDP profiles. Keep them
         // editable, but never make an unavailable transport look connectable.
         if !c.kind.can_attempt() {
             self.selected = Some(id);
@@ -633,8 +625,9 @@ impl RemoteApp {
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
-        if live_sessions_enabled() {
-            self.live = Some(self.start_live(&c));
+        if can_attempt_live(c.kind) {
+            let live = self.start_live(&c);
+            self.live = Some(live);
             // Record the attempt in "last used"; presence is only marked
             // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
@@ -647,6 +640,12 @@ impl RemoteApp {
     fn disconnect_session(&mut self) {
         // Dropping the live session closes the transport (the worker thread
         // sees its channel close and disconnects).
+        if let Some(LiveSession::Qos(session)) = self.live.as_ref() {
+            self.collab_outbox
+                .push(ui::collaboration::CollabRequest::CloseWorkspaceControl {
+                    session_id: session.id,
+                });
+        }
         self.live = None;
         self.fb_image = None;
         self.fb_canvas = None;
@@ -657,7 +656,7 @@ impl RemoteApp {
 
     /// Build the real transport for a connection from its kind + auth and
     /// the process environment (secrets are never stored in the document).
-    fn start_live(&self, c: &Connection) -> LiveSession {
+    fn start_live(&mut self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
@@ -694,17 +693,29 @@ impl RemoteApp {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
             },
-            ConnectionKind::Qos => match self.qos_routes.route(&c.host) {
-                Ok(QosRouteDecision::Direct) => LiveSession::Error(
-                    "A direct authenticated route is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative."
-                        .to_string(),
-                ),
-                Ok(QosRouteDecision::Relayed { via }) => LiveSession::Error(format!(
-                    "An encrypted relay route via server {} is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative.",
-                    short_device_id(&via)
-                )),
-                Err(error) => LiveSession::Error(error),
-            },
+            ConnectionKind::Qos => {
+                let target = match c.host.parse::<iroh::EndpointId>() {
+                    Ok(target) => *target.as_bytes(),
+                    Err(_) => {
+                        return LiveSession::Error(
+                            "qOS host must be an exact certified device endpoint id".into(),
+                        );
+                    }
+                };
+                let id = self.next_qos_session_id;
+                self.next_qos_session_id = self.next_qos_session_id.saturating_add(1);
+                self.collab_outbox
+                    .push(ui::collaboration::CollabRequest::OpenWorkspaceControl {
+                        session_id: id,
+                        target_device: target,
+                    });
+                LiveSession::Qos(QosSession {
+                    id,
+                    status: SessionStatus::Connecting,
+                    size: None,
+                    decoder: qos_callstream::H264Decoder::new(),
+                })
+            }
             other => LiveSession::Error(format!(
                 "{} transport is not implemented yet",
                 other.label()
@@ -735,6 +746,7 @@ impl RemoteApp {
                     changed = true;
                 }
             }
+            Some(LiveSession::Qos(_)) => {}
             _ => {}
         }
         // Reflect a freshly-established connection in the row's presence.
@@ -792,6 +804,98 @@ impl RemoteApp {
                 y,
             });
         }
+    }
+
+    fn qos_pointer_target(&self, p: Point) -> Option<(f64, f64)> {
+        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+            return None;
+        };
+        if session.status != SessionStatus::Connected {
+            return None;
+        }
+        let (width, height) = session.size?;
+        let canvas = self.fb_canvas?;
+        if !canvas.contains(p) || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+            return None;
+        }
+        Some((
+            ((p.x - canvas.x0) / canvas.width() * f64::from(width))
+                .clamp(0.0, f64::from(width.saturating_sub(1))),
+            ((p.y - canvas.y0) / canvas.height() * f64::from(height))
+                .clamp(0.0, f64::from(height.saturating_sub(1))),
+        ))
+    }
+
+    fn queue_qos_input(&mut self, event: runtime_collab::WorkspaceControlInput) -> bool {
+        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+            return false;
+        };
+        if session.status != SessionStatus::Connected {
+            return false;
+        }
+        self.collab_outbox
+            .push(ui::collaboration::CollabRequest::WorkspaceControlInput {
+                session_id: session.id,
+                event,
+            });
+        true
+    }
+
+    fn qos_keycode(code: KeyCode) -> Option<u32> {
+        Some(match code {
+            KeyCode::KeyA => 30,
+            KeyCode::KeyB => 48,
+            KeyCode::KeyC => 46,
+            KeyCode::KeyD => 32,
+            KeyCode::KeyE => 18,
+            KeyCode::KeyF => 33,
+            KeyCode::KeyG => 34,
+            KeyCode::KeyH => 35,
+            KeyCode::KeyI => 23,
+            KeyCode::KeyJ => 36,
+            KeyCode::KeyK => 37,
+            KeyCode::KeyL => 38,
+            KeyCode::KeyM => 50,
+            KeyCode::KeyN => 49,
+            KeyCode::KeyO => 24,
+            KeyCode::KeyP => 25,
+            KeyCode::KeyQ => 16,
+            KeyCode::KeyR => 19,
+            KeyCode::KeyS => 31,
+            KeyCode::KeyT => 20,
+            KeyCode::KeyU => 22,
+            KeyCode::KeyV => 47,
+            KeyCode::KeyW => 17,
+            KeyCode::KeyX => 45,
+            KeyCode::KeyY => 21,
+            KeyCode::KeyZ => 44,
+            KeyCode::Digit1 => 2,
+            KeyCode::Digit2 => 3,
+            KeyCode::Digit3 => 4,
+            KeyCode::Digit4 => 5,
+            KeyCode::Digit5 => 6,
+            KeyCode::Digit6 => 7,
+            KeyCode::Digit7 => 8,
+            KeyCode::Digit8 => 9,
+            KeyCode::Digit9 => 10,
+            KeyCode::Digit0 => 11,
+            KeyCode::Enter => 28,
+            KeyCode::Escape => 1,
+            KeyCode::Backspace => 14,
+            KeyCode::Tab => 15,
+            KeyCode::Space => 57,
+            KeyCode::ArrowUp => 103,
+            KeyCode::ArrowDown => 108,
+            KeyCode::ArrowLeft => 105,
+            KeyCode::ArrowRight => 106,
+            KeyCode::ShiftLeft => 42,
+            KeyCode::ShiftRight => 54,
+            KeyCode::ControlLeft => 29,
+            KeyCode::ControlRight => 97,
+            KeyCode::AltLeft => 56,
+            KeyCode::AltRight => 100,
+            _ => return None,
+        })
     }
 
     /// Commit the form draft into the workspace + CRDT.
@@ -1161,6 +1265,61 @@ struct EventRouteCtx<'a> {
 // ===========================================================================
 
 impl Widget for RemoteApp {
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        std::mem::take(&mut self.collab_outbox)
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
+            return;
+        };
+        let Some(LiveSession::Qos(session)) = self.live.as_mut() else {
+            return;
+        };
+        if session.id != *session_id {
+            return;
+        }
+        match event {
+            runtime_collab::WorkspaceControlEvent::WaitingForConsent { .. } => {
+                session.status = SessionStatus::Connecting;
+            }
+            runtime_collab::WorkspaceControlEvent::StreamStarted { width, height, .. } => {
+                session.size = Some((*width, *height));
+                session.status = SessionStatus::Connected;
+            }
+            runtime_collab::WorkspaceControlEvent::Frame { encoded_h264, .. } => {
+                if let Some(frame) = session.decoder.decode(encoded_h264) {
+                    session.size = Some((frame.width, frame.height));
+                    self.fb_image = Some(PenikoImage {
+                        data: Blob::new(Arc::new(frame.rgba)),
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: frame.width,
+                        height: frame.height,
+                    });
+                }
+            }
+            runtime_collab::WorkspaceControlEvent::Closed(reason) => {
+                session.status = SessionStatus::Failed(match reason {
+                    runtime_collab::WorkspaceControlCloseReason::Denied(message) => message.clone(),
+                    runtime_collab::WorkspaceControlCloseReason::Revoked => {
+                        "Target revoked workspace control".into()
+                    }
+                    runtime_collab::WorkspaceControlCloseReason::TargetDisconnected => {
+                        "Target disconnected".into()
+                    }
+                    runtime_collab::WorkspaceControlCloseReason::RelayDisconnected => {
+                        "Encrypted relay disconnected".into()
+                    }
+                    runtime_collab::WorkspaceControlCloseReason::LocalDisconnect => {
+                        "Workspace control closed".into()
+                    }
+                });
+            }
+        }
+        self.dirty = true;
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
     }
@@ -1259,11 +1418,11 @@ impl Widget for RemoteApp {
         }
         match operation {
             crate::actions::RemoteOperation::Connect { connection_id } => {
-                if !live_sessions_enabled() {
-                    return Err("live remote sessions are disabled".into());
-                }
-                if self.workspace.get(connection_id).is_none() {
+                let Some(connection) = self.workspace.get(connection_id) else {
                     return Err("saved connection no longer exists".into());
+                };
+                if !can_attempt_live(connection.kind) {
+                    return Err("this live remote transport is disabled".into());
                 }
                 self.open_session(connection_id);
                 match self.live.as_ref().map(LiveSession::status) {
@@ -1613,6 +1772,28 @@ impl Widget for RemoteApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
+            WindowEvent::MouseInput { state, button, .. }
+                if self.qos_pointer_target(self.pointer).is_some() =>
+            {
+                let button = match button {
+                    MouseButton::Left => Some(272),
+                    MouseButton::Right => Some(273),
+                    MouseButton::Middle => Some(274),
+                    _ => None,
+                };
+                if let Some(button) = button {
+                    if *state == ElementState::Pressed && button == 272 {
+                        self.queue_qos_input(
+                            runtime_collab::WorkspaceControlInput::KeyboardFocus { focused: true },
+                        );
+                    }
+                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerButton {
+                        button,
+                        pressed: *state == ElementState::Pressed,
+                    });
+                }
+                *handled = true;
+            }
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
             WindowEvent::MouseInput { state, button, .. }
@@ -1643,6 +1824,26 @@ impl Widget for RemoteApp {
                     ctx.node_id,
                     ctx.taffy,
                 );
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: key_state,
+                        ..
+                    },
+                ..
+            } if matches!(self.live.as_ref(), Some(LiveSession::Qos(session)) if session.status == SessionStatus::Connected)
+                && !(self.fullscreen && *code == KeyCode::Escape) =>
+            {
+                if let Some(keycode) = Self::qos_keycode(*code) {
+                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::Key {
+                        keycode,
+                        pressed: *key_state == ElementState::Pressed,
+                        modifiers: 0,
+                    });
+                    *handled = true;
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1720,6 +1921,9 @@ impl RemoteApp {
             self.dirty = true; // hover feedback
             // Stream pointer motion to a live remote desktop.
             self.forward_vnc_pointer(p);
+            if let Some((x, y)) = self.qos_pointer_target(p) {
+                self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion { x, y });
+            }
         }
         // A focused field tracks the pointer so a drag extends its
         // selection past the edge of the box.
@@ -2646,7 +2850,7 @@ impl RemoteApp {
                 theme,
                 connect,
                 if c.kind == ConnectionKind::Qos {
-                    "Check route"
+                    "Connect"
                 } else {
                     "Connect"
                 },
@@ -3478,11 +3682,9 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport object: the honest "not connected" card. The
-        // env gate is enforced at `open_session` (it only creates a live
-        // session when REMOTE_LIVE_SESSIONS is set), so a `None` here means
-        // either the default gated build or a not-yet-opened session — never
-        // a fabricated terminal or desktop.
+        // No live transport object: the honest "not connected" card. Only
+        // app-owned SSH/VNC transports use the developer gate; production qOS
+        // control always creates a real broker session or an honest error.
         let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
                 scene,
@@ -3505,6 +3707,17 @@ impl RemoteApp {
         // Live path: reflect the real transport state.
         match status {
             SessionStatus::Connecting => {
+                let (title, detail) = if c.kind == ConnectionKind::Qos {
+                    (
+                        "Waiting for consent…",
+                        "Opening an authenticated route to the exact target, then waiting for it to share a workspace surface…",
+                    )
+                } else {
+                    (
+                        "Connecting…",
+                        "Negotiating the transport and authenticating…",
+                    )
+                };
                 self.draw_status_session(
                     scene,
                     transform,
@@ -3512,8 +3725,8 @@ impl RemoteApp {
                     theme,
                     content,
                     &c,
-                    "Connecting…",
-                    &["Negotiating the transport and authenticating…".to_string()],
+                    title,
+                    &[detail.to_string()],
                     StatusTone::Pending,
                 );
             }
@@ -3988,7 +4201,7 @@ impl RemoteApp {
         let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
         // Kind chip + connection label after the name.
         let mode = if c.kind == ConnectionKind::Qos {
-            format!("· {} · local render", c.address())
+            format!("· {} · workspace stream", c.address())
         } else if c.kind.is_terminal() {
             format!("· {} · shell", c.address())
         } else {
@@ -4027,7 +4240,7 @@ impl RemoteApp {
         x = disconnect.x0 - 10.0;
 
         // Framebuffer-only controls: fullscreen, scale, clipboard.
-        if c.kind.streams_framebuffer() || c.kind == ConnectionKind::Qos {
+        if c.kind.streams_framebuffer() {
             let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
@@ -4663,28 +4876,110 @@ mod tests {
     }
 
     #[test]
-    fn qos_session_setup_consumes_route_provider_without_faking_transport() {
-        struct DirectRoute;
-        impl QosRouteProvider for DirectRoute {
-            fn route(&self, _target_hint: &str) -> Result<QosRouteDecision, String> {
-                Ok(QosRouteDecision::Direct)
-            }
-        }
-
-        let app = RemoteApp::new_demo().with_qos_route_provider(Arc::new(DirectRoute));
-        let connection = app
+    fn connect_qos_starts_the_production_broker_transport_without_dev_gate() {
+        let mut app = RemoteApp::new_demo();
+        let target = iroh::SecretKey::generate().public();
+        let id = app
             .workspace
             .connections()
             .iter()
             .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection");
-        let status = app.start_live(connection).status();
-        let SessionStatus::Failed(message) = status else {
-            panic!("route-only bootstrap must remain an honest failed session")
+            .expect("demo qOS connection")
+            .id;
+        app.workspace.get_mut(id).expect("qOS connection").host = target.to_string();
+
+        app.apply(Action::Connect(id), &mut doc());
+
+        assert!(matches!(app.live, Some(LiveSession::Qos(_))));
+        assert!(matches!(
+            app.collab_outbox.as_slice(),
+            [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+                if target_device == target.as_bytes()
+        ));
+    }
+
+    #[test]
+    fn qos_session_setup_uses_authenticated_broker_transport() {
+        let mut app = RemoteApp::new_demo();
+        let mut connection = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection")
+            .clone();
+        let target = iroh::SecretKey::generate().public();
+        connection.host = target.to_string();
+        let session = app.start_live(&connection);
+        assert!(matches!(
+            session,
+            LiveSession::Qos(QosSession {
+                status: SessionStatus::Connecting,
+                ..
+            })
+        ));
+        assert!(matches!(
+            app.collab_outbox.as_slice(),
+            [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+                if target_device == target.as_bytes()
+        ));
+    }
+
+    #[test]
+    fn qos_widget_never_queues_input_before_consent_or_after_revocation() {
+        let mut app = RemoteApp::new_demo();
+        let mut connection = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection")
+            .clone();
+        connection.host = iroh::SecretKey::generate().public().to_string();
+        let live = app.start_live(&connection);
+        app.live = Some(live);
+        let session_id = match app.live.as_ref() {
+            Some(LiveSession::Qos(session)) => session.id,
+            _ => panic!("qOS session"),
         };
-        assert!(message.contains("direct authenticated route"));
-        assert!(message.contains("target must still grant control"));
-        assert!(message.contains("No input was sent"));
+        app.collab_outbox.clear();
+        assert!(
+            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                x: 1.0,
+                y: 2.0
+            })
+        );
+        assert!(app.collab_outbox.is_empty());
+
+        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+            session_id,
+            event: runtime_collab::WorkspaceControlEvent::StreamStarted {
+                surface: 4,
+                width: 1280,
+                height: 720,
+            },
+        });
+        assert!(
+            app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                x: 1.0,
+                y: 2.0
+            })
+        );
+        app.collab_outbox.clear();
+
+        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+            session_id,
+            event: runtime_collab::WorkspaceControlEvent::Closed(
+                runtime_collab::WorkspaceControlCloseReason::Revoked,
+            ),
+        });
+        assert!(
+            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                x: 1.0,
+                y: 2.0
+            })
+        );
+        assert!(app.collab_outbox.is_empty());
     }
 
     #[test]
@@ -4884,6 +5179,13 @@ mod tests {
                 other => panic!("{which} did not open a session: {other:?}"),
             }
         }
+
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-qos");
+        assert!(matches!(
+            app.live,
+            Some(LiveSession::Preview(SessionStatus::Connecting))
+        ));
     }
 
     #[test]

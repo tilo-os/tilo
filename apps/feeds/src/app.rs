@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -4014,6 +4015,148 @@ impl Widget for FeedsApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut toolbar: Vec<_> = self
+            .toolbar_buttons
+            .iter()
+            .map(|button| {
+                let (target, name) = match button.action {
+                    ToolbarAction::AddSubscription => ("feeds.toolbar:add", "Add subscription"),
+                    ToolbarAction::Refresh => ("feeds.toolbar:refresh", "Refresh all feeds"),
+                    ToolbarAction::MarkAllRead => ("feeds.toolbar:read", "Mark all read"),
+                    ToolbarAction::ImportOpml => ("feeds.toolbar:import", "Import OPML"),
+                    ToolbarAction::ExportOpml => ("feeds.toolbar:export", "Export OPML"),
+                };
+                AccessNode::new(Role::Button)
+                    .with_name(name)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(button.rect)
+                    .with_action_target(target)
+            })
+            .collect();
+        // Compact navigation belongs to the same action group as the regular
+        // feed controls. Keeping it in the toolbar also gives every synthetic
+        // toolbar child a stable action target without mixing keyed controls
+        // with position-addressed root regions.
+        if self.hamburger_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Show subscriptions")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.sidebar.is_open(self.nav_layout())),
+                    )
+                    .with_bounds(self.hamburger_rect)
+                    .with_action_target("feeds.sidebar"),
+            );
+        }
+        if self.back_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Back to articles")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.back_rect)
+                    .with_action_target("feeds.back"),
+            );
+        }
+        let articles = self
+            .list_rows
+            .iter()
+            .filter_map(|row| {
+                let article = self.store.article(row.id)?;
+                Some(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(article.title.clone())
+                        .with_description(article.summary.clone())
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.selected == Some(row.id)),
+                        )
+                        .with_bounds(row.rect)
+                        .with_action_target(format!("feeds.article:{}", row.id))
+                        .with_children(vec![
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name(format!("Star {}", article.title))
+                                .with_state(
+                                    AccessState::new().focusable(true).checked(article.starred),
+                                )
+                                .with_bounds(row.star_rect)
+                                .with_action_target(format!("feeds.star:{}", row.id)),
+                        ]),
+                )
+            })
+            .collect();
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Feed actions")
+                .with_bounds(self.toolbar_rect)
+                .with_children(toolbar),
+            AccessNode::new(Role::List)
+                .with_name("Articles")
+                .with_bounds(self.list_rect)
+                .with_children(articles),
+        ];
+        if self.refresh.visible() {
+            children.push(
+                AccessNode::new(Role::ProgressBar)
+                    .with_name(format!(
+                        "Refreshing feeds: {} of {} complete",
+                        self.refresh.done, self.refresh.total
+                    ))
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Feeds")
+                .with_bounds(self.rect)
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+            return false;
+        }
+        match target {
+            "feeds.toolbar:add" => self.open_add_subscription(),
+            "feeds.toolbar:refresh" => self.refresh_all(),
+            "feeds.toolbar:read" => self.mark_all_read(state),
+            "feeds.toolbar:import" => self.request_import(),
+            "feeds.toolbar:export" => self.export_opml(),
+            "feeds.sidebar" => self.sidebar.toggle(self.nav_layout()),
+            "feeds.back" => self.show_master(),
+            _ if target.starts_with("feeds.article:") => {
+                let Ok(id) = target["feeds.article:".len()..].parse() else {
+                    return false;
+                };
+                if self.store.article(id).is_none() {
+                    return false;
+                }
+                self.select_article(id, state);
+            }
+            _ if target.starts_with("feeds.star:") => {
+                let Ok(id) = target["feeds.star:".len()..].parse() else {
+                    return false;
+                };
+                if self.store.article(id).is_none() {
+                    return false;
+                }
+                self.toggle_star(id, state);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep frames flowing while the sidebar flap is mid-slide, while
         // network fetches are outstanding (so the per-frame `draw` drain keeps
@@ -4753,6 +4896,62 @@ mod tests {
         let before = a.store.folder(fid).unwrap().collapsed;
         a.toggle_folder(fid, &mut doc);
         assert_ne!(a.store.folder(fid).unwrap().collapsed, before);
+    }
+
+    #[test]
+    fn accessibility_exposes_article_and_star_through_existing_actions() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let mut text = TextRenderer::new();
+        let _ = headless_frame(&mut a, &mut doc, &mut text);
+        let id = a.list_rows[0].id;
+        let before = a.store.article(id).expect("sample article").starred;
+        let tree = a.accessibility().expect("feeds exports a semantic window");
+        assert_eq!(tree.role, Role::Window);
+        assert!(tree.children.iter().any(|node| node.role == Role::Toolbar));
+        assert!(a.perform_semantic_action(
+            &format!("feeds.star:{id}"),
+            &A11yAction::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_ne!(a.store.article(id).expect("sample article").starred, before);
+        assert!(a.perform_semantic_action(
+            &format!("feeds.article:{id}"),
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(a.selected_article(), Some(id));
+    }
+
+    #[test]
+    fn compact_navigation_is_grouped_with_keyed_toolbar_actions() {
+        let mut a = app();
+        lay_out(&mut a, 390.0, 844.0);
+        let tree = a.accessibility().expect("feeds exports a semantic window");
+        assert!(
+            tree.children.iter().all(|node| node.semantic_key.is_none()),
+            "root regions remain position-addressed"
+        );
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("feed actions toolbar");
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .all(|node| node.semantic_key.is_some()),
+            "all compact toolbar actions have stable identities"
+        );
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
+        );
     }
 
     // --- responsive layout ------------------------------------------------

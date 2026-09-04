@@ -23,6 +23,7 @@ use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Wi
 use ui::winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, Politeness, Role};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -3787,6 +3788,20 @@ impl Widget for DisksApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Disks")
+            .with_bounds(self.rect);
+        if !self.status.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.status.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -4164,6 +4179,20 @@ mod tests {
         assert_eq!(app.topo.drives.len(), 4);
         assert_eq!(app.selected, 0);
         assert_eq!(app.tab, Tab::Overview);
+    }
+
+    #[test]
+    fn root_accessibility_reports_disk_operation_status() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.status = "Rescan complete".into();
+        let node = app.accessibility().expect("disks exports a window");
+        assert_eq!(node.role, Role::Window);
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.name.as_deref() == Some("Rescan complete"))
+        );
     }
 
     #[test]

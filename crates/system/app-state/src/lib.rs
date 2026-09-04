@@ -25,7 +25,10 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable;
@@ -654,6 +657,7 @@ fn stale_sibling(dir: &Path) -> PathBuf {
 
 /// Take an exclusive, non-blocking `flock` on `path`. `None` when another
 /// process holds it, or (conservatively) when the lock file can't even be created.
+#[cfg(unix)]
 fn acquire_writer_lock(path: &Path) -> Option<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -665,6 +669,26 @@ fn acquire_writer_lock(path: &Path) -> Option<File> {
     // SAFETY: `file` owns a live fd for the duration of the call.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     (rc == 0).then_some(file)
+}
+
+/// Windows file sharing is fixed when the handle is opened. Denying every
+/// share mode gives this live `File` the same process-lifetime exclusivity as
+/// `flock`; closing it releases the lock even after a crash.
+#[cfg(windows)]
+fn acquire_writer_lock(path: &Path) -> Option<File> {
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(path)
+        .ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn acquire_writer_lock(_path: &Path) -> Option<File> {
+    None
 }
 
 /// Read the actor sidecar, creating a fresh identity the first time.
@@ -958,6 +982,22 @@ mod tests {
             first.actor(),
             second.actor(),
             "two live writers sharing an actor id would corrupt the change sequence"
+        );
+    }
+
+    #[test]
+    fn writer_lock_is_exclusive_and_released_with_its_handle() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("writer.lock");
+        let first = acquire_writer_lock(&path).expect("first writer lock");
+        assert!(
+            acquire_writer_lock(&path).is_none(),
+            "a second live handle must not acquire the writer lock"
+        );
+        drop(first);
+        assert!(
+            acquire_writer_lock(&path).is_some(),
+            "dropping the owner must release the writer lock"
         );
     }
 

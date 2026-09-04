@@ -52,6 +52,48 @@ pub struct Source {
     /// Whether this source can drive a full qOS install (vs. raw ISO write
     /// only).
     pub installable: bool,
+    /// Stable identity of the file selected and reviewed by the user. The
+    /// privileged writer rejects a path which now resolves to another file.
+    #[serde(default)]
+    pub identity: Option<SourceIdentity>,
+    /// Digest bound into a signed release catalog. Local arbitrary images do
+    /// not have an external trust anchor, so they rely on identity + exact size.
+    #[serde(default)]
+    pub expected_sha256: Option<String>,
+}
+
+/// Platform file identity, portable across the helper request boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIdentity {
+    pub volume: u64,
+    pub file: u64,
+}
+
+impl SourceIdentity {
+    /// Capture the strongest stable identity exposed by the current host.
+    pub fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                volume: metadata.dev(),
+                file: metadata.ino(),
+            })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::MetadataExt;
+            Some(Self {
+                volume: u64::from(metadata.volume_serial_number()?),
+                file: metadata.file_index()?,
+            })
+        }
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let _ = metadata;
+            None
+        }
+    }
 }
 
 impl Source {
@@ -104,6 +146,8 @@ impl QosRelease {
             size: self.size,
             label: format!("qOS {} ({})", self.version, self.channel),
             installable: true,
+            identity: None,
+            expected_sha256: (!self.image_sha256.is_empty()).then(|| self.image_sha256.clone()),
         }
     }
 }
@@ -789,6 +833,11 @@ pub enum JobPhase {
     Failed,
 }
 
+/// A persisted active phase cannot prove that a restarted UI still supervises
+/// the privileged writer which produced it. Treat that state as unknown and
+/// potentially incomplete until the user performs a fresh review.
+pub const WRITE_SUPERVISION_LOST: &str = "qOS Imager restarted before the previous write reported completion. Its outcome is unknown and the drive may be incomplete. Keep it connected until any writer activity stops, then rescan and review it before retrying.";
+
 impl JobPhase {
     pub fn key(&self) -> &'static str {
         match self {
@@ -823,13 +872,18 @@ impl JobPhase {
 }
 
 /// Live progress of the current job (0..1 each phase).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Progress {
     pub phase: JobPhase,
     pub write_frac: f64,
     pub verify_frac: f64,
     /// Bytes per second of the active phase, for the ETA line.
     pub rate_bps: u64,
+    /// Actionable terminal failure detail from the writer/helper. Kept on the
+    /// progress event so the privileged boundary cannot collapse a useful
+    /// device, authorization, or verification error into a generic failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Default for Progress {
@@ -839,11 +893,29 @@ impl Default for Progress {
             write_frac: 0.0,
             verify_frac: 0.0,
             rate_bps: 0,
+            error: None,
         }
     }
 }
 
 impl Progress {
+    /// Record that no live supervisor can establish the job's outcome.
+    pub fn mark_supervision_lost(&mut self) {
+        self.phase = JobPhase::Failed;
+        self.rate_bps = 0;
+        self.error = Some(WRITE_SUPERVISION_LOST.into());
+    }
+
+    /// Fail closed when an active progress snapshot has outlived its local
+    /// worker/supervisor. Returns whether a recovery transition was applied.
+    pub fn fail_if_supervision_lost(&mut self) -> bool {
+        if !self.phase.is_active() {
+            return false;
+        }
+        self.mark_supervision_lost();
+        true
+    }
+
     /// Overall fraction across both phases (write counts for the first 85%,
     /// verify the last 15% — the read-back is quicker than the write).
     pub fn overall(&self) -> f64 {
@@ -972,6 +1044,8 @@ pub fn sample_source() -> Source {
             size: 0,
             label: String::new(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
         QosRelease::to_source,
     )
@@ -988,6 +1062,8 @@ pub fn sample_recent_sources() -> Vec<Source> {
             size: 2_113_929_216,
             label: "Fedora-WS-Live-42-1-1".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
         Source {
             kind: SourceKind::IsoFile,
@@ -996,6 +1072,8 @@ pub fn sample_recent_sources() -> Vec<Source> {
             size: 1_181_116_006,
             label: "ARCH_202606".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
     ]
 }
@@ -1164,6 +1242,7 @@ mod tests {
             write_frac: 0.5,
             verify_frac: 0.0,
             rate_bps: 100,
+            error: None,
         };
         assert!((writing.overall() - 0.425).abs() < 1e-9);
         // Half of a 1000-byte image left at 100 B/s → ~5s.
@@ -1173,8 +1252,42 @@ mod tests {
             write_frac: 1.0,
             verify_frac: 1.0,
             rate_bps: 0,
+            error: None,
         };
         assert_eq!(done.overall(), 1.0);
+    }
+
+    #[test]
+    fn restored_active_phases_fail_closed_when_supervision_is_lost() {
+        for phase in [JobPhase::Writing, JobPhase::Verifying] {
+            let mut progress = Progress {
+                phase,
+                write_frac: 0.7,
+                verify_frac: 0.2,
+                rate_bps: 42_000_000,
+                error: None,
+            };
+
+            assert!(progress.fail_if_supervision_lost());
+            assert_eq!(progress.phase, JobPhase::Failed);
+            assert_eq!(progress.rate_bps, 0);
+            assert!(progress.error.as_deref().is_some_and(|message| {
+                message.contains("outcome is unknown") && message.contains("incomplete")
+            }));
+            assert_ne!(progress.phase, JobPhase::Success);
+        }
+    }
+
+    #[test]
+    fn supervision_recovery_does_not_rewrite_terminal_or_idle_phases() {
+        for phase in [JobPhase::Idle, JobPhase::Success, JobPhase::Failed] {
+            let mut progress = Progress {
+                phase,
+                ..Progress::default()
+            };
+            assert!(!progress.fail_if_supervision_lost());
+            assert_eq!(progress.phase, phase);
+        }
     }
 
     #[test]

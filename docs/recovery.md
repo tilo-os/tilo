@@ -41,8 +41,10 @@ Every path that offers a rollback prints this before it does anything —
 `qos-deployment caveats`. Finding it out afterwards is the failure this is written
 to prevent.
 
-**Backups are a separate problem and qOS does not solve it yet.** Rollback is
-image recovery. If what you need back is a file, this is not the tool.
+Rollback is image recovery. File recovery is separate: Repair Mode can copy
+personal files from `/var/home` to a mounted external disk, and the installer
+medium can open an otherwise unbootable qOS volume read-only. Neither workflow
+rewrites the original while recovering files.
 
 ## From a working session
 
@@ -127,7 +129,8 @@ filesystem, no update timer, no sshd. It gives you a console with
 3. re-fetch and stage the current image
 4. make `/var` writable, and say where your data is
 5. the **previous** boot's warnings and errors
-6. a root shell
+6. copy personal files to an external disk
+7. a root shell
 
 It is the same rootfs the desktop boots, selected by `qos.mode=repair` on a
 *sealed* kernel command line — see [security/repair-mode.md](security/repair-mode.md)
@@ -138,6 +141,46 @@ What repair mode cannot fix: a rootfs that will not mount. The composefs root is
 verity-enforced, so corruption is refused rather than silently used, and repair
 mode runs from that same rootfs. That case needs external media, and no
 on-disk mode can change it.
+
+## Recover files with the installer medium
+
+Boot the qOS installer and press **Ctrl+Alt+F2**. The recovery console lists
+disks before asking for a source. Encrypted qOS volumes are opened read-only;
+the recovery key or disk passphrase goes directly to `cryptsetup` and is not
+stored. The source mount also forbids devices, programs, and set-user-ID files.
+
+Choose either one folder below the installed home directory or `.` for all
+homes. The guided flow lists destination partitions and mounts the one you
+choose without formatting it. It must be on a different physical disk, be
+writable, and have enough free space for the selection. Recovery copies links
+without following them outside the source and syncs the result before reporting
+success. Review the copy before repairing or removing the original disk.
+Ctrl+Alt+F1 returns to the graphical installer.
+
+The same boundary is scriptable for technicians:
+
+```bash
+sudo qos-recovery list
+sudo qos-recovery open --device /dev/nvme0n1p4
+sudo qos-recovery copy --device /dev/nvme0n1p4 \
+  --from alex/Documents --destination /run/media/backup
+sudo qos-recovery close
+```
+
+## Remove an alongside installation
+
+Removal is intentionally narrower than installation. From the installer
+medium's recovery console, qOS will remove only an **alongside** root that has a
+matching install-time ownership marker. You must type the partition's exact
+device, size, and UUID fingerprint. qOS then removes only boot files recorded by
+that installation and deletes that one root partition. It never formats the
+shared EFI filesystem, edits another partition, or resizes the remaining OS.
+
+The released space is unallocated. Expand the remaining OS with its own disk
+manager, which understands that filesystem. If firmware still shows qOS first,
+boot the remaining OS once and select it as the default in firmware settings.
+Older installations without an ownership marker fail closed: recover the files,
+then use a trusted partition editor rather than letting qOS guess.
 
 ## Reading a machine that will not boot at all
 

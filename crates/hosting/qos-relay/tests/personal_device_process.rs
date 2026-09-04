@@ -125,6 +125,7 @@ fn write_approver_fixture(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_route() {
     let workspace = tempfile::tempdir().unwrap();
     let approver_root = workspace.path().join("approver-qos");
@@ -174,6 +175,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_qos-enroll"));
     let status_file = recipient_identities.join("pairing-status.json");
+    let requester = qos_relay::ProcessLease::capture(std::process::id()).unwrap();
     let recipient_process = Command::new(&enroll)
         .args(["pair-device", "--identity-root"])
         .arg(&recipient_root)
@@ -181,6 +183,10 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(&recipient_identities)
         .args(["--label", "New laptop", "--timeout", "10", "--status-file"])
         .arg(&status_file)
+        .arg("--requester-pid")
+        .arg(requester.pid().to_string())
+        .arg("--requester-start-time")
+        .arg(requester.start_time().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -343,6 +349,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 /// runner's mount namespace.
 #[test]
 #[ignore = "requires root plus CAP_SYS_ADMIN; fs-fuse.yml runs this explicitly"]
+#[allow(clippy::too_many_lines)]
 fn privileged_helper_preserves_user_owned_personal_device_projection() {
     #[cfg(not(unix))]
     panic!("the privileged helper is Linux-only");
@@ -401,6 +408,9 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         let script = r#"
 set -eu
 exec 9</usr/bin/mount
+exec 8</usr/bin/setpriv
+exec 7</usr/bin/sleep
+exec 6</usr/bin/awk
 mount --make-rprivate /
 /proc/self/fd/9 -t tmpfs tmpfs /etc
 printf '%s\n' 'qosaccept:x:42424:42424::/home/qosaccept:/sbin/nologin' >/etc/passwd
@@ -411,9 +421,27 @@ mkdir -p /home/qosaccept
 : > /usr/bin/qos-enroll
 /proc/self/fd/9 --bind "$QOS_ENROLL_BIN" /usr/bin/qos-enroll
 export PKEXEC_UID=42424
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /proc/self/fd/7 300 &
+requester=$!
+trap 'kill "$requester" 2>/dev/null || true' EXIT
+# The background child initially retains the shell's root credentials until
+# setpriv executes. Do not race the helper's ownership validation against that
+# transition.
+requester_uid=
+attempts=0
+while [ "$requester_uid" != 42424 ]; do
+    requester_uid=$(/proc/self/fd/6 '$1 == "Uid:" { print $2; exit }' "/proc/$requester/status" 2>/dev/null) || requester_uid=
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 500 ]; then
+        echo "requester did not assume uid 42424 (observed ${requester_uid:-missing})" >&2
+        exit 1
+    fi
+    /proc/self/fd/7 0.01
+done
+requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$QOS_HELPER" approve-device --identity-root "$QOS_APPROVER_ROOT" --identity-dir "$QOS_APPROVER_IDENTITIES" --expected-device "$QOS_RECIPIENT_ID" --expected-service "$QOS_RECIPIENT_SERVICE" &
 approval=$!
-"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json"
+"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")

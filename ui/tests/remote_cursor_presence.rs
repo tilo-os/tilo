@@ -14,8 +14,9 @@
 )]
 
 use ui::app::App;
-use ui::collaboration::CollabEvent;
-use ui::presence::user_color;
+use ui::collaboration::{CollabEvent, Collaborator};
+use ui::permissions::UserId;
+use ui::presence::{ParticipantKind, user_color};
 use ui::state::State;
 use ui::widget::Container;
 
@@ -71,4 +72,34 @@ fn remote_cursor_move_updates_existing_entry_in_place() {
         "repeated events for the same peer must update in place, not append",
     );
     assert_eq!(presence.remote_cursors[0].position, [200.0, 300.0]);
+}
+
+#[test]
+fn authenticated_context_marks_agent_presence_before_it_moves() {
+    let mut app = new_headless_app();
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![Collaborator {
+            id: "agent@release".into(),
+            name: "Release assistant".into(),
+            color: [0.3, 0.4, 0.9],
+            is_agent: true,
+            is_self: false,
+        }],
+        permissions: vec![],
+    });
+    app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
+        user_id: "agent@release".into(),
+        x: 24.0,
+        y: 36.0,
+    });
+
+    let agent = UserId("agent@release".into());
+    assert_eq!(
+        app.presence_ctx().participant_kind(&agent),
+        ParticipantKind::Agent,
+    );
+    assert_eq!(
+        app.presence_ctx().remote_cursors[0].label,
+        "Release assistant",
+    );
 }
