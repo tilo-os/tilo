@@ -308,7 +308,7 @@ fi
 
 if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
-   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
+   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 4 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
@@ -324,6 +324,16 @@ if grep -Fq -- '--alongside' "$backend" \
   ok "alongside install fails closed on signed roots or undersized ESPs and never formats the shared ESP"
 else
   bad "alongside install can overwrite an occupied root or shared ESP"
+fi
+
+if grep -Fq -- '--preflight-alongside)' "$backend" \
+   && grep -Fq '[ "$PREFLIGHT_ALONGSIDE" -eq 1 ]' "$backend" \
+   && grep -Fq 'Prepared storage check passed:' "$backend" \
+   && grep -A5 -F 'if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then' "$backend" \
+      | grep -Fq 'exit 0'; then
+  ok "prepared-storage preflight reuses identity/ESP validation and exits before installation"
+else
+  bad "prepared-storage preflight is missing or can fall through into destructive installation"
 fi
 
 if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
