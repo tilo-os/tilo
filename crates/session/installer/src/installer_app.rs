@@ -90,6 +90,9 @@ const BACK_PATH: &str = "installer.back";
 const BEGIN_PATH: &str = "installer.begin";
 const REBOOT_PATH: &str = "installer.reboot";
 const POWEROFF_PATH: &str = "installer.poweroff";
+/// Rising-edge action that copies the one-time recovery key. The key itself
+/// never enters the CRDT; only this non-secret intent flag does.
+const RECOVERY_COPY_PATH: &str = "installer.recovery_copy";
 const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
 const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
 const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
@@ -918,6 +921,9 @@ pub struct InstallerApp {
     status_lines: Vec<String>,
     /// One-time LUKS recovery key, kept visible until the machine restarts.
     recovery_key: Option<String>,
+    /// Whether the visible key has been copied during this installer session.
+    /// This is presentation state only; a newly emitted key resets it.
+    recovery_key_copied: bool,
     /// Cached account/system fields (mirror their CRDT Text objects) for
     /// the Review display + backend argv.
     username: String,
@@ -1012,6 +1018,7 @@ impl InstallerApp {
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
             recovery_key: None,
+            recovery_key_copied: false,
             username: String::new(),
             full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
@@ -1395,6 +1402,7 @@ impl InstallerApp {
             BEGIN_PATH,
             REBOOT_PATH,
             POWEROFF_PATH,
+            RECOVERY_COPY_PATH,
             RECOVERY_ACK_PATH,
             NETWORK_REFRESH_PATH,
             NETWORK_CONNECT_PATH,
@@ -1618,6 +1626,7 @@ impl InstallerApp {
             opts.filesystem
         )];
         self.recovery_key = None;
+        self.recovery_key_copied = false;
         self.dirty_structure = true;
         self.focus_reset = true;
 
@@ -1680,6 +1689,14 @@ impl InstallerApp {
     /// Run a terminal power action (Reboot / Power off). On success the
     /// machine goes down before this returns; a failure surfaces a status.
     fn run_power(&mut self, action: PowerAction) {
+        // Do not deliberately leave a disk-unlock factor in the live
+        // session's clipboard after handing off to the installed system. If
+        // the person copied something else since, preserve their newer value.
+        if let Some(key) = &self.recovery_key
+            && ui::clipboard_paste().as_deref() == Some(key.as_str())
+        {
+            ui::clipboard_copy("");
+        }
         match crate::install::run_power(action) {
             Ok(true) => {}
             _ => self
@@ -2413,6 +2430,31 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(Text::new(key).with_size(sm)));
+        children.push(Box::new(
+            ActionButton::new(
+                if self.recovery_key_copied {
+                    "Copy recovery key again"
+                } else {
+                    "Copy recovery key"
+                },
+                RECOVERY_COPY_PATH,
+            )
+            .with_test_id("recovery_key_copy"),
+        ));
+        children.push(Box::new(
+            Text::new(if self.recovery_key_copied {
+                "Copied. Paste it into a password manager or an encrypted note on another drive before rebooting."
+            } else {
+                "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy when you reboot or power off."
+            })
+            .with_size(sm)
+            .with_color(if self.recovery_key_copied {
+                theme.status_success
+            } else {
+                theme.text_dim
+            })
+            .with_live(Politeness::Polite),
+        ));
     }
 }
 
@@ -2915,6 +2957,15 @@ impl InstallerApp {
             self.dirty_structure = true;
         }
 
+        if Self::read_flag(state, root, RECOVERY_COPY_PATH) {
+            let _ = state.put(root, RECOVERY_COPY_PATH, false);
+            if let Some(key) = &self.recovery_key {
+                ui::clipboard_copy(key);
+                self.recovery_key_copied = true;
+                self.dirty_structure = true;
+            }
+        }
+
         // Back rising edge.
         if Self::read_flag(state, root, BACK_PATH) {
             let _ = state.put(root, BACK_PATH, false);
@@ -3134,6 +3185,7 @@ impl Widget for InstallerApp {
         } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
+                self.recovery_key_copied = false;
                 self.dirty_structure = true;
             }
         } else {
@@ -4220,6 +4272,51 @@ mod tests {
         assert!(
             app.status_lines.is_empty(),
             "secret marker is not a log line"
+        );
+    }
+
+    #[test]
+    fn visible_recovery_key_can_be_copied_without_entering_shared_state() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        assert!(
+            !has_test_id(
+                app.build_composition(&Theme::dark()).as_ref(),
+                "recovery_key_copy"
+            ),
+            "the action must not exist before a key has been received"
+        );
+
+        let key = "abcd-efgh-ijkl-mnop";
+        app.on_external_event(&format!("{RECOVERY_KEY_PREFIX}{key}"), &mut doc, &root);
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_copy"
+        ));
+
+        let _ = doc.put(&root, RECOVERY_COPY_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.recovery_key_copied);
+        assert!(!InstallerApp::read_flag(&doc, &root, RECOVERY_COPY_PATH));
+        assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
+        assert!(
+            !String::from_utf8_lossy(&doc.save()).contains(key),
+            "the recovery secret must never be replicated through the CRDT"
+        );
+
+        app.on_external_event(
+            &format!("{RECOVERY_KEY_PREFIX}replacement-key"),
+            &mut doc,
+            &root,
+        );
+        assert!(
+            !app.recovery_key_copied,
+            "a newly emitted key needs its own copy confirmation"
         );
     }
 
