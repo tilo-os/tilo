@@ -551,7 +551,7 @@ pub struct GreeterApp {
     /// Whether the fixed local account has at least one enrolled fingerprint.
     /// False on every discovery or probe error, and whenever the username is
     /// editable: the greeter must not advertise a factor it cannot identify.
-    fingerprint_available: bool,
+    fingerprint: FingerprintAvailability,
     status: String,
     /// How [`GreeterApp::status`] should read — see [`StatusKind`].
     status_kind: StatusKind,
@@ -595,6 +595,22 @@ pub struct GreeterApp {
     /// The compact-viewport scroll position survives status/caps/auth
     /// rebuilds, which recreate the composed tree.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FingerprintAvailability {
+    Unavailable,
+    Enrolled,
+}
+
+impl From<bool> for FingerprintAvailability {
+    fn from(enrolled: bool) -> Self {
+        if enrolled {
+            Self::Enrolled
+        } else {
+            Self::Unavailable
+        }
+    }
 }
 
 impl Default for GreeterApp {
@@ -644,7 +660,7 @@ impl GreeterApp {
             sessions,
             selected_session: 0,
             login_user,
-            fingerprint_available,
+            fingerprint: fingerprint_available.into(),
             status: String::new(),
             status_kind: StatusKind::None,
             detail: String::new(),
@@ -867,7 +883,7 @@ impl GreeterApp {
                 .primary()
                 .fill_width(ACTION_HEIGHT),
         )];
-        if self.fingerprint_available {
+        if self.fingerprint == FingerprintAvailability::Enrolled {
             actions.push(Box::new(
                 Button::new(
                     "greeter.fingerprint",
@@ -1187,7 +1203,9 @@ impl GreeterApp {
         if self.phase != AuthPhase::Idle {
             return;
         }
-        if method == AuthMethod::Fingerprint && !self.fingerprint_available {
+        if method == AuthMethod::Fingerprint
+            && self.fingerprint != FingerprintAvailability::Enrolled
+        {
             self.set_status("No enrolled fingerprint is available for this account");
             return;
         }
