@@ -256,6 +256,8 @@ jobs:
               ;;
           esac
       - run: cargo test -p imager --lib --locked
+      - name: Prove the packaged host writer is enabled
+        run: cargo test -p imager --lib --locked --features host-media-writer
       - name: Build the complete native Linux package set
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
@@ -372,6 +374,9 @@ jobs:
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked
+      - name: Prove the packaged host writer is enabled
+        shell: powershell
+        run: cargo test -p imager --lib --locked --features host-media-writer
       - name: Build the complete native Windows package set
         shell: powershell
         env:
@@ -506,6 +511,8 @@ jobs:
               ;;
           esac
       - run: cargo test -p imager --lib --locked
+      - name: Prove the packaged host writer is enabled
+        run: cargo test -p imager --lib --locked --features host-media-writer
       - name: Build the complete native macOS package set
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"

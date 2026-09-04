@@ -110,6 +110,7 @@ windows_launcher="$repo/apps/imager/packaging/windows/Start-qOS-Imager.ps1"
 writer="$repo/apps/imager/src/write.rs"
 if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
   && grep -Fq 'cfg!(feature = "host-media-writer")' "$writer" \
+  && [ "$(grep -Fc 'cargo test -p imager --lib --locked --features host-media-writer' "$workflow")" -eq 3 ] \
   && grep -Fq -- '--features host-media-writer' \
     "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq -- '--features host-media-writer' \
