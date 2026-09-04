@@ -264,6 +264,12 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    /// Open the certified workspace-control capability for `target_device`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker request fails or its response
+    /// does not contain a valid workspace-control capability.
     pub async fn open_workspace_control(
         &self,
         target_device: [u8; 32],
@@ -833,6 +839,12 @@ pub struct WorkspaceControlHandle {
 }
 
 impl WorkspaceControlHandle {
+    /// Wait for the next workspace-control event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker request fails or the returned
+    /// event cannot be decoded.
     pub async fn read(&self) -> Result<WorkspaceControlEvent, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         let bytes = reply.get()?.get_event()?;
@@ -843,6 +855,12 @@ impl WorkspaceControlHandle {
         })
     }
 
+    /// Send one input event through this certified control capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the event cannot be encoded or the broker
+    /// rejects or fails the request.
     pub async fn send_input(&self, event: &WorkspaceControlInput) -> Result<(), NotAvailable> {
         let bytes = postcard::to_allocvec(event).map_err(|error| {
             NotAvailable::Capnp(capnp::Error::failed(format!(
@@ -855,6 +873,12 @@ impl WorkspaceControlHandle {
         Ok(())
     }
 
+    /// Close this workspace-control capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker cannot complete the close
+    /// request.
     pub async fn close(&self) -> Result<(), NotAvailable> {
         self.inner.close_request().send().promise.await?;
         Ok(())
