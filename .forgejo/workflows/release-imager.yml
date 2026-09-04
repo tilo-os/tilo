@@ -233,19 +233,13 @@ jobs:
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
               if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-                broker_env="$RUNNER_TEMP/qos-imager-linux-broker.env"
-                "$CREDENTIAL_BROKER" linux "$broker_env"
-                while IFS= read -r setting; do
-                  case "$setting" in
-                    QOS_LINUX_SIGNER=*|QOS_LINUX_VERIFY_KEY=*) printf '%s\n' "$setting" >> "$GITHUB_ENV" ;;
-                    *) printf 'credential broker returned an unsupported setting\n' >&2; exit 1 ;;
-                  esac
-                done < "$broker_env"
-                rm -f "$broker_env"
+                apps/imager/packaging/acquire-release-credentials.sh \
+                  linux "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
               elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
                 test -n "${SIGNING_KEY_B64:-}" && test -n "${SIGNING_KEY_ID:-}"
                 signing_key="$RUNNER_TEMP/qos-imager-signing-key.asc"
-                printf '%s' "$SIGNING_KEY_B64" | base64 --decode > "$signing_key"
+                test ! -e "$signing_key"
+                (umask 077; printf '%s' "$SIGNING_KEY_B64" | base64 --decode > "$signing_key")
                 gpg --batch --import "$signing_key"
                 rm -f "$signing_key"
                 echo "QOS_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
@@ -267,6 +261,9 @@ jobs:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: apps/imager/packaging/package-host.sh
+      - name: Remove bootstrap Linux signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/qos-imager-signing-key.asc"
       - name: Sign the directly downloadable installer payloads
         if: startsWith(github.ref, 'refs/tags/imager-v')
         run: |
@@ -345,24 +342,21 @@ jobs:
           EXTERNAL_SIGNER: ${{ vars.IMAGER_WINDOWS_SIGNER }}
           CREDENTIAL_BROKER: ${{ vars.IMAGER_WINDOWS_CREDENTIAL_BROKER }}
           ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
+          EXPECTED_PUBLISHER: ${{ vars.IMAGER_WINDOWS_PUBLISHER }}
         run: |
           if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
             $Version = $env:GITHUB_REF_NAME -replace '^imager-v', ''
             if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "release tag must be imager-vMAJOR.MINOR.PATCH" }
             if ($env:CREDENTIAL_BROKER) {
-              $BrokerEnv = Join-Path $env:RUNNER_TEMP "qos-imager-windows-broker.env"
-              & $env:CREDENTIAL_BROKER windows $BrokerEnv
-              if ($LASTEXITCODE -ne 0) { throw "credential broker failed" }
-              Get-Content $BrokerEnv | ForEach-Object {
-                if ($_ -notmatch '^QOS_WINDOWS_SIGNER=.+$') { throw "credential broker returned an unsupported setting" }
-                $_ | Out-File -FilePath $env:GITHUB_ENV -Append
-              }
-              Remove-Item $BrokerEnv -Force
+              & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 broker $env:CREDENTIAL_BROKER |
+                Out-File -FilePath $env:GITHUB_ENV -Append
             } elseif ($env:EXTERNAL_SIGNER) {
-              "QOS_WINDOWS_SIGNER=$env:EXTERNAL_SIGNER" | Out-File -FilePath $env:GITHUB_ENV -Append
+              & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 signer $env:EXTERNAL_SIGNER |
+                Out-File -FilePath $env:GITHUB_ENV -Append
             } elseif ($env:ALLOW_STATIC_BOOTSTRAP -eq "1") {
               if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) { throw "bootstrap PFX secrets are missing" }
               $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
+              if (Test-Path -LiteralPath $Pfx) { throw "bootstrap PFX path already exists" }
               [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
               "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
               "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -370,6 +364,8 @@ jobs:
               throw "Configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap"
             }
             "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            if (-not $env:EXPECTED_PUBLISHER) { throw "Configure IMAGER_WINDOWS_PUBLISHER" }
+            "QOS_WINDOWS_EXPECTED_PUBLISHER=$env:EXPECTED_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_RELEASE_BASE_URL=https://code.sandbox.example/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -381,6 +377,12 @@ jobs:
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
         run: apps/imager/packaging/package-host.ps1
+      - name: Remove bootstrap Windows signing material
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx") `
+            -Force -ErrorAction SilentlyContinue
       - name: Install and launch the packaged Windows UI offscreen
         shell: powershell
         run: |
@@ -453,6 +455,8 @@ jobs:
           APPLE_ID: ${{ secrets.IMAGER_APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.IMAGER_APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.IMAGER_APPLE_APP_PASSWORD }}
+          EXPECTED_TEAM_ID: ${{ vars.IMAGER_MAC_TEAM_ID }}
+          EXPECTED_CERT_SHA256: ${{ vars.IMAGER_MAC_CERT_SHA256 }}
         run: |
           set -euo pipefail
           case "${GITHUB_REF:-}" in
@@ -461,28 +465,25 @@ jobs:
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
               if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-                broker_env="$RUNNER_TEMP/qos-imager-macos-broker.env"
-                "$CREDENTIAL_BROKER" macos "$broker_env"
-                while IFS= read -r setting; do
-                  case "$setting" in
-                    QOS_MAC_SIGNING_IDENTITY=*|QOS_NOTARY_KEYCHAIN_PROFILE=*) printf '%s\n' "$setting" >> "$GITHUB_ENV" ;;
-                    *) printf 'credential broker returned an unsupported setting\n' >&2; exit 1 ;;
-                  esac
-                done < "$broker_env"
-                rm -f "$broker_env"
+                apps/imager/packaging/acquire-release-credentials.sh \
+                  macos "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
               elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
                 test -n "${CERT_P12_B64:-}" && test -n "${CERT_PASSWORD:-}"
                 test -n "${SIGNING_IDENTITY:-}" && test -n "${APPLE_ID:-}"
                 test -n "${APPLE_TEAM_ID:-}" && test -n "${APPLE_APP_PASSWORD:-}"
                 keychain="$RUNNER_TEMP/qos-imager-signing.keychain-db"
+                keychain_list="$RUNNER_TEMP/qos-imager-original-keychains"
                 p12="$RUNNER_TEMP/qos-imager-signing.p12"
-                printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12"
+                test ! -e "$p12" && test ! -e "$keychain" && test ! -e "$keychain_list"
+                (umask 077; printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12")
+                security list-keychains -d user > "$keychain_list"
                 security create-keychain -p qos-ci "$keychain"
                 security unlock-keychain -p qos-ci "$keychain"
                 security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
                 rm -f "$p12"
                 security set-key-partition-list -S apple-tool:,apple: -s -k qos-ci "$keychain"
                 security list-keychains -d user -s "$keychain"
+                echo "QOS_MAC_BOOTSTRAP_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
                 echo "QOS_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
                 echo "QOS_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
                 echo "QOS_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
@@ -492,6 +493,14 @@ jobs:
                 exit 1
               fi
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
+              [[ "${EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] \
+                || { printf 'configure IMAGER_MAC_TEAM_ID\n' >&2; exit 1; }
+              cert_fingerprint="${EXPECTED_CERT_SHA256^^}"
+              cert_fingerprint="${cert_fingerprint//:/}"
+              [[ "$cert_fingerprint" =~ ^[A-F0-9]{64}$ ]] \
+                || { printf 'configure IMAGER_MAC_CERT_SHA256\n' >&2; exit 1; }
+              echo "QOS_MAC_EXPECTED_TEAM_ID=$EXPECTED_TEAM_ID" >> "$GITHUB_ENV"
+              echo "QOS_MAC_EXPECTED_CERT_SHA256=$cert_fingerprint" >> "$GITHUB_ENV"
               echo "QOS_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
               echo "QOS_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
               ;;
@@ -501,6 +510,29 @@ jobs:
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
         run: apps/imager/packaging/package-host.sh
+      - name: Remove temporary macOS signing credentials
+        if: always()
+        run: |
+          set +e
+          rm -f "$RUNNER_TEMP/qos-imager-signing.p12"
+          if [ -n "${QOS_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+            security delete-generic-password -s com.apple.gke.notary.tool \
+              -a "$QOS_NOTARY_KEYCHAIN_PROFILE" 2>/dev/null
+          fi
+          keychain_list="$RUNNER_TEMP/qos-imager-original-keychains"
+          if [ -f "$keychain_list" ]; then
+            original_keychains=()
+            while IFS= read -r original; do
+              original="${original#\"}"
+              original="${original%\"}"
+              [ -z "$original" ] || original_keychains+=("$original")
+            done < "$keychain_list"
+            security list-keychains -d user -s "${original_keychains[@]}"
+            rm -f "$keychain_list"
+          fi
+          security delete-keychain \
+            "$RUNNER_TEMP/qos-imager-signing.keychain-db" 2>/dev/null
+          true
       - name: Mount and launch the packaged macOS UI offscreen
         run: |
           set -euo pipefail
@@ -621,16 +653,16 @@ jobs:
           set -euo pipefail
           token_file="$RUNNER_TEMP/qos-homebrew-tap-token"
           trap 'rm -f "$token_file"' EXIT
+          test ! -e "$token_file"
           if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            "$CREDENTIAL_BROKER" homebrew "$token_file"
-            test -s "$token_file"
+            apps/imager/packaging/acquire-release-token.sh \
+              homebrew "$CREDENTIAL_BROKER" "$token_file"
           elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_TAP_TOKEN:-}" ]; then
-            printf '%s' "$BOOTSTRAP_TAP_TOKEN" > "$token_file"
+            (umask 077; printf '%s' "$BOOTSTRAP_TAP_TOKEN" > "$token_file")
           else
             printf 'configure the OIDC credential broker for Homebrew publication\n' >&2
             exit 1
           fi
-          chmod 0600 "$token_file"
           HOMEBREW_TAP_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-homebrew-tap.sh release-assets
 
@@ -691,16 +723,16 @@ jobs:
           set -euo pipefail
           token_file="$RUNNER_TEMP/qos-winget-token"
           trap 'rm -f "$token_file"' EXIT
+          test ! -e "$token_file"
           if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            "$CREDENTIAL_BROKER" winget "$token_file"
-            test -s "$token_file"
+            apps/imager/packaging/acquire-release-token.sh \
+              winget "$CREDENTIAL_BROKER" "$token_file"
           elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_WINGET_TOKEN:-}" ]; then
-            printf '%s' "$BOOTSTRAP_WINGET_TOKEN" > "$token_file"
+            (umask 077; printf '%s' "$BOOTSTRAP_WINGET_TOKEN" > "$token_file")
           else
             printf 'configure the OIDC credential broker for WinGet publication\n' >&2
             exit 1
           fi
-          chmod 0600 "$token_file"
           WINGET_GITHUB_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-winget.sh release-assets
 
@@ -725,15 +757,15 @@ jobs:
           set -euo pipefail
           token_file="$RUNNER_TEMP/qos-site-release-token"
           trap 'rm -f "$token_file"' EXIT
+          test ! -e "$token_file"
           if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            "$CREDENTIAL_BROKER" site "$token_file"
-            test -s "$token_file"
+            apps/imager/packaging/acquire-release-token.sh \
+              site "$CREDENTIAL_BROKER" "$token_file"
           elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_SITE_TOKEN:-}" ]; then
-            printf '%s' "$BOOTSTRAP_SITE_TOKEN" > "$token_file"
+            (umask 077; printf '%s' "$BOOTSTRAP_SITE_TOKEN" > "$token_file")
           else
             printf 'configure the OIDC credential broker for website publication\n' >&2
             exit 1
           fi
-          chmod 0600 "$token_file"
           QOS_SITE_GIT_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-site-release.sh

@@ -67,6 +67,8 @@ closed unless the platform release credentials are configured:
   only after timestamping.
   `signtool verify` independently checks its result. Bootstrap-only fallback:
   `IMAGER_WINDOWS_CERT_PFX_B64` and `IMAGER_WINDOWS_CERT_PASSWORD`.
+  `IMAGER_WINDOWS_PUBLISHER` pins the complete Authenticode certificate subject;
+  packaging checks the signer of every executable against it.
 - macOS steady state: `IMAGER_MACOS_CREDENTIAL_BROKER` leases the Developer ID
   signing identity and a notarytool keychain profile. Bootstrap-only fallback:
   `IMAGER_MAC_CERT_P12_B64`, `IMAGER_MAC_CERT_PASSWORD`,
@@ -74,6 +76,24 @@ closed unless the platform release credentials are configured:
   `IMAGER_APPLE_TEAM_ID`, and `IMAGER_APPLE_APP_PASSWORD`. The app is signed
   with the hardened runtime; both the app and signed DMG are notarized and
   stapled before publication.
+
+`IMAGER_MAC_TEAM_ID` and `IMAGER_MAC_CERT_SHA256` independently pin the
+ten-character Developer Team ID and complete SHA-256 leaf-certificate
+fingerprint. Packaging extracts the actual app signing certificate and refuses
+either mismatch.
+
+All Unix broker programs and signer wrappers must be canonical absolute,
+root-owned paths outside the checkout and runner temporary directory; neither
+they nor any parent may be group/world writable. A broker creates its output as
+a new regular, non-symlink, runner-owned mode-0600 file without an extended ACL.
+Linux leases contain exactly one `QOS_LINUX_SIGNER` and one
+`QOS_LINUX_VERIFY_KEY`; macOS leases contain exactly one
+`QOS_MAC_SIGNING_IDENTITY` and one `QOS_NOTARY_KEYCHAIN_PROFILE`. Publication
+token brokers write one non-empty token with no newline. Unknown, duplicate,
+empty, control-character, multiline, or malformed output fails the release.
+Windows applies the equivalent protected-ACL and non-reparse-point contract.
+Bootstrap PFX/P12 files, temporary keychains, and notary profiles are removed
+by `always()` cleanup steps, including after a failed build.
 
 The bootstrap credentials are protected Forgejo secrets. Native and promotion
 broker paths are separate protected repository variables because absolute paths
