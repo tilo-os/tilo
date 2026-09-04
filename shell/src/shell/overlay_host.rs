@@ -3636,6 +3636,10 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for event in events {
+            if self.room_activity.observe_agent_launch_event(&event) {
+                chrome_handle.borrow_mut().bump();
+                posted = true;
+            }
             // Only a failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
             // [`Self::retire_notices_for_opened_windows`]'s job; `Exited`
@@ -6282,6 +6286,12 @@ impl ShellOverlayHost {
                 "Task Center updated",
                 "The task and its audit trail are shared with this workspace.",
             );
+        }
+        if outcome.agent_runtime_changed {
+            // Starting or retrying a process is local, not a durable task
+            // transition. Redraw its factual lifecycle notice without
+            // claiming shared work has begun.
+            chrome.borrow_mut().bump();
         }
     }
 

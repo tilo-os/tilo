@@ -38,6 +38,10 @@ const STDERR_TAIL_LINES: usize = 12;
 /// exhaust compositor memory with one unterminated write.
 const APP_LOG_LINE_BYTES: usize = 8 * 1024;
 const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
+/// The signed headless package the desktop is allowed to manage for Task
+/// Center work. Keeping this fixed prevents a task title or agent id from
+/// becoming an executable/package selector.
+pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "dev.qos.agent";
 
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
     let mut chunk = [0_u8; 4096];
@@ -199,12 +203,12 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
 
 /// Consume the compositor's one-shot authority record for a launcher child.
 /// Kernel process facts corroborate the record but never create authority.
-pub fn consume_trusted_service_launch(
+pub fn consume_trusted_service_launch_identity(
     pid: u32,
     start_time: u64,
     app_id: &str,
     workspace_id: &str,
-) -> Option<Vec<String>> {
+) -> Option<ServiceLaunchIdentity> {
     let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
     launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
     let launch = launches.get(&pid)?;
@@ -214,9 +218,51 @@ pub fn consume_trusted_service_launch(
     {
         return None;
     }
-    launches
-        .remove(&pid)
-        .map(|launch| launch.identity.allowed_compat_entry_ids)
+    launches.remove(&pid).map(|launch| launch.identity)
+}
+
+/// Compatibility service view of [`consume_trusted_service_launch_identity`].
+/// The compatibility server only needs its fixed entry snapshot; the
+/// collaboration broker consumes the full record to authenticate a launch.
+pub fn consume_trusted_service_launch(
+    pid: u32,
+    start_time: u64,
+    app_id: &str,
+    workspace_id: &str,
+) -> Option<Vec<String>> {
+    consume_trusted_service_launch_identity(pid, start_time, app_id, workspace_id)
+        .map(|identity| identity.allowed_compat_entry_ids)
+}
+
+/// Atomically consume a service launch record using the kernel's current PID
+/// start-time. A direct `qos-launcher` invocation has no compositor record,
+/// and a reused PID cannot inherit a dead launch's authority.
+pub fn consume_trusted_service_launch_for_pid(
+    pid: u32,
+    app_id: &str,
+    workspace_id: &str,
+) -> Option<ServiceLaunchIdentity> {
+    let (_, start_time) = proc_stat(pid)?;
+    consume_trusted_service_launch_identity(pid, start_time, app_id, workspace_id)
+}
+
+/// Verify (without spending) the shell-owned process record for a service
+/// descriptor. Collaboration and compatibility may both be declared by one
+/// package, so consuming collaboration's descriptor must not invalidate the
+/// compatibility service's independent one-shot handoff.
+pub fn attest_trusted_service_launch_for_pid(
+    pid: u32,
+    app_id: &str,
+    workspace_id: &str,
+) -> Option<ServiceLaunchIdentity> {
+    let (_, start_time) = proc_stat(pid)?;
+    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    let launch = launches.get(&pid)?;
+    (launch.start_time == start_time
+        && launch.identity.app_id == app_id
+        && launch.identity.workspace_id == workspace_id)
+        .then(|| launch.identity.clone())
 }
 
 /// Publish the server-owned compatibility entries that a newly launched
@@ -340,6 +386,15 @@ pub enum LaunchError {
     NotInstalled { package_id: String },
     /// The package is installed but declares no GUI entrypoint.
     NotAGuiApp { package_id: String },
+    /// The fixed workspace-agent package is not a headless service package.
+    NotAManagedService { package_id: String },
+    /// The requested agent is not currently admitted to this workspace.
+    AgentNotAdmitted { agent_id: String },
+    /// Delegated agents may only be started by a workspace administrator.
+    AgentLaunchNotAuthorized,
+    /// The shell could not even create the worker that starts a managed
+    /// agent; callers must show Retry rather than claiming it is starting.
+    AgentLaunchWorkerUnavailable { detail: String },
     /// `qos-launcher` isn't anywhere we look.
     LauncherBinaryMissing { searched: Vec<PathBuf> },
     /// The compositor hasn't published a Wayland socket to connect to.
@@ -366,6 +421,18 @@ impl LaunchError {
             }
             LaunchError::NotAGuiApp { package_id } => {
                 format!("{package_id} has no graphical entrypoint")
+            }
+            LaunchError::NotAManagedService { package_id } => {
+                format!("{package_id} is not an installed managed service")
+            }
+            LaunchError::AgentNotAdmitted { agent_id } => {
+                format!("{agent_id} is not an enabled agent in this workspace")
+            }
+            LaunchError::AgentLaunchNotAuthorized => {
+                "only a workspace administrator can start an agent".to_string()
+            }
+            LaunchError::AgentLaunchWorkerUnavailable { detail } => {
+                format!("could not start the agent launcher: {detail}")
             }
             LaunchError::LauncherBinaryMissing { searched } => {
                 let list: Vec<String> = searched.iter().map(|p| p.display().to_string()).collect();
@@ -402,6 +469,12 @@ impl std::fmt::Display for LaunchError {
 pub struct LaunchEvent {
     pub package_id: String,
     pub display_name: String,
+    /// The delegated agent this event belongs to, when the desktop started a
+    /// managed Task Center service. Ordinary app launches leave this unset.
+    pub managed_agent_id: Option<String>,
+    /// Workspace paired with [`Self::managed_agent_id`], keeping a launch
+    /// event from one room from changing another room's Task Center state.
+    pub managed_workspace_id: Option<String>,
     pub kind: LaunchEventKind,
 }
 
@@ -427,6 +500,8 @@ pub enum LaunchEventKind {
 struct LaunchIdentity {
     package_id: String,
     display_name: String,
+    managed_agent_id: Option<String>,
+    managed_workspace_id: Option<String>,
 }
 
 /// A fully-resolved launch, ready to hand to `Command`.
@@ -443,6 +518,9 @@ pub struct LaunchCommand {
     /// Compositor-owned service authority registered only after this exact
     /// launcher process exists. Never serialised into the child environment.
     pub service_identity: Option<ServiceLaunchIdentity>,
+    /// Correlates launch events to one delegated agent without putting that
+    /// identifier in ambient environment state.
+    pub managed_agent_id: Option<String>,
 }
 
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -1003,7 +1081,7 @@ pub fn build_launch_command(
     build_launch_command_for(
         app,
         launcher_bin,
-        wayland_socket,
+        Some(wayland_socket),
         room,
         &LaunchExtras {
             capabilities_file,
@@ -1035,7 +1113,7 @@ pub fn build_launch_command_for_tab(
     build_launch_command_for(
         app,
         launcher_bin,
-        wayland_socket,
+        Some(wayland_socket),
         room,
         &LaunchExtras {
             capabilities_file,
@@ -1046,6 +1124,46 @@ pub fn build_launch_command_for_tab(
             continuity_tab_id: Some(tab_id),
         },
     )
+}
+
+/// Build the sandboxed, display-less launch for one admitted workspace
+/// agent. The executable and package id come only from the fixed signed
+/// package; `agent_id` is forwarded as one opaque argv value and is never
+/// interpreted as a command line.
+pub fn build_workspace_agent_command(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+    agent_id: &str,
+) -> LaunchCommand {
+    let mut command = build_launch_command_for(
+        app,
+        launcher_bin,
+        None,
+        room,
+        &LaunchExtras {
+            capabilities_file: None,
+            identity_path,
+            render_node: None,
+            document: None,
+            uri: None,
+            continuity_tab_id: None,
+        },
+    );
+    command.args.push("--service".into());
+    command.args.push("--".into());
+    command.args.extend([
+        "--workspace".into(),
+        room.to_string(),
+        "--app".into(),
+        WORKSPACE_AGENT_PACKAGE_ID.into(),
+        "--name".into(),
+        agent_id.to_string(),
+        "--task-runs".into(),
+    ]);
+    command.managed_agent_id = Some(agent_id.to_string());
+    command
 }
 
 /// The launch-command inputs beyond core app identity, grouped so
@@ -1070,7 +1188,7 @@ struct LaunchExtras<'a> {
 fn build_launch_command_for(
     app: &InstalledApp,
     launcher_bin: &Path,
-    wayland_socket: &Path,
+    wayland_socket: Option<&Path>,
     room: RoomId,
     extras: &LaunchExtras<'_>,
 ) -> LaunchCommand {
@@ -1088,8 +1206,6 @@ fn build_launch_command_for(
         app.manifest_path.display().to_string(),
         "--payload-root".to_string(),
         app.payload_root.display().to_string(),
-        "--wayland-socket".to_string(),
-        wayland_socket.display().to_string(),
         "--workspace-id".to_string(),
         room.to_string(),
         // Always passed, so the launcher checks every capability against
@@ -1097,6 +1213,10 @@ fn build_launch_command_for(
         "--app-id".to_string(),
         app.package_id.clone(),
     ];
+    if let Some(wayland_socket) = wayland_socket {
+        args.push("--wayland-socket".to_string());
+        args.push(wayland_socket.display().to_string());
+    }
     if let Some(path) = capabilities_file {
         args.push("--capabilities".to_string());
         args.push(path.display().to_string());
@@ -1144,6 +1264,7 @@ fn build_launch_command_for(
             },
             compat_entry_generation: windows_compat_entry_generation(),
         }),
+        managed_agent_id: None,
     }
 }
 
@@ -1158,6 +1279,80 @@ fn build_launch_command_for(
 /// cannot be found — see [`launch_with_document`].
 pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
     launch_with_document(package_id, room, None)
+}
+
+/// Start one admitted agent as a desktop-managed headless service in its
+/// workspace. This is the native Task Center path: the signed package is
+/// resolved again immediately before launch, then receives the same
+/// launcher-authenticated collaboration descriptor and selected identity as
+/// any other workspace app. Per-agent action authority remains broker-side.
+///
+/// # Errors
+///
+/// Returns an error when the caller is not a workspace administrator, the
+/// agent is not admitted, the fixed agent service is missing/malformed, or
+/// the normal identity/launcher setup fails.
+pub fn launch_workspace_agent(
+    agent_id: &str,
+    workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
+    let agent_id = agent_id.trim();
+    if workspace
+        .role_of_agent(agent_id)
+        .is_none_or(|role| role == crate::shell::state::CapRole::Denied)
+    {
+        return Err(LaunchError::AgentNotAdmitted {
+            agent_id: agent_id.to_string(),
+        });
+    }
+    if !workspace.may_administer(&crate::shell::state::local_user_id()) {
+        return Err(LaunchError::AgentLaunchNotAuthorized);
+    }
+    let app = installed_apps()?
+        .into_iter()
+        .find(|app| app.package_id == WORKSPACE_AGENT_PACKAGE_ID)
+        .ok_or_else(|| LaunchError::NotInstalled {
+            package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
+        })?;
+    let manifest = launcher::manifest::read_manifest(&app.manifest_path).map_err(|error| {
+        LaunchError::RegistryUnreadable {
+            detail: format!("reading the workspace-agent manifest: {error}"),
+        }
+    })?;
+    let requires_collaboration = manifest
+        .sandbox
+        .services
+        .get(launcher::services::COLLAB_SERVICE)
+        .is_some_and(|requirement| {
+            launcher::manifest::ServiceReq::parse(requirement)
+                .is_ok_and(|requirement| requirement.is_required())
+        });
+    if manifest.kind != launcher::manifest::KIND_SERVICE
+        || manifest.entrypoint.cli_bin().is_none()
+        || !requires_collaboration
+    {
+        return Err(LaunchError::NotAManagedService {
+            package_id: app.package_id,
+        });
+    }
+    let launcher_bin = resolve_launcher_bin()?;
+    let identity_path = crate::identity_registry::selected_identity_path(
+        &workspace.room.to_string(),
+    )
+    .map_err(|error| LaunchError::IdentityUnavailable {
+        detail: error.to_string(),
+    })?;
+    let command = build_workspace_agent_command(
+        &app,
+        &launcher_bin,
+        workspace.room,
+        identity_path.as_deref(),
+        agent_id,
+    );
+    if let Err(detail) = spawn_detached(app.clone(), command) {
+        return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
+    }
+    Ok(app)
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the
@@ -1254,7 +1449,7 @@ fn launch_with_context(
     let mut command = build_launch_command_for(
         &app,
         &launcher_bin,
-        &socket,
+        Some(&socket),
         room,
         &LaunchExtras {
             capabilities_file: capabilities_file.as_deref(),
@@ -1311,7 +1506,7 @@ fn launch_with_context(
         );
     }
     remember_launch(&app);
-    spawn_detached(app.clone(), command);
+    let _ = spawn_detached(app.clone(), command);
     Ok(app)
 }
 
@@ -1385,22 +1580,36 @@ pub fn launch_uri_in_workspace(
 
 /// Run `command` on a worker thread and report the outcome through
 /// [`EVENTS`]; the thread lives as long as the app does.
-fn spawn_detached(app: InstalledApp, command: LaunchCommand) {
-    spawn_launch(app.package_id, app.display_name, command);
+fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), String> {
+    spawn_launch(app.package_id, app.display_name, command)
 }
 
 /// Run `command` on a worker thread under `(package_id, display_name)`,
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.qpkg`
 /// via `qos-launcher run` and a host app via `run-host` — since they
 /// differ only in what the launcher does, not in how it's supervised.
-pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCommand) {
+pub fn spawn_launch(
+    package_id: String,
+    display_name: String,
+    command: LaunchCommand,
+) -> Result<(), String> {
     let app = LaunchIdentity {
         package_id,
         display_name,
+        managed_agent_id: command.managed_agent_id.clone(),
+        managed_workspace_id: command
+            .service_identity
+            .as_ref()
+            .map(|identity| identity.workspace_id.clone()),
     };
     let builder = std::thread::Builder::new().name("qos-app-launch".to_string());
     // Kept for the spawn-failure report below since the closure moves `app`.
-    let identity = (app.package_id.clone(), app.display_name.clone());
+    let identity = (
+        app.package_id.clone(),
+        app.display_name.clone(),
+        app.managed_agent_id.clone(),
+        app.managed_workspace_id.clone(),
+    );
     let spawn_result = builder.spawn(move || {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
@@ -1419,6 +1628,8 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 push_event(LaunchEvent {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),
+                    managed_agent_id: app.managed_agent_id.clone(),
+                    managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
                         detail: e.to_string(),
                     },
@@ -1437,6 +1648,8 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
+            managed_agent_id: app.managed_agent_id.clone(),
+            managed_workspace_id: app.managed_workspace_id.clone(),
             kind: LaunchEventKind::Started { pid: child.id() },
         });
 
@@ -1482,17 +1695,26 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
+            managed_agent_id: app.managed_agent_id.clone(),
+            managed_workspace_id: app.managed_workspace_id.clone(),
             kind,
         });
     });
-    if let Err(e) = spawn_result {
-        push_event(LaunchEvent {
-            package_id: identity.0,
+    match spawn_result {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let detail = format!("could not start launch thread: {e}");
+            push_event(LaunchEvent {
+                package_id: identity.0,
             display_name: identity.1,
-            kind: LaunchEventKind::SpawnFailed {
-                detail: format!("could not start launch thread: {e}"),
-            },
-        });
+            managed_agent_id: identity.2,
+            managed_workspace_id: identity.3,
+                kind: LaunchEventKind::SpawnFailed {
+                    detail: detail.clone(),
+                },
+            });
+            Err(detail)
+        }
     }
 }
 
@@ -1944,6 +2166,69 @@ mod tests {
             cmd.args[pos("--render-node") + 1],
             "/dev/dri/renderD128",
             "the app must be pointed at THIS compositor's GPU"
+        );
+    }
+
+    #[test]
+    fn workspace_agent_command_is_headless_fixed_package_service_argv() {
+        let app = InstalledApp {
+            package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
+            display_name: "Agent".into(),
+            category: None,
+            version: "0.1.0".into(),
+            manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
+            payload_root: PathBuf::from("/apps/agent"),
+            has_gui: false,
+            opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
+        };
+        let room = RoomId::new();
+        let command = build_workspace_agent_command(
+            &app,
+            Path::new("/usr/bin/qos-launcher"),
+            room,
+            Some(Path::new("/run/user/1000/qos/identity.json")),
+            "studio-agent",
+        );
+
+        assert!(!command.args.iter().any(|arg| arg == "--wayland-socket"));
+        assert!(!command.args.iter().any(|arg| arg == "--capabilities"));
+        assert_eq!(command.managed_agent_id.as_deref(), Some("studio-agent"));
+        let separator = command
+            .args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("service argv has an explicit separator");
+        assert_eq!(
+            command
+                .args
+                .get(separator.wrapping_sub(1))
+                .map(String::as_str),
+            Some("--service")
+        );
+        assert_eq!(
+            command.args.get(separator.saturating_add(1)..),
+            Some(
+                [
+                    "--workspace".to_string(),
+                    room.to_string(),
+                    "--app".to_string(),
+                    WORKSPACE_AGENT_PACKAGE_ID.to_string(),
+                    "--name".to_string(),
+                    "studio-agent".to_string(),
+                    "--task-runs".to_string(),
+                ]
+                .as_slice()
+            )
+        );
+        let room_string = room.to_string();
+        assert_eq!(
+            command
+                .service_identity
+                .as_ref()
+                .map(|identity| (identity.app_id.as_str(), identity.workspace_id.as_str())),
+            Some((WORKSPACE_AGENT_PACKAGE_ID, room_string.as_str()))
         );
     }
 
@@ -2477,6 +2762,17 @@ mod tests {
             consume_trusted_service_launch(pid, start_time, "dev.qos.windows", "room-1"),
             None,
             "the authority record is single-use"
+        );
+    }
+
+    #[test]
+    fn direct_launcher_pid_has_no_service_authority_to_redeem() {
+        let pid = std::process::id();
+        lock(&TRUSTED_SERVICE_LAUNCHES).clear();
+        assert_eq!(
+            attest_trusted_service_launch_for_pid(pid, "dev.qos.agent", "room-1"),
+            None,
+            "a direct qos-launcher invocation must not mint the shell's one-shot authority"
         );
     }
 
