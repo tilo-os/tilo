@@ -368,6 +368,10 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the end-to-end proof keeps the broker, agent, and peer assertions together"
+)]
 fn the_agent_inserts_a_table_on_the_peers_replica() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");

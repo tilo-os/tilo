@@ -77,14 +77,11 @@ enum MemberSheet {
 }
 
 impl MemberSheet {
-    fn action_count(&self) -> usize {
-        match self {
-            Self::Role(_) => 3,
-            // Cancel, inspect the related history, then complete the
-            // irreversible-looking action. The mutation itself remains a
-            // forward, policy-checked record.
-            Self::Remove(_) | Self::Revoke(_) => 3,
-        }
+    const fn action_count() -> usize {
+        // Every sheet offers three explicit choices. Destructive sheets use
+        // cancel, inspect history, then complete the policy-checked action;
+        // the role sheet offers its three concrete roles.
+        3
     }
 }
 
@@ -291,23 +288,29 @@ impl WorkspaceSettingsOverlay {
     /// a pointer, and every other key is absorbed by the host while open.
     pub fn handle_member_sheet_key(&mut self, key: MemberSheetKey) -> Option<EventOutcome> {
         let sheet = self.member_sheet.clone()?;
-        let count = sheet.action_count();
+        let count = MemberSheet::action_count();
         match key {
             MemberSheetKey::Previous => {
-                self.member_sheet_focus =
-                    self.member_sheet_focus.checked_sub(1).unwrap_or(count - 1);
+                self.member_sheet_focus = self
+                    .member_sheet_focus
+                    .checked_sub(1)
+                    .unwrap_or_else(|| count.saturating_sub(1));
                 None
             }
             MemberSheetKey::Next => {
-                self.member_sheet_focus = (self.member_sheet_focus + 1) % count;
+                self.member_sheet_focus = self
+                    .member_sheet_focus
+                    .checked_add(1)
+                    .filter(|next| *next < count)
+                    .unwrap_or(0);
                 None
             }
             MemberSheetKey::Cancel => Some(EventOutcome::DismissMemberSheet),
-            MemberSheetKey::Activate => self.member_sheet_outcome(&sheet, self.member_sheet_focus),
+            MemberSheetKey::Activate => Self::member_sheet_outcome(&sheet, self.member_sheet_focus),
         }
     }
 
-    fn member_sheet_outcome(&self, sheet: &MemberSheet, index: usize) -> Option<EventOutcome> {
+    fn member_sheet_outcome(sheet: &MemberSheet, index: usize) -> Option<EventOutcome> {
         match sheet {
             MemberSheet::Role(user) => [CapRole::Viewer, CapRole::Commenter, CapRole::Editor]
                 .get(index)
@@ -450,8 +453,7 @@ impl WorkspaceSettingsOverlay {
                 .iter()
                 .position(|rect| rect.contains(point))
             {
-                return self
-                    .member_sheet_outcome(sheet, index)
+                return Self::member_sheet_outcome(sheet, index)
                     .unwrap_or(EventOutcome::DismissMemberSheet);
             }
             // This is a modal decision, so a stray click cannot alter a
@@ -642,6 +644,10 @@ impl WorkspaceSettingsOverlay {
     /// Paint the focused decision surface over the settings lens. The outer
     /// modal remains visible for context, while this compact sheet makes the
     /// exact permission being changed and its consequences impossible to miss.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the focused permission sheet is one compact renderer whose geometry, hit targets, focus treatment, and exact security consequences must stay in lockstep"
+    )]
     fn draw_member_sheet(
         &mut self,
         scene: &mut Scene,
@@ -808,7 +814,7 @@ impl WorkspaceSettingsOverlay {
         } else {
             card.y0 + 112.0
         };
-        for (index, label) in labels.iter().enumerate() {
+        for (index, (label, preview)) in labels.iter().zip(&previews).enumerate() {
             let y0 = start_y + usize_to_f64_lossy(index) * (row_h + gap);
             let option = Rect::new(option_x0, y0, option_x1, y0 + row_h);
             self.member_sheet_option_rects.push(option);
@@ -845,7 +851,7 @@ impl WorkspaceSettingsOverlay {
             if role_sheet {
                 text_renderer.draw_text(
                     scene,
-                    &previews[index],
+                    preview,
                     tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((option.x0 + 12.0, option.y0 + 29.0).into()),

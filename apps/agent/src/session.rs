@@ -682,7 +682,7 @@ impl Session {
                 if let Some(end) = end
                     && Some(end) != before
                 {
-                    self.capture_step(target_app_id, &record, descriptor.action_label.clone(), end);
+                    self.capture_step(target_app_id, &record, descriptor.action_label, end);
                 }
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(()))
