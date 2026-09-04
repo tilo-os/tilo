@@ -111,6 +111,14 @@ enum Cmd {
         /// argv value; it is never parsed as a command line.
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
+        /// Launch this package's headless entrypoint as a desktop-managed
+        /// service. Valid only for `kind = "service"`; no display or open
+        /// resource is handed into the sandbox.
+        #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
+        service: bool,
+        /// Trusted service argv, forwarded verbatim after the entrypoint.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
     },
     /// Launch a CLI command from an already-installed package. Used by the
     /// PATH shim (`qos-cli-shim`).
@@ -242,6 +250,8 @@ fn main() -> ExitCode {
             render_node,
             open,
             open_uri,
+            service,
+            rest,
         } => run_gui_command(RunCliArgs {
             manifest,
             payload_root,
@@ -260,6 +270,8 @@ fn main() -> ExitCode {
             render_node,
             open,
             open_uri,
+            service,
+            rest,
         }),
         Cmd::RunInstalled {
             package,
@@ -340,10 +352,13 @@ struct RunCliArgs {
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
     open_uri: Option<String>,
+    service: bool,
+    rest: Vec<String>,
 }
 
-/// Build [`RunOptions`] from the `run` subcommand's flags and launch the
-/// package's GUI entrypoint.
+/// Build [`RunOptions`] from the `run` subcommand's flags and launch either
+/// the package's GUI entrypoint or its explicitly requested managed-service
+/// entrypoint.
 fn run_gui_command(args: RunCliArgs) -> ExitCode {
     if args.minimal_libs {
         eprintln!(
@@ -359,7 +374,13 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         sandbox_shim_bin: None,
         minimal_libs: args.minimal_libs,
         landlock_enforce: true,
-        mode: LaunchMode::Gui,
+        mode: if args.service {
+            LaunchMode::Service {
+                passthrough_argv: args.rest,
+            }
+        } else {
+            LaunchMode::Gui
+        },
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
