@@ -26,14 +26,69 @@ const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskAction {
-    peer_id: u64,
     app: String,
+    peer_id: u64,
     resource: String,
     resource_kind: String,
     resource_label: String,
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
+    /// This action's sole content argument comes from the immediately
+    /// preceding action result, never from model-authored JSON.
+    carries: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct StepOutcome {
+    /// The application-declared result returned by the broker.
+    output: qos_actions::ActionOutput,
+    /// A local document's app-derived product. Local document actions predate
+    /// `ActionOutput`; this preserves their existing honest hand-off without
+    /// pretending the model or the generic action door produced it.
+    product: Option<surface::Product>,
+}
+
+impl StepOutcome {
+    fn content_hash(&self) -> Result<&str, String> {
+        let mut hashes = self
+            .output
+            .resources
+            .iter()
+            .filter_map(|address| qos_actions::content_hash(address));
+        if let Some(hash) = hashes.next() {
+            if hashes.next().is_some() {
+                return Err("the previous action produced more than one content resource".into());
+            }
+            return Ok(hash);
+        }
+        if let Some(surface::Product::Content { hash }) = &self.product {
+            return Ok(hash);
+        }
+        Err("the previous action produced no content resource".into())
+    }
+}
+
+fn arguments_for_step(
+    carries: bool,
+    planned: &serde_json::Map<String, serde_json::Value>,
+    previous: Option<&StepOutcome>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if !carries {
+        return Ok(planned.clone());
+    }
+    let hash = previous
+        .ok_or_else(|| "a content-consuming action has no preceding action result".to_string())?
+        .content_hash()?;
+    let mut arguments = planned.clone();
+    // `prompted_content` always projects its one input under this shared
+    // parameter name. Replace any model-authored value: the descriptor says
+    // the value is carried, so only the preceding application may supply it.
+    arguments.insert(
+        qos_actions::PROMPTED_PARAM.to_string(),
+        serde_json::Value::String(hash.to_string()),
+    );
+    Ok(arguments)
 }
 
 #[derive(Debug)]
@@ -79,17 +134,20 @@ fn task_action_from_offer(
     ) {
         return Err("Tasks cannot invoke an action requiring human confirmation".into());
     }
-    qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
-        .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
+    if !offer.wants_content() {
+        qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
+            .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
+    }
     Ok(TaskAction {
-        peer_id,
         app: offer.app.clone(),
+        peer_id,
         resource: offer.descriptor.address.resource.clone(),
         resource_kind: offer.descriptor.resource_kind.clone(),
         resource_label: offer.descriptor.resource_label.clone(),
         action: offer.descriptor.address.action.clone(),
         arguments,
         label: offer.descriptor.action_label.clone(),
+        carries: offer.wants_content(),
     })
 }
 
@@ -385,18 +443,24 @@ impl Session {
             }
             Err(message) => return self.fail_task(&run, &message),
         };
+        let mut previous = None;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(&run)? {
                 return self.cancel_task(&run, "Cancelled before the next action");
             }
+            let arguments =
+                match arguments_for_step(action.carries, &action.arguments, previous.as_ref()) {
+                    Ok(arguments) => arguments,
+                    Err(message) => return self.fail_task(&run, &message),
+                };
             self.report_task(
                 &run,
                 runtime_collab::TaskRunUpdate::Progress {
                     message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
                 },
             )?;
-            match self.invoke_task_action(&run, action)? {
-                Ok(()) => {}
+            match self.invoke_task_action(&run, action, &arguments)? {
+                Ok(outcome) => previous = Some(outcome),
                 Err(TaskActionStop::Cancelled) => {
                     return self.cancel_task(&run, "Cancelled while an action was running");
                 }
@@ -576,7 +640,8 @@ impl Session {
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         action: &TaskAction,
-    ) -> Result<Result<(), TaskActionStop>> {
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let request_id = self.next_request_id();
         self.link.send(&CollabRequest::InvokeTaskAction {
             request_id,
@@ -585,7 +650,7 @@ impl Session {
             peer_id: action.peer_id,
             resource: action.resource.clone(),
             action: action.action.clone(),
-            arguments: action.arguments.clone(),
+            arguments: arguments.clone(),
         })?;
         let (id, mut update) = match self.wait_for_task_action_result(request_id)? {
             Ok(result) => result,
@@ -622,7 +687,10 @@ impl Session {
             self.publish_task_interaction(run, action, &update, interaction_sequence);
         }
         match update {
-            qos_actions::InvocationUpdate::Succeeded { .. } => Ok(Ok(())),
+            qos_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
+                output,
+                product: self.product_for_app(&action.app),
+            })),
             qos_actions::InvocationUpdate::Cancelled { .. } => Ok(Err(TaskActionStop::Cancelled)),
             qos_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(TaskActionStop::Failed(error.message)))
@@ -762,6 +830,16 @@ impl Session {
                     return Ok(result);
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
+                Some(CollabEvent::Document { envelope, .. }) => {
+                    match DocumentMutation::decode(&envelope.payload)? {
+                        DocumentMutation::Snapshot(data) => {
+                            let _ = self.absorb_snapshot(&data)?;
+                        }
+                        DocumentMutation::Incremental(data) => {
+                            let _ = self.merge_incremental_anywhere(&data)?;
+                        }
+                    }
+                }
                 Some(event) => deferred.push(event),
                 None => {}
             }
@@ -1042,7 +1120,7 @@ impl Session {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
-    ) -> Result<Result<(), String>> {
+    ) -> Result<Result<StepOutcome, String>> {
         if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
         }
@@ -1094,13 +1172,30 @@ impl Session {
         Ok(found)
     }
 
+    /// What the named application's current document denotes after an
+    /// action. This remains the application's function, not an interpretation
+    /// of its document by the agent.
+    fn product_for_app(&self, app: &str) -> Option<surface::Product> {
+        let namespace = surface::for_app_id(app).map_or(app, |contract| contract.namespace);
+        let view = self.view(None);
+        self.editor
+            .as_ref()
+            .filter(|editor| editor.contract().namespace == namespace)
+            .and_then(|editor| (editor.contract().product)(&view, &editor.doc))
+            .or_else(|| {
+                self.peers
+                    .get(namespace)
+                    .and_then(|editor| (editor.contract().product)(&view, &editor.doc))
+            })
+    }
+
     fn perform_broker(
         &mut self,
         id: &str,
         offer: &surface::Offer,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
-    ) -> Result<Result<(), String>> {
+    ) -> Result<Result<StepOutcome, String>> {
         let Some(peer_id) = offer.broker_peer_id else {
             return Ok(Err(
                 "that operation is local-only and cannot be brokered".to_string()
@@ -1172,7 +1267,10 @@ impl Session {
             qos_actions::InvocationUpdate::Succeeded { output, .. } => {
                 tracing::info!(%id, invocation_id, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
-                Ok(Ok(()))
+                Ok(Ok(StepOutcome {
+                    output,
+                    product: self.product_for_app(&offer.app),
+                }))
             }
             _ => Ok(Err(
                 "the broker returned an invalid nonterminal result".to_string()
@@ -1185,7 +1283,7 @@ impl Session {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
-    ) -> Result<Result<(), String>> {
+    ) -> Result<Result<StepOutcome, String>> {
         let context = self.task_context();
         let Some(address) = surface::decode_address(id) else {
             return Ok(Err("that no longer names anything I can find".to_string()));
@@ -1229,6 +1327,7 @@ impl Session {
         match invoked {
             Ok(Some(delta)) => {
                 let end = editor.latest_entry_id();
+                let product = (editor.contract().product)(&view, &editor.doc);
                 let record = self.cfg.record.clone().unwrap_or_default();
                 let request = CollabRequest::DocumentIncremental { data: delta };
                 if is_primary {
@@ -1244,7 +1343,10 @@ impl Session {
                     self.capture_step(target_app_id, &record, descriptor.action_label, end);
                 }
                 std::thread::sleep(self.cfg.pace);
-                Ok(Ok(()))
+                Ok(Ok(StepOutcome {
+                    output: qos_actions::ActionOutput::default(),
+                    product,
+                }))
             }
             Ok(None) => {
                 tracing::warn!(%id, "the operation changed nothing");
@@ -1290,6 +1392,16 @@ impl Session {
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.broker_surfaces = surfaces;
+                }
+                Some(CollabEvent::Document { envelope, .. }) => {
+                    match DocumentMutation::decode(&envelope.payload)? {
+                        DocumentMutation::Snapshot(data) => {
+                            let _ = self.absorb_snapshot(&data)?;
+                        }
+                        DocumentMutation::Incremental(data) => {
+                            let _ = self.merge_incremental_anywhere(&data)?;
+                        }
+                    }
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -1546,6 +1658,7 @@ impl Session {
             self.finish_run()?;
             return Ok(true);
         }
+        let mut previous = None;
         for step in &plan.steps {
             let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
             let Some(at) = blocks.iter().position(|b| b.id == ins_id) else {
@@ -1553,6 +1666,7 @@ impl Session {
                 // instruction and took the paragraph with it.
                 break;
             };
+            let mut outcome = None;
             let applied = match &step.instruction {
                 Instruction::Table => self.make_table(&blocks, at)?,
                 Instruction::Caption => self.caption_image(&blocks, at)?,
@@ -1573,10 +1687,24 @@ impl Session {
                     if self.dispatched_this_turn.contains(id) {
                         true
                     } else {
+                        let arguments =
+                            match arguments_for_step(step.carries, arguments, previous.as_ref()) {
+                                Ok(arguments) => arguments,
+                                Err(why) => {
+                                    self.splice_reply(
+                                        &blocks,
+                                        ins_id,
+                                        &format!("{}: I couldn't do that - {why}", self.cfg.name),
+                                    )?;
+                                    self.finish_run()?;
+                                    return Ok(true);
+                                }
+                            };
                         let id = id.clone();
-                        match self.perform(&id, arguments, confirmation)? {
-                            Ok(()) => {
+                        match self.perform(&id, &arguments, confirmation)? {
+                            Ok(performed) => {
                                 self.dispatched_this_turn.insert(id);
+                                outcome = Some(performed);
                                 true
                             }
                             Err(why) => {
@@ -1606,6 +1734,11 @@ impl Session {
                 self.finish_run()?;
                 return Ok(true);
             }
+            // Only the immediately following step may consume a result. A
+            // presentation-only step or a skipped duplicate breaks the chain
+            // rather than letting a later action accidentally reuse stale
+            // content.
+            previous = outcome;
         }
         // Every step ran clean, so the instruction is answered in full and
         // the paragraph that asked for it goes away. Idempotent against a
@@ -1964,6 +2097,82 @@ mod tests {
         let mut invalid = task_run();
         invalid.version = 2;
         assert!(validate_task_run(&invalid).is_err());
+    }
+
+    #[test]
+    fn a_content_step_uses_only_the_immediately_preceding_application_result() {
+        let output = qos_actions::ActionOutput {
+            value: Some(serde_json::json!({"display": "ignored"})),
+            resources: vec![
+                qos_actions::content_resource("abc123")
+                    .expect("the producer returned a valid content hash"),
+            ],
+        };
+        let previous = StepOutcome {
+            output,
+            product: Some(surface::Product::Content {
+                hash: "legacy-derived-product".into(),
+            }),
+        };
+        let planned = serde_json::Map::from_iter([(
+            qos_actions::PROMPTED_PARAM.to_string(),
+            serde_json::Value::String("model-invented".into()),
+        )]);
+
+        let bound = arguments_for_step(true, &planned, Some(&previous))
+            .expect("one content result binds the next content input");
+        assert_eq!(
+            bound.get(qos_actions::PROMPTED_PARAM),
+            Some(&serde_json::Value::String("abc123".into())),
+            "the preceding app result must replace model input and its legacy product fallback"
+        );
+        assert!(
+            arguments_for_step(true, &planned, None).is_err(),
+            "a content action cannot reuse an older or invented result"
+        );
+    }
+
+    #[test]
+    fn a_content_step_refuses_ambiguous_or_wrong_kind_results() {
+        let ambiguous = StepOutcome {
+            output: qos_actions::ActionOutput {
+                value: None,
+                resources: vec!["qos.content:first".into(), "qos.content:second".into()],
+            },
+            product: None,
+        };
+        assert!(
+            arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
+            "choosing one of two products would be a model-visible guess"
+        );
+
+        let wrong_kind = StepOutcome {
+            output: qos_actions::ActionOutput {
+                value: None,
+                resources: vec!["files.entry:/tmp/picture.png".into()],
+            },
+            product: None,
+        };
+        assert!(
+            arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
+            "a generic resource address is not proof that content bytes exist"
+        );
+    }
+
+    #[test]
+    fn a_local_apps_declared_product_can_feed_the_next_content_step() {
+        let previous = StepOutcome {
+            output: qos_actions::ActionOutput::default(),
+            product: Some(surface::Product::Content {
+                hash: "rendered-photo".into(),
+            }),
+        };
+        let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
+            .expect("the app, not the agent, declared the local document's product");
+        assert_eq!(
+            bound.get(qos_actions::PROMPTED_PARAM),
+            Some(&serde_json::Value::String("rendered-photo".into()))
+        );
     }
 
     #[test]
