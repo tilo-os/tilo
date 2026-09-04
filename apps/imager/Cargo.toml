@@ -18,6 +18,11 @@ thin = ["dep:runtime-dylib"]
 # Host downloads opt into the narrowly elevated raw-media writer. The qpkg
 # deliberately omits this feature because its sandbox has no raw-device portal.
 host-media-writer = []
+# Flatpak cannot safely elevate a binary from inside its mutable mount
+# namespace.  This backend asks the host's root-owned UDisks2 service for one
+# polkit-authorized, exclusive file descriptor to the reviewed removable
+# drive.  No /dev access or host-command escape is granted to the sandbox.
+flatpak-media-writer = ["dep:zbus"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -36,6 +41,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
+zbus = { workspace = true, optional = true, default-features = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
