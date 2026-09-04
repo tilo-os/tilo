@@ -26,8 +26,10 @@ files=(
     /usr/libexec/qos-session
     /usr/libexec/qos-session-dev
     /usr/libexec/qos-unlock-helper
+    /usr/lib/systemd/user/qos-graphical-session.target
     /usr/share/wayland-sessions/qos.desktop
     /usr/share/wayland-sessions/qos-dev.desktop
+    /usr/share/xdg-desktop-portal/nirios-portals.conf
     /usr/share/xdg-desktop-portal/portals/qos.portal
     /etc/pam.d/qos-unlock
 )

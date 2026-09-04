@@ -23,12 +23,14 @@ stage=$work/stage
 
 main=$work/qos-session
 dev=$work/qos-session-devel
-mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/qos-session}
+mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/qos-session}
 install -pm 0755 "$stage/bin/qos-shell" "$stage/bin/qos-launcher" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/qos-unlock-helper" "$stage/libexec/qos-session" "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/qos-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/qos.desktop" "$main/usr/share/wayland-sessions/"
 install -pm 0644 "$stage/portal/qos.portal" "$main/usr/share/xdg-desktop-portal/portals/"
+install -pm 0644 "$stage/portal/nirios-portals.conf" "$main/usr/share/xdg-desktop-portal/"
+install -pm 0644 "$stage/systemd-user/qos-graphical-session.target" "$main/usr/lib/systemd/user/"
 install -pm 0644 "$stage/license/LICENSE" "$main/usr/share/doc/qos-session/copyright"
 
 mkdir -p "$dev"/{DEBIAN,usr/libexec,usr/share/wayland-sessions}
@@ -63,8 +65,8 @@ Priority: optional
 Architecture: $arch
 Maintainer: qOS contributors <qos@code.podesta.ai>
 Installed-Size: $(installed_size "$main")
-Depends: $shlib_deps, libpam0g, libvulkan1, libegl1
-Recommends: mesa-vulkan-drivers, xdg-desktop-portal, greetd | gdm3 | sddm
+Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap, systemd, xdg-desktop-portal, xdg-dbus-proxy
+Recommends: mesa-vulkan-drivers, xwayland-satellite, greetd | gdm3 | sddm
 Description: qOS collaborative compositor as a Wayland session
  Installs the qOS compositor, launcher, unlock helper, PAM policy, portal
  registration, and display-manager session entry on a Debian-family host.
