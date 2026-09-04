@@ -127,20 +127,21 @@ list_tags() {
     echo "Log in (podman login ${QOS_PUBLISH_REPO%%/*}), or set" >&2
     echo "QOS_REGISTRY_CREDS=user:token." >&2
     return 1; }
-  # A copy in a directory of our own, mounted with an SELinux relabel. Bind-mounting
-  # the credential file straight in fails "permission denied" reading it — the
-  # container cannot see through the label on $XDG_RUNTIME_DIR — and relabelling the
-  # real file to fix that would rewrite the host's credential store.
+  # Copy into a directory of our own first. The resulting file is streamed over
+  # stdin below: an Actions job commonly controls a host Docker daemon, which
+  # cannot bind-mount paths from the job container's private filesystem.
     tmp="$(mktemp -d)" || return 1
     if ! cp "$auth" "$tmp/auth.json" || ! chmod 0600 "$tmp/auth.json"; then
       rm -r "$tmp"
       return 1
     fi
   fi
-  if "$engine" run --rm \
-      -e REGISTRY_AUTH_FILE=/run/qos-auth/auth.json \
-      -v "$tmp:/run/qos-auth:ro,z" \
-      "$SKOPEO_IMAGE" list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+  if "$engine" run --rm --interactive \
+      --entrypoint /bin/sh \
+      -e REGISTRY_AUTH_FILE=/tmp/qos-auth.json \
+      "$SKOPEO_IMAGE" -ceu \
+      'umask 077; cat > "$REGISTRY_AUTH_FILE"; exec skopeo list-tags "docker://$1"' \
+      sh "$QOS_PUBLISH_REPO" < "$tmp/auth.json"; then
     rc=0
   else
     rc=$?
