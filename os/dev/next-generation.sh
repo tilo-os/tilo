@@ -50,6 +50,8 @@ esac
 # is already taken.
 #
 # QOS_REGISTRY_CREDS ("user:token") is the explicit path, and it is what CI uses.
+# It is converted immediately into a mode-0600 temporary auth file. Passing it
+# through a credential command-line option would expose the token in process argv.
 # Discovering an auth file works interactively and is unreliable in a job: the
 # runner's `docker login` may write a `credsStore` entry with no credential in the
 # file at all, and the first file that *exists* is not necessarily the one with the
@@ -78,28 +80,49 @@ find_authfile() {
 }
 
 list_tags() {
-  local creds_args=() auth tmp rc
+  local auth tmp rc encoded
   if [ -n "$QOS_REGISTRY_CREDS" ]; then
-    creds_args=(--creds "$QOS_REGISTRY_CREDS")
+    case "$QOS_REGISTRY_CREDS" in
+      *:*) ;;
+      *) echo "QOS_REGISTRY_CREDS must be user:token" >&2; return 1 ;;
+    esac
+    [ -n "${QOS_REGISTRY_CREDS%%:*}" ] && [ -n "${QOS_REGISTRY_CREDS#*:}" ] || {
+      echo "QOS_REGISTRY_CREDS must contain a non-empty user and token" >&2
+      return 1
+    }
+    tmp="$(mktemp -d)" || return 1
+    chmod 0700 "$tmp" || { rm -r "$tmp"; return 1; }
+    auth="$tmp/auth.json"
+    encoded="$(printf '%s' "$QOS_REGISTRY_CREDS" | base64 | tr -d '\n')" \
+      || { rm -r "$tmp"; return 1; }
+    if ! printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+        "${QOS_PUBLISH_REPO%%/*}" "$encoded" > "$auth" \
+      || ! chmod 0600 "$auth"; then
+      rm -r "$tmp"
+      return 1
+    fi
   fi
 
   if command -v skopeo >/dev/null 2>&1; then
-    skopeo list-tags "${creds_args[@]+"${creds_args[@]}"}" \
-      "docker://$QOS_PUBLISH_REPO" 2>&1
-    return
+    if [ -n "${auth:-}" ]; then
+      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+        rc=0
+      else
+        rc=$?
+      fi
+      rm -r "$tmp"
+      return $rc
+    fi
+    skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
+    return $?
   fi
 
   local engine
   engine="$(command -v podman || command -v docker)" || {
     echo "no skopeo, and no podman or docker to run it in" >&2; return 1; }
 
-  if [ ${#creds_args[@]} -gt 0 ]; then
-    "$engine" run --rm "$SKOPEO_IMAGE" \
-      list-tags "${creds_args[@]}" "docker://$QOS_PUBLISH_REPO" 2>&1
-    return
-  fi
-
-  auth="$(find_authfile)" || {
+  if [ -z "${auth:-}" ]; then
+    auth="$(find_authfile)" || {
     echo "no container auth file carries an entry for ${QOS_PUBLISH_REPO%%/*}." >&2
     echo "Log in (podman login ${QOS_PUBLISH_REPO%%/*}), or set" >&2
     echo "QOS_REGISTRY_CREDS=user:token." >&2
@@ -108,14 +131,21 @@ list_tags() {
   # the credential file straight in fails "permission denied" reading it — the
   # container cannot see through the label on $XDG_RUNTIME_DIR — and relabelling the
   # real file to fix that would rewrite the host's credential store.
-  tmp="$(mktemp -d)"
-  cp "$auth" "$tmp/auth.json" && chmod 0644 "$tmp/auth.json"
-  "$engine" run --rm \
-    -e REGISTRY_AUTH_FILE=/run/qos-auth/auth.json \
-    -v "$tmp:/run/qos-auth:ro,z" \
-    "$SKOPEO_IMAGE" list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
-  rc=$?
-  rm -rf "$tmp"
+    tmp="$(mktemp -d)" || return 1
+    if ! cp "$auth" "$tmp/auth.json" || ! chmod 0600 "$tmp/auth.json"; then
+      rm -r "$tmp"
+      return 1
+    fi
+  fi
+  if "$engine" run --rm \
+      -e REGISTRY_AUTH_FILE=/run/qos-auth/auth.json \
+      -v "$tmp:/run/qos-auth:ro,z" \
+      "$SKOPEO_IMAGE" list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -r "$tmp"
   return $rc
 }
 

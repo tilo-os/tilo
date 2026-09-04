@@ -13,6 +13,7 @@ use iroh::endpoint::presets;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::network::actor::WorkspaceControlRoute;
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
@@ -461,6 +462,11 @@ pub struct ShellNetwork {
     /// Topics already subscribed in the actor. Avoids sending a Join command on
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
+    /// Transport-authenticated direct neighbours, scoped by workspace.
+    /// Populated only after IdentityHello admission succeeds.
+    workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
+    /// Authenticated host sessions whose ephemeral presence plane is ready.
+    workspace_control_relays: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
     /// Tokio runtime hosting the actor. `Option` so `drop` can `take`
     /// it and shut down without blocking the test thread.
     runtime: Option<tokio::runtime::Runtime>,
@@ -529,6 +535,8 @@ pub struct ShellNetwork {
     /// Frames are coalesced per surface when the render loop falls behind,
     /// keeping network jitter from turning into unbounded compositor memory.
     inbound_legacy: Arc<Mutex<std::collections::VecDeque<InboundLegacyEvent>>>,
+    workspace_control_observers:
+        Mutex<Vec<tokio::sync::mpsc::UnboundedSender<WorkspaceControlNetworkEvent>>>,
     /// Recent reader/transport exits, retained independently of mutable room
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
@@ -541,7 +549,25 @@ pub struct ShellNetwork {
 #[derive(Debug, Clone)]
 pub struct InboundLegacyEvent {
     pub workspace_topic: u64,
+    /// Full authenticated sender identity. `None` only in the in-process test
+    /// bridge, which has no Iroh transport.
+    pub transport_peer: Option<iroh::EndpointId>,
     pub message: NeighbourMsg,
+}
+
+/// Authenticated network edges observed by workspace-control sessions. This
+/// fan-out tap leaves the compositor's consuming legacy queue untouched.
+#[derive(Debug, Clone)]
+pub enum WorkspaceControlNetworkEvent {
+    Message(InboundLegacyEvent),
+    PeerLeft {
+        workspace_topic: u64,
+        peer: iroh::EndpointId,
+    },
+    PeerRevoked {
+        workspace_topic: u64,
+        peer: iroh::EndpointId,
+    },
 }
 
 const LEGACY_INBOX_CAP: usize = 256;
@@ -798,6 +824,8 @@ impl ShellNetwork {
             event_tx,
             event_rx: Mutex::new(event_rx),
             joined_topics: Mutex::new(std::collections::HashSet::new()),
+            workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
+            workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
             local_peer_hash,
             keypair,
@@ -825,6 +853,7 @@ impl ShellNetwork {
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
         })
     }
@@ -834,6 +863,114 @@ impl ShellNetwork {
     /// publisher.
     pub fn local_peer_id_hash(&self) -> u64 {
         self.local_peer_hash
+    }
+
+    /// Resolve and open a qOS workspace-control session over an authenticated
+    /// exact-target device route. A successful route is transport reachability
+    /// only: the returned session still waits for the target's authenticated
+    /// SurfaceStreamStart before allowing input.
+    pub fn open_workspace_control(
+        &self,
+        workspace: u64,
+        target: iroh::EndpointId,
+    ) -> Result<crate::network::WorkspaceControlSession, String> {
+        if target == self.local_peer_id {
+            return Err("cannot control this device through its remote route".into());
+        }
+        if !self.join_topic(workspace) {
+            return Err("workspace transport is unavailable".into());
+        }
+        let direct_reachable = self
+            .workspace_control_direct
+            .lock()
+            .map(|peers| peers.contains(&(workspace, target)))
+            .unwrap_or(false);
+        let relay_ids = self
+            .workspace_control_relays
+            .lock()
+            .map(|relays| {
+                relays
+                    .iter()
+                    .filter_map(|(relay_ws, relay)| (*relay_ws == workspace).then_some(*relay))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let candidates = relay_ids
+            .iter()
+            .map(|relay| qos_relay::ServerAdvertisement {
+                device: *relay.as_bytes(),
+                role: qos_relay::DeviceRole::AlwaysOnServer,
+                services: qos_relay::ServiceCapabilities::relay_only(),
+                workspaces: std::collections::BTreeSet::from([workspace]),
+                apps: std::collections::BTreeSet::new(),
+                priority: 0,
+                latency_ms: 0,
+                active_assignments: 0,
+                assignment_capacity: u32::MAX,
+                online: true,
+            })
+            .collect::<Vec<_>>();
+        let route = match qos_relay::route_remote_control(
+            *self.local_peer_id.as_bytes(),
+            *target.as_bytes(),
+            workspace,
+            direct_reachable,
+            &candidates,
+        ) {
+            qos_relay::RemoteControlRoute::Direct { .. } => {
+                WorkspaceControlRoute::Direct { target }
+            }
+            qos_relay::RemoteControlRoute::Relayed { via, .. } => {
+                let _via = iroh::EndpointId::from_bytes(&via)
+                    .map_err(|_| "mesh selected an invalid relay identity")?;
+                return Err(
+                    "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
+                        .into(),
+                );
+            }
+            qos_relay::RemoteControlRoute::Unavailable => {
+                return Err("no authenticated direct workspace-control path is online".into());
+            }
+        };
+        Ok(crate::network::WorkspaceControlSession::new(
+            workspace,
+            self.local_peer_hash,
+            target,
+            route,
+        ))
+    }
+
+    /// Publish one input through a session's selected route. The session gate
+    /// constructs no message before consent or after revocation/disconnect.
+    pub fn publish_workspace_control_input(
+        &self,
+        session: &crate::network::WorkspaceControlSession,
+        event: &crate::network::InputEvent,
+    ) -> Result<(), String> {
+        let msg = session.input_message(event).map_err(str::to_owned)?;
+        self.cmd_tx
+            .try_send(NetCmd::PublishWorkspaceControl {
+                ws: session.workspace(),
+                msg,
+                route: session.route(),
+            })
+            .map_err(|error| format!("workspace-control transport is unavailable: {error}"))
+    }
+
+    pub fn subscribe_workspace_control(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<WorkspaceControlNetworkEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Ok(mut observers) = self.workspace_control_observers.lock() {
+            observers.push(tx);
+        }
+        rx
+    }
+
+    fn notify_workspace_control(&self, event: WorkspaceControlNetworkEvent) {
+        if let Ok(mut observers) = self.workspace_control_observers.lock() {
+            observers.retain(|observer| observer.send(event.clone()).is_ok());
+        }
     }
 
     /// What the peers in `cluster_id` are called, keyed by the peer
@@ -957,6 +1094,7 @@ impl ShellNetwork {
                 | NeighbourMsg::SurfaceFrame { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::PermissionGrant { .. }
         ) {
             return false;
         }
@@ -987,9 +1125,27 @@ impl ShellNetwork {
         queue.drain(..).collect()
     }
 
+    #[cfg(test)]
     fn queue_legacy_message(&self, workspace_topic: u64, message: NeighbourMsg) {
+        self.queue_legacy_message_from(workspace_topic, None, message);
+    }
+
+    fn queue_legacy_message_from(
+        &self,
+        workspace_topic: u64,
+        transport_peer: Option<iroh::EndpointId>,
+        message: NeighbourMsg,
+    ) {
         // Never reflect a host's own gossip echo into a decoder or seat.
         if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
+            return;
+        }
+        self.notify_workspace_control(WorkspaceControlNetworkEvent::Message(InboundLegacyEvent {
+            workspace_topic,
+            transport_peer,
+            message: message.clone(),
+        }));
+        if matches!(message, NeighbourMsg::PermissionGrant { .. }) {
             return;
         }
         let Ok(mut queue) = self.inbound_legacy.lock() else {
@@ -1038,6 +1194,7 @@ impl ShellNetwork {
         }
         queue.push_back(InboundLegacyEvent {
             workspace_topic,
+            transport_peer,
             message,
         });
     }
@@ -2168,11 +2325,26 @@ impl ShellNetwork {
     /// `event_rx` lock.
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
-            NetEvent::HostReady { ws, peer } => self.handle_host_ready(ws, peer),
+            NetEvent::HostReady { ws, peer } => {
+                if let Ok(mut relays) = self.workspace_control_relays.lock() {
+                    relays.insert((ws, peer));
+                }
+                self.handle_host_ready(ws, peer);
+            }
             NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
             NetEvent::PeerLeft { ws, peer, cause } => {
+                if let Ok(mut direct) = self.workspace_control_direct.lock() {
+                    direct.remove(&(ws, peer));
+                }
+                if let Ok(mut relays) = self.workspace_control_relays.lock() {
+                    relays.remove(&(ws, peer));
+                }
+                self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerLeft {
+                    workspace_topic: ws,
+                    peer,
+                });
                 self.record_peer_departure(ws, peer, cause);
                 let handle = crate::network::behaviour::peer_liveness_handle(&peer);
                 self.peer_identities
@@ -2323,6 +2495,17 @@ impl ShellNetwork {
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
         if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
+            if self.peer_identities.get(&origin).is_some()
+                && let Ok(mut direct) = self.workspace_control_direct.lock()
+            {
+                direct.insert((ws, peer));
+            }
+            if self.peer_identities.get(&origin).is_none() {
+                self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerRevoked {
+                    workspace_topic: ws,
+                    peer,
+                });
+            }
             return;
         }
         if self.require_peer_identity && self.peer_identities.get(&origin).is_none() {
@@ -2440,7 +2623,10 @@ impl ShellNetwork {
             message @ (NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
-            | NeighbourMsg::RemoteInput { .. }) => self.queue_legacy_message(ws, message),
+            | NeighbourMsg::RemoteInput { .. }
+            | NeighbourMsg::PermissionGrant { .. }) => {
+                self.queue_legacy_message_from(ws, Some(peer), message);
+            }
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -3189,6 +3375,8 @@ pub(crate) fn shell_network_for_test(
         event_tx,
         event_rx: Mutex::new(event_rx),
         joined_topics: Mutex::new(joined_topics),
+        workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
+        workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,
         local_peer_hash,
         keypair,
@@ -3218,6 +3406,7 @@ pub(crate) fn shell_network_for_test(
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+        workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
@@ -3226,6 +3415,77 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
+        let (net, mut commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA11);
+        let target = iroh::SecretKey::generate().public();
+        let relay = iroh::SecretKey::generate().public();
+
+        net.workspace_control_direct
+            .lock()
+            .expect("direct routes")
+            .insert((DEFAULT_WS_TOPIC, target));
+        let mut direct = net
+            .open_workspace_control(DEFAULT_WS_TOPIC, target)
+            .expect("direct route");
+        assert!(matches!(
+            direct.route(),
+            WorkspaceControlRoute::Direct { target: selected } if selected == target
+        ));
+        direct.observe(&NeighbourMsg::PermissionGrant {
+            peer: 0xCA11,
+            capability: "workspace-control:4:granted".into(),
+        });
+        direct.observe(&NeighbourMsg::SurfaceStreamStart {
+            surface: 4,
+            source_peer: crate::network::behaviour::peer_liveness_handle(&target),
+            width: 64,
+            height: 64,
+            codec: "h264".into(),
+            ts: 1,
+            sender_monotonic_ns_at_send: 1,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+            app_id: "test.app".into(),
+        });
+        net.publish_workspace_control_input(
+            &direct,
+            &crate::network::InputEvent::PointerMotion { x: 2.0, y: 3.0 },
+        )
+        .expect("direct input");
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(NetCmd::PublishWorkspaceControl {
+                route: WorkspaceControlRoute::Direct { target: selected },
+                ..
+            }) if selected == target
+        ));
+
+        net.workspace_control_direct
+            .lock()
+            .expect("direct routes")
+            .clear();
+        net.workspace_control_relays
+            .lock()
+            .expect("relay routes")
+            .insert((DEFAULT_WS_TOPIC, relay));
+        assert!(
+            net.open_workspace_control(DEFAULT_WS_TOPIC, target)
+                .is_err(),
+            "workspace-wide relay fan-out must not carry exact-target control"
+        );
+
+        net.workspace_control_relays
+            .lock()
+            .expect("relay routes")
+            .clear();
+        assert!(
+            net.open_workspace_control(DEFAULT_WS_TOPIC, target)
+                .is_err()
+        );
+    }
 
     fn personal_continuity_network_for_test(
         user_public_key: [u8; 32],

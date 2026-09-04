@@ -78,14 +78,16 @@ SB_PRESENT=null
 GRUB_PRESENT=null
 LOADER_CONF_PRESENT=null
 BOOT_MS=null
+BOOT_SIGNAL=""
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 
 cleanup() {
-  if [ -f "$PID" ]; then
-    inenv "kill \$(cat '$PID') 2>/dev/null || true"
+  qemu_pid="$(cat "$PID" 2>/dev/null || true)"
+  if [[ "$qemu_pid" =~ ^[0-9]+$ ]]; then
+    inenv "kill '$qemu_pid' 2>/dev/null || true"
     sleep 1
-    inenv "kill -9 \$(cat '$PID') 2>/dev/null || true"
+    inenv "kill -9 '$qemu_pid' 2>/dev/null || true"
     rm -f "$PID"
   fi
   rm -f "$MON" "$SNAP" "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
@@ -103,6 +105,7 @@ emit_json() {
   "systemd_boot_efi_present": $SB_PRESENT,
   "grub_efi_present": $GRUB_PRESENT,
   "loader_conf_present": $LOADER_CONF_PRESENT,
+  "boot_signal": "$BOOT_SIGNAL",
   "boot_ms": $BOOT_MS,
   "log": "$LOG",
   "disk": "$DISK"
@@ -219,13 +222,20 @@ inenv "test -S '$MON'" || { emit_json "boot" false "qemu did not start"; exit 8;
 
 DEADLINE=$(( BOOT_START + BOOT_TIMEOUT ))
 BOOT_STATE="unknown"
+BOOT_SIGNAL=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  # Two accepted signals:
-  #   * bare `Reached target ... multi-user.target` from journald->console,
-  #   * ANSI-coloured `[  OK  ] Reached target ...` (strip escape sequences).
+  # Accept a bare or ANSI-coloured systemd target milestone.
   if [ -f "$CONSOLE" ] && sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
       grep -qE "Reached target [^-]*(multi-user\.target|graphical\.target)"; then
-    BOOT_STATE="reached"; break
+    BOOT_STATE="reached"; BOOT_SIGNAL="systemd-target"; break
+  fi
+  # Release images do not necessarily mirror systemd target milestones to the
+  # serial journal. A real getty login prompt is an equally strong downstream
+  # signal: systemd cannot start it before the boot reaches its configured
+  # multi-user target.
+  if [ -f "$CONSOLE" ] && tr -d '\000\r' < "$CONSOLE" 2>/dev/null \
+      | grep -qE '(^|[[:space:]])[^[:space:]]+[[:space:]]+login:[[:space:]]*$'; then
+    BOOT_STATE="reached"; BOOT_SIGNAL="serial-getty"; break
   fi
   if grep -qE "Kernel panic|Failed to load kernel|Boot failed" "$CONSOLE" 2>/dev/null; then
     BOOT_STATE="panic"; break
@@ -240,15 +250,21 @@ done
 # timestamp on the `Reached target multi-user.target` line is the
 # wall-clock since boot in seconds. Reused verbatim so the numbers are
 # apples-to-apples with the prior GRUB baseline.
-BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
-  awk '
-    match($0, /\[[[:space:]]*([0-9]+\.[0-9]+)\]/, m) { last_ts=m[1] }
-    /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
-      printf "%d", last_ts * 1000
-      exit
-    }
-  ' || echo 0)"
-[ -n "$BOOT_MS" ] || BOOT_MS=0
+if [ "$BOOT_SIGNAL" = "systemd-target" ]; then
+  BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
+    awk '
+      match($0, /\[[[:space:]]*([0-9]+\.[0-9]+)\]/, m) { last_ts=m[1] }
+      /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
+        printf "%d", last_ts * 1000
+        exit
+      }
+    ' || true)"
+  [ -n "$BOOT_MS" ] || BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))
+else
+  # Getty has no kernel timestamp on its prompt, so report honest wall-clock
+  # elapsed time rather than manufacturing a zero-duration boot.
+  BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))
+fi
 
 # Look for the systemd-boot marker in the serial log ("Loading Boot Loader
 # Menu" won't appear on a single-entry silent boot, but the systemd-boot
@@ -260,21 +276,22 @@ if grep -qi "GNU GRUB" "$CONSOLE" 2>/dev/null; then
   log "warn: serial console contains 'GNU GRUB' — swap did not take"
 fi
 
-log "phase 2: state=$BOOT_STATE boot_ms=$BOOT_MS"
+log "phase 2: state=$BOOT_STATE signal=$BOOT_SIGNAL boot_ms=$BOOT_MS"
 
 # ACPI-shutdown so the run leaves no orphan process behind.
-if inenv "kill -0 \$(cat '$PID') 2>/dev/null"; then
+qemu_pid="$(cat "$PID" 2>/dev/null || true)"
+if [[ "$qemu_pid" =~ ^[0-9]+$ ]] && inenv "kill -0 '$qemu_pid' 2>/dev/null"; then
   inenv "printf 'system_powerdown\n' | socat - 'unix:$MON'" >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do
-    inenv "kill -0 \$(cat '$PID') 2>/dev/null" || break
+    inenv "kill -0 '$qemu_pid' 2>/dev/null" || break
     sleep 1
   done
-  inenv "kill -9 \$(cat '$PID') 2>/dev/null || true"
+  inenv "kill -9 '$qemu_pid' 2>/dev/null || true"
 fi
 rm -f "$PID"
 
 if [ "$BOOT_STATE" = "reached" ]; then
-  emit_json "verified" true "systemd-boot on ESP + boot completed in ${BOOT_MS}ms"
+  emit_json "verified" true "systemd-boot on ESP + boot reached $BOOT_SIGNAL in ${BOOT_MS}ms"
   exit 0
 fi
 

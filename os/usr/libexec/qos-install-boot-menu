@@ -1,0 +1,155 @@
+#!/usr/bin/bash
+# Add narrowly-owned systemd-boot entries for operating systems already on the
+# ESP used by an alongside qOS install. Foreign EFI binaries are never copied,
+# renamed, or changed. Loaders on another ESP remain available through firmware:
+# systemd-boot cannot safely chainload a path on a different filesystem.
+set -euo pipefail
+
+EFIVARS="${QOS_BOOT_MENU_EFIVARS:-/sys/firmware/efi/efivars}"
+EFIBOOTMGR="${QOS_BOOT_MENU_EFIBOOTMGR:-efibootmgr}"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+valid_uuid() { case "$1" in ''|*[!A-Fa-f0-9-]*) return 1;; esac; }
+
+plain_beneath() {
+  local root="$1" relative="$2" cursor component
+  cursor="$root"
+  case "$relative" in ''|/*|*..*) return 1;; esac
+  IFS=/ read -r -a components <<<"$relative"
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || return 1
+    cursor="$cursor/$component"
+    [ ! -L "$cursor" ] || return 1
+  done
+  [ -f "$cursor" ]
+}
+
+write_entry() {
+  local esp="$1" relative="$2" title="$3" loader="$4" root_uuid="$5"
+  local target="$esp/$relative" temporary
+  case "$relative" in loader/entries/qos-*.conf) ;; *) die "unsafe qOS loader-entry path: $relative";; esac
+  [ ! -L "$esp/loader" ] && [ ! -L "$esp/loader/entries" ] \
+    || die "refusing a symlinked systemd-boot entry directory"
+  install -d -m 0755 "$esp/loader/entries"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] \
+      || die "refusing non-regular existing boot entry: $relative"
+    grep -Fqx -- "# qOS owner root=UUID=$root_uuid" "$target" \
+      || die "existing $relative is not owned by this qOS installation"
+  fi
+  temporary="$(mktemp "$esp/loader/entries/.qos-entry.XXXXXX")"
+  trap 'rm -f -- "$temporary"' RETURN
+  printf '# qOS owner root=UUID=%s\ntitle %s\nefi /%s\n' \
+    "$root_uuid" "$title" "$loader" > "$temporary"
+  chmod 0644 "$temporary"
+  mv -f -- "$temporary" "$target"
+  trap - RETURN
+  printf '%s\n' "$relative"
+}
+
+install_entries() {
+  [ "$#" -eq 2 ] || die "usage: $0 install ESP_ROOT ROOT_FILESYSTEM_UUID"
+  local esp="$1" root_uuid="$2" machine suffix efi windows_count windows_path
+  local vendor vendor_name slug candidate candidate_name chosen priority matches entry
+  local -a windows=() vendors=() planned_entries=()
+  [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP root is not a plain directory: $esp"
+  esp="$(realpath -e -- "$esp")"
+  valid_uuid "$root_uuid" || die "invalid root filesystem UUID"
+  machine="${QOS_BOOT_MENU_ARCH:-$(uname -m)}"
+  case "$machine" in x86_64|amd64) suffix=x64;; aarch64|arm64) suffix=aa64;; *) die "unsupported UEFI architecture: $machine";; esac
+  efi="$esp/EFI"
+  [ -d "$efi" ] || return 0
+  [ ! -L "$efi" ] || die "refusing a symlinked EFI directory"
+
+  # Windows has one architecture-neutral canonical loader. More than one
+  # case-variant is an ambiguous/corrupt layout even on a case-sensitive test
+  # filesystem, so refuse it rather than choosing one by directory order.
+  mapfile -d '' -t windows < <(find -P "$efi" -xdev -mindepth 3 -maxdepth 3 \
+    -type f -iname bootmgfw.efi -ipath '*/microsoft/boot/bootmgfw.efi' -print0)
+  windows_count="${#windows[@]}"
+  [ "$windows_count" -le 1 ] || die "ambiguous Windows EFI loaders on the qOS ESP"
+  if [ "$windows_count" -eq 1 ]; then
+    windows_path="${windows[0]#"$esp"/}"
+    plain_beneath "$esp" "$windows_path" || die "unsafe Windows EFI loader path"
+    planned_entries+=("loader/entries/qos-windows.conf" "Windows" "$windows_path")
+  fi
+
+  # A shim is preferred to its distro's GRUB binary because it retains that
+  # distro's Secure Boot verification boundary. One entry per vendor is safe;
+  # two same-priority candidates for a vendor are not.
+  mapfile -d '' -t vendors < <(find -P "$efi" -xdev -mindepth 1 -maxdepth 1 -type d -print0)
+  for vendor in "${vendors[@]}"; do
+    vendor_name="$(basename "$vendor")"
+    case "${vendor_name,,}" in microsoft|linux|boot|qos|systemd) continue;; esac
+    case "$vendor_name" in *[!A-Za-z0-9._-]*|'') die "unsafe EFI vendor directory name: $vendor_name";; esac
+    chosen=""
+    for priority in "shim${suffix}.efi" "grub${suffix}.efi"; do
+      matches=0
+      candidate=""
+      while IFS= read -r -d '' entry; do
+        candidate_name="$(basename "$entry")"
+        if [ "${candidate_name,,}" = "$priority" ]; then
+          matches=$((matches + 1)); candidate="$entry"
+        fi
+      done < <(find -P "$vendor" -xdev -mindepth 1 -maxdepth 1 -type f -print0)
+      [ "$matches" -le 1 ] || die "ambiguous $vendor_name $priority EFI loaders"
+      if [ "$matches" -eq 1 ]; then chosen="$candidate"; break; fi
+    done
+    [ -n "$chosen" ] || continue
+    candidate="${chosen#"$esp"/}"
+    plain_beneath "$esp" "$candidate" || die "unsafe Linux EFI loader path: $candidate"
+    slug="${vendor_name,,}"
+    entry="loader/entries/qos-linux-$slug.conf"
+    for planned in "${planned_entries[@]}"; do
+      [ "$planned" != "$entry" ] || die "ambiguous EFI vendor entry name: $entry"
+    done
+    planned_entries+=("$entry" "Linux ($vendor_name)" "$candidate")
+  done
+
+  for ((i=0; i<${#planned_entries[@]}; i+=3)); do
+    write_entry "$esp" "${planned_entries[i]}" "${planned_entries[i+1]}" \
+      "${planned_entries[i+2]}" "$root_uuid"
+  done
+}
+
+firmware_snapshot() {
+  [ "$#" -eq 1 ] || die "usage: $0 firmware-snapshot STATE_FILE"
+  local state="$1" output order next temporary
+  temporary="$(mktemp "${state}.XXXXXX")"
+  chmod 0600 "$temporary"
+  if [ ! -d "$EFIVARS" ]; then
+    printf 'version=1\nefi=0\n' > "$temporary"
+  else
+    command -v "$EFIBOOTMGR" >/dev/null 2>&1 || die "efibootmgr is required to preserve firmware boot order"
+    output="$("$EFIBOOTMGR")" || die "could not snapshot firmware boot order"
+    order="$(sed -n 's/^BootOrder: //p' <<<"$output" | head -1)"
+    next="$(sed -n 's/^BootNext: //p' <<<"$output" | head -1)"
+    [[ "$order" =~ ^[0-9A-Fa-f]{4}(,[0-9A-Fa-f]{4})*$ ]] || die "firmware returned an invalid BootOrder"
+    [ -z "$next" ] || [[ "$next" =~ ^[0-9A-Fa-f]{4}$ ]] || die "firmware returned an invalid BootNext"
+    printf 'version=1\nefi=1\nboot_order=%s\nboot_next=%s\n' "$order" "$next" > "$temporary"
+  fi
+  mv -f -- "$temporary" "$state"
+}
+
+firmware_restore() {
+  [ "$#" -eq 1 ] || die "usage: $0 firmware-restore STATE_FILE"
+  local state="$1" efi order next
+  [ -f "$state" ] && [ ! -L "$state" ] || die "firmware snapshot is missing or unsafe"
+  efi="$(sed -n 's/^efi=//p' "$state" | head -1)"
+  [ "$efi" = 1 ] || { [ "$efi" = 0 ] && return 0; die "invalid firmware snapshot"; }
+  order="$(sed -n 's/^boot_order=//p' "$state" | head -1)"
+  next="$(sed -n 's/^boot_next=//p' "$state" | head -1)"
+  [[ "$order" =~ ^[0-9A-Fa-f]{4}(,[0-9A-Fa-f]{4})*$ ]] || die "invalid saved BootOrder"
+  [ -z "$next" ] || [[ "$next" =~ ^[0-9A-Fa-f]{4}$ ]] || die "invalid saved BootNext"
+  "$EFIBOOTMGR" -o "$order" >/dev/null || die "could not restore the original firmware BootOrder"
+  if [ -n "$next" ]; then "$EFIBOOTMGR" -n "$next" >/dev/null; else "$EFIBOOTMGR" -N >/dev/null; fi \
+    || die "could not restore the original firmware BootNext"
+}
+
+case "${1:-}" in
+  install) shift; install_entries "$@";;
+  firmware-snapshot) shift; firmware_snapshot "$@";;
+  firmware-restore) shift; firmware_restore "$@";;
+  *) die "usage: $0 {install ESP ROOT_UUID|firmware-snapshot FILE|firmware-restore FILE}";;
+esac

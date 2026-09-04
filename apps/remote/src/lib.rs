@@ -24,11 +24,11 @@
 //! ## qOS relay
 //!
 //! A qOS device is modelled as a distinct connection [`kind`] because it
-//! is fundamentally different from a screen-scraping remote desktop: the
-//! peer does **not** stream pixels. It relays application and workspace
-//! state over the compositor's P2P fabric, and we render that state
-//! *locally* with this same toolkit. That keeps qOS-to-qOS sessions crisp,
-//! theme-consistent, and bandwidth-light.
+//! does not create an app-owned remote-desktop protocol. It asks the session
+//! broker for an authenticated exact-target device-mesh route, then consumes
+//! the compositor's existing consented workspace-surface stream and sends
+//! input through the existing target-side firewall. Workspace-wide relay
+//! fan-out is refused because it cannot keep control input target-confidential.
 //!
 //! [`kind`]: model::ConnectionKind
 

@@ -14,10 +14,12 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/verify-linux-release.sh" \
+  "$repo/apps/imager/packaging/sign-linux-release-file.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
   "$repo/apps/imager/packaging/publish-winget.sh" \
+  "$repo/os/dev/test-installer-cycle.sh" \
   && ok 'imager release and promotion scripts parse' \
   || bad 'an imager release script does not parse'
 
@@ -30,6 +32,11 @@ if command -v appstreamcli >/dev/null 2>&1; then
     && ok 'Linux application metadata validates offline' \
     || bad 'Linux application metadata is invalid'
 fi
+
+grep -Fq '"$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"' \
+  "$repo/apps/imager/packaging/package-host.sh" \
+  && ok 'AppImage metadata uses the desktop-id filename expected by linuxdeploy' \
+  || bad 'AppImage packaging will omit discoverable application metadata'
 
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
@@ -56,7 +63,27 @@ grep -Fq 'id-token: write' "$workflow" \
   && ok 'all credentialed jobs enable Forgejo OIDC with platform-specific brokers' \
   || bad 'short-lived credential path is not wired into every release job'
 
+grep -Fq 'acquire-release-credentials.sh' "$workflow" \
+  && grep -Fq 'Acquire-ReleaseCredentials.ps1' "$workflow" \
+  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 3 ] \
+  && grep -Fq 'credential output must not preexist' \
+    "$repo/apps/imager/packaging/acquire-release-token.sh" \
+  && grep -Fq 'lease file has an extended' \
+    "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
+  && grep -Fq 'IMAGER_WINDOWS_PUBLISHER' "$workflow" \
+  && grep -Fq 'QOS_WINDOWS_EXPECTED_PUBLISHER' \
+    "$repo/apps/imager/packaging/package-host.ps1" \
+  && grep -Fq 'IMAGER_MAC_TEAM_ID' "$workflow" \
+  && grep -Fq 'IMAGER_MAC_CERT_SHA256' "$workflow" \
+  && grep -Fq 'QOS_MAC_EXPECTED_CERT_SHA256' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && [ "$(grep -Fc 'if: always()' "$workflow")" -ge 2 ] \
+  && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
+  || bad 'release credential outputs or signing identities are insufficiently constrained'
+
 grep -Fq 'AppImage.asc' "$workflow" \
+  && grep -Fq 'qos-installer-*.asc' "$workflow" \
+  && grep -Fq 'qos-installer-catalog-v1.json' "$repo/apps/imager/packaging/verify-linux-release.sh" \
   && grep -Fq 'qos-release-key.asc' "$workflow" \
   && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
@@ -65,6 +92,18 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
+
+for artifact in \
+  qos-imager-windows-x86_64.zip \
+  qos-imager-macos-x86_64.zip \
+  qos-imager-macos-aarch64.zip; do
+  grep -Fq "            $artifact" "$workflow" \
+    && ok "$artifact is an explicit publication prerequisite" \
+    || bad "$artifact is linked by the website but absent from the publication gate"
+done
+grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
+  && ok 'every required release sidecar is validated before publication' \
+  || bad 'release digest sidecars are checked for existence but not content'
 
 grep -Fq 'bash os/tests/imager_linux_release_trust.sh' \
     "$repo/.forgejo/workflows/check.yml" \
@@ -75,6 +114,17 @@ linux_launcher="$repo/apps/imager/packaging/linux/qos-imager"
 mac_launcher="$repo/apps/imager/packaging/macos/qos-imager"
 windows_launcher="$repo/apps/imager/packaging/windows/Start-qOS-Imager.ps1"
 writer="$repo/apps/imager/src/write.rs"
+if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'cfg!(feature = "host-media-writer")' "$writer" \
+  && [ "$(grep -Fc 'cargo test -p imager --lib --locked --features host-media-writer' "$workflow")" -eq 3 ] \
+  && grep -Fq -- '--features host-media-writer' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq -- '--features host-media-writer' \
+    "$repo/apps/imager/packaging/package-host.ps1"; then
+  ok 'every host package compiles in the real short-lived media writer'
+else
+  bad 'a host package can ship with its media writer disabled'
+fi
 if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq 'with administrator privileges' "$mac_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
@@ -134,8 +184,8 @@ grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
-  && grep -Fq '"$CREDENTIAL_BROKER" homebrew "$token_file"' "$workflow" \
-  && grep -Fq '"$CREDENTIAL_BROKER" winget "$token_file"' "$workflow" \
+  && grep -Fq 'homebrew "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
+  && grep -Fq 'winget "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
   && grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
   && ok 'first-party Homebrew and public WinGet promotion are automated' \
   || bad 'a package-index promotion path is missing'
@@ -144,6 +194,9 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq 'test:release' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "jq -r '.tag // empty'" "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/qOS/Imager/${version}/qOS.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'QOS_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
   || bad 'landing-page release publication is not wired'
@@ -157,10 +210,75 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
 
 grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
-  && grep -Fq 'podman login code.sandbox.example' "$workflow" \
-  && grep -Fq 'sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9' "$workflow" \
+  && grep -Fq 'podman login \' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.sandbox.example' "$workflow" \
+  && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
+
+cycle="$repo/os/dev/test-installer-cycle.sh"
+boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
+if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
+  && grep -Fq -- '--prepared-alongside' "$workflow" \
+  && grep -Fq 'QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS' "$workflow" \
+  && grep -Fq 'qemu-system-aarch64' "$workflow" \
+  && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
+  && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
+  && grep -Fq 'dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g' "$workflow" \
+  && grep -Fq 'ImageMagick mtools ntfs-3g util-linux' "$workflow" \
+  && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
+  && grep -Fq 'name: qos-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
+  && grep -Fq '"$vm" boot-target --gl --no-tpm' "$cycle" \
+  && grep -Fq '"$vm" login --passcode-only "$QOS_PASS"' "$cycle" \
+  && grep -Fq '"$vm" init-cycle' "$cycle" \
+  && grep -Fq 'cargo run -q -p imager --locked --example embed-profile' "$cycle" \
+  && grep -Fq 'truncate -s "+$((64 * 1024))" "$profiled_raw"' "$cycle" \
+  && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
+  && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
+  && grep -Fq 'customization modified the released installer medium' "$cycle" \
+  && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'qos-windows.conf' "$cycle" \
+  && grep -Fq 'qos-linux-fedora.conf' "$cycle" \
+  && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
+  && grep -Fq "wait_private_screen 'qOS" "$cycle" \
+  && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
+  && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
+  && grep -Fq 'rm -f -- "$run/private-observe.png"' "$cycle" \
+  && grep -Fq '::qos-recovery-key::' "$cycle" \
+  && grep -Fq '.artifact-secret-canary.txt' "$cycle" \
+  && grep -Fq 'test ! -s "$out/.artifact-secret-canary.txt"' "$cycle" \
+  && ! grep -Fq 'QOS_INSTALLER_CYCLE_STORAGE:-$out/storage' "$cycle" \
+  && ! grep -Fq 'cp -f "$run/serial.log" "$out/installer-serial.log"' "$cycle" \
+  && grep -Fq "wait_screen 08-oobe-intro" "$cycle" \
+  && grep -Fq "wait_screen 09-oobe-ready" "$cycle" \
+  && grep -Fq '"$vm" keys tab tab ret' "$cycle" \
+  && grep -Fq "wait_screen 10-tour-move" "$cycle" \
+  && grep -Fq "wait_screen 11-tour-arrange" "$cycle" \
+  && grep -Fq "wait_screen 12-tour-share" "$cycle" \
+  && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
+  && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
+  ok 'every tagged medium must pass a profiled graphical install, encrypted boot, login, OOBE, and desktop cycle'
+else
+  bad 'release media lack a fail-closed native full graphical installation cycle'
+fi
+
+grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
+  && grep -Fq 'BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))' "$boot_verify" \
+  && grep -Fq '"boot_signal": "$BOOT_SIGNAL"' "$boot_verify" \
+  && grep -Fq 'boot reached $BOOT_SIGNAL in ${BOOT_MS}ms' "$boot_verify" \
+  && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
+  || bad 'serial-getty fallback can report a misleading zero-duration boot'
+
+[ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "shell/**"' "$workflow")" -eq 2 ] \
+  && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
+  && grep -Fq 'QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
+  && ! grep -Fq 'QOS_REGISTRY_CREDS:' "$workflow" \
+  && ok 'installer-medium changes trigger native, short-lived-authenticated architecture-matched builds' \
+  || bad 'installer-medium trigger, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
   && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \

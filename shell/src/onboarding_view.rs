@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -28,7 +29,8 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
@@ -201,7 +203,7 @@ enum TourPage {
 const NAVIGATE_CARDS: &[(&str, &str)] = &[
     (
         "Search  ·  Super+K or Super+Space",
-        "Type to open apps, files, settings, or actions without hunting through menus.",
+        "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
     ),
     (
         "Overview  ·  Ctrl+Tab or four-finger swipe",
@@ -842,8 +844,12 @@ impl OnboardingView {
         };
         actions(vec![
             Box::new(
+                Button::new("onboarding.tour.skip.button", "Skip tour", Some(KEY_FINISH))
+                    .fit_content(40.0),
+            ),
+            Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
-                    .with_icon(ui::icons::Icon::ArrowLeft),
+                    .fit_content(40.0),
             ),
             Box::new(
                 Button::new(
@@ -851,7 +857,7 @@ impl OnboardingView {
                     primary_label,
                     Some(primary_key),
                 )
-                .with_icon(ui::icons::Icon::ArrowRight)
+                .fit_content(40.0)
                 .with_style(ui::widget::ButtonStyle::Primary),
             ),
         ])
@@ -879,7 +885,11 @@ impl OnboardingView {
                     Box::new(
                         Button::new(
                             "onboarding.connect.button",
-                            "Use my existing qOS identity",
+                            // Keep this action concise enough to remain legible beside
+                            // Create identity on the supported 420 px narrow layout.
+                            // The surrounding intro already establishes qOS identity
+                            // as the subject, so the shorter copy loses no context.
+                            "Use existing",
                             Some(KEY_CONNECT),
                         )
                         .with_icon(ui::icons::Icon::ExternalLink),
@@ -949,7 +959,16 @@ impl OnboardingView {
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
-            nearby = nearby.push(paragraph(status, theme));
+            nearby = nearby.push(Box::new(
+                Text::new(status)
+                    // A stable semantic address lets the accessibility host
+                    // recognise verification-code and completion updates as
+                    // changes to one status region across composition rebuilds.
+                    .with_id("onboarding.nearby.status")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
         }
         nearby = nearby.push(Box::new(nearby_action));
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
@@ -1400,8 +1419,45 @@ impl OnboardingView {
     }
 }
 
+fn terminate_nearby_pairing(child: &mut Option<Child>) {
+    let Some(mut child) = child.take() else {
+        return;
+    };
+    let Ok(pid) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let group = pid.saturating_neg();
+    // SAFETY: the process is spawned with `process_group(0)`, making its
+    // validated PID the process-group ID. A negative target is confined to
+    // that group and cannot signal the compositor's own group.
+    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_millis(750);
+    loop {
+        let leader_finished = child.try_wait().ok().flatten().is_some();
+        // Signal 0 only checks whether any descendant still occupies the
+        // dedicated group. Do not return just because pkexec itself exited:
+        // qos-home-peer-control or qos-enroll may still be winding down.
+        let group_gone = unsafe { libc::kill(group, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if leader_finished && group_gone {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: same dedicated process group as above. This is the bounded
+    // fallback for a broker or enrollment worker that ignored SIGTERM.
+    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        terminate_nearby_pairing(&mut self.nearby_child);
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
@@ -1511,22 +1567,39 @@ impl Widget for OnboardingView {
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
                             .map(PathBuf::from)
                             .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
-                        match Command::new("pkexec")
-                            .args([
-                                "/usr/libexec/qos-home-peer-control",
-                                "pair-device",
-                                "--identity-root",
-                            ])
-                            .arg(identity_root)
-                            .arg("--identity-dir")
-                            .arg(identity_dir)
-                            .args(["--label", &label, "--status-file"])
-                            .arg(status_path)
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                        {
+                        let requester = qos_relay::ProcessLease::capture(std::process::id());
+                        let spawn =
+                            requester
+                                .map_err(|error| error.to_string())
+                                .and_then(|lease| {
+                                    Command::new("pkexec")
+                                        .args([
+                                            "/usr/libexec/qos-home-peer-control",
+                                            "pair-device",
+                                            "--identity-root",
+                                        ])
+                                        .arg(identity_root)
+                                        .arg("--identity-dir")
+                                        .arg(identity_dir)
+                                        .args(["--label", &label, "--status-file"])
+                                        .arg(status_path)
+                                        .arg("--requester-pid")
+                                        .arg(lease.pid().to_string())
+                                        .arg("--requester-start-time")
+                                        .arg(lease.start_time().to_string())
+                                        .stdin(Stdio::null())
+                                        .stdout(Stdio::piped())
+                                        .stderr(Stdio::piped())
+                                        // pkexec, the privileged broker and qos-enroll must
+                                        // share a revocable lifetime.  A dedicated process
+                                        // group lets Cancel, Back and compositor teardown
+                                        // stop the whole transaction instead of merely
+                                        // orphaning a privileged descendant.
+                                        .process_group(0)
+                                        .spawn()
+                                        .map_err(|error| error.to_string())
+                                });
+                        match spawn {
                             Ok(child) => {
                                 self.nearby_child = Some(child);
                                 self.nearby_status =
@@ -1546,9 +1619,9 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
             let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+            terminate_nearby_pairing(&mut self.nearby_child);
+            if let Some(path) = &self.nearby_status_path {
+                let _ = std::fs::remove_file(path);
             }
             self.nearby_status =
                 Some("Nearby setup cancelled. Choose Connect nearby to try again.".into());
@@ -1650,10 +1723,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            terminate_nearby_pairing(&mut self.nearby_child);
             self.nearby_status = None;
             self.flow.back();
         }
@@ -1906,6 +1976,38 @@ impl Widget for OnboardingView {
             *handled = true;
             return;
         }
+        if self.tour_page.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_FINISH, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
+        // Escape follows the visible Back action while the identity ceremony
+        // is still reversible. This is especially important on Connect,
+        // where a nearby-device attempt may be running: keyboard users need a
+        // conventional way to leave the branch, and KEY_BACK shares the exact
+        // same cleanup path that terminates that process group and clears its
+        // transient status. Intro and Done deliberately remain non-dismissible
+        // because setup has either not established an identity yet or still
+        // needs an explicit hand-off into the desktop.
+        if matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_BACK, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -2084,8 +2186,116 @@ mod tests {
         (v, calls)
     }
 
+    #[test]
+    fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
+        let child = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn pairing-shaped process tree");
+        let pgid = i32::try_from(child.id()).expect("test process ID");
+        // Give the shell enough time to create the descendant that used to
+        // survive when only the immediate pkexec process was killed.
+        std::thread::sleep(Duration::from_millis(40));
+        let mut child = Some(child);
+
+        terminate_nearby_pairing(&mut child);
+
+        assert!(child.is_none());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            // A killed grandchild can remain as a zombie until the host's PID
+            // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping
+            // entry as present, so inspect procfs and require that the group
+            // has no process capable of executing instead.
+            if !process_group_has_live_member(pgid) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a descendant survived cancellation in process group {pgid}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn process_group_has_live_member(pgid: i32) -> bool {
+        std::fs::read_dir("/proc").is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let Ok(process_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    return false;
+                };
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
+                    return false;
+                };
+                let Some((_, tail)) = stat.rsplit_once(')') else {
+                    return false;
+                };
+                let mut fields = tail.split_whitespace();
+                let state = fields.next();
+                let _parent = fields.next();
+                let process_group = fields.next().and_then(|field| field.parse::<i32>().ok());
+                process_group == Some(pgid) && !matches!(state, Some("Z" | "X"))
+            })
+        })
+    }
+
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    fn escape_event() -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+        // winit keeps the platform field private. These inert placeholders
+        // match the toolkit and greeter keyboard-event tests.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::Escape);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy
+            .new_leaf(taffy::Style::default())
+            .expect("event target");
+        let mut handled = false;
+        let mut focus_target = None;
+        view.handle_event(
+            &escape_event(),
+            1.0,
+            &Modifiers::default(),
+            document,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility();
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| accessibility_for_id(child, id))
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
@@ -2442,6 +2652,33 @@ mod tests {
     }
 
     #[test]
+    fn every_tour_page_exposes_an_explicit_skip_action() {
+        let mut view = OnboardingView::new_tour();
+        let mut doc = AutoCommit::new();
+        view.sync(&mut doc, &automerge::ROOT);
+
+        for page in [
+            TourPage::Navigate,
+            TourPage::Organise,
+            TourPage::Collaborate,
+        ] {
+            assert_eq!(view.tour_page, Some(page));
+            let actions = OnboardingView::tour_actions(page);
+            let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
+                .expect("tour page exposes Skip tour");
+            assert_eq!(node.name.as_deref(), Some("Skip tour"));
+            if page != TourPage::Collaborate {
+                press(&mut doc, KEY_TOUR_NEXT);
+                view.sync(&mut doc, &automerge::ROOT);
+            }
+        }
+
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished(), "Skip tour dismisses a reopened tour");
+    }
+
+    #[test]
     fn reopened_tour_has_no_identity_gate_and_can_be_dismissed() {
         let mut view = OnboardingView::new_tour();
         let mut doc = AutoCommit::new();
@@ -2480,6 +2717,7 @@ mod tests {
 
         assert!(navigation.contains("Super+K"));
         assert!(navigation.contains("Super+Space"));
+        assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
         assert!(navigation.contains("Ctrl+Tab"));
         assert!(navigation.contains("four-finger swipe"));
         assert!(navigation.contains("Super+arrow keys"));
@@ -2544,6 +2782,69 @@ mod tests {
     }
 
     #[test]
+    fn nearby_pairing_updates_share_one_polite_live_region() {
+        let (mut view, _) = view();
+        view.flow.begin_connect();
+        let theme = Theme::dark();
+
+        for status in [
+            "Looking for a trusted device nearby…",
+            "Code 123456 · waiting for approval on your trusted device",
+            "Connected. Your workspaces will appear automatically.",
+        ] {
+            view.nearby_status = Some(status.into());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let node = accessibility_for_id(&view, "onboarding.nearby.status")
+                .expect("nearby status accessibility node");
+
+            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.name.as_deref(), Some(status));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+        }
+    }
+
+    #[test]
+    fn resumed_tour_preserves_focus_reset_and_reduced_motion_navigation() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
+        let mut view = OnboardingView::new(directory.path().to_path_buf());
+
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert!(
+            view.take_focus_reset(),
+            "a restored page must place keyboard focus inside its rebuilt controls"
+        );
+        assert!(!view.take_focus_reset(), "the focus edge is one-shot");
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(view.reduce_motion);
+        assert!(
+            !view.needs_animation_frame(),
+            "restoring a tour must not restart entrance animation under reduced motion"
+        );
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_NEXT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+        assert_eq!(
+            load_progress(directory.path()).expect("updated tour journal"),
+            Some(PersistedStage::TourCollaborate)
+        );
+        assert!(
+            view.take_focus_reset(),
+            "keyboard navigation must move focus into the newly restored stage"
+        );
+        assert!(!view.needs_animation_frame());
+    }
+
+    #[test]
     fn host_desktop_context_keeps_the_identity_creation_gate() {
         let mut view = OnboardingView::with_all_handlers_in_context(
             Box::new(|| {
@@ -2585,6 +2886,30 @@ mod tests {
         let _ = doc.put(&root, KEY_BACK, true);
         view.sync(&mut doc, &root);
         assert_eq!(view.transition_direction, -1.0);
+    }
+
+    #[test]
+    fn escape_follows_back_on_reversible_identity_steps_only() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+
+        assert!(
+            !dispatch_escape(&mut view, &mut document),
+            "intro must not be dismissible before an identity exists"
+        );
+        press(&mut document, KEY_CONNECT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Connect);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
+
+        press(&mut document, KEY_BEGIN);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::NoRecovery);
+        assert!(dispatch_escape(&mut view, &mut document));
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
     }
 
     #[test]
@@ -2906,7 +3231,12 @@ mod tests {
                 .expect("narrow large-text tour layout");
             view.apply_layout(&taffy, node, Point::ZERO);
 
-            for id in ["onboarding.tour.back.button", "onboarding.tour.next.button"] {
+            let mut action_rects = Vec::new();
+            for id in [
+                "onboarding.tour.skip.button",
+                "onboarding.tour.back.button",
+                "onboarding.tour.next.button",
+            ] {
                 let action = node_map
                     .values()
                     .find_map(|&ptr| unsafe {
@@ -2924,7 +3254,14 @@ mod tests {
                         && action.y1 <= f64::from(HEIGHT),
                     "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
                 );
+                action_rects.push(action);
             }
+            assert!(
+                action_rects
+                    .windows(2)
+                    .all(|pair| pair[0].x1 <= pair[1].x0 && (pair[0].y0 - pair[1].y0).abs() < 1.0),
+                "compact tour actions must remain one ordered row, page={next_presses}, rects={action_rects:?}"
+            );
         }
     }
 }

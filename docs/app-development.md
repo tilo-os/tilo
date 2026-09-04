@@ -133,6 +133,7 @@ Run the same gates explicitly from an app directory:
 ```bash
 qos-dev check
 qos-dev certify
+qos-dev certify . --workspace --responsive-artifacts target/responsive-acceptance
 ```
 
 `qos-dev check` runs structural checks, app-only formatting verification,
@@ -142,6 +143,18 @@ runtime proof against the production app root; from a checkout,
 `qos-dev certify --workspace` certifies every graphical app. Certification is
 an app boundary, not a warning budget: one legacy callback, stale binding,
 missing semantic route, or invalid operation contract fails it.
+
+The workspace responsive form builds the graphical fleet once, certifies each
+production root, then captures every app at phone, tablet, laptop, and desktop
+sizes in four modes: ordinary copy, expanded pseudo-localized copy, 200% text,
+and high contrast. It also runs the native semantic/accessibility audit at each
+of those sixteen app/mode/viewport combinations and saves the JSON beside the
+images. A failure is attributed to the app, mode, and viewport; artifacts are
+grouped by app instead of overwriting one global set. Each PNG must have the
+requested dimensions and contain a materially painted frame; creating an empty
+or effectively single-colour image is a failure, not a golden candidate. This
+is the release-surface acceptance run—not a substitute for scenario-specific
+interaction tests.
 
 Every app using the shared `LaunchSpec` runner also gets a standard responsive
 acceptance capture without app-specific argument parsing:

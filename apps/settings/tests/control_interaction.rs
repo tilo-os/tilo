@@ -137,6 +137,28 @@ fn click_at(
             node,
             taffy,
         );
+        // The live host resolves action-bound control intents immediately
+        // after event delivery. Mirror that boundary here so AppShell's Back
+        // `View` action reaches its retained button handler.
+        while let Some(intent) = app.take_control_invocation() {
+            let control = intent
+                .address
+                .resource
+                .strip_prefix("qos.control:")
+                .expect("Settings control actions use the toolkit control resource");
+            let payload = serde_json::to_vec(control).expect("control id is valid JSON");
+            let started = app
+                .start_resource_operation(
+                    qos_actions::InvocationId::new(),
+                    qos_actions::OperationKind::View,
+                    "qos.ui.control.invoke",
+                    &payload,
+                    doc,
+                    &root,
+                )
+                .expect("Settings control action succeeds");
+            assert!(started.is_some(), "Settings handled its control action");
+        }
     }
 }
 

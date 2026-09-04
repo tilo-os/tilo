@@ -21,7 +21,7 @@ pub enum InputModality {
 /// Controller legend/layout used when rendering face buttons.
 ///
 /// Actions bind to positions (`South`, `East`, …), not printed letters: the
-/// south button is A on Xbox, B on Nintendo and × on PlayStation hardware.
+/// south button is `A` on Xbox, `B` on Nintendo and `×` on `PlayStation` hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControllerFamily {
     Generic,
@@ -38,7 +38,6 @@ impl ControllerFamily {
         match vendor_id {
             Some(0x045e) => Self::Xbox,
             Some(0x054c) => Self::PlayStation,
-            Some(0x057e) => Self::from_device_name(name),
             _ => Self::from_device_name(name),
         }
     }
@@ -108,6 +107,7 @@ impl KeyboardFamily {
 /// separate from [`InputModality`]: moving a mouse must not make a connected
 /// touchscreen or controller disappear from shortcut help.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InputAvailability {
     pub keyboard: bool,
     pub pointer: bool,

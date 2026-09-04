@@ -12,17 +12,27 @@
 //!   scene — no synthetic desktop.
 //!
 //! The byte transport is real: [`crate::ssh`] speaks SSH over `russh`,
-//! [`crate::vnc`] speaks RFB. A live connection is still gated behind
-//! [`live_sessions_enabled`] so the *default* build never touches the
-//! network and the session surface stays the honest "not connected" card
-//! until the user opts in.
+//! [`crate::vnc`] speaks RFB. Those app-owned network transports stay gated
+//! behind [`live_sessions_enabled`]; qOS device control uses the production
+//! shell broker and is available without the developer opt-in.
 
-/// Whether live network sessions are enabled. Off by default so the app
-/// never blocks a render on the network and the session surface is the
-/// honest "not connected" card. Set `REMOTE_LIVE_SESSIONS` (to anything) to
-/// let Connect open a *real* SSH / VNC session.
+use crate::model::ConnectionKind;
+
+/// Whether app-owned SSH/VNC sessions are enabled. Off by default so those
+/// transports do not touch the network until a developer opts in. qOS device
+/// control does not use this switch.
 pub fn live_sessions_enabled() -> bool {
     std::env::var("REMOTE_LIVE_SESSIONS").is_ok()
+}
+
+/// Whether this connection kind may start its real transport now. qOS is a
+/// production broker capability; SSH/VNC retain the explicit developer gate.
+pub fn can_attempt_live(kind: ConnectionKind) -> bool {
+    match kind {
+        ConnectionKind::Qos => true,
+        ConnectionKind::Ssh | ConnectionKind::Vnc => live_sessions_enabled(),
+        ConnectionKind::Rdp => false,
+    }
 }
 
 /// The state of a live transport, shared from the background I/O thread to
@@ -45,6 +55,25 @@ pub enum SessionStatus {
 impl SessionStatus {
     pub fn is_live(&self) -> bool {
         matches!(self, SessionStatus::Connecting | SessionStatus::Connected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qos_broker_transport_is_production_on() {
+        assert!(can_attempt_live(ConnectionKind::Qos));
+        assert!(!can_attempt_live(ConnectionKind::Rdp));
+        assert_eq!(
+            can_attempt_live(ConnectionKind::Ssh),
+            live_sessions_enabled()
+        );
+        assert_eq!(
+            can_attempt_live(ConnectionKind::Vnc),
+            live_sessions_enabled()
+        );
     }
 }
 

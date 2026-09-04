@@ -2807,6 +2807,84 @@ impl Widget for PdfApp {
         "PdfApp"
     }
 
+    /// The reader paints its document chrome and pages directly, so expose the
+    /// otherwise invisible structure explicitly.  The navigation controls use
+    /// the same `PdfOperation` reducer as the toolbar and Ctrl+K resources;
+    /// assistive technology never takes a separate, untested shortcut.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let pages = self.doc.page_count();
+        let current = self.current_page.saturating_add(1).min(pages.max(1));
+        let controls = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Previous page")
+                .with_action_target("pdf.previous-page"),
+            AccessNode::new(Role::Button)
+                .with_name("Next page")
+                .with_action_target("pdf.next-page"),
+            AccessNode::new(Role::Button)
+                .with_name("Zoom in")
+                .with_action_target("pdf.zoom-in"),
+            AccessNode::new(Role::Button)
+                .with_name("Zoom out")
+                .with_action_target("pdf.zoom-out"),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Sidebar")
+                .with_action_target("pdf.toggle-sidebar")
+                .with_state(AccessState::new().checked(self.show_sidebar)),
+        ];
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name(if self.doc_name.is_empty() {
+                    "PDF document".to_string()
+                } else {
+                    self.doc_name.clone()
+                })
+                .with_description("PDF reader; page navigation, zoom, and sidebar controls")
+                .with_value(format!(
+                    "Page {current} of {pages}; zoom {:.0}%",
+                    self.zoom() * 100.0
+                ))
+                .with_state(AccessState::new().focusable(true))
+                .with_children(controls),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !matches!(
+            action,
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        use crate::actions::PdfOperation;
+        let operation = match target {
+            "pdf.previous-page" => PdfOperation::PreviousPage,
+            "pdf.next-page" => PdfOperation::NextPage,
+            "pdf.zoom-in" => PdfOperation::ZoomIn,
+            "pdf.zoom-out" => PdfOperation::ZoomOut,
+            "pdf.toggle-sidebar" => PdfOperation::ToggleSidebar,
+            _ => return false,
+        };
+        let Ok(payload) = serde_json::to_vec(&operation) else {
+            return false;
+        };
+        self.invoke_resource_operation(
+            qos_actions::OperationKind::View,
+            crate::actions::PDF_VIEWER_OPERATION_TYPE,
+            &payload,
+            state,
+            path,
+        )
+        .unwrap_or(false)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("pdf_app")
     }
@@ -3014,6 +3092,35 @@ mod tests {
         app.recompute_regions();
         app.sync_viewport_frame();
         (app, st)
+    }
+
+    #[test]
+    fn accessibility_exposes_reader_state_and_routes_toolbar_operations() {
+        use ui::a11y::Action;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut state) = app_with_state();
+        let tree = app.accessibility().expect("reader semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Document);
+        assert!(
+            tree.value
+                .as_deref()
+                .is_some_and(|value| value.contains("Page"))
+        );
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("pdf.zoom-in"))
+        );
+
+        let sidebar_before = app.show_sidebar;
+        assert!(app.perform_semantic_action(
+            "pdf.toggle-sidebar",
+            &Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_ne!(app.show_sidebar, sidebar_before);
     }
 
     /// Run one full `ui::App`-equivalent frame against `app`: build the taffy

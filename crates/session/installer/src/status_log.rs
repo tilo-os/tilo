@@ -47,6 +47,14 @@ impl StatusLog {
             rect: Rect::ZERO,
         }
     }
+
+    fn latest_announcement(&self) -> Option<&str> {
+        self.lines
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .find(|line| !line.trim().is_empty())
+    }
 }
 
 impl Widget for StatusLog {
@@ -170,5 +178,64 @@ impl Widget for StatusLog {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Politeness, Role};
+
+        let latest = self.latest_announcement()?;
+        let lower = latest.to_ascii_lowercase();
+        let politeness = if lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("touch your security key")
+        {
+            Politeness::Assertive
+        } else {
+            Politeness::Polite
+        };
+        Some(
+            AccessNode::new(Role::StaticText)
+                .with_semantic_key("installer.install-status")
+                .with_name(latest)
+                .with_live(politeness),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newest_progress_line_is_a_stable_polite_live_region() {
+        let log = StatusLog::new(
+            vec![
+                "Preparing encrypted storage…".into(),
+                "Creating your account…".into(),
+            ],
+            200.0,
+        );
+        let node = log.accessibility().expect("status semantics");
+        assert_eq!(node.name.as_deref(), Some("Creating your account…"));
+        assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+        assert_eq!(
+            node.semantic_key.as_deref(),
+            Some("installer.install-status")
+        );
+    }
+
+    #[test]
+    fn failures_and_hardware_touch_prompts_are_assertive() {
+        for line in [
+            "error: target identity changed",
+            "Touch your security key to continue…",
+        ] {
+            let log = StatusLog::new(vec![line.into()], 200.0);
+            assert_eq!(
+                log.accessibility().and_then(|node| node.live),
+                Some(ui::a11y::Politeness::Assertive),
+                "did not announce {line:?} immediately"
+            );
+        }
     }
 }
