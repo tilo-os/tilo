@@ -1965,6 +1965,10 @@ fn draw_member_row(
 
 /// The role chip half of [`draw_member_row`] — its fill, label and the
 /// chevron affording that owners can open the explicit role chooser.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the renderer receives the complete immutable role-chip context"
+)]
 fn draw_member_role_chip(
     scene: &mut Scene,
     transform: Affine,

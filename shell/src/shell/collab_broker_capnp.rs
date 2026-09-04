@@ -530,32 +530,32 @@ impl CapnpBrokerState {
         idle_timeout: std::time::Duration,
         cancellation_grace: std::time::Duration,
     ) {
-        let expired = {
-            let Ok(mut pending) = self.pending_invocations.lock() else {
-                return;
-            };
-            let ids = pending
-                .iter()
-                .filter_map(|(id, invocation)| {
-                    let cancellation_expired =
-                        invocation
+        let expired =
+            {
+                let Ok(mut pending) = self.pending_invocations.lock() else {
+                    return;
+                };
+                pending
+                    .extract_if(|_, invocation| {
+                        let cancellation_expired = invocation
                             .cancellation_requested_at
                             .is_some_and(|requested| {
                                 now.saturating_duration_since(requested) >= cancellation_grace
                             });
-                    let idle_expired =
-                        now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
-                    (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
-                })
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|(id, cancellation_expired)| {
-                    pending
-                        .remove(&id)
-                        .map(|invocation| (id, cancellation_expired, invocation))
-                })
-                .collect::<Vec<_>>()
-        };
+                        let idle_expired =
+                            now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
+                        cancellation_expired || idle_expired
+                    })
+                    .map(|(id, invocation)| {
+                        let cancellation_expired = invocation
+                            .cancellation_requested_at
+                            .is_some_and(|requested| {
+                                now.saturating_duration_since(requested) >= cancellation_grace
+                            });
+                        (id, cancellation_expired, invocation)
+                    })
+                    .collect::<Vec<_>>()
+            };
         for (id, cancellation_expired, pending) in expired {
             let (code, message) = if cancellation_expired {
                 (
@@ -694,6 +694,10 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "catalogue projection performs one ordered authorization and serialization pass"
+    )]
     fn action_catalogue_json_for(
         &self,
         cluster_id: &str,
@@ -990,6 +994,11 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "invocation admission validates one complete broker protocol transaction"
+    )]
     fn start_invocation_confirmed_for(
         &self,
         peer_id: u64,
@@ -1238,6 +1247,11 @@ impl CapnpBrokerState {
 
     /// Mint and deliver one live-only task run. No durable/offline queue is
     /// kept: losing the subscribed agent means Launch remains unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace, task, route, subscription, or task
+    /// registry is unavailable, or if delivery fails.
     pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
         let membership = self
             .membership
@@ -1250,13 +1264,15 @@ impl CapnpBrokerState {
                 .iter()
                 .find(|workspace| workspace.room.to_string() == cluster_id)
                 .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
+            let workspace_id = workspace.id;
             let task = workspace
                 .tasks
                 .iter()
                 .find(|task| task.id == task_id)
                 .cloned()
                 .ok_or_else(|| "the task no longer exists".to_string())?;
-            (workspace.id, task)
+            drop(tree);
+            (workspace_id, task)
         };
         let agent_id = task
             .assigned_agent
@@ -1327,6 +1343,7 @@ impl CapnpBrokerState {
             &actor,
             format!("Broker dispatched live run {run_id}"),
         );
+        drop(tree);
         Ok(run_id)
     }
 
@@ -1374,11 +1391,13 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
             .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-        Ok(workspace
+        let cancelled = workspace
             .tasks
             .iter()
             .find(|task| task.id == run.task_id)
-            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
+            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled);
+        drop(tree);
+        Ok(cancelled)
     }
 
     fn record_task_run_update(
@@ -1430,6 +1449,7 @@ impl CapnpBrokerState {
                 return Err("the task run is already terminal".into());
             }
             current.terminal = true;
+            drop(runs);
         }
         let membership = self
             .membership
@@ -1447,9 +1467,14 @@ impl CapnpBrokerState {
             let _ = tree.set_workspace_task_status(workspace_id, &run.task_id, status, &actor);
         }
         let _ = tree.append_workspace_task_audit(workspace_id, &run.task_id, &actor, summary);
+        drop(tree);
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "task lease, target address, and action inputs are independent authorization fields"
+    )]
     fn start_task_action(
         &self,
         peer_id: u64,
@@ -2063,7 +2088,10 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "workspace control requires a workspace-scoped channel".into(),
             ));
         };
-        let target_bytes = match params.get().and_then(|params| params.get_target_device()) {
+        let target_bytes = match params
+            .get()
+            .and_then(channel_handle::open_workspace_control_params::Reader::get_target_device)
+        {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut target = [0_u8; 32];
                 target.copy_from_slice(bytes);
@@ -3454,9 +3482,10 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         _params: workspace_control_handle::ReadParams,
         mut results: workspace_control_handle::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let this = self.clone();
+        let this = self;
         Promise::from_future(async move {
-            if let Some(event) = this.initial.lock().await.take() {
+            let initial = this.initial.lock().await.take();
+            if let Some(event) = initial {
                 let bytes = postcard::to_allocvec(&event)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?;
                 results.get().set_event(&bytes);
@@ -3478,6 +3507,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                 {
                     let mut session = this.session.lock().await;
                     let event = workspace_control_event(session.deny(error.to_string()));
+                    drop(session);
                     let bytes = postcard::to_allocvec(&event)
                         .map_err(|error| capnp::Error::failed(error.to_string()))?;
                     results.get().set_event(&bytes);
@@ -3536,7 +3566,10 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         {
             return Promise::err(error);
         }
-        let bytes = match params.get().and_then(|params| params.get_event()) {
+        let bytes = match params
+            .get()
+            .and_then(workspace_control_handle::send_input_params::Reader::get_event)
+        {
             Ok(bytes) => bytes,
             Err(error) => return Promise::err(error),
         };
@@ -3544,7 +3577,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
             Ok(input) => input,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let this = self.clone();
+        let this = self;
         Promise::from_future(async move {
             let session = this.session.lock().await;
             let input = match input {
@@ -3575,9 +3608,12 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                     crate::network::InputEvent::KeyboardFocus { surface, focused }
                 }
             };
-            this.network
+            let result = this
+                .network
                 .publish_workspace_control_input(&session, &input)
-                .map_err(capnp::Error::failed)
+                .map_err(capnp::Error::failed);
+            drop(session);
+            result
         })
     }
 
@@ -4263,6 +4299,10 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 /// (e.g. a stale socket file blocks it, permissions are wrong, or the
 /// parent directory does not exist) or if spawning the accept thread
 /// fails.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the broker thread receives each independently-owned service boundary explicitly"
+)]
 pub fn spawn(
     socket_path: PathBuf,
     fanout: &Arc<FanoutState>,
@@ -4270,7 +4310,7 @@ pub fn spawn(
     publisher: Arc<PeerPublisher>,
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
+    workspace_control_network: Option<&Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
@@ -4282,7 +4322,7 @@ pub fn spawn(
         membership,
         trusted_devices,
     );
-    if let Some(network) = workspace_control_network.as_ref() {
+    if let Some(network) = workspace_control_network {
         state.attach_workspace_control_network(network);
     }
     fanout.attach_capnp(Arc::clone(&state));
@@ -4457,7 +4497,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
                 libc::MSG_PEEK | libc::MSG_DONTWAIT,
             )
         };
-        if read >= marker.len() as libc::ssize_t {
+        if read >= libc::ssize_t::try_from(marker.len()).unwrap_or(libc::ssize_t::MAX) {
             return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC);
         }
         if read == 0 {
@@ -4573,6 +4613,10 @@ async fn authenticate_launcher_handoff(
     ))
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc is Rc-based and this future runs only on the broker thread's LocalSet"
+)]
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
@@ -4848,7 +4892,7 @@ mod tests {
             crate::shell::state::WorkspaceId(44),
             "Agent room",
         );
-        workspace.owner = Some(principal.clone());
+        workspace.owner = Some(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let agent_membership = workspace.grant_capability(CapOverride::membership(
             Subject::agent("scribe"),
@@ -5198,6 +5242,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test covers the complete live invocation authorization lifecycle"
+    )]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(31),
@@ -5361,11 +5409,13 @@ mod tests {
             pending
                 .get_mut(&refresh.id)
                 .expect("refresh remains pending")
-                .cancellation_requested_at = Some(now - std::time::Duration::from_secs(2));
+                .cancellation_requested_at = now.checked_sub(std::time::Duration::from_secs(2));
             pending
                 .get_mut(&erased.id)
                 .expect("erase remains pending")
-                .last_activity = now - std::time::Duration::from_secs(2);
+                .last_activity = now
+                .checked_sub(std::time::Duration::from_secs(2))
+                .unwrap_or(now);
         }
         state.expire_stale_invocations_at(
             now,

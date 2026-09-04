@@ -829,6 +829,11 @@ impl CollaborationManager {
     /// Connect a headless participant as a first-class workspace agent.
     /// Its friendly id is both the visible handle and the principal whose
     /// scoped capabilities the broker evaluates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime connection or agent identity cannot be
+    /// established.
     pub fn for_agent_route(
         app_id: impl Into<String>,
         cluster_id: Uuid,
@@ -849,6 +854,11 @@ impl CollaborationManager {
     /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
     /// still requires a certified endpoint identity; this method merely
     /// preserves the agent principal kind for diagnostic transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor is invalid or the runtime connection
+    /// cannot be established.
     pub fn for_agent_route_fd(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -869,6 +879,11 @@ impl CollaborationManager {
 
     /// Certified explicit-socket agent connection used by out-of-process
     /// runtimes that do not inherit the launcher's service descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor or certified identity is invalid, or
+    /// the runtime connection cannot be established.
     pub fn for_agent_route_fd_with_identity(
         fd: RawFd,
         app_id: impl Into<String>,

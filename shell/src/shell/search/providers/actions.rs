@@ -1368,6 +1368,8 @@ mod tests {
             ),
             "even the Operator profile requires an explicit scoped grant"
         );
+        drop(tree);
+        drop(state);
     }
 
     /// A name typed in any case names one agent. Two spellings would be

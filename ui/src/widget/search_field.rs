@@ -435,6 +435,10 @@ impl Widget for SearchField {
         vec![&self.input as &dyn Widget]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.input);
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.input as &mut (dyn Widget + '_)]
     }

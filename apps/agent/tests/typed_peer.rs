@@ -314,9 +314,40 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     );
     workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
     workspace.set_owner(principal);
+    // Every `handle` below is an agent delegation on the production endpoint,
+    // not merely a display name. Keep the harness honest by admitting exactly
+    // the deterministic agents used by these integration tests.
+    for agent in ["quinten", "Scribe", "files", "photos"] {
+        workspace.grant_capability(shell::shell::state::CapOverride::membership(
+            shell::shell::state::Subject::agent(agent),
+            workspace.room.to_string(),
+            collab_types::Verb::Write,
+        ));
+    }
+    // Admission is not action authority: agents deliberately inherit no room
+    // role. Mirror the two app grants exercised by this harness so the broker,
+    // not only Session's local permission view, can expose those actions.
+    for app in ["dev.qos.word-processor", "dev.qos.photos"] {
+        workspace.grant_capability(shell::shell::state::CapOverride::grant(
+            shell::shell::state::Subject::agent("Scribe"),
+            shell::shell::state::Scope::App(app.to_string()),
+            collab_types::Verb::Write,
+        ));
+    }
+    for (host, app) in [
+        ("quinten", "dev.qos.word-processor"),
+        ("photos", "dev.qos.photos"),
+        ("files", "dev.qos.file-explorer"),
+    ] {
+        workspace.grant_capability(shell::shell::state::CapOverride::grant(
+            shell::shell::state::Subject::agent(host),
+            shell::shell::state::Scope::App(app.to_string()),
+            collab_types::Verb::Write,
+        ));
+    }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.workspaces.push(workspace);
-    let trusted_devices = ["quinten", "Scribe", "files"]
+    let trusted_devices = ["quinten", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();

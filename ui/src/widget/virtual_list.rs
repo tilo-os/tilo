@@ -1448,6 +1448,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.mounted.iter().map(|row| row.widget.as_ref()).collect()
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for row in &self.mounted {
+            visitor(row.widget.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.mounted
             .iter_mut()

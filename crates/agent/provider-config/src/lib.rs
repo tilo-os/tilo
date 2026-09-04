@@ -43,7 +43,7 @@ impl ProviderProtocol {
 
 /// Where an endpoint runs. This is an explicit trust cue in the UI: a local
 /// vLLM server must never look like a hosted API merely because it shares the
-/// OpenAI wire protocol.
+/// `OpenAI` wire protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointLocation {
@@ -261,19 +261,19 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     pub fn load() -> Self {
         let section = settings_store::load_section(SETTINGS_SECTION);
-        Self::from_section(section)
+        Self::from_section(&section)
     }
 
     pub fn load_at(path: &Path) -> Self {
         Self::from_section(
-            settings_store::load_at(path)
+            &settings_store::load_at(path)
                 .remove(SETTINGS_SECTION)
                 .and_then(|value| value.as_object().cloned())
                 .unwrap_or_default(),
         )
     }
 
-    fn from_section(section: Map<String, Value>) -> Self {
+    fn from_section(section: &Map<String, Value>) -> Self {
         section
             .get(CONFIG_KEY)
             .cloned()
@@ -285,6 +285,10 @@ impl ProviderConfig {
     /// Merge our single configuration payload into the shared settings file.
     /// Other Settings panes retain their sections, and no secret can enter the
     /// document because `ProviderProfile` exposes a reference only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when serialization or the atomic settings update fails.
     pub fn save(&self) -> std::io::Result<()> {
         let config = self.clone().sanitised();
         let mut section = Map::new();
@@ -295,6 +299,11 @@ impl ProviderConfig {
         settings_store::update_section(SETTINGS_SECTION, section)
     }
 
+    /// Saves the provider configuration to an explicit settings path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when serialization or the atomic settings update fails.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
         let config = self.clone().sanitised();
         let mut section = Map::new();

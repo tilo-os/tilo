@@ -579,6 +579,11 @@ impl ChannelHandle {
 
     /// Subscribe this admitted agent session to broker-addressed task runs.
     /// A person session and an offline agent receive no substitute queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_task_runs(&self) -> Result<TaskRunStream, NotAvailable> {
         let reply = self
             .inner
@@ -592,6 +597,12 @@ impl ChannelHandle {
     }
 
     /// Report an update for one exact broker-minted task lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the update cannot be serialized, the
+    /// broker connection is unavailable, or the connection drops during the
+    /// call.
     pub async fn report_task_run(
         &self,
         run_id: u64,
@@ -611,6 +622,16 @@ impl ChannelHandle {
     }
 
     /// Invoke a published application action under a leased task context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable, the
+    /// connection drops during the call, or the broker returns malformed
+    /// invocation data.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fields mirror the broker RPC and are independently meaningful"
+    )]
     pub async fn invoke_task_action(
         &self,
         run_id: u64,
@@ -650,6 +671,11 @@ impl ChannelHandle {
     /// Whether Task Center requested cooperative cancellation for this exact
     /// leased run. A `true` response is advisory to a running action, but an
     /// agent must not start another action after observing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
         let mut request = self.inner.task_run_cancelled_request();
         let mut params = request.get();
@@ -1295,6 +1321,11 @@ pub struct TaskRunStream {
 impl TaskRunStream {
     /// Pull the next task run, rejecting malformed broker data rather than
     /// presenting an agent with an ambiguous authority envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection drops or the broker
+    /// returns a malformed task envelope.
     pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         let json = reply

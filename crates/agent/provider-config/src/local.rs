@@ -85,6 +85,11 @@ pub enum ModelArtifactFormat {
 }
 
 impl PinnedArtifact {
+    /// Validates transport, digest, and size invariants for this artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisionError::InvalidCatalog`] for an unsafe or malformed artifact.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         if !self.url.starts_with("https://") {
             return Err(ProvisionError::InvalidCatalog(
@@ -139,6 +144,12 @@ pub struct LocalModelCatalog {
 }
 
 impl LocalModelCatalog {
+    /// Validates all catalog runtime and model records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisionError::InvalidCatalog`] when an entry is malformed,
+    /// duplicated, or references unsupported data.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         let mut runtime_ids = BTreeSet::new();
         for runtime in &self.runtimes {
@@ -210,8 +221,8 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
         .accelerators
         .iter()
         .filter_map(|accelerator| match (runtime, accelerator) {
-            (RuntimeKind::NvidiaCuda, Accelerator::Nvidia { vram_mib, .. }) => Some(*vram_mib),
-            (
+            (RuntimeKind::NvidiaCuda, Accelerator::Nvidia { vram_mib, .. })
+            | (
                 RuntimeKind::AmdRocm,
                 Accelerator::Amd {
                     vram_mib,
@@ -227,7 +238,7 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
 }
 
 /// Determine the best runtime without probing hardware from an unprivileged
-/// agent process. CUDA and ROCm are selected only when both the driver stack
+/// agent process. CUDA and `ROCm` are selected only when both the driver stack
 /// and sufficient VRAM are confirmed; CPU is an honest fallback.
 pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
     if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if *vram_mib >= 8192 && !driver.trim().is_empty())) {
@@ -281,6 +292,11 @@ pub struct LocalEndpoint {
 }
 
 impl LocalEndpoint {
+    /// Validates that this endpoint is loopback-only and names a model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-loopback URL or empty model id.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         let local =
             self.url.starts_with("http://127.0.0.1:") || self.url.starts_with("http://[::1]:");
@@ -307,16 +323,51 @@ pub struct TransferProgress {
 /// operations, pinned artifacts, and a typed vLLM launch request — no `run`,
 /// `sh`, or free-form command string exists in this API.
 pub trait LocalModelBackend {
+    /// Returns the current resumable partial size.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when partial state cannot be inspected.
     fn partial_size(&self, artifact: &PinnedArtifact) -> Result<u64, ProvisionError>;
+    /// Resumes a pinned download from `from_byte`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when transfer cannot proceed safely.
     fn resume_download(
         &mut self,
         artifact: &PinnedArtifact,
         from_byte: u64,
     ) -> Result<TransferProgress, ProvisionError>;
+    /// Computes the SHA-256 digest of the partial artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the partial artifact cannot be hashed.
     fn sha256_of_partial(&self, artifact: &PinnedArtifact) -> Result<String, ProvisionError>;
+    /// Atomically promotes a verified partial artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when promotion fails.
     fn promote_verified(&mut self, artifact: &PinnedArtifact) -> Result<(), ProvisionError>;
+    /// Installs a catalog-approved runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when runtime installation fails.
     fn install_runtime(&mut self, runtime: &RuntimeRelease) -> Result<(), ProvisionError>;
+    /// Installs a catalog-approved model.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when model installation fails.
     fn install_model(&mut self, model: &LocalModelRelease) -> Result<(), ProvisionError>;
+    /// Starts the local vLLM service.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when activation fails.
     fn start_vllm(&mut self, launch: VllmLaunch) -> Result<LocalEndpoint, ProvisionError>;
 }
 
@@ -369,6 +420,12 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
         Self { backend }
     }
 
+    /// Installs the selected model and its pinned runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid catalog data, unsupported hardware, failed
+    /// verification, or a backend installation failure.
     pub fn install(
         &mut self,
         catalog: &LocalModelCatalog,
@@ -406,6 +463,12 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
         Ok(LocalModelStatus::Installed)
     }
 
+    /// Activates an installed model on the loopback endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid catalog data, unsupported hardware, or a
+    /// backend startup or endpoint-validation failure.
     pub fn activate(
         &mut self,
         catalog: &LocalModelCatalog,
@@ -557,7 +620,9 @@ mod tests {
             from: u64,
         ) -> Result<TransferProgress, ProvisionError> {
             self.calls.push("resume");
-            assert_eq!(from, self.partial);
+            if from != self.partial {
+                return Err(ProvisionError::Backend("unexpected resume offset".into()));
+            }
             Ok(TransferProgress {
                 received_bytes: artifact.size_bytes,
                 complete: true,

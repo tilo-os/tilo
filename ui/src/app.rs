@@ -6,6 +6,8 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
+use std::cell::{Cell, RefCell};
+
 /// Toolkit-owned continuation schema used when an app has no narrower
 /// domain-specific projection. The CRDT document travels on its stable record
 /// route; this payload restores the complementary local presentation state.
@@ -324,12 +326,13 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
     if let Some(intent) = w.appearance_intent() {
         return Some(intent);
     }
-    for child in w.children() {
-        if let Some(intent) = find_appearance_intent(child) {
-            return Some(intent);
+    let mut found = None;
+    w.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = find_appearance_intent(child);
         }
-    }
-    None
+    });
+    found
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -345,11 +348,36 @@ enum Direction {
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
 /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
 /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
+/// Returns `true` only when the callback changed pixels. This keeps an
+/// installed background pump from turning every event-loop wake into a full
+/// window redraw.
+type FrameTick = Box<dyn FnMut(&mut PresenceCtx) -> bool + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a qos_actions::ActionSpec,
 );
+
+/// Exact host-side mutation key for the resource/action surface. Every route
+/// that can mutate document or presentation-only widget state bumps it. This
+/// deliberately avoids `AutoCommit::get_heads()`, which closes an open
+/// transaction and could split a pending undo unit during a read-only query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResourceCacheKey {
+    mutation_generation: u64,
+}
+
+struct ResourceCache {
+    key: ResourceCacheKey,
+    declared: Vec<qos_actions::Resource>,
+    complete: Vec<qos_actions::Resource>,
+}
+
+struct LocalResourceCache {
+    key: ResourceCacheKey,
+    permission_generation: u64,
+    resources: Vec<qos_actions::Resource>,
+    allowed: std::collections::HashSet<qos_actions::ActionAddress>,
+}
 
 /// Runtime audit result for one interactive control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,6 +531,14 @@ pub struct App {
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
+    /// Resource declarations are expensive tree materialisations and used by
+    /// input gating, Ctrl+K, accessibility and broker publication. Keep one
+    /// exact snapshot until the host crosses a state-mutation boundary.
+    resource_cache: RefCell<Option<ResourceCache>>,
+    local_resource_cache: RefCell<Option<LocalResourceCache>>,
+    resource_generation: Cell<u64>,
+    permission_generation: Cell<u64>,
+    last_control_availability: Option<(ResourceCacheKey, u64)>,
     last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
     /// Last app-owned continuation projection sent to the local shell.
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
@@ -581,6 +617,10 @@ impl App {
     /// a connected endpoint, so accepting it here avoids process-global
     /// environment mutation and keeps those callers on the production typed
     /// transport.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "construction explicitly initializes all retained application state before applying startup projections"
+    )]
     pub fn with_collaboration_manager(
         state: State,
         root_widget: Box<dyn Widget>,
@@ -655,6 +695,11 @@ impl App {
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
+            resource_cache: RefCell::new(None),
+            local_resource_cache: RefCell::new(None),
+            resource_generation: Cell::new(0),
+            permission_generation: Cell::new(0),
+            last_control_availability: None,
             last_published_actions: None,
             last_published_continuation: None,
             pending_continuation_restore: crate::collaboration::continuation_restore_env(),
@@ -1049,6 +1094,7 @@ impl App {
     /// Lets the hosted app register its action types, e.g.
     /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
     pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
+        self.invalidate_widget_resource_cache();
         &mut self.action_registry
     }
 
@@ -1056,17 +1102,83 @@ impl App {
         self.action_transport = transport;
     }
 
-    fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
-        let mut resources = Vec::new();
+    fn resource_cache_key(&self) -> ResourceCacheKey {
+        ResourceCacheKey {
+            mutation_generation: self.resource_generation.get(),
+        }
+    }
+
+    /// Invalidate declarations derived from document or widget-local state.
+    fn invalidate_widget_resource_cache(&mut self) {
+        self.resource_generation
+            .set(self.resource_generation.get().wrapping_add(1));
+        self.resource_cache.get_mut().take();
+        self.local_resource_cache.get_mut().take();
+        self.last_control_availability = None;
+    }
+
+    fn ensure_resource_cache(&self) -> ResourceCacheKey {
+        let key = self.resource_cache_key();
+        if self
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| cache.key == key)
+        {
+            return key;
+        }
+
+        let mut declared = Vec::new();
         crate::widget::collect_widget_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
-            &mut resources,
+            &mut declared,
         );
-        resources
+        let mut complete = declared.clone();
+        let mut semantics = crate::a11y_tree::SemanticTree::new();
+        semantics.refresh(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            &[],
+        );
+        complete.extend(semantics.action_resources());
+        let mut operation_handlers = self.root_widget.resource_operation_handlers();
+        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        let violations =
+            qos_actions::validate_surface(&complete, &self.action_registry, &operation_handlers);
+        if !violations.is_empty() {
+            for violation in violations {
+                tracing::error!(
+                    address = %violation.address,
+                    reason = %violation.reason,
+                    "refusing an invalid resource/action surface"
+                );
+            }
+            complete.clear();
+        }
+        *self.resource_cache.borrow_mut() = Some(ResourceCache {
+            key: key.clone(),
+            declared,
+            complete,
+        });
+        // The local projection is keyed by the same generation, but eagerly
+        // dropping it bounds retained action trees after a large document is
+        // closed.
+        self.local_resource_cache.borrow_mut().take();
+        key
     }
 
-    fn refresh_control_action_availability(&mut self) {
+    fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
+        let key = self.ensure_resource_cache();
+        self.resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(Vec::new, |cache| cache.declared.clone())
+    }
+
+    fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
         fn collect_addresses(
             resources: &[qos_actions::Resource],
             allowed: &mut std::collections::HashSet<qos_actions::ActionAddress>,
@@ -1079,46 +1191,86 @@ impl App {
             }
         }
 
-        let resources = self
-            .collect_declared_resources()
+        let key = self.ensure_resource_cache();
+        let permission_generation = self.permission_generation.get();
+        if self
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.key == key && cache.permission_generation == permission_generation
+            })
+        {
+            return (key, permission_generation);
+        }
+        let (declared, complete) = self
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(
+                || (Vec::new(), Vec::new()),
+                |cache| (cache.declared.clone(), cache.complete.clone()),
+            );
+        let resources = complete
+            .into_iter()
+            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+            .collect::<Vec<_>>();
+        let allowed_resources = declared
             .into_iter()
             .filter_map(|resource| self.filter_resource_for_local_actor(resource))
             .collect::<Vec<_>>();
         let mut allowed = std::collections::HashSet::new();
-        collect_addresses(&resources, &mut allowed);
+        collect_addresses(&allowed_resources, &mut allowed);
+        *self.local_resource_cache.borrow_mut() = Some(LocalResourceCache {
+            key: key.clone(),
+            permission_generation,
+            resources,
+            allowed,
+        });
+        (key, permission_generation)
+    }
+
+    fn collect_local_resources(&self) -> Vec<qos_actions::Resource> {
+        let (key, permission_generation) = self.ensure_local_resource_cache();
+        self.local_resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.key == key && cache.permission_generation == permission_generation
+            })
+            .map_or_else(Vec::new, |cache| cache.resources.clone())
+    }
+
+    fn refresh_control_action_availability(&mut self) {
+        let cache_key = self.ensure_local_resource_cache();
+        if self.last_control_availability.as_ref() == Some(&cache_key) {
+            return;
+        }
+        // Clone only the compact address set so the cache borrow does not
+        // span a mutable call into the retained widget tree.
+        let allowed = self
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .map_or_else(std::collections::HashSet::new, |cache| {
+                cache.allowed.clone()
+            });
         self.root_widget
             .refresh_control_action_availability(&allowed);
+        self.last_control_availability = Some(cache_key);
     }
 
     /// The complete machine-driveable surface: domain resources declared by
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
-        let mut resources = self.collect_declared_resources();
-        let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh(
-            self.root_widget.as_ref(),
-            &self.node_map,
-            self.focused_node,
-            &[],
-        );
-        resources.extend(semantics.action_resources());
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
-        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        let violations =
-            qos_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
-        if violations.is_empty() {
-            resources
-        } else {
-            for violation in violations {
-                tracing::error!(
-                    address = %violation.address,
-                    reason = %violation.reason,
-                    "refusing an invalid resource/action surface"
-                );
-            }
-            Vec::new()
-        }
+        let key = self.ensure_resource_cache();
+        self.resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(Vec::new, |cache| cache.complete.clone())
     }
 
     /// Audit every retained control binding against the fresh resource tree.
@@ -1336,6 +1488,7 @@ impl App {
                 &mut self.state.doc,
                 &root,
             );
+            self.invalidate_widget_resource_cache();
         }
     }
 
@@ -1457,6 +1610,7 @@ impl App {
             );
             self.needs_sync = true;
             self.layout_dirty = true;
+            self.invalidate_widget_resource_cache();
         }
         Ok(crate::widget::ResourceOperationStart::Completed(
             qos_actions::ActionOutput::default(),
@@ -1471,14 +1625,10 @@ impl App {
         confirmed_by_broker: bool,
         invocation: Option<qos_actions::InvocationId>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
-        let resources = self.collect_resources();
         let resources = if actor == self.local_author.0 {
-            resources
-                .into_iter()
-                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-                .collect()
+            self.collect_local_resources()
         } else {
-            resources
+            self.collect_resources()
         };
         let (typed_arguments, resolved) =
             Self::resolve_resource_invocation(&resources, address, argument, confirmed_by_broker)?;
@@ -1551,6 +1701,9 @@ impl App {
                 .validate(output)
                 .map_err(qos_actions::DoorError::Failed)?;
         }
+        // Effect/view operations are allowed to switch presentation-only
+        // resources without touching Automerge.
+        self.invalidate_widget_resource_cache();
         self.layout_dirty = true;
         Ok(started)
     }
@@ -1560,11 +1713,7 @@ impl App {
     fn dispatch_control_invocations(&mut self) -> usize {
         let mut dispatched = 0_usize;
         while let Some(intent) = self.root_widget.take_control_invocation() {
-            let local_resources = self
-                .collect_resources()
-                .into_iter()
-                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-                .collect::<Vec<_>>();
+            let local_resources = self.collect_local_resources();
             let Some(resolved) = qos_actions::door::resolve(&local_resources, &intent.address)
             else {
                 tracing::warn!(
@@ -1674,15 +1823,14 @@ impl App {
             }
             changed = true;
         }
+        if changed {
+            self.invalidate_widget_resource_cache();
+        }
         changed
     }
 
     pub fn open_action_palette(&mut self) {
-        let resources = self
-            .collect_resources()
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
+        let resources = self.collect_local_resources();
         let providers = self.root_widget.search_providers();
         let mut palette = crate::action_palette::ActionPalette::new();
         palette.load_open_resources(&resources);
@@ -1812,6 +1960,9 @@ impl App {
         // If the palette closed (Escape, or a non-prompted selection), drop it.
         if self.action_palette.as_ref().is_some_and(|p| !p.is_open()) {
             self.action_palette = None;
+        }
+        if consumed {
+            self.invalidate_widget_resource_cache();
         }
         consumed
     }
@@ -1960,6 +2111,7 @@ impl App {
         }
         self.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
+        self.invalidate_widget_resource_cache();
         self.layout_dirty = true;
     }
 
@@ -1975,6 +2127,7 @@ impl App {
         }
         self.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
+        self.invalidate_widget_resource_cache();
         self.layout_dirty = true;
     }
 
@@ -2354,7 +2507,7 @@ impl App {
     /// non-blocking.
     pub fn set_frame_tick<F>(&mut self, tick: F)
     where
-        F: FnMut(&mut PresenceCtx) + Send + Sync + 'static,
+        F: FnMut(&mut PresenceCtx) -> bool + Send + Sync + 'static,
     {
         self.frame_tick = Some(Box::new(tick));
     }
@@ -2443,6 +2596,10 @@ impl App {
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
+        self.permission_generation
+            .set(self.permission_generation.get().wrapping_add(1));
+        self.local_resource_cache.get_mut().take();
+        self.last_control_availability = None;
         self.refresh_control_action_availability();
         self.layout_dirty = true;
     }
@@ -2608,6 +2765,7 @@ impl App {
             }
         };
         if applied {
+            self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
         }
@@ -2703,6 +2861,9 @@ impl App {
                 | CollabEvent::WorkspaceControl { .. } => {}
             }
         }
+        if any {
+            self.invalidate_widget_resource_cache();
+        }
         any
     }
 
@@ -2712,7 +2873,7 @@ impl App {
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
         for participant in &collaborators {
             self.presence_ctx.set_participant_kind(
-                &crate::permissions::UserId(participant.id.clone()),
+                crate::permissions::UserId(participant.id.clone()),
                 participant.is_agent,
             );
         }
@@ -2752,6 +2913,7 @@ impl App {
             .root_widget
             .apply_room_action(&mut self.state.doc, type_id, payload);
         if applied {
+            self.invalidate_widget_resource_cache();
             // Named after the publisher so local Ctrl+Z walks past it
             // instead of through it.
             self.state.record_committed_action_authored(
@@ -2814,6 +2976,7 @@ impl App {
             }
             _ => {}
         }
+        self.invalidate_widget_resource_cache();
     }
 
     pub fn local_author(&self) -> &crate::permissions::UserId {
@@ -2822,6 +2985,7 @@ impl App {
 
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
+        self.invalidate_widget_resource_cache();
         &mut self.state
     }
 
@@ -2967,6 +3131,7 @@ impl App {
         }
         self.layout_dirty = true;
         self.needs_sync = true;
+        self.invalidate_widget_resource_cache();
     }
 
     fn commit_action(&mut self) {
@@ -2988,6 +3153,7 @@ impl App {
                 .get(&id)
                 .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
+        self.invalidate_widget_resource_cache();
 
         // Incremental delta, not the whole document — serialising per
         // keystroke scales with document size. `UndoLog::apply_inverse`
@@ -3025,6 +3191,7 @@ impl App {
             }
             self.layout_dirty = true;
             self.needs_sync = true;
+            self.invalidate_widget_resource_cache();
         }
     }
 
@@ -3154,9 +3321,7 @@ impl App {
             {
                 out.push((name, politeness, crate::screen_reader::describe(&node)));
             }
-            for child in w.children() {
-                visit(child, out);
-            }
+            w.for_each_child(&mut |child| visit(child, out));
         }
         if self.screen_reader.is_none() {
             return;
@@ -3382,6 +3547,7 @@ impl App {
             if matches!(action, Action::Focus) {
                 self.set_focused_node(Some(taffy_id));
             }
+            self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
             return None;
@@ -3563,6 +3729,7 @@ impl App {
                         if matches!(verb, crate::a11y::Action::Focus) {
                             self.set_focused_node(Some(taffy_id));
                         }
+                        self.invalidate_widget_resource_cache();
                         self.needs_sync = true;
                         self.layout_dirty = true;
                         return Ok(true);
@@ -3609,6 +3776,7 @@ impl App {
             self.state.record_committed_action(before, None, None);
             self.needs_sync = true;
             self.layout_dirty = true;
+            self.invalidate_widget_resource_cache();
         }
         Ok(true)
     }
@@ -3648,6 +3816,7 @@ impl App {
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.invalidate_widget_resource_cache();
         self.update_focusable_order();
     }
 
@@ -3713,6 +3882,7 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.needs_sync = false;
+        self.invalidate_widget_resource_cache();
     }
 
     /// Pair with [`crate::persist::open`], which hands back the document the
@@ -4360,7 +4530,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
             },
             None,
         );
-        for child in widget.children() {
+        widget.for_each_child(&mut |child| {
             draw_debug_recursive(
                 child,
                 scene,
@@ -4369,7 +4539,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
                 depth.saturating_add(1),
                 cycle,
             );
-        }
+        });
     }
     let debug_outline_cycle = [
         app.theme.tokens.colors.semantic.warning,
@@ -4506,8 +4676,15 @@ fn create_window_render(
     let renderer = Renderer::new(
         &device_handle.device,
         RendererOptions {
-            use_cpu: false,
-            antialiasing_support: vello::AaSupport::all(),
+            // Diagnostic/low-end fallback: CPU coarse stages with the same
+            // GPU fine raster. Kept opt-in until the benchmark proves it is
+            // faster on a device; the default remains the GPU pipeline.
+            use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+            // Every frame below renders with `AaConfig::Area`. Advertising
+            // 8x/16x MSAA as well only compiles and retains shader variants
+            // this framework never selects, increasing startup and GPU
+            // memory pressure on exactly the low-end devices we target.
+            antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: None,
             pipeline_cache: None,
         },
@@ -4859,7 +5036,13 @@ impl AppHandler {
         let Ok(mut scene) = render.scene_pool.recv() else {
             return false;
         };
-        scene.reset();
+        let Ok(mut damage_regions) = render.damage_pool.recv() else {
+            return false;
+        };
+        damage_regions.clear();
+        // Every pooled scene is either newly seeded or reset by the worker
+        // before recycling. Resetting it again here only rewrote all stream
+        // lengths on every frame.
         let inner = surface.window.inner_size();
         let scale = surface.window.scale_factor();
         let transform = crate::scale::composite_transform(scale)
@@ -4874,10 +5057,12 @@ impl AppHandler {
         if render
             .render_tx
             .send(RenderRequest::Frame {
-                scene: Box::new(scene),
+                scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
                 base_color: Color::TRANSPARENT,
+                damage_regions,
+                full_redraw: true,
             })
             .is_err()
         {
@@ -4934,6 +5119,9 @@ impl AppHandler {
             root_node,
             &app.taffy,
         );
+        // `handle_event` may change presentation-only resource declarations
+        // without touching the CRDT (selected tab, open media, local mode).
+        app.invalidate_widget_resource_cache();
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
         }
@@ -5045,16 +5233,6 @@ impl AppHandler {
         }
         let app = &mut self.app;
 
-        // `recv()` is the backpressure boundary — capacity-2 means
-        // at most one frame of overlap (main building N+1 while
-        // worker presents N).
-        let Ok(mut scene) = render.scene_pool.recv() else {
-            tracing::error!("ui-render thread died; closing window");
-            event_loop.exit();
-            return;
-        };
-        scene.reset();
-
         let inner = window.inner_size();
         let width = inner.width;
         let height = inner.height;
@@ -5064,22 +5242,33 @@ impl AppHandler {
         )]
         let scale_factor = window.scale_factor() as f32;
         app.last_frame_size = Some(inner);
+        let mut floating_content_changed =
+            app.layout_dirty || app.structure_dirty || app.needs_sync;
+        let mut full_redraw_required = floating_content_changed;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
         // outgoing one's.
-        app.record_tick();
+        let record_changed = app.record_tick();
+        floating_content_changed |= record_changed;
+        full_redraw_required |= record_changed;
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
         // Drain model notifications and advance update-driven widgets before
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         if app.root_widget.update(&mut app.state.doc, &app.state.root) {
+            floating_content_changed = true;
+            full_redraw_required = true;
+            app.invalidate_widget_resource_cache();
             app.needs_sync = true;
             app.layout_dirty = true;
         }
         if app.needs_sync {
+            floating_content_changed = true;
+            full_redraw_required = true;
             app.root_widget.sync(&mut app.state.doc, &app.state.root);
+            app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
         if let Some(p) = app.profiler.as_mut() {
@@ -5096,6 +5285,7 @@ impl AppHandler {
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
         let structure_rebuilt = app.structure_dirty;
+        floating_content_changed |= structure_rebuilt;
         let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
         if app.structure_dirty {
             app.rebuild_structure();
@@ -5128,6 +5318,55 @@ impl AppHandler {
         ) else {
             return;
         };
+        full_redraw_required |= structure_rebuilt || t_relayout_branch;
+        // Read before `draw_frame_content` drains widget dirty flags via
+        // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
+        // independent native floating surfaces.
+        floating_content_changed |= app.root_widget.needs_redraw();
+
+        // Bounded CPU↔GPU backpressure belongs immediately before scene
+        // encoding. Model update, sync and layout above can overlap the
+        // worker presenting the previous frame instead of waiting for a
+        // recycled encoder before doing any useful CPU work.
+        let Ok(mut scene) = render.scene_pool.recv() else {
+            tracing::error!("ui-render thread died; closing window");
+            event_loop.exit();
+            return;
+        };
+        let Ok(mut damage_regions) = render.damage_pool.recv() else {
+            tracing::error!("ui-render damage pool died; closing window");
+            event_loop.exit();
+            return;
+        };
+        damage_regions.clear();
+        full_redraw_required |= app.debug_mode
+            || app.action_palette.is_some()
+            || app.tooltip_host.needs_frame()
+            || app.tooltip_host.visible().is_some()
+            || !app.state.collab.cursors.is_empty()
+            || !app.presence_ctx.remote_cursors.is_empty()
+            || app
+                .profiler
+                .as_ref()
+                .is_some_and(super::profiling::FrameProfiler::hud_enabled);
+        if !full_redraw_required {
+            app.root_widget.collect_damage(&mut damage_regions);
+            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let scale = f64::from(scale_factor);
+            for rect in &mut damage_regions {
+                *rect = KurboRect::new(
+                    rect.x0 * scale,
+                    rect.y0 * scale,
+                    rect.x1 * scale,
+                    rect.y1 * scale,
+                )
+                .inflate(16.0 * scale, 16.0 * scale)
+                .intersect(physical_viewport);
+            }
+            damage_regions.retain(|rect| !rect.is_zero_area());
+        }
+        // The worker resets scenes before returning them to this pool; the
+        // pre-seeded scenes are empty too.
 
         let t_draw_start = if perf {
             Some(std::time::Instant::now())
@@ -5165,7 +5404,7 @@ impl AppHandler {
         // `update_if_active` only builds + sends when an AT is
         // attached, so this is free on the common no-reader path.
         if let Some(adapter) = self.a11y_adapter.as_mut() {
-            let app_ref: &App = app;
+            let app_ref: &mut App = app;
             let scale = f64::from(scale_factor);
             adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
         }
@@ -5190,10 +5429,12 @@ impl AppHandler {
             }
         }
         let req = RenderRequest::Frame {
-            scene: Box::new(scene),
+            scene,
             width,
             height,
             base_color: app.theme.bg_app,
+            damage_regions,
+            full_redraw: full_redraw_required,
         };
         if render.render_tx.send(req).is_err() {
             tracing::error!("ui-render thread receiver closed; exiting");
@@ -5237,8 +5478,10 @@ impl AppHandler {
         // The secondary surfaces paint the same app-owned state. A primary
         // frame therefore invalidates each of them exactly once; their own
         // presentation never recursively requests another primary frame.
-        for surface in &self.floating_windows {
-            surface.window.request_redraw();
+        if floating_content_changed {
+            for surface in &self.floating_windows {
+                surface.window.request_redraw();
+            }
         }
     }
 
@@ -5588,6 +5831,10 @@ impl AppHandler {
                 root_node,
                 &app.taffy,
             );
+            // Even a document-free interaction may switch which resources a
+            // widget presents. Invalidate once at the mutable tree boundary;
+            // all later consumers in this event/frame share the rebuilt cache.
+            app.invalidate_widget_resource_cache();
             let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
@@ -5883,7 +6130,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::InitialTreeRequested => {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
-                            let app_ref: &App = &self.app;
+                            let app_ref: &mut App = &mut self.app;
                             adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
                         }
                         window.request_redraw();
@@ -6152,10 +6399,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         self.sync_ime(&window);
 
         if self.app.pump_floating_surface_service() {
+            self.app.invalidate_widget_resource_cache();
             self.app.layout_dirty = true;
             window.request_redraw();
         }
         if self.apply_floating_host_messages(event_loop) {
+            self.app.invalidate_widget_resource_cache();
             window.request_redraw();
         }
         self.sync_native_floating_geometry();
@@ -6178,12 +6427,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if awaiting_primary_first_present {
             window.request_redraw();
         }
-        if self.app.root_widget.needs_animation_frame() {
-            for surface in &self.floating_windows {
-                surface.window.request_redraw();
-            }
-        }
-
         let app = &mut self.app;
 
         // Catches a compositor reconfigure that changes `inner_size()`
@@ -6302,12 +6545,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // fling) can reposition content without an input event.
             app.layout_dirty = true;
             window.request_redraw();
+            for surface in &self.floating_windows {
+                surface.window.request_redraw();
+            }
         }
 
-        // The shell typically writes visible state (remote cursor
-        // positions) here, so redraw unconditionally when the tick fires.
-        if let Some(tick) = app.frame_tick.as_mut() {
-            tick(&mut app.presence_ctx);
+        // A background pump can run while its visible projection is stable.
+        // Redrawing only on a changed snapshot avoids full-scene GPU work on
+        // every otherwise-idle collaboration wake.
+        if let Some(tick) = app.frame_tick.as_mut()
+            && tick(&mut app.presence_ctx)
+        {
             window.request_redraw();
         }
 
@@ -6334,7 +6582,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             (true, _) => {
                 // `checked_add` is non-panicking at the end of Instant's range.
                 let next_tick = Instant::now()
-                    .checked_add(Duration::from_millis(16))
+                    // 60 Hz is 16.666… ms. A 16 ms deadline wakes at 62.5 Hz
+                    // and creates needless CPU/GPU pressure on slow machines.
+                    .checked_add(Duration::from_nanos(16_666_667))
                     .unwrap_or_else(Instant::now);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
             }
@@ -6560,7 +6810,7 @@ mod pointer_broadcast_tests {
         // Drain the baseline so what the assertion sees is this edit alone.
         let _ = app.state.save_incremental();
 
-        app.state
+        app.state_mut_for_test()
             .doc
             .put(&automerge::ROOT, "body", "the quarterly report")
             .expect("put on the root object");
@@ -8183,6 +8433,82 @@ mod action_palette_tests {
             doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
                 .unwrap();
         }
+    }
+
+    struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Widget for CountingPublisher {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _p: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "counting-publisher"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            vec![Resource::new("test.cache:1", "test.cache", "Cached")]
+        }
+    }
+
+    #[test]
+    fn resource_tree_is_materialized_once_per_exact_generation() {
+        use std::sync::atomic::Ordering;
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        let _ = app.collect_resources();
+        let _ = app.collect_resources();
+        app.refresh_control_action_availability();
+        app.refresh_control_action_availability();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        app.state_mut_for_test()
+            .doc
+            .put(&ROOT, "cache-version", 1_i64)
+            .expect("test document mutation");
+        let _ = app.collect_resources();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+        app.invalidate_widget_resource_cache();
+        let _ = app.collect_resources();
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
     /// winit keeps a `KeyEvent` field `pub(crate)`, so a struct literal

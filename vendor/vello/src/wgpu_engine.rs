@@ -792,6 +792,44 @@ impl WgpuEngine {
         self.pool.bufs.clear();
     }
 
+    pub(crate) fn tracked_memory_bytes(&self) -> (u64, u64, u64) {
+        let pooled = self
+            .pool
+            .bufs
+            .iter()
+            .map(|(properties, buffers)| {
+                properties
+                    .size
+                    .saturating_mul(u64::try_from(buffers.len()).unwrap_or(u64::MAX))
+            })
+            .sum();
+        let live_buffers = self
+            .bind_map
+            .buf_map
+            .values()
+            .map(|entry| match &entry.buffer {
+                MaterializedBuffer::Gpu(buffer) => buffer.size(),
+                MaterializedBuffer::Cpu(buffer) => {
+                    u64::try_from(buffer.borrow().len()).unwrap_or(u64::MAX)
+                }
+            })
+            .chain(self.downloads.values().map(Buffer::size))
+            .sum();
+        let images = self
+            .bind_map
+            .image_map
+            .values()
+            .map(|(texture, _)| {
+                let bytes_per_block = texture.format().block_copy_size(None).unwrap_or(4);
+                u64::from(texture.width())
+                    .saturating_mul(u64::from(texture.height()))
+                    .saturating_mul(u64::from(texture.depth_or_array_layers()))
+                    .saturating_mul(u64::from(bytes_per_block))
+            })
+            .sum();
+        (pooled, live_buffers, images)
+    }
+
     pub fn free_download(&mut self, buf: BufferProxy) {
         self.downloads.remove(&buf.id);
     }

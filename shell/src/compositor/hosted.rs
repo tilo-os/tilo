@@ -445,6 +445,7 @@ fn install_presence_pump(
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::take(&mut *buf)
         };
+        let received = !drained.is_empty();
         let now = std::time::Instant::now();
         for entry in drained {
             // A frame addressed to a room is this session learning a named person is in it; putting them on
@@ -469,7 +470,11 @@ fn install_presence_pump(
                 now,
             );
         }
-        cursors.apply_to(presence_ctx, now);
+        // A received frame can also change the collaborator roster. The
+        // interpolator separately reports position/fade changes; quiet ticks
+        // now leave the 4K surface entirely untouched.
+        let cursor_changed = cursors.apply_to(presence_ctx, now);
+        received || cursor_changed
     });
 }
 

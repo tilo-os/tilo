@@ -143,10 +143,23 @@ impl LiveAppActionsProvider {
         Self { broker }
     }
 
-    pub fn capability_target(id: &str) -> Option<(&str, qos_actions::PermissionRequirement, &str)> {
+    fn result_parts(id: &str) -> Option<(&str, &str, &str, &str, &str, &str)> {
         let mut parts = id.split(ID_SEPARATOR);
         let app = parts.next()?;
-        let permission = match parts.next()? {
+        let permission = parts.next()?;
+        let cluster = parts.next()?;
+        let record = parts.next()?;
+        let resource = parts.next()?;
+        let action = parts.next()?;
+        parts
+            .next()
+            .is_none()
+            .then_some((app, permission, cluster, record, resource, action))
+    }
+
+    pub fn capability_target(id: &str) -> Option<(&str, qos_actions::PermissionRequirement, &str)> {
+        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
+        let permission = match permission {
             "none" => qos_actions::PermissionRequirement::None,
             "read" => qos_actions::PermissionRequirement::Read,
             "comment" => qos_actions::PermissionRequirement::Comment,
@@ -155,11 +168,20 @@ impl LiveAppActionsProvider {
             "admin" => qos_actions::PermissionRequirement::Admin,
             _ => return None,
         };
-        let _workspace = parts.next()?;
-        let _record = parts.next()?;
-        let _resource = parts.next()?;
-        let action = parts.next()?;
-        parts.next().is_none().then_some((app, permission, action))
+        Some((app, permission, action))
+    }
+
+    /// The application, room, record, resource, and operation represented by
+    /// one provider-local id.
+    ///
+    /// The palette needs only the opaque id. Headless integrations also need
+    /// its existing resource hierarchy so they can reveal one application,
+    /// then one object, without flattening every action into their initial
+    /// context. Keep the decoding beside [`Self::result_id`], where the wire
+    /// address is minted, rather than making those integrations duplicate it.
+    pub fn hierarchy(id: &str) -> Option<(&str, &str, &str, &str, &str)> {
+        let (app, _permission, cluster, record, resource, action) = Self::result_parts(id)?;
+        Some((app, cluster, record, resource, action))
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
@@ -635,5 +657,35 @@ impl SearchProvider for LiveAppActionsProvider {
             }
         }
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ID_SEPARATOR, LiveAppActionsProvider};
+
+    #[test]
+    fn hierarchy_decodes_the_address_shape_minted_by_the_provider() {
+        let id = [
+            "dev.qos.files",
+            "write",
+            "room-7",
+            "file:/Brief.md",
+            "files.entry:/Brief.md",
+            "rename",
+        ]
+        .join(&ID_SEPARATOR.to_string());
+
+        assert_eq!(
+            LiveAppActionsProvider::hierarchy(&id),
+            Some((
+                "dev.qos.files",
+                "room-7",
+                "file:/Brief.md",
+                "files.entry:/Brief.md",
+                "rename",
+            ))
+        );
+        assert!(LiveAppActionsProvider::hierarchy("display.id#rename").is_none());
     }
 }
