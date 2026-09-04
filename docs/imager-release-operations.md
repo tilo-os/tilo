@@ -5,10 +5,10 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `runner` | Linux x86-64 | Rust, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm |
+| `runner` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm |
 | `runner-arm64` | Linux ARM64 | same Linux toolchain and release utilities, running natively |
-| `windows` | Windows x86-64 | Rust MSVC, Windows SDK `signtool`, Inno Setup 6, WinGet client |
-| `macos-x64` | Intel macOS | Xcode CLI tools, Rust, `hdiutil`, `notarytool`, Homebrew |
+| `windows` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
+| `macos-x64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `macos-arm64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at

@@ -49,7 +49,7 @@ $Lease = Join-Path $LeaseDirectory "lease.env"
 New-Item -ItemType Directory -Path $LeaseDirectory | Out-Null
 try {
     if (Test-Path -LiteralPath $Lease) { throw "credential lease output already exists" }
-    & $Trusted windows $Lease
+    $null = & $Trusted windows $Lease
     if ($LASTEXITCODE -ne 0) { throw "credential broker failed" }
     $Item = Get-Item -LiteralPath $Lease -Force
     if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
