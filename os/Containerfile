@@ -343,6 +343,7 @@ COPY . /build
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
 ARG QOS_WITH_BROWSER
 ARG QOS_PREBUILT_APPS=0
+ARG QOS_PREBUILT_DESKTOP=0
 ARG QOS_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -361,7 +362,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
+    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+         DESKTOP_RELEASE_ARGS=""; \
+       else \
+         DESKTOP_RELEASE_ARGS="-p shell -p launcher -p qos-unlock-helper"; \
+       fi \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p qos-power -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
@@ -371,6 +377,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin qos-windows-vm-control --bin qos-windows-rail \
     && missing=0 \
     && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
+         case "${QOS_PREBUILT_DESKTOP}:$b" in 1:shell|1:qos-launcher|1:qos-unlock-helper) continue ;; esac; \
          [ -x "target/release/$b" ] || missing=1; \
        done \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
@@ -385,10 +392,20 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               --bin qos-windows-vm-control --bin qos-windows-rail; \
        fi \
     && mkdir -p /out /out/optional /out/thin-apps \
+    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+         cp /build/os/desktop-artifacts/shell \
+            /build/os/desktop-artifacts/qos-launcher \
+            /build/os/desktop-artifacts/qos-unlock-helper \
+            /out/; \
+       else \
+         cp target/release/shell \
+            target/release/qos-launcher \
+            target/release/qos-unlock-helper \
+            /out/; \
+       fi \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
-    && cp target/release/shell \
-          target/release/qos-projector \
+    && cp target/release/qos-projector \
           target/release/fs \
           target/release/qos-relay \
           target/release/qos-relay-admin \
@@ -403,9 +420,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
-          target/release/qos-launcher \
           target/release/qos-power \
-          target/release/qos-unlock-helper \
           target/release/qos-rollback \
           target/release/qos \
           target/release/qos-pkg \

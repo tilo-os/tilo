@@ -6,7 +6,7 @@ does not fan out into unrelated builds:
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
 | Apps | A relevant `main` change, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Changed apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
-| Desktop session | `desktop-vX.Y.Z` | Native host packages; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums |
+| Desktop session | A relevant `main` change or `desktop-vX.Y.Z` | Native host packages; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload on `main` |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows and macOS downloads |
 
@@ -36,6 +36,15 @@ pinned collection, replaces only the apps selected by the dependency/change
 plan, and publishes a new immutable `.tar.gz`. OS images and desktop
 distributions can pin one by version and architecture without compiling apps
 again.
+
+The Fedora desktop lane also emits a small deterministic OS payload containing
+the same install-tested `shell`, `qos-launcher`, and `qos-unlock-helper`
+binaries. A successful `main` build publishes it immutably and advances
+`QOS_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
+downloads the matching architecture and omits those three Cargo packages from
+its build. OS-only changes therefore test the desktop/OS integration without
+recompiling the desktop; pull requests retain a source fallback and receive no
+package-reading credential.
 
 Each architecture collection also contains the signed `qos-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
@@ -93,6 +102,15 @@ the configured `QPKG_PUBLISHER_IDENTITY` secret.
 Manual desktop and imager runs with `full_native` exercise their full build
 matrices without publishing, which makes them safe release rehearsals.
 
+OS pushes remain build-only while CI capacity is constrained. Once a
+non-exportable `COSIGN_KEY_REF` is configured, setting
+`QOS_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
+reproducibility, installed-VM, signing, SBOM, provenance, freshness, and
+channel-promotion path used by explicit releases. It does not introduce a
+weaker fast-publish path. A successful desktop payload publication requests
+that OS integration run only when the switch is enabled; standalone app
+updates continue to publish only their qpkg/collection boundary.
+
 ## Forgejo-specific rules
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
@@ -104,9 +122,13 @@ matrices without publishing, which makes them safe release rehearsals.
   publication job. The main integration has package-write and repository-write
   scope so it can advance only the pinned collection channel after publication.
 - Trusted OS builds read the private immutable app collection with a separate
-  read-only Forgejo Actions (Local) integration. Store its audience in
+  read-only Forgejo Actions (Local) integration. The same integration reads the
+  immutable desktop payload. Store its audience in
   `QOS_OS_APP_COLLECTION_AUDIENCE`. Pull-request jobs never receive or use that
   package capability; main, scheduled, and manual builds test the integration.
+- Desktop payload publication uses a package-write/repository-write integration
+  restricted to `package-desktop.yml` pushes on `main`; store its audience in
+  `QOS_DESKTOP_RELEASE_AUDIENCE`.
 - Keep remote actions pinned to full commit hashes.
 - Use the v3 artifact actions (or Forgejo's patched v4), because upstream v4's
   GitHub Artifact API is not compatible with this instance.

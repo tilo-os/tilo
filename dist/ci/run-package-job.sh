@@ -334,6 +334,10 @@ fedora-44)
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
+    stage=collect-os-desktop-payload
+    case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
+    SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+        dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
     ;;
 arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does

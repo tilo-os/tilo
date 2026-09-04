@@ -48,6 +48,14 @@ on:
         description: "Expected 64-hex Ed25519 publisher key; empty uses vars.QOS_APP_COLLECTION_PUBLISHER."
         required: false
         default: ""
+      desktop_payload_url:
+        description: "Pinned qos-desktop-os-<arch>.tar.gz URL; empty uses the architecture channel variable."
+        required: false
+        default: ""
+      desktop_payload_sha256:
+        description: "SHA-256 of desktop_payload_url; empty uses the architecture channel variable."
+        required: false
+        default: ""
 
 concurrency:
   # Generations are a single dense security series. Two tag/manual jobs must
@@ -180,6 +188,70 @@ jobs:
           echo "QOS_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt app collection'
 
+      - name: Materialize the pinned desktop payload
+        env:
+          PAYLOAD_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
+          PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
+          PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
+          PAYLOAD_URL_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_URL }}
+          PAYLOAD_SHA256_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256 }}
+          PAYLOAD_URL_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_X86_64 }}
+          PAYLOAD_SHA256_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_X86_64 }}
+          PAYLOAD_URL_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_AARCH64 }}
+          PAYLOAD_SHA256_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo 'QOS_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
+          [[ $EVENT_NAME != pull_request ]] || exit 0
+          case "$(uname -m)" in
+            x86_64)
+              architecture=x86_64
+              PAYLOAD_URL=${PAYLOAD_URL_INPUT:-${PAYLOAD_URL_X86_64:-$PAYLOAD_URL_DEFAULT}}
+              PAYLOAD_SHA256=${PAYLOAD_SHA256_INPUT:-${PAYLOAD_SHA256_X86_64:-$PAYLOAD_SHA256_DEFAULT}}
+              ;;
+            aarch64)
+              architecture=aarch64
+              PAYLOAD_URL=${PAYLOAD_URL_INPUT:-$PAYLOAD_URL_AARCH64}
+              PAYLOAD_SHA256=${PAYLOAD_SHA256_INPUT:-$PAYLOAD_SHA256_AARCH64}
+              ;;
+            *) printf 'unsupported desktop payload architecture\n' >&2; exit 1 ;;
+          esac
+          [[ -n ${PAYLOAD_URL:-} ]] || exit 0
+          [[ -n ${PAYLOAD_AUDIENCE:-} && $PAYLOAD_SHA256 =~ ^[0-9a-fA-F]{64}$ ]]
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
+            | jq -er .value)
+          echo "::add-mask::$jwt"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+            --output "$work/desktop.tar.gz"
+          printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
+            | sha256sum --check --strict
+          expected=$'SHA256SUMS\nmanifest.json\nqos-launcher\nqos-unlock-helper\nshell'
+          actual=$(tar -tzf "$work/desktop.tar.gz" | LC_ALL=C sort)
+          [[ $actual == "$expected" ]] || {
+            printf 'unexpected desktop payload members:\n%s\n' "$actual" >&2
+            exit 1
+          }
+          tar --extract --gzip --file "$work/desktop.tar.gz" --directory "$work" \
+            --no-same-owner --no-same-permissions
+          if find "$work" -mindepth 1 -type l -o \( ! -type f ! -type d \) | grep -q .; then
+            printf 'desktop payload contains links or special files\n' >&2
+            exit 1
+          fi
+          (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          [[ $(jq -er .architecture "$work/manifest.json") == "$architecture" ]]
+          find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
+          install -m 0755 "$work/shell" "$work/qos-launcher" \
+            "$work/qos-unlock-helper" os/desktop-artifacts/
+          cp "$work/manifest.json" os/desktop-artifacts/
+          echo 'QOS_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
+          echo '::notice::using pinned prebuilt desktop payload'
+
       # Log in on EVERY build: the build installs from the private, digest-pinned
       # frozen RPM repo (RPMS_REF), pulled as a stage — so even build-only runs
       # (main pushes / PRs) need registry read. Pushing the image still only
@@ -265,6 +337,21 @@ jobs:
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
+      - name: Select build-only or publication mode
+        id: release-mode
+        env:
+          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+        run: |
+          publish=false
+          if [[ $GITHUB_REF == refs/tags/v* \
+                || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main ) \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
+                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "::notice::OS publication mode: $publish"
+
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
       # published image: the retention window is arithmetic on it, and the floor is
@@ -303,7 +390,7 @@ jobs:
         with:
           images: code.podesta.ai/qos/qos
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=pr
@@ -333,7 +420,7 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/Containerfile
           push: false
-          outputs: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.publish == 'true' && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -350,6 +437,7 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
             QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
@@ -380,7 +468,7 @@ jobs:
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -400,6 +488,7 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
             QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
@@ -415,7 +504,7 @@ jobs:
 
       - name: Reseal, install, boot, and publish the verified image
         id: release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         timeout-minutes: 60
         env:
           QOS_IMAGE: localhost/qos:release-candidate
@@ -579,7 +668,7 @@ jobs:
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
       - name: Sign the published image
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           # URI only (for example gcpkms://, awskms://, azurekms:// or
           # hashivault://). The signing key is non-exportable and never enters
@@ -597,7 +686,7 @@ jobs:
       # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
       # what shipped + verify it came from us.
       - name: Generate SBOM (syft → SPDX)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}
@@ -612,7 +701,7 @@ jobs:
           upload-release-assets: false
 
       - name: Attest the SBOM to the image (signed)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
@@ -622,7 +711,7 @@ jobs:
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
@@ -639,7 +728,7 @@ jobs:
       # keys; this release-signed statement is the migration anchor and is still
       # required before any channel becomes visible.
       - name: Generate and attest release freshness
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
@@ -652,7 +741,7 @@ jobs:
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
       - name: Verify candidate and promote release channels
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           image="code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"

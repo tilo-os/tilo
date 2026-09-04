@@ -34,8 +34,18 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && ok 'desktop push and pull-request triggers are path-scoped' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
+grep -Fq 'publish-os-payload:' "$desktop" \
+  && grep -Fq 'QOS_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
+  && grep -Fq 'QOS_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
+  && grep -Fq 'QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}' "$os" \
+  && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
+  && ok 'OS composition reuses the install-tested native desktop payload' \
+  || bad 'OS releases still rebuild the desktop component'
+
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
+  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
