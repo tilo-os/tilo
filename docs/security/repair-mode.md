@@ -151,12 +151,12 @@ the disk whether it is open — it asks the LUKS header whether this is a key.
 ### Why generation-bound unlock is still stronger
 
 The bounded-rollback design will additionally ensure an optional future TPM
-factor cannot auto-unlock repair mode:
+factor cannot auto-unlock repair mode once enrollment is enabled:
 `qos-rollback` seals against **PCR 7 and 11** with a signed prediction, and a
 repair-mode command line produces a different PCR 11, so its keyslot would not
-open and the recovery key would be the only way in. That path is not live —
-`docs/security/rollback.md` records that the initramfs `qos-rollback unlock` hook
-is still unwritten and no signed predictions ship.
+open and the recovery key would be the only way in. The initramfs consumer now
+ships and preserves that fallback, but the installer still enrolls no such slot
+because no signed prediction for its target-specific UKI exists yet.
 
 When it is live, repair mode gets the stronger property for free, because the
 mechanism that gives it is the same one that makes the mode selectable at all: the

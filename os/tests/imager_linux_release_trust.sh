@@ -21,7 +21,7 @@ mkdir -p "$assets/linux-x86_64" "$assets/linux-aarch64" \
 
 for arch in x86_64 aarch64; do
   directory="$assets/linux-$arch"
-  for suffix in AppImage tar.gz; do
+  for suffix in AppImage tar.gz flatpak; do
     artifact="$directory/qos-imager-linux-$arch.$suffix"
     printf 'qOS Imager test artifact: %s %s\n' "$arch" "$suffix" >"$artifact"
     (cd "$directory" && sha256sum "$(basename "$artifact")" \
@@ -55,7 +55,7 @@ printf '%s\n' "$fingerprint" >"$assets/release-key/qos-release-key.fingerprint"
   >qos-release-key.fingerprint.sha256)
 
 QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
-  | grep -Fq 'verified 7 Linux and installer artifacts'
+  | grep -Fq 'verified 9 Linux and installer artifacts'
 
 wrong="${fingerprint%?}0"
 [ "$wrong" != "$fingerprint" ] || wrong="${fingerprint%?}1"
