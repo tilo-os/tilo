@@ -85,6 +85,7 @@ LOCAL_IMG="localhost/bootc"
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 GUIDED_PARTITION="${QOS_GUIDED_PARTITION:-/usr/libexec/qos-guided-partition}"
 EFI_ARTIFACTS="${QOS_INSTALL_EFI_ARTIFACTS:-/usr/libexec/qos-install-efi-artifacts}"
+BOOT_MENU="${QOS_INSTALL_BOOT_MENU:-/usr/libexec/qos-install-boot-menu}"
 
 # Alongside installs share a firmware-visible FAT ESP with qOS's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -668,7 +669,21 @@ if [ "$ALONGSIDE" -eq 1 ]; then
   EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
   validate_alongside
   log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
-  log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    log "  qOS ESP     : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
+  else
+    log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+  fi
+  FIRMWARE_STATE="$(mktemp)"
+  "$BOOT_MENU" firmware-snapshot "$FIRMWARE_STATE"
+  FIRMWARE_RESTORED=0
+  restore_firmware_boot_state() {
+    [ "$FIRMWARE_RESTORED" -eq 0 ] || return 0
+    "$BOOT_MENU" firmware-restore "$FIRMWARE_STATE"
+    rm -f -- "$FIRMWARE_STATE"
+    FIRMWARE_RESTORED=1
+  }
+  trap restore_firmware_boot_state EXIT
 fi
 
 # Refuse if the target disk (or any of its partitions) is currently mounted.
@@ -760,7 +775,11 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # sibling LUKS mappings belonging to the existing OS.
   ENC_CLEANUP_TARGET="$DISK"
   [ "$ALONGSIDE" -eq 0 ] || ENC_CLEANUP_TARGET="$ROOT_PARTITION"
-  trap '"$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
+  cleanup_encrypted_install() {
+    "$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true
+    [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
+  }
+  trap cleanup_encrypted_install EXIT
 
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
@@ -806,6 +825,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   /usr/libexec/qos-uki-cmdline replace \
     "$UNLOCK_PLACEHOLDER" "$UNLOCK_OPTIONS" "$TARGET_UKI"
   /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
+  BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
@@ -824,6 +844,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
     umount "$ALONGSIDE_MNT/boot/efi" 2>/dev/null || true
     umount "$ALONGSIDE_MNT" 2>/dev/null || true
     rmdir "$ALONGSIDE_MNT" 2>/dev/null || true
+    restore_firmware_boot_state
   }
   trap cleanup_alongside EXIT
   podman run --rm --privileged --pid=host --ipc=host \
@@ -833,6 +854,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete qos.install --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize /target
+  BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
@@ -847,6 +869,21 @@ else
       --block-setup direct \
       --target-imgref "$QOS_TARGET_IMGREF" \
       "$DISK"
+fi
+if [ "$ALONGSIDE" -eq 1 ]; then
+  restore_firmware_boot_state
+  BOOT_MENU_RESULT="$("$BOOT_MENU" install "$BOOT_ESP_ROOT" "${ROOT_FS_UUID:-no-root-uuid}")"
+  if [ -n "$BOOT_MENU_RESULT" ]; then
+    log "  boot menu   : added safe shortcuts for existing operating systems on the qOS ESP"
+  elif [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    # systemd-boot intentionally operates on its own ESP. Copying Windows or a
+    # distro shim from another ESP would break its update/BCD trust boundary;
+    # preserve firmware entries/order and keep those systems in the firmware
+    # picker instead of presenting a shortcut which cannot boot.
+    log "  boot menu   : existing systems remain in the firmware boot picker (their ESPs were not changed)"
+  else
+    log "  boot menu   : no unambiguous existing loader was present on the selected ESP; firmware entries were preserved"
+  fi
 fi
 log "  base system installed."
 
