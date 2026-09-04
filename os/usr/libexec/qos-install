@@ -671,8 +671,10 @@ IFS= read -r PASSWORD || true
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
   [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
-  [ "${#PIN}" -ge 12 ] \
-    || die "disk passphrase must contain at least 12 characters"
+  SECRET_POLICY=/usr/libexec/qos-startup-secret-policy
+  [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
+  POLICY_ERROR="$(printf '%s\n' "$PIN" | "$SECRET_POLICY" 2>&1)" \
+    || die "$POLICY_ERROR"
 fi
 
 log "qOS installer"

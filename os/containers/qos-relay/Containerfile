@@ -59,6 +59,8 @@ ARG SOURCE_DATE_EPOCH=0
 # cargo reads that config from /build.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    CARGO_BUILD_JOBS=2 \
+    CARGO_PROFILE_RELEASE_LTO=thin \
     CARGO_INCREMENTAL=0 \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C.UTF-8 \
@@ -71,7 +73,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cargo build --release -p qos-relay -p fs --bins \
+    && cargo build --release -p qos-relay --bins \
+    && cargo build --release -p fs --bin fs \
     && mkdir -p /out \
     && cp target/release/qos-relay \
           target/release/qos-relay-admin \

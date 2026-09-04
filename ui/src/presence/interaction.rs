@@ -296,7 +296,15 @@ impl PresenceCtx {
 
         let is_agent = interaction.actor.kind == InteractionActorKind::Agent;
         let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
-        draw_actor_glyph(scene, transform, glyph_center, actor_color, is_agent);
+        let glyph_outline = theme.on_surface(actor_color).ink;
+        draw_actor_glyph(
+            scene,
+            transform,
+            glyph_center,
+            actor_color,
+            glyph_outline,
+            is_agent,
+        );
         let actor_label = actor_label(self, &user, is_agent);
         let size = theme.tokens.typography.scale.sm;
         let first = tr.elide_to_width(&actor_label, size, (rect.width() - 40.0) as f32);
@@ -405,6 +413,7 @@ fn draw_actor_glyph(
     transform: Affine,
     center: Point,
     color: Color,
+    outline: Color,
     is_agent: bool,
 ) {
     if is_agent {
@@ -416,11 +425,11 @@ fn draw_actor_glyph(
         diamond.line_to((center.x - radius, center.y));
         diamond.close_path();
         scene.fill(Fill::NonZero, transform, color, None, &diamond);
-        scene.stroke(&Stroke::new(1.2), transform, Color::WHITE, None, &diamond);
+        scene.stroke(&Stroke::new(1.2), transform, outline, None, &diamond);
     } else {
         let dot = vello::kurbo::Circle::new(center, 4.5);
         scene.fill(Fill::NonZero, transform, color, None, &dot);
-        scene.stroke(&Stroke::new(1.2), transform, Color::WHITE, None, &dot);
+        scene.stroke(&Stroke::new(1.2), transform, outline, None, &dot);
     }
 }
 

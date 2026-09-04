@@ -1,4 +1,4 @@
-name: Mirror the Fedora bootc base
+name: Snapshot / Fedora base
 
 # Copies the upstream Fedora bootc base into code.podesta.ai and prints the
 # digest to pin. Sibling of snapshot-rpms: that job freezes the package set,

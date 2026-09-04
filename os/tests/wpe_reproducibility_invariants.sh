@@ -120,7 +120,7 @@ snapshot_inputs=(
   .forgejo/workflows/snapshot-wpe-buildroot.yml
 )
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
-input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*permissions:/p' "$snapshot_workflow")"
+input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*enable-openid-connect:/p' "$snapshot_workflow")"
 has "$snapshot_workflow" "mapfile -t snapshot_inputs < <(printf '%s' \"\$WPE_SNAPSHOT_INPUTS\")" \
   'WPE promotion parses the authoritative input list without an empty pathspec'
 for input in "${snapshot_inputs[@]}"; do

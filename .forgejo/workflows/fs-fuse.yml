@@ -1,4 +1,4 @@
-name: Collaborative filesystem kernel contract
+name: CI / filesystem contract
 
 on:
   push:
@@ -86,11 +86,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a real kernel FUSE environment
         run: |
+          # Brokered Kata runners expose the guest kernel's misc device but a
+          # fresh nested job container may not carry its /dev node. Recreate
+          # that node from the kernel-owned major/minor; this still fails closed
+          # when the running kernel has no real FUSE device.
+          if ! test -c /dev/fuse && test -r /sys/class/misc/fuse/dev; then
+            IFS=: read -r fuse_major fuse_minor < /sys/class/misc/fuse/dev
+            mknod -m 0666 /dev/fuse c "$fuse_major" "$fuse_minor"
+          fi
           if ! test -c /dev/fuse; then
             ls -l /dev/fuse 2>&1 || true
             echo "runner did not expose the FUSE character device" >&2
