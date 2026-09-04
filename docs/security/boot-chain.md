@@ -382,8 +382,7 @@ of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
-| TPM without verified boot | recovery key, passphrase | type the passphrase |
+| TPM (current release) | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
@@ -394,25 +393,19 @@ per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
 which of those handlers has enrolled material; without the FIDO2 boot option a
 security key could be successfully enrolled yet never tried by the initramfs.
 
-The installer and privileged backend both require a startup secret. A short PIN
-is accepted only when TPM2 and Secure Boot are active, the running kernel
-reports integrity or confidentiality lockdown, **and the target preflight
-proves the installed target retains that verified-boot boundary**. That
-preflight requires the owner's qOS db certificate to already be enrolled in
-firmware, verifies the running artifacts against it, signs the newly installed
-target artifacts with the same key, verifies every signature, and parses every
-target UKI to require sealed kernel, initrd, command line, OS identity,
-composefs digest, generation and hardening arguments. Enrollment happens only
-after this target-side proof succeeds. Checking the EFI variable without
-checking either its runtime consequence or the target handoff would make a
-live-medium firmware flag sufficient evidence for a security boundary.
+The installer and privileged backend both require a startup secret. This
+release always uses a strong passphrase. The former target preflight verified
+signatures and UKI contents, but its LUKS token was sealed only to PCR 7. PCR 7
+authenticates the firmware Secure Boot policy/database; it does not bind unlock
+to the selected qOS UKI or initramfs. That is not sufficient evidence for a
+short-PIN boundary, so the preflight and TPM enrollment are not shipped.
 
 This means a stock machine that has not completed owner/OEM Secure Boot
 enrollment uses the strong-passphrase path even when it has a TPM. Software
 cannot truthfully manufacture firmware trust without the owner's physical
-ceremony. Reinstalls and OEM-provisioned machines can use one short PIN because
-the trust key is already in firmware and is carried continuously into the new
-target.
+ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
+until qOS additionally ships signed measured-artifact policies and update-safe
+prediction consumption.
 TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the
@@ -463,12 +456,11 @@ That leaves two genuinely secure product choices:
    paths then need a physical hardware matrix before this becomes the default.
 
 Until one of those choices is deliberately made and delivered end to end, the
-secure product behaviour is the one enforced above: a fresh machine gets a
-strong startup passphrase; a short PIN is shown only for an already continuous,
-verified target chain. `target_verified_boot_ready` must not be relaxed to TPM
-presence, an EFI flag, or a resumable-install marker.
+secure product behaviour is the one enforced above: every machine gets a
+strong startup passphrase. `target_verified_boot_ready` must not be enabled by
+TPM presence, an EFI flag, signed files alone, or a resumable-install marker.
 
-The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
+The removed TPM slot bound to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.
 Binding to a register that covers the boot artefacts themselves sounds stronger and
 is unusable on its own: it changes on every OS update, so every update would send

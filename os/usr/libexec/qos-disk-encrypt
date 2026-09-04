@@ -285,15 +285,16 @@ EOF
 have_tpm2() { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; }
 
 cmd_enrol() {
-  local dev="" key="" pin_file="" want_fido2=0 reseal=0 force_passphrase=0
+  # PCR 7 authenticates the firmware Secure Boot policy, not the selected qOS
+  # UKI/initramfs. Until signed per-generation predictions and their initramfs
+  # consumer ship together, fail closed to an ordinary strong passphrase.
+  local dev="" key="" pin_file="" want_fido2=0 reseal=0 force_passphrase=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
       --fido2) want_fido2=1; shift ;;
-      # A TPM is useful only behind verified boot. The installer passes this
-      # when Secure Boot is not active so PCR 7="off" is never presented as a
-      # hardware-backed short-PIN boundary.
+      # Compatibility flag for callers; passphrase mode is also the default.
       --passphrase) force_passphrase=1; shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
       # chip, or after turning Secure Boot on or off (PCR 7 changes either way).
@@ -324,19 +325,7 @@ cmd_enrol() {
   fi
 
   if [ "$reseal" -eq 1 ]; then
-    have_tpm2 || die "enrol --reseal: no TPM2 device to re-seal to"
-    log "  re-sealing to the TPM (replacing the previous TPM key slot)…"
-    if [ -n "$pin_file" ]; then
-      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
-        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
-        || die "re-seal failed; the recovery key still opens the disk"
-    else
-      systemd-cryptenroll "${unlock[@]}" \
-        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
-        || die "re-seal failed; the recovery key still opens the disk"
-    fi
-    log "  re-sealed."
-    return 0
+    die "enrol --reseal: TPM enrollment is disabled until qOS unlock is bound to signed measured-boot predictions; keep the recovery key and strong passphrase"
   fi
 
   # A private scratch dir for the secrets this function has to hand to
@@ -406,10 +395,9 @@ cmd_enrol() {
     log "  FIDO2 key enrolled."
   fi
 
-  # (3) The quiet-unlock factor. PCR 7 only: it is the Secure Boot policy
-  # register, so the seal breaks if the boot policy changes, while PCR 4 (the
-  # boot artefacts themselves) would break the seal on every OS update and send
-  # the user to the recovery key each time.
+  # (3) The startup factor. The TPM branch is unreachable in this release
+  # because force_passphrase defaults to 1; retaining the structure keeps the
+  # future measured-policy change reviewable without shipping PCR-7-only unlock.
   if have_tpm2 && [ "$force_passphrase" -eq 0 ]; then
     if [ -n "$pin_file" ]; then
       log "  enrolling TPM2 with a PIN…"
