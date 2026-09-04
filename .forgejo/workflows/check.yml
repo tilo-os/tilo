@@ -109,7 +109,9 @@ jobs:
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
           bash os/tests/installer_guided_alongside.sh
+          bash os/tests/installer_boot_menu.sh
           bash os/tests/live_recovery.sh
+          bash os/tests/boot_ux_invariants.sh
           bash os/tests/repair_mode.sh
           bash os/tests/installer_profile_transport.sh
           bash os/tests/imager_release_invariants.sh
