@@ -918,9 +918,10 @@ pub struct WindowGroup {
     pub tabs: Vec<Tab>,
     pub active_tab: TabId,
     pub width: WindowWidth,
-    /// Mirrors the widget's maximized flag, stored so it survives a
-    /// restart and replicates. `#[serde(default)]` so pre-existing JSON
-    /// still loads, un-maximized.
+    /// Mirrors the widget's maximized flag. This is presentation state for
+    /// this device: it survives a local restart but is never sent to room
+    /// peers. `#[serde(default)]` keeps pre-existing local JSON loading
+    /// un-maximized.
     #[serde(default)]
     pub maximized: bool,
 }
@@ -954,17 +955,13 @@ struct ReplicatedTab {
     tile: Option<TileContent>,
 }
 
-/// One window group as a room's replication document carries it.
-/// `width`/`maximized` are `Option` because a peer may create the entry
-/// just to hold its own tab without owning the group — `None` means
-/// "owner hasn't said", not "default". **No `active_tab`** — see
-/// [`WorkspaceTree::project_owned_contents`].
+/// One window group as a room's replication document carries it. Geometry,
+/// maximization and active-tab selection are per-device presentation state,
+/// so the shared record carries only its topology and tabs.
 #[derive(Clone, Debug)]
 struct ReplicatedGroup {
     id: GroupId,
     order: u64,
-    width: Option<WindowWidth>,
-    maximized: Option<bool>,
     tabs: Vec<ReplicatedTab>,
 }
 
@@ -1012,20 +1009,6 @@ fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, 
 }
 
 /// [`put_str_if_changed`] for a boolean.
-fn put_bool_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: bool) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Boolean(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current != Some(value) {
-        let _ = doc.put(obj, key, ScalarValue::Boolean(value));
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Collaborator {
     pub id: String,
@@ -3176,16 +3159,10 @@ impl WorkspaceTree {
             if owns_group {
                 live_groups.insert(gkey.clone());
                 put_uint_if_changed(doc, &group_entry, "order", gi as u64);
-                put_uint_if_changed(
-                    doc,
-                    &group_entry,
-                    "width_permille",
-                    u64::from(group.width.permille()),
-                );
-                put_bool_if_changed(doc, &group_entry, "maximized", group.maximized);
-                // `active_tab` is not written here. It is the one
-                // field of this struct that belongs to the person
-                // rather than to the room.
+                // Width, maximization and active-tab selection are local
+                // presentation preferences. Old room documents may still
+                // contain the first two fields, but no current peer writes
+                // or reads them.
             }
 
             Self::project_owned_tabs(doc, &group_entry, group, mine);
@@ -3345,20 +3322,6 @@ impl WorkspaceTree {
                     groups.push(ReplicatedGroup {
                         id: gid,
                         order: uint(&group_entry, "order").unwrap_or(u64::MAX),
-                        width: uint(&group_entry, "width_permille").map(|p| {
-                            // Clamped into u16's range on the line
-                            // above, so this never actually truncates.
-                            WindowWidth::Fraction(
-                                u16::try_from(p.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
-                            )
-                        }),
-                        maximized: match doc.get(&group_entry, "maximized").ok().flatten() {
-                            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                                ScalarValue::Boolean(b) => Some(*b),
-                                _ => None,
-                            },
-                            _ => None,
-                        },
                         tabs,
                     });
                 }
@@ -3400,10 +3363,7 @@ impl WorkspaceTree {
             }
             for group in &strip.groups {
                 if peer_salt_of(group.id) == local_salt {
-                    out.push((
-                        group.id,
-                        format!("g|{}|{:?}|{:?}", group.order, group.width, group.maximized),
-                    ));
+                    out.push((group.id, format!("g|{}", group.order)));
                 }
                 for tab in &group.tabs {
                     if peer_salt_of(tab.id) == local_salt {
@@ -3563,23 +3523,9 @@ impl WorkspaceTree {
         is_local: &dyn Fn(u64) -> bool,
         changed: &mut bool,
     ) -> WindowGroup {
-        // Geometry travels only from the peer that owns the group — for
-        // one of ours the document is an echo of what we last projected,
-        // and taking it back would revert an unpublished resize.
-        if !is_local(local.id) {
-            if let Some(width) = rep.width
-                && local.width.permille() != width.permille()
-            {
-                local.width = width;
-                *changed = true;
-            }
-            if let Some(maximized) = rep.maximized
-                && local.maximized != maximized
-            {
-                local.maximized = maximized;
-                *changed = true;
-            }
-        }
+        // Geometry and maximization remain exactly as this device last set
+        // them. A peer changing its own desktop must never resize, maximize,
+        // or otherwise rearrange ours.
 
         let mut by_tab: std::collections::BTreeMap<u64, ReplicatedTab> =
             rep.tabs.into_iter().map(|t| (t.id, t)).collect();
@@ -3646,8 +3592,8 @@ impl WorkspaceTree {
             id: rep.id,
             tabs,
             active_tab,
-            width: rep.width.unwrap_or(WindowWidth::Normal),
-            maximized: rep.maximized.unwrap_or(false),
+            width: WindowWidth::Normal,
+            maximized: false,
         }
     }
 
@@ -4261,8 +4207,10 @@ impl WorkspaceTree {
                     }
                 }
             }
-            // Nested strips + window_groups so per-group maximized +
-            // width_permille writes have a doc-side path to land in.
+            // Nested strips + window groups keep this device's durable topology
+            // available to local recovery. Geometry is deliberately omitted:
+            // the cache/JSON owns it locally and room replication never carries
+            // it to another desktop.
             let Ok(strips_id) = self.doc.put_object(&entry, "strips", ObjType::List) else {
                 continue;
             };
@@ -4287,16 +4235,6 @@ impl WorkspaceTree {
                     let _ = self
                         .doc
                         .put(&group_entry, "id", ScalarValue::Uint(group.id));
-                    let _ = self.doc.put(
-                        &group_entry,
-                        "maximized",
-                        ScalarValue::Boolean(group.maximized),
-                    );
-                    let _ = self.doc.put(
-                        &group_entry,
-                        "width_permille",
-                        ScalarValue::Uint(u64::from(group.width.permille())),
-                    );
                     // `tile_json` is a JSON-blob shim for `TileContent`
                     // rather than a full per-variant CRDT structure.
                     let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List)
@@ -4370,22 +4308,6 @@ impl WorkspaceTree {
         }
     }
 
-    /// The `Boolean` scalar at `obj[prop]`, or `None` if absent/a different type.
-    fn doc_bool(
-        doc: &AutoCommit,
-        obj: &automerge::ObjId,
-        prop: impl Into<automerge::Prop>,
-    ) -> Option<bool> {
-        use automerge::{ReadDoc, ScalarValue, Value};
-        match doc.get(obj, prop).ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Boolean(v) => Some(*v),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// The `Bytes` scalar at `obj[prop]`, or `None` if absent/a different type.
     fn doc_bytes(
         doc: &AutoCommit,
@@ -4452,9 +4374,10 @@ impl WorkspaceTree {
             self.workspaces = new_workspaces;
         }
 
-        // Reconstruct per-window-group `maximized`, `width_permille` and
-        // `tabs`, matching each strip/group by id; a missing cache entry
-        // gets a fresh `Strip`/`WindowGroup` synthesized.
+        // Reconstruct shared topology and tabs, matching each strip/group by
+        // id. Width and maximization stay on the matching local cache entry;
+        // a newly seen group receives local defaults. Legacy documents that
+        // contain geometry are intentionally ignored.
         if let Some(workspaces_id) = Self::doc_obj(&self.doc, &ROOT, "workspaces") {
             self.rebuild_window_groups_from_doc(&workspaces_id);
         }
@@ -4499,23 +4422,6 @@ impl WorkspaceTree {
                     let Some(group_id) = Self::doc_uint(&self.doc, &group_entry, "id") else {
                         continue;
                     };
-                    let maximized =
-                        Self::doc_bool(&self.doc, &group_entry, "maximized").unwrap_or(false);
-                    // Peers publish a *fraction*, so width means the
-                    // same share of this replica's own display, not
-                    // the sender's pixel count. `width_pixels` is the
-                    // pre-fraction shape — migrate rather than drop it.
-                    let width = Self::doc_uint(&self.doc, &group_entry, "width_permille")
-                        .filter(|v| *v > 0)
-                        .and_then(|v| u16::try_from(v).ok())
-                        .map(WindowWidth::Fraction)
-                        .or_else(|| {
-                            Self::doc_uint(&self.doc, &group_entry, "width_pixels")
-                                .filter(|v| *v > 0)
-                                .and_then(|v| u32::try_from(v).ok())
-                                .map(WindowWidth::from_legacy_pixels)
-                        });
-
                     let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) else {
                         continue;
                     };
@@ -4535,7 +4441,7 @@ impl WorkspaceTree {
                     // `self.workspaces`, so this can only borrow the `doc`
                     // field, not all of `self`.
                     let doc_tabs = Self::collect_doc_tabs(&self.doc, &group_entry);
-                    Self::apply_group_from_doc(strip, group_id, maximized, width, &doc_tabs);
+                    Self::apply_group_from_doc(strip, group_id, &doc_tabs);
                 }
             }
         }
@@ -4568,17 +4474,11 @@ impl WorkspaceTree {
         doc_tabs
     }
 
-    /// Fold a doc-side group's `maximized`/`width`/`doc_tabs` into
-    /// `strip`'s cached window group `group_id`, synthesizing a fresh
-    /// placeholder group (carrying the doc's tabs) if the cache doesn't
-    /// have one yet.
-    fn apply_group_from_doc(
-        strip: &mut Strip,
-        group_id: u64,
-        maximized: bool,
-        width: Option<WindowWidth>,
-        doc_tabs: &[(u64, String, Vec<u8>)],
-    ) {
+    /// Fold a doc-side group's shared tabs into `strip`'s cached window
+    /// group `group_id`, synthesizing a fresh local-presentation group when
+    /// the cache doesn't have one yet. Historical geometry fields are not
+    /// read: they belonged to an older, shared-layout wire shape.
+    fn apply_group_from_doc(strip: &mut Strip, group_id: u64, doc_tabs: &[(u64, String, Vec<u8>)]) {
         let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
             // A placeholder group, carrying doc tabs.
             let synthesized_tabs: Vec<Tab> = doc_tabs
@@ -4594,17 +4494,11 @@ impl WorkspaceTree {
                 id: group_id,
                 tabs: synthesized_tabs,
                 active_tab,
-                width: width.unwrap_or(WindowWidth::Normal),
-                maximized,
+                width: WindowWidth::Normal,
+                maximized: false,
             });
             return;
         };
-        g.maximized = maximized;
-        // Always `Fraction`: mapping back onto Narrow/Normal/Wide would
-        // silently coerce a peer's manual resize to the closest preset.
-        if let Some(w) = width {
-            g.width = w;
-        }
         if doc_tabs.is_empty() {
             return;
         }
@@ -4680,32 +4574,6 @@ impl WorkspaceTree {
             }
         }
         None
-    }
-
-    /// Mirror a `WindowGroup.maximized` flip into the doc so peer-sync
-    /// observes it. No-op if not yet seeded — see [`Self::locate_group`].
-    pub fn doc_set_maximized(&mut self, group_id: u64, new_value: bool) {
-        use automerge::{ScalarValue, transaction::Transactable};
-        if let Some((entry, _, _, _)) = self.locate_group(group_id) {
-            let _ = self
-                .doc
-                .put(&entry, "maximized", ScalarValue::Boolean(new_value));
-        }
-    }
-
-    /// Mirror a `WindowGroup.width` resize into the doc as a fraction
-    /// — a pixel count would reproduce the sender's monitor instead of
-    /// the receiver's own share. Same null-tolerance as
-    /// [`Self::doc_set_maximized`].
-    pub fn doc_set_width(&mut self, group_id: u64, new_permille: u16) {
-        use automerge::{ScalarValue, transaction::Transactable};
-        if let Some((entry, _, _, _)) = self.locate_group(group_id) {
-            let _ = self.doc.put(
-                &entry,
-                "width_permille",
-                ScalarValue::Uint(u64::from(new_permille)),
-            );
-        }
     }
 
     /// Walk the doc to the workspace map for `workspace_id`. Same
@@ -5407,16 +5275,6 @@ impl WorkspaceTree {
                 let _ = self
                     .doc
                     .put(&group_entry, "id", ScalarValue::Uint(group.id));
-                let _ = self.doc.put(
-                    &group_entry,
-                    "maximized",
-                    ScalarValue::Boolean(group.maximized),
-                );
-                let _ = self.doc.put(
-                    &group_entry,
-                    "width_permille",
-                    ScalarValue::Uint(u64::from(group.width.permille())),
-                );
                 if let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) {
                     for (l, tab) in group.tabs.iter().enumerate() {
                         if let Ok(tab_entry) = self.doc.insert_object(&tabs_id, l, ObjType::Map) {
@@ -7391,6 +7249,83 @@ mod automerge_foundation_tests {
         );
     }
 
+    #[test]
+    fn remote_topology_updates_preserve_this_desktops_group_geometry() {
+        const HOST: u16 = 0xCAFE;
+        const GUEST: u16 = 0xBEEF;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+
+        let (_host_strip, host_group, _host_tab) = seed_single_tab_strip(&mut host, room, HOST);
+        let _ = seed_single_tab_strip(&mut guest, room, GUEST);
+
+        ship(&mut host, &mut guest, room, 1);
+
+        // The guest chooses a deliberately different presentation for the
+        // host's shared group. This must survive all later room updates.
+        let guest_ws = guest
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .unwrap();
+        let guest_host_group = guest_ws
+            .strips
+            .iter_mut()
+            .flat_map(|strip| strip.window_groups.iter_mut())
+            .find(|group| group.id == host_group)
+            .expect("the host group arrives on the guest desktop");
+        guest_host_group.width = WindowWidth::Fraction(775);
+        guest_host_group.maximized = true;
+
+        // The host makes both a presentation change and an intentional shared
+        // topology change. Only the new tab is allowed to cross the room.
+        let host_ws = host
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+            .unwrap();
+        let host_group_ref = host_ws
+            .strips
+            .iter_mut()
+            .flat_map(|strip| strip.window_groups.iter_mut())
+            .find(|group| group.id == host_group)
+            .expect("host group remains present");
+        host_group_ref.width = WindowWidth::Fraction(500);
+        host_group_ref.maximized = false;
+        host_group_ref.tabs.push(Tab {
+            id: salted(HOST, 4),
+            title: "Follow-up".into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Follow-up".into(),
+            },
+        });
+        host.sync_room_doc(room);
+        ship(&mut host, &mut guest, room, 1);
+
+        let guest_host_group = guest
+            .workspaces
+            .iter()
+            .find(|ws| ws.room == room)
+            .into_iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .find(|group| group.id == host_group)
+            .expect("the shared group remains present");
+        assert_eq!(guest_host_group.width, WindowWidth::Fraction(775));
+        assert!(guest_host_group.maximized);
+        assert_eq!(
+            guest_host_group
+                .tabs
+                .iter()
+                .map(|tab| tab.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Plan", "Follow-up"],
+            "the intentional shared topology update must still arrive"
+        );
+    }
+
     /// Give `tree`'s workspace in `room` a single strip/group holding one
     /// tab titled "Plan", salted under `salt`. Returns `(strip, group,
     /// tab)`. Half of
@@ -8458,7 +8393,7 @@ mod automerge_foundation_tests {
     }
 
     #[test]
-    fn maximize_toggle_propagates_via_apply_changes() {
+    fn maximization_stays_on_the_local_desktop_when_topology_syncs() {
         // Tree B starts from `default()`, same reason as the append test.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
@@ -8467,11 +8402,9 @@ mod automerge_foundation_tests {
             "bootstrap_default seeds the first group un-maximized"
         );
 
-        // Mirror to both sides — production calls
-        // `harvest_pending_maximize_changes`, which writes cache then
-        // doc; in the test we replicate that pattern directly.
+        // This is local presentation state. Synchronizing the workspace's
+        // topology must not carry this maximize decision to a second desktop.
         tree_a.workspaces[0].strips[0].window_groups[0].maximized = true;
-        tree_a.doc_set_maximized(target_group, true);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
@@ -8488,21 +8421,18 @@ mod automerge_foundation_tests {
             "tree B should observe the window group after sync"
         );
         assert!(
-            target.unwrap().maximized,
-            "maximize flip should propagate; got {target:?}"
+            !target.unwrap().maximized,
+            "a peer's maximize flip must not rearrange this desktop; got {target:?}"
         );
     }
 
     #[test]
-    fn width_change_propagates_via_apply_changes() {
-        // A share, not a pixel count: B's monitor isn't A's, so
-        // replicating pixels would reproduce A's screen on B's.
+    fn width_stays_on_the_local_desktop_when_topology_syncs() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         let new_share: u16 = 600;
 
         tree_a.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(new_share);
-        tree_a.doc_set_width(target_group, new_share);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
@@ -8520,13 +8450,9 @@ mod automerge_foundation_tests {
         );
         assert_eq!(
             target.unwrap().width,
-            WindowWidth::Fraction(new_share),
-            "the width share should round-trip via doc"
+            WindowWidth::Normal,
+            "a peer's resize must not change this desktop's width"
         );
-        // And that share means the same proportion of whatever display B
-        // has, which is the property a pixel count could not carry.
-        assert_eq!(target.unwrap().width.resolve(1600.0), 960.0);
-        assert_eq!(target.unwrap().width.resolve(3840.0), 2304.0);
     }
 
     #[test]
@@ -9687,8 +9613,6 @@ mod peer_window_merge_tests {
         let rep = ReplicatedGroup {
             id: local.id,
             order: 0,
-            width: None,
-            maximized: None,
             tabs: vec![remote_tab(7, 4242)],
         };
         let mut changed = false;
@@ -9725,8 +9649,6 @@ mod peer_window_merge_tests {
         let rep = ReplicatedGroup {
             id: local.id,
             order: 0,
-            width: None,
-            maximized: None,
             // The peer's surface id, which is not ours.
             tabs: vec![remote_tab(7, 4242)],
         };
@@ -9768,8 +9690,6 @@ mod peer_window_merge_tests {
         let rep = ReplicatedGroup {
             id: local.id,
             order: 0,
-            width: None,
-            maximized: None,
             tabs: vec![rep_tab],
         };
         let mut changed = false;

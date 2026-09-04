@@ -6442,17 +6442,14 @@ impl WordProcessorWidget {
             }
         }
         for c in &remote_carets {
-            presence.draw_peer_caret(scene, theme, ctf, &c.user, c.rect);
-            Self::draw_remote_caret_label(
+            presence.draw_peer_caret_labeled(
                 scene,
-                ctf,
-                text_renderer,
                 theme,
-                presence,
+                text_renderer,
+                ctf,
                 &c.user,
                 &c.label,
-                c.rect.x0,
-                c.rect.y0,
+                c.rect,
             );
         }
     }
@@ -8345,47 +8342,6 @@ impl WordProcessorWidget {
             }
         }
         out
-    }
-
-    /// Paint a small rounded name pill in the peer's colour, anchored just above
-    /// a remote caret at content-space `(caret_x, caret_top)`. Drawn through the
-    /// page content transform `ctf` so it tracks the page like the caret it labels.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_remote_caret_label(
-        scene: &mut Scene,
-        ctf: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        user: &UserId,
-        label: &str,
-        caret_x: f64,
-        caret_top: f64,
-    ) {
-        let (r, g, b) = presence.color_for(user);
-        let peer = Color::from_rgb8(r, g, b);
-        let size = 11.0_f32;
-        let pad_x = 5.0_f64;
-        let pad_y = 2.0_f64;
-        let (tw, _th) = text_renderer.measure(label, size, None);
-        let chip_w = f64::from(tw) + pad_x * 2.0;
-        let chip_h = f64::from(size) + pad_y * 2.0;
-        // Sit the pill just above the caret's top edge.
-        let chip_x = caret_x;
-        let chip_y = caret_top - chip_h - 2.0;
-        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-        let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
-        scene.fill(Fill::NonZero, ctf, peer, None, &chip);
-        // White-on-colour label for contrast against the peer hue.
-        text_renderer.draw_text(
-            scene,
-            label,
-            size,
-            Color::WHITE,
-            ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-            None,
-        );
-        let _ = theme;
     }
 
     fn extend_or_clear(&mut self, shift: bool) {

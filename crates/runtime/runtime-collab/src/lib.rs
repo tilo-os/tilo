@@ -214,6 +214,11 @@ impl ChannelHandle {
     /// Report a bounded, inert continuation projection to the local shell.
     /// The broker binds `app_id` to this certified channel rather than trusting
     /// the caller's claim, and never relays this report to collaboration peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn report_continuation(
         &self,
         app_id: &str,
@@ -232,6 +237,11 @@ impl ChannelHandle {
     /// Clear this application's previously reported continuation projection.
     /// The broker binds the request to the certified channel route exactly as
     /// it does for [`Self::report_continuation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn clear_continuation(&self, app_id: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.clear_continuation_request();
         req.get().set_app_id(app_id);
@@ -1206,6 +1216,12 @@ pub enum PresencePayload {
         start: u64,
         end: u64,
     },
+    /// The authenticated sender is visually following `target`; `None`
+    /// releases that transient relationship. This is presence, never remote
+    /// viewport control.
+    Following {
+        target: Option<String>,
+    },
     Arrived,
     Left,
 }
@@ -1275,6 +1291,13 @@ fn decode_presence_payload(
         W::Typing(r) => PresencePayload::Typing {
             start: r.get_start(),
             end: r.get_end(),
+        },
+        W::Following(target) => PresencePayload::Following {
+            target: target
+                .ok()
+                .and_then(|target| target.to_str().ok())
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned),
         },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,

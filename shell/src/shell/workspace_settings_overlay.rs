@@ -15,7 +15,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::shell::chrome_state::{Chrome, WsTab};
-use crate::shell::state::{UserId, WorkspaceTree};
+use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, default_app_rows, draw_default_apps_pane, draw_members_pane,
     draw_permissions_pane, members_pane_rows, permissions_pane_layout,
@@ -47,10 +47,45 @@ pub enum EventOutcome {
     MemberRole(UserId),
     RemoveMember(UserId),
     Revoke(String),
+    SetMemberRole(UserId, CapRole),
+    ConfirmRemoveMember(UserId),
+    ConfirmRevoke(String),
+    ReviewPermissionActivity,
+    DismissMemberSheet,
     SelectTab(WsTab),
     CreateInvite,
     EditName,
     CommitName,
+}
+
+/// Keyboard operations understood by the focused member-permission sheet.
+/// The host maps platform keys into this small vocabulary so presentation
+/// state stays independent from winit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberSheetKey {
+    Previous,
+    Next,
+    Activate,
+    Cancel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MemberSheet {
+    Role(UserId),
+    Remove(UserId),
+    Revoke(String),
+}
+
+impl MemberSheet {
+    fn action_count(&self) -> usize {
+        match self {
+            Self::Role(_) => 3,
+            // Cancel, inspect the related history, then complete the
+            // irreversible-looking action. The mutation itself remains a
+            // forward, policy-checked record.
+            Self::Remove(_) | Self::Revoke(_) => 3,
+        }
+    }
 }
 
 /// Values the host needs to paint the lens body between the component's
@@ -71,6 +106,9 @@ pub struct WorkspaceSettingsOverlay {
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
+    member_sheet: Option<MemberSheet>,
+    member_sheet_focus: usize,
+    member_sheet_option_rects: Vec<Rect>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -83,6 +121,9 @@ impl Default for WorkspaceSettingsOverlay {
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
+            member_sheet: None,
+            member_sheet_focus: 0,
+            member_sheet_option_rects: Vec::new(),
         }
     }
 }
@@ -210,12 +251,90 @@ impl WorkspaceSettingsOverlay {
         &self.member_control_rects
     }
 
+    /// Button bounds from the currently focused role / confirmation sheet.
+    /// Kept primarily for end-to-end pointer coverage; the bounds are still
+    /// produced by the same draw pass as the visible controls.
+    pub fn member_sheet_option_rects(&self) -> &[Rect] {
+        &self.member_sheet_option_rects
+    }
+
+    pub fn member_sheet_is_open(&self) -> bool {
+        self.member_sheet.is_some()
+    }
+
+    pub fn open_member_role_sheet(&mut self, user: UserId, current: CapRole) {
+        self.member_sheet = Some(MemberSheet::Role(user));
+        self.member_sheet_focus = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor]
+            .iter()
+            .position(|role| *role == current)
+            .unwrap_or(0);
+    }
+
+    pub fn open_remove_member_sheet(&mut self, user: UserId) {
+        self.member_sheet = Some(MemberSheet::Remove(user));
+        self.member_sheet_focus = 0;
+    }
+
+    pub fn open_revoke_sheet(&mut self, cap_id: String) {
+        self.member_sheet = Some(MemberSheet::Revoke(cap_id));
+        self.member_sheet_focus = 0;
+    }
+
+    pub fn dismiss_member_sheet(&mut self) {
+        self.member_sheet = None;
+        self.member_sheet_focus = 0;
+        self.member_sheet_option_rects.clear();
+    }
+
+    /// Resolve an operation in the sheet's intentionally tiny keyboard
+    /// vocabulary. Navigation wraps so the choice remains reachable without
+    /// a pointer, and every other key is absorbed by the host while open.
+    pub fn handle_member_sheet_key(&mut self, key: MemberSheetKey) -> Option<EventOutcome> {
+        let sheet = self.member_sheet.clone()?;
+        let count = sheet.action_count();
+        match key {
+            MemberSheetKey::Previous => {
+                self.member_sheet_focus =
+                    self.member_sheet_focus.checked_sub(1).unwrap_or(count - 1);
+                None
+            }
+            MemberSheetKey::Next => {
+                self.member_sheet_focus = (self.member_sheet_focus + 1) % count;
+                None
+            }
+            MemberSheetKey::Cancel => Some(EventOutcome::DismissMemberSheet),
+            MemberSheetKey::Activate => self.member_sheet_outcome(&sheet, self.member_sheet_focus),
+        }
+    }
+
+    fn member_sheet_outcome(&self, sheet: &MemberSheet, index: usize) -> Option<EventOutcome> {
+        match sheet {
+            MemberSheet::Role(user) => [CapRole::Viewer, CapRole::Commenter, CapRole::Editor]
+                .get(index)
+                .copied()
+                .map(|role| EventOutcome::SetMemberRole(user.clone(), role)),
+            MemberSheet::Remove(user) => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                1 => Some(EventOutcome::ReviewPermissionActivity),
+                2 => Some(EventOutcome::ConfirmRemoveMember(user.clone())),
+                _ => None,
+            },
+            MemberSheet::Revoke(cap_id) => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                1 => Some(EventOutcome::ReviewPermissionActivity),
+                2 => Some(EventOutcome::ConfirmRevoke(cap_id.clone())),
+                _ => None,
+            },
+        }
+    }
+
     fn clear_hits(&mut self) {
         self.tab_pill_rects = [Rect::ZERO; 4];
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.member_sheet_option_rects.clear();
     }
 
     /// Paint the transition-owned marker, shadow and card, returning the
@@ -230,6 +349,7 @@ impl WorkspaceSettingsOverlay {
     ) -> Option<DrawPlan> {
         if !open {
             self.clear_hits();
+            self.dismiss_member_sheet();
         }
         self.transition.set_open(
             open,
@@ -324,6 +444,21 @@ impl WorkspaceSettingsOverlay {
     /// Resolve a click to one semantic outcome. The host remains the sole
     /// owner of authorization and mutation side effects.
     pub fn hit_test(&self, point: Point, active_tab: WsTab) -> EventOutcome {
+        if let Some(sheet) = &self.member_sheet {
+            if let Some(index) = self
+                .member_sheet_option_rects
+                .iter()
+                .position(|rect| rect.contains(point))
+            {
+                return self
+                    .member_sheet_outcome(sheet, index)
+                    .unwrap_or(EventOutcome::DismissMemberSheet);
+            }
+            // This is a modal decision, so a stray click cannot alter a
+            // member behind it. Outside-click follows the standard sheet
+            // convention and abandons the pending choice.
+            return EventOutcome::DismissMemberSheet;
+        }
         if self.close_rect().contains(point) {
             return EventOutcome::Close;
         }
@@ -439,7 +574,9 @@ impl WorkspaceSettingsOverlay {
             &state,
             &tree,
         );
+
         if fully_painted {
+            self.draw_member_sheet(scene, transform, text_renderer, theme, rect, &tree);
             return;
         }
 
@@ -497,6 +634,232 @@ impl WorkspaceSettingsOverlay {
             hsize,
             colors.text_dim,
             transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
+            None,
+        );
+        self.draw_member_sheet(scene, transform, text_renderer, theme, rect, &tree);
+    }
+
+    /// Paint the focused decision surface over the settings lens. The outer
+    /// modal remains visible for context, while this compact sheet makes the
+    /// exact permission being changed and its consequences impossible to miss.
+    fn draw_member_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        settings_rect: Rect,
+        tree: &WorkspaceTree,
+    ) {
+        let Some(sheet) = self.member_sheet.clone() else {
+            self.member_sheet_option_rects.clear();
+            return;
+        };
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let role_sheet = matches!(sheet, MemberSheet::Role(_));
+        let height = if role_sheet { 326.0 } else { 300.0 };
+        let width = (settings_rect.width() - 48.0).clamp(330.0, 440.0);
+        let card = Rect::new(
+            settings_rect.center().x - width / 2.0,
+            settings_rect.center().y - height / 2.0,
+            settings_rect.center().x + width / 2.0,
+            settings_rect.center().y + height / 2.0,
+        );
+        let backdrop = RoundedRect::from_rect(settings_rect, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[0].with_alpha_factor(0.56),
+            None,
+            &backdrop,
+        );
+        let surface = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
+        ui::surface::soft_shadow(scene, transform, card, colors.neutral[0], 24.0, 10.0, 0.52);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &surface,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &surface,
+        );
+
+        let (title, description, subject): (&str, String, Option<String>) = match &sheet {
+            MemberSheet::Role(user) => {
+                let current = tree
+                    .active_workspace()
+                    .and_then(|workspace| workspace.role_of(user))
+                    .map_or("Viewer", crate::shell::workspace_settings::role_label);
+                (
+                    "Choose workspace access",
+                    format!(
+                        "{} is currently {current}. Choose exactly what they can do.",
+                        crate::shell::workspace_settings::short_id(user)
+                    ),
+                    None,
+                )
+            }
+            MemberSheet::Remove(user) => (
+                "Remove this person?",
+                "They will stop receiving future sync and edits. Downloaded copies remain on their devices."
+                    .to_string(),
+                Some(crate::shell::workspace_settings::short_id(user)),
+            ),
+            MemberSheet::Revoke(cap_id) => (
+                "Revoke this permission?",
+                "The selected capability will stop applying immediately. Review its activity first if you are unsure."
+                    .to_string(),
+                Some(crate::shell::workspace_settings::short_id(cap_id)),
+            ),
+        };
+        text_renderer.draw_text(
+            scene,
+            title,
+            tokens.typography.scale.lg,
+            colors.text_primary,
+            transform.pre_translate((card.x0 + 20.0, card.y0 + 20.0).into()),
+            None,
+        );
+        if let Some(subject) = subject {
+            text_renderer.draw_text(
+                scene,
+                &subject,
+                tokens.typography.scale.sm,
+                colors.accent[4],
+                transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
+                None,
+            );
+        }
+        let desc_y = if role_sheet {
+            card.y0 + 50.0
+        } else {
+            card.y0 + 72.0
+        };
+        let description = text_renderer.elide_to_width(
+            &description,
+            tokens.typography.scale.sm,
+            f64_to_f32_lossy(card.width() - 40.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &description,
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform.pre_translate((card.x0 + 20.0, desc_y).into()),
+            None,
+        );
+
+        self.member_sheet_option_rects.clear();
+        let option_x0 = card.x0 + 20.0;
+        let option_x1 = card.x1 - 20.0;
+        let (labels, previews): (Vec<String>, Vec<String>) = match &sheet {
+            MemberSheet::Role(_) => {
+                let roles = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
+                (
+                    roles
+                        .iter()
+                        .map(|role| crate::shell::workspace_settings::role_label(*role).to_string())
+                        .collect(),
+                    roles
+                        .iter()
+                        .map(|role| {
+                            crate::shell::workspace_settings::role_capability_preview(*role)
+                                .to_string()
+                        })
+                        .collect(),
+                )
+            }
+            MemberSheet::Remove(_) => (
+                vec![
+                    "Keep access".into(),
+                    "Review activity first".into(),
+                    "Remove person".into(),
+                ],
+                vec![
+                    "No changes are made.".into(),
+                    "Open workspace history before deciding.".into(),
+                    "This removes their workspace capabilities.".into(),
+                ],
+            ),
+            MemberSheet::Revoke(_) => (
+                vec![
+                    "Keep permission".into(),
+                    "Review activity first".into(),
+                    "Revoke permission".into(),
+                ],
+                vec![
+                    "No changes are made.".into(),
+                    "Open workspace history before deciding.".into(),
+                    "This removes the selected capability immediately.".into(),
+                ],
+            ),
+        };
+        let row_h = if role_sheet { 58.0 } else { 42.0 };
+        let gap = 8.0;
+        let start_y = if role_sheet {
+            card.y0 + 88.0
+        } else {
+            card.y0 + 112.0
+        };
+        for (index, label) in labels.iter().enumerate() {
+            let y0 = start_y + usize_to_f64_lossy(index) * (row_h + gap);
+            let option = Rect::new(option_x0, y0, option_x1, y0 + row_h);
+            self.member_sheet_option_rects.push(option);
+            let focused = index == self.member_sheet_focus;
+            let destructive = index == 2 && !role_sheet;
+            let tint = if destructive {
+                colors.semantic.danger
+            } else {
+                colors.accent[5]
+            };
+            let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.md));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tint.with_alpha_factor(if focused { 0.25 } else { 0.10 }),
+                None,
+                &rr,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(if focused { 2.0 } else { 1.0 }),
+                transform,
+                tint.with_alpha_factor(if focused { 0.95 } else { 0.45 }),
+                None,
+                &rr,
+            );
+            text_renderer.draw_text(
+                scene,
+                label,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform.pre_translate((option.x0 + 12.0, option.y0 + 9.0).into()),
+                None,
+            );
+            if role_sheet {
+                text_renderer.draw_text(
+                    scene,
+                    &previews[index],
+                    tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform.pre_translate((option.x0 + 12.0, option.y0 + 29.0).into()),
+                    None,
+                );
+            }
+        }
+        let hint = "↑ ↓ to choose · Enter to confirm · Esc to cancel";
+        text_renderer.draw_text(
+            scene,
+            hint,
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((card.x0 + 20.0, card.y1 - 22.0).into()),
             None,
         );
     }
@@ -1381,6 +1744,43 @@ mod tests {
         assert_eq!(
             overlay.hit_test(hit_rect.center(), WsTab::General),
             EventOutcome::WorkspaceDefault(resource)
+        );
+    }
+
+    #[test]
+    fn role_sheet_keyboard_selects_an_explicit_role_without_cycling() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.open_member_role_sheet("ada".into(), CapRole::Viewer);
+        assert!(overlay.member_sheet_is_open());
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Next),
+            None,
+            "arrow navigation only moves the focused choice"
+        );
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::SetMemberRole(
+                "ada".into(),
+                CapRole::Commenter
+            ))
+        );
+    }
+
+    #[test]
+    fn destructive_sheet_needs_the_final_confirmation_option() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.open_revoke_sheet("cap-camera".into());
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::DismissMemberSheet),
+            "the initial focus is the safe keep-permission action"
+        );
+        overlay.open_revoke_sheet("cap-camera".into());
+        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::ConfirmRevoke("cap-camera".into()))
         );
     }
 }

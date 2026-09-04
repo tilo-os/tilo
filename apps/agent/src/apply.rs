@@ -29,6 +29,9 @@ pub struct Editor {
     /// and nothing reading a document is entitled to turn one back into a
     /// name.
     author: String,
+    /// Durable task provenance applied to native edits while a session is
+    /// carrying out one addressed instruction.
+    history_context: Option<qos_actions::ActionContext>,
     /// Which app authored this document.
     contract: &'static AppContract,
 }
@@ -129,6 +132,7 @@ impl Editor {
             doc,
             actor,
             author: actor_handle.to_string(),
+            history_context: None,
             contract,
         }
     }
@@ -136,6 +140,26 @@ impl Editor {
     /// Which app authored the document this holds.
     pub fn contract(&self) -> &'static AppContract {
         self.contract
+    }
+
+    /// Set task context for subsequent commits. The session clears it after
+    /// the run so a later, unrelated instruction cannot inherit it.
+    pub fn set_history_context(&mut self, context: Option<qos_actions::ActionContext>) {
+        self.history_context = context;
+    }
+
+    /// Stable identity of this replica's author.
+    pub fn actor_hex(&self) -> String {
+        self.actor.to_hex_string()
+    }
+
+    /// Newest non-genesis revision, suitable as one end of a run step.
+    pub fn latest_entry_id(&mut self) -> Option<ui::HistoryEntryId> {
+        qdoc::history::versions(&mut self.doc)
+            .into_iter()
+            .rev()
+            .find(|version| !qdoc::history::is_schema_genesis(version))
+            .map(|version| ui::history_source::entry_id_from_hash(&version.change_hash))
     }
 
     /// The tree the app publishes for this document, seen from `view`.
@@ -221,6 +245,7 @@ impl Editor {
             doc,
             actor,
             author: actor_handle.to_string(),
+            history_context: None,
             contract,
         };
         this.drain();
@@ -423,7 +448,12 @@ impl Editor {
         // transaction is the app's call, not this one's, so it is said out
         // loud rather than left to look like a rendering fault elsewhere.
         if self.doc.pending_ops() > 0 {
-            qdoc::history::commit_stamped(&mut self.doc);
+            qdoc::history::commit_stamped_with_message(
+                &mut self.doc,
+                self.history_context
+                    .as_ref()
+                    .and_then(qos_actions::ActionContext::change_message),
+            );
         } else if self.doc.get_heads() != before {
             tracing::warn!(
                 action = ?action,
@@ -502,6 +532,7 @@ impl Editor {
             &mut transport,
         )?;
         self.stamp_authorship(&text_before);
+        self.commit_task_context();
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
     }
@@ -536,6 +567,7 @@ impl Editor {
             &mut transport,
         )?;
         self.stamp_authorship(&text_before);
+        self.commit_task_context();
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
     }
@@ -570,8 +602,21 @@ impl Editor {
             &mut transport,
         )?;
         self.stamp_authorship(&text_before);
+        self.commit_task_context();
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
+    }
+
+    fn commit_task_context(&mut self) {
+        if self.doc.pending_ops() == 0 {
+            return;
+        }
+        qdoc::history::commit_stamped_with_message(
+            &mut self.doc,
+            self.history_context
+                .as_ref()
+                .and_then(qos_actions::ActionContext::change_message),
+        );
     }
 
     /// Mark whatever text this replica just added with the durable

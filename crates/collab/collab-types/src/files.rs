@@ -1129,6 +1129,44 @@ pub const MAX_HISTORY_CONTROL_BYTES: usize = 1_024;
 pub const HISTORY_PREVIEW_XATTR_PREFIX: &str = "user.qos.history-preview.";
 /// Fits below Linux's 64 KiB xattr ceiling with room for transport overhead.
 pub const MAX_HISTORY_PREVIEW_BYTES: usize = 48 * 1024;
+/// Read-only dynamic xattr: append an open conflict UUID to request a
+/// non-committing deterministic merge classification.
+pub const MERGE_PREFLIGHT_XATTR_PREFIX: &str = "user.qos.merge-preflight.";
+pub const MERGE_PREFLIGHT_VERSION: u16 = 1;
+pub const MAX_MERGE_PREFLIGHT_BYTES: usize = 4 * 1024;
+
+/// Bounded daemon-authored explanation used by Files before it enables a
+/// merge. The projection never contains mutable working-copy bytes; its
+/// `diff_summary` only describes the exact immutable conflict members.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergePreflightProjectionV1 {
+    pub schema_version: u16,
+    pub conflict_id: Uuid,
+    pub safe: bool,
+    pub explanation: String,
+    pub diff_summary: String,
+}
+
+impl MergePreflightProjectionV1 {
+    /// Validates that this projection is bounded and addresses a real conflict.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileRecordError::InvalidMergePreflight`] when the schema,
+    /// conflict identifier, or user-facing explanation is invalid.
+    pub fn validate(&self) -> Result<(), FileRecordError> {
+        if self.schema_version != MERGE_PREFLIGHT_VERSION
+            || self.conflict_id.is_nil()
+            || self.explanation.is_empty()
+            || self.explanation.len() > 512
+            || self.diff_summary.len() > 1_024
+        {
+            return Err(FileRecordError::InvalidMergePreflight);
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum FileRecordError {
@@ -1164,6 +1202,8 @@ pub enum FileRecordError {
     InvalidKeepBothTransaction,
     #[error("invalid merge-conflict transaction")]
     InvalidMergeTransaction,
+    #[error("invalid merge preflight projection")]
+    InvalidMergePreflight,
     #[error("content revision has a nil record id")]
     NilRecordId,
     #[error("content revision has a nil version id")]
