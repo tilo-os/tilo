@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,7 +15,7 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "QOS_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 1;
+pub const RPC_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
@@ -27,6 +28,7 @@ pub enum Request {
         profile_id: String,
         model_id: String,
         body: serde_json::Value,
+        timeout_ms: u64,
     },
     SecretStatus {
         profile_id: String,
@@ -116,11 +118,14 @@ pub fn plan(
     profile_id: &str,
     model_id: &str,
     body: serde_json::Value,
+    timeout: Duration,
 ) -> Result<String, ClientError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let response = request(Request::Plan {
         profile_id: profile_id.to_string(),
         model_id: model_id.to_string(),
         body,
+        timeout_ms,
     })?;
     response
         .output
