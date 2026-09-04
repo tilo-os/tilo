@@ -86,6 +86,10 @@ jobs:
   build-and-push:
     runs-on: runner
     enable-openid-connect: true
+    env:
+      QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}
+      QOS_EFI_SIGNING_CERT_SHA256: ${{ vars.QOS_EFI_SIGNING_CERT_SHA256 }}
+      QOS_REQUIRE_PCR_PREDICTION: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && '1' || '0' }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -624,7 +628,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo -n apt-get update
           sudo -n apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
+            binutils btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
             jq qemu-system-x86 qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
             uidmap util-linux
           command -v jq podman qemu-img qemu-system-x86_64 skopeo sshpass socat systemd-repart >/dev/null
@@ -663,6 +667,9 @@ jobs:
           if [[ -s "$QOS_RESEALED_DIGEST_FILE" ]]; then
             resealed_digest="$(tr -d '\n\r' < "$QOS_RESEALED_DIGEST_FILE")"
             ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
+          fi
+          if [[ -n "$QOS_PCR_PREDICTION_SIGNER" ]]; then
+            ./os/dev/sign-target-prediction.sh "$repro_image" "$QOS_PCR_PREDICTION_SIGNER"
           fi
           final_manifest="$(skopeo inspect --raw "containers-storage:$QOS_IMAGE" | sha256sum | awk '{print $1}')"
           repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"

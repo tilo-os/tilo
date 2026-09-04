@@ -95,5 +95,10 @@ done < <(find "$cache_dir" -maxdepth 1 -type f -print)
 chmod 0755 "$cache_dir"
 find "$cache_dir" -maxdepth 1 -type f ! -name '*.part' -exec chmod 0644 {} +
 if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-  chcon -R -t container_file_t -- "$cache_dir"
+  # A previous private container mount may leave a valid-looking type with
+  # container-specific MCS categories (for example c123,c456). A later build
+  # receives different categories and is then denied despite mode 0644. The
+  # cache is an immutable, checksum-verified build context shared by jobs, so
+  # give it the shared container level as well as the correct type.
+  chcon -R -t container_file_t -l s0 -- "$cache_dir"
 fi

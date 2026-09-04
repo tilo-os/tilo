@@ -356,10 +356,65 @@ cmd_update() {
   fi
   bootc upgrade || die "bootc upgrade failed — see the output above. If the registry
   is unreachable this machine keeps running what it has."
+  stage_rollback_generation || {
+    bootc rollback >/dev/null 2>&1 || true
+    die "the update was fetched but cannot become the next boot until its signed measured-boot keyslot is enrolled; the current deployment remains selected"
+  }
   # The staged deployment's entry has to carry a boot counter BEFORE the reboot
   # into it, or the first boot of a broken update is also the last chance to
   # notice. Doing it here rather than at next boot is the whole difference.
   cmd_entries
+}
+
+stage_rollback_generation() {
+  local device="$(cat /run/qos-root/source 2>/dev/null || true)"
+  [ -b "$device" ] || return 0
+  local has=0 id token
+  for id in $(seq 0 31); do
+    token="$(cryptsetup token export --token-id "$id" "$device" 2>/dev/null || true)"
+    printf '%s' "$token" | grep -q '"type"[[:space:]]*:[[:space:]]*"qos-rollback"' \
+      && { has=1; break; }
+  done
+  [ "$has" = 1 ] || return 0
+
+  local staged_digest incoming="" incoming_uki="" uki cmd gen uki_digest predictions pin
+  local -a prediction_matches=()
+  staged_digest="$(bootc_field 's["status"]["staged"]["composefs"]["verity"]')"
+  [ -n "$staged_digest" ] || return 1
+  staged_digest="${staged_digest#sha512:}"
+  predictions="$(esp_path)/EFI/qos/pcr-predictions"
+  for uki in "$(esp_path)"/EFI/Linux/bootc/*.efi; do
+    [ -f "$uki" ] || continue
+    cmd="$($UKI_CMDLINE show "$uki" 2>/dev/null || true)"
+    gen="$(printf '%s\n' "$cmd" | tr ' ' '\n' | sed -n 's/^qos\.generation=//p' | head -1)"
+    case "$gen" in ''|*[!0-9]*) continue ;; esac
+    uki_digest="$(printf '%s\n' "$cmd" | tr ' ' '\n' | sed -n 's/^composefs=//p' | head -1)"
+    uki_digest="${uki_digest#sha512:}"
+    [ "$uki_digest" = "$staged_digest" ] || continue
+    [ -z "$incoming" ] || return 1
+    incoming="$gen"
+    incoming_uki="$uki"
+  done
+  [ -n "$incoming" ] || return 1
+  mapfile -t prediction_matches < <(find "$predictions" -maxdepth 1 -type f \
+    -name "generation-$incoming*.json" -print 2>/dev/null)
+  [ "${#prediction_matches[@]}" -eq 1 ] || return 1
+  /usr/libexec/qos-verified-boot-install-preflight \
+    --uki "$incoming_uki" --prediction "${prediction_matches[0]}" \
+    --generation "$incoming" || return 1
+  [ -s /run/qos-rollback/proof.key ] || return 1
+  pin="$(mktemp /run/qos-update-pin.XXXXXX)" || return 1
+  chmod 0600 "$pin"
+  if ! systemd-ask-password -n --echo=masked --id=qos-update-pin \
+      "Enter the startup PIN to secure qOS generation $incoming" >"$pin"; then
+    rm -f "$pin"; return 1
+  fi
+  if ! qos-rollback --predictions "$predictions" enroll --device "$device" \
+      --generation "$incoming" --recovery-key-file /run/qos-rollback/proof.key \
+      --pin-file "$pin"; then
+    rm -f "$pin"; return 1
+  fi
+  rm -f "$pin"
 }
 
 # --- boot counters and the repair entry ---------------------------------------

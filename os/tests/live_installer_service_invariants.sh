@@ -42,7 +42,8 @@ done
 # The negative conditions deliberately become true on the installed target.
 # Check both UKI specialization and bootc's kernel-argument path so neither
 # installation implementation can strand these services in live mode.
-if grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend" \
+if grep -Fq 'target UKI still contains the live installer marker' "$backend" \
+   && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
    && [ "$(grep -c -- '--karg-delete qos.install' "$backend" || true)" -ge 2 ]; then
   ok 'every installed-image path removes the live marker and re-enables services'
 else

@@ -10,7 +10,7 @@ helper="$repo/os/usr/libexec/qos-system-extension-activate"
 userspace="$repo/os/usr/lib/systemd/system/qos-system-extension-userspace.service"
 boot="$repo/os/usr/lib/systemd/system/qos-system-extension-boot-stage.service"
 model="$repo/os/usr/lib/systemd/system/qos-local-model.service"
-user_model="$repo/os/usr/lib/systemd/user/qos-model-manager.service"
+user_model="$repo/os/usr/lib/systemd/user/qos-models.service"
 socket="$repo/os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service"
 dispatch_helper="$repo/os/usr/libexec/qos-system-extension-dispatch"
@@ -20,6 +20,8 @@ boot_stage="$repo/os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage
 boot_stage_path="$repo/os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path"
 polkit="$repo/os/etc/polkit-1/rules.d/49-qos-updates.rules"
 contract="$repo/os/usr/share/qos/system-extensions/README.md"
+# shellcheck source=lib/containerfile.sh
+. "$repo/os/tests/lib/containerfile.sh"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -31,7 +33,7 @@ for source in \
     'os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service' \
     'os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service' \
-    'os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service' \
+    'os/usr/lib/systemd/user/qos-models.service /usr/lib/systemd/user/qos-models.service' \
     'os/usr/lib/user-tmpfiles.d/qos-model-manager.conf /usr/lib/user-tmpfiles.d/qos-model-manager.conf' \
     'os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service' \
@@ -42,7 +44,8 @@ for source in \
     'os/usr/lib/sysusers.d/qos-local-model.conf /usr/lib/sysusers.d/qos-local-model.conf' \
     'os/usr/share/qos/system-extensions /usr/share/qos/system-extensions'; do
     set -- $source
-    need "$containerfile" "COPY $1 $2" "image does not package $1"
+    containerfile_has_copy "$containerfile" "$1" "$2" \
+      || bad "image does not package $1"
 done
 [ "$fail" -ne 0 ] || ok 'image packages extension contracts and service boundary'
 
@@ -102,7 +105,7 @@ for line in \
     'd %t/qos/services                0700'; do
     need "$user_tmpfiles" "$line" "fresh-user tmpfiles does not provision $line"
 done
-need "$containerfile" 'systemctl --global enable qos-model-manager.service' 'per-user model manager is not enabled in the image'
+need "$containerfile" 'systemctl --global enable qos-models.service' 'per-user model manager is not enabled in the image'
 [ "$fail" -ne 0 ] || ok 'Settings reaches a confined per-user model manager through the app-service channel with fresh-user storage'
 
 need "$socket" 'ListenStream=/run/qos/system-extension-api/request.sock' 'desktop request socket is not fixed-path'
@@ -130,7 +133,9 @@ else
     ok 'desktop has no broad polkit grant for model or extension services'
 fi
 need "$containerfile" 'systemctl enable qos-system-extension-dispatcher.socket' 'fixed request socket is not enabled in the image'
-need "$containerfile" 'COPY --from=builder /out/qos-system-extension-manager /usr/libexec/qos-system-extension-manager' 'image does not package privileged BootPack manager'
+containerfile_has_copy "$containerfile" /out/qos-system-extension-manager \
+  /usr/libexec/qos-system-extension-manager builder \
+  || bad 'image does not package privileged BootPack manager'
 need "$containerfile" '-p system-extension' 'image builder does not compile privileged BootPack manager'
 need "$containerfile" 'systemctl enable qos-system-extension-boot-pack-status.service' 'BootPack reboot status is not projected after boot'
 need "$containerfile" 'systemctl enable qos-system-extension-boot-pack-stage.path' 'BootPack fixed queue is not path-activated'

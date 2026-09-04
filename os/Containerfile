@@ -604,6 +604,94 @@ RUN BIN_DIR=/out/thin-apps \
             PUBKEY_OUT=/out/browser-publisher.hex \
             /build/os/scripts/pack-apps.sh; }
 
+# Enumerated artifact overlays keep the expensive rootfs stage shallow without
+# bulk-copying os/usr (which would accidentally ship development/test-only
+# files). Their internal COPY layers are cheap scratch-tree commits; each is
+# applied to the multi-gigabyte bootc rootfs once, at the same logical boundary
+# where its individual files were previously copied.
+FROM scratch AS desktop-binaries
+COPY --from=builder \
+    /out/shell /out/fs /out/terminal /out/file-explorer /out/settings \
+    /out/qos-model-manager /out/qos-model-gateway \
+    /out/qos-relay /out/qos-relay-admin /out/qos-enroll \
+    /out/qos-greeter /out/qos-installer /out/qos-launcher \
+    /out/qos-runtime-bundle /out/qos-install /out/qos-pkg /out/qos-power \
+    /usr/bin/
+COPY --from=builder /out/optional/ /usr/bin/
+COPY --chmod=0755 --from=builder \
+    /out/qos-system-extension-manager /out/qos-home-peer-control \
+    /out/qos-cli-shim /out/qos-unlock-helper /out/qos-ush /out/qos-projector \
+    /out/qos-app-host \
+    /usr/libexec/
+COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
+COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
+COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
+
+FROM scratch AS rollback-files
+COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
+COPY \
+    os/usr/libexec/qos-rollback-common \
+    os/usr/libexec/qos-rollback-confirm \
+    os/usr/libexec/qos-rollback-harden \
+    os/usr/libexec/qos-rollback-initrd-unlock \
+    os/usr/libexec/qos-root-discover \
+    /usr/libexec/
+COPY \
+    os/usr/lib/systemd/system-generators/qos-rollback-unlock-generator \
+    os/usr/lib/systemd/system-generators/qos-root-generator \
+    /usr/lib/systemd/system-generators/
+COPY os/usr/lib/dracut/modules.d/91qos-rollback /usr/lib/dracut/modules.d/91qos-rollback
+COPY \
+    os/usr/lib/systemd/system/qos-rollback-confirm.service \
+    os/usr/lib/systemd/system/qos-rollback-confirm.timer \
+    os/usr/lib/systemd/system/qos-rollback-harden.service \
+    /usr/lib/systemd/system/
+COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
+
+FROM scratch AS recovery-files
+COPY --chmod=0755 --from=builder /out/qos /usr/bin/qos
+COPY --chmod=0755 \
+    os/usr/libexec/qos-deployment \
+    os/usr/libexec/qos-system-extension-activate \
+    os/usr/libexec/qos-system-extension-dispatch \
+    os/usr/libexec/qos-boot-health \
+    os/usr/libexec/qos-repair \
+    os/usr/libexec/qos-recovery \
+    os/usr/libexec/qos-update-policy-set \
+    os/usr/libexec/qos-update-policy-check \
+    /usr/libexec/
+COPY --chmod=0755 os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline
+COPY --chmod=0755 os/usr/lib/systemd/system-generators/qos-boot-mode-generator /usr/lib/systemd/system-generators/qos-boot-mode-generator
+COPY \
+    os/usr/lib/systemd/system/qos-boot-entries.service \
+    os/usr/lib/systemd/system/qos-boot-health.service \
+    os/usr/lib/systemd/system/qos-repair.target \
+    os/usr/lib/systemd/system/qos-repair@.service \
+    os/usr/lib/systemd/system/qos-deployment-rollback.service \
+    os/usr/lib/systemd/system/qos-deployment-update.service \
+    os/usr/lib/systemd/system/qos-system-extension-userspace.service \
+    os/usr/lib/systemd/system/qos-system-extension-boot-stage.service \
+    os/usr/lib/systemd/system/qos-system-extension-boot-pack-status.service \
+    os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path \
+    os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service \
+    os/usr/lib/systemd/system/qos-local-model.service \
+    os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket \
+    os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service \
+    /usr/lib/systemd/system/
+COPY \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
+COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
+COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
+COPY os/usr/share/qos/system-extensions /usr/share/qos/system-extensions
+COPY \
+    os/usr/share/doc/qos/system-extensions.md \
+    docs/recovery.md \
+    docs/security/repair-mode.md \
+    /usr/share/doc/qos/
+COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
+
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
 # Named, because it is no longer the last stage: the sealed layout needs the
@@ -682,8 +770,7 @@ FROM ${BASE_REF} AS rootfs
 # so the helper performs a checked single-file replacement within that existing
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
-COPY os/scripts/finalize-rpmdb.sh /usr/libexec/qos/finalize-rpmdb
-RUN chmod 0755 /usr/libexec/qos/finalize-rpmdb
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/qos/finalize-rpmdb
 ARG FINALIZE_RPMDB="/usr/libexec/qos/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
@@ -888,30 +975,24 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # ---------------------------------------------------------------------------
 # Compiled qOS binaries (built in the `builder` stage above)
 # ---------------------------------------------------------------------------
-# Compositor
-COPY --from=builder /out/shell /usr/bin/shell
-# FUSE driver
-COPY --from=builder /out/fs /usr/bin/fs
-# System apps
-COPY --from=builder /out/terminal /usr/bin/terminal
-COPY --from=builder /out/file-explorer /usr/bin/file-explorer
+# Compositor, FUSE driver, system apps, settings and model services. The
+# enumerated scratch overlay preserves their individual paths and metadata but
+# costs this large rootfs only one commit.
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
 # image where those are unreachable on real hardware.
-COPY --from=builder /out/settings /usr/bin/settings
-COPY --from=builder /out/qos-model-manager /usr/bin/qos-model-manager
-COPY --from=builder /out/qos-model-gateway /usr/bin/qos-model-gateway
-COPY --from=builder /out/qos-system-extension-manager /usr/libexec/qos-system-extension-manager
-COPY os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service
-COPY os/usr/lib/systemd/user/qos-model-gateway.service /usr/lib/systemd/user/qos-model-gateway.service
-COPY --from=builder /out/qos-relay /usr/bin/qos-relay
-COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
-COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
-COPY --from=builder /out/qos-home-peer-control /usr/libexec/qos-home-peer-control
-COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
-COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service
-COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
+COPY --from=desktop-binaries / /
+COPY \
+    os/usr/lib/systemd/user/qos-models.service \
+    os/usr/lib/systemd/user/qos-model-gateway.service \
+    os/usr/lib/systemd/user/qos-app-host.service \
+    /usr/lib/systemd/user/
+COPY \
+    os/usr/lib/systemd/system/qos-relay.service \
+    os/usr/lib/systemd/system/qos-fs-replica.service \
+    os/usr/lib/systemd/system/qos-relay-firstboot.service \
+    /usr/lib/systemd/system/
 COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
 COPY os/usr/share/polkit-1/actions/org.qos.home-peer.policy /usr/share/polkit-1/actions/org.qos.home-peer.policy
 COPY os/etc/polkit-1/rules.d/49-qos-home-peer.rules /etc/polkit-1/rules.d/49-qos-home-peer.rules
@@ -921,50 +1002,33 @@ RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /
 # into this rootfs below). Copied as the contents of /out/optional/ because the
 # browser is omitted under QOS_WITH_BROWSER=0, and that leaves the directory
 # empty rather than leaving this COPY pointing at a path that does not exist.
-COPY --from=builder /out/optional/ /usr/bin/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
-COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
 # Graphical installer. Primarily consumed by the layered installer image
 # (Containerfile.installer); bundled here so it no longer needs a host build.
-COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 # App launcher + runtime-bundle CLI. `qos-launcher` is what actually
 # execs installed / declared packages inside their bwrap sandbox;
 # `qos-runtime-bundle` is the CLI over the same crate that produced
 # the baked bundle at image-build time — shipping it lets operators
 # `verify` or extend the bundle from a running system.
-COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
-COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
-COPY --from=builder /out/qos-app-host /usr/libexec/qos-app-host
-COPY os/usr/lib/systemd/user/qos-app-host.service /usr/lib/systemd/user/qos-app-host.service
 # Package management on the running system: `qos-install` installs, lists and
 # removes `.qpkg`s into the user's own store, `qos-pkg` packs and verifies
 # them, and `qos-cli-shim` is what `qos-install` drops on $PATH for a package
 # that declares CLI commands. Without these in the image the only apps a user
 # could ever have are the ones the image shipped.
-COPY --from=builder /out/qos-install /usr/bin/qos-install
-COPY --from=builder /out/qos-pkg /usr/bin/qos-pkg
-COPY --from=builder /out/qos-cli-shim /usr/libexec/qos-cli-shim
-COPY --from=builder /out/qos-power /usr/bin/qos-power
 # The session-unlock verify helper: the compositor spawns it while the session
 # is locked to verify the user's password via PAM (see os/etc/pam.d/qos-unlock).
 # It lives under /usr/libexec (not on $PATH) since only the compositor invokes
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
-COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 # The confined shell runtime. Apps declare `ush = "required@<v>"` under
 # [sandbox.services] and the launcher refuses to start them when its socket is
 # absent — apps/terminal does, so without this binary and the user unit below
 # the packaged Terminal cannot launch. /usr/libexec because the terminal's own
 # lookup order is $QOS_USH_BIN, then /usr/libexec/qos-ush, then $PATH.
-COPY --from=builder /out/qos-ush /usr/libexec/qos-ush
-COPY --from=builder /out/qos-projector /usr/libexec/qos-projector
 # Modern AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
 # system audio) is delegated to the source-pinned, tested build above.
-COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
-COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
 # Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
 # H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
-COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
 COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
 RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
     install -D -m 0644 /qos-assets/doubletake-ae06722-LICENSE \
@@ -973,8 +1037,10 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
       /usr/share/licenses/qos-fluxcast/LICENSE
 COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
-COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
-COPY os/usr/lib/systemd/user/qos-fs-recipient.service /usr/lib/systemd/user/qos-fs-recipient.service
+COPY \
+    os/usr/lib/systemd/user/qos-ush.service \
+    os/usr/lib/systemd/user/qos-fs-recipient.service \
+    /usr/lib/systemd/user/
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
@@ -1087,8 +1153,10 @@ COPY --from=builder /out/app-publisher.hex /usr/share/qos/app-publisher.hex
 COPY os/etc/profile.d/qos-apps.sh /etc/profile.d/qos-apps.sh
 
 # FUSE mount service
-COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
-COPY os/usr/lib/systemd/system/fs-identity.path /usr/lib/systemd/system/fs-identity.path
+COPY \
+    os/usr/lib/systemd/system/fs.service \
+    os/usr/lib/systemd/system/fs-identity.path \
+    /usr/lib/systemd/system/
 # A measured installer UKI must not try to persist its transient TPM identity
 # to the read-only live ESP. These conditions stop both systemd setup phases
 # only while the sealed command line carries qos.install.
@@ -1104,11 +1172,12 @@ COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 #   - shell.desktop          — default session (no peer-sync)
 #   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
 # tuigreet lists both at the login prompt; see docs/peer-sync.md.
-COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
-COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
-COPY os/usr/libexec/qos-session /usr/libexec/qos-session
+COPY \
+    os/usr/share/wayland-sessions/shell.desktop \
+    os/usr/share/wayland-sessions/shell-peer-sync.desktop \
+    /usr/share/wayland-sessions/
+COPY --chmod=0755 os/usr/libexec/qos-session /usr/libexec/qos-session
 COPY os/usr/lib/systemd/user/qos-graphical-session.target /usr/lib/systemd/user/qos-graphical-session.target
-RUN chmod 0755 /usr/libexec/qos-session
 
 # Default compositor config
 COPY os/etc/qos/desktop.toml /etc/qos/desktop.toml
@@ -1118,9 +1187,11 @@ COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth).
-COPY os/etc/pam.d/greetd /etc/pam.d/greetd
 # PAM stack for in-session unlock (qos-unlock-helper). Auth + account only.
-COPY os/etc/pam.d/qos-unlock /etc/pam.d/qos-unlock
+COPY \
+    os/etc/pam.d/greetd \
+    os/etc/pam.d/qos-unlock \
+    /etc/pam.d/
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
@@ -1145,8 +1216,10 @@ COPY os/usr/lib/udev/rules.d/90-qos-backlight.rules /usr/lib/udev/rules.d/90-qos
 #    artefacts themselves — needs a signed prediction, or every update would
 #    break the seal. This key is what such a prediction would verify against.
 #    See docs/security/boot-chain.md.
-COPY keys/cosign.pub /usr/share/qos/cosign.pub
-COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
+COPY \
+    keys/cosign.pub \
+    keys/tpm2-pcr-signing.public.pem \
+    /usr/share/qos/
 
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.sandbox.example/qos/qos (everything else stays permissive), so a tampered or
@@ -1156,13 +1229,15 @@ COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
 
 # First-boot setup service
-COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
-COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-power.service
+COPY \
+    os/usr/lib/systemd/system/shell-firstboot.service \
+    os/usr/lib/systemd/system/qos-power.service \
+    os/usr/lib/systemd/system/qos-growfs-sysroot.service \
+    /usr/lib/systemd/system/
 
 # Grow the real filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
-COPY os/usr/lib/systemd/system/qos-growfs-sysroot.service /usr/lib/systemd/system/qos-growfs-sysroot.service
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
@@ -1170,12 +1245,14 @@ COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.co
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 COPY os/usr/lib/user-tmpfiles.d/qos-model-manager.conf /usr/lib/user-tmpfiles.d/qos-model-manager.conf
-COPY os/usr/lib/sysusers.d/qos-local-model.conf /usr/lib/sysusers.d/qos-local-model.conf
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
-COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
+COPY \
+    os/usr/lib/sysusers.d/qos-local-model.conf \
+    os/usr/lib/sysusers.d/qos-identity.conf \
+    /usr/lib/sysusers.d/
 RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/qos-local-model.conf
 
@@ -1217,7 +1294,6 @@ COPY os/etc/locale.conf /etc/locale.conf
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync trade-off doc users are pointed at from the .desktop
 # Comment field and the systemd unit Documentation= line).
-COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
@@ -1226,8 +1302,11 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # docs/security/ — and the COPY was not updated, so every image build since has
 # failed at this line with `"/docs/secure-boot.md": not found`. Installed under its
 # real name, and the Documentation= lines that referenced the old one follow it.
-COPY docs/security/boot-chain.md /usr/share/doc/qos/boot-chain.md
-COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
+COPY \
+    os/docs/peer-sync.md \
+    docs/security/boot-chain.md \
+    docs/security/rollback.md \
+    /usr/share/doc/qos/
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -1316,20 +1395,25 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely
 # applied. 03-boot.toml carries the arguments the install step used to inject.
-COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
-COPY os/usr/lib/bootc/kargs.d/03-boot.toml /usr/lib/bootc/kargs.d/03-boot.toml
+COPY \
+    os/usr/lib/bootc/kargs.d/01-hardening.toml \
+    os/usr/lib/bootc/kargs.d/00-root.toml \
+    os/usr/lib/bootc/kargs.d/03-boot.toml \
+    os/usr/lib/bootc/kargs.d/04-mode.toml \
+    /usr/lib/bootc/kargs.d/
 # Which mode the sealed command line boots into. `qos.mode=repair` is what the
 # repair entry carries, and it can only come from inside the signature — see the
 # file's own header for why the two values have to stay the same length.
-COPY os/usr/lib/bootc/kargs.d/04-mode.toml /usr/lib/bootc/kargs.d/04-mode.toml
 
 # Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
 # Used by the installer (os/Containerfile.installer layers qos-install on top of
 # this image), and afterwards on the installed system — `enrol` is also how a
 # volume is re-sealed to a replaced TPM, which is exactly the case where the
 # machine can only be reached with the recovery key.
-COPY os/usr/libexec/qos-disk-encrypt /usr/libexec/qos-disk-encrypt
-RUN chmod 0755 /usr/libexec/qos-disk-encrypt
+COPY --chmod=0755 \
+    os/usr/libexec/qos-disk-encrypt \
+    os/usr/libexec/qos-verified-boot-install-preflight \
+    /usr/libexec/
 
 # Owner-enrolled Secure Boot. qOS builds its own kernel, so the base image's
 # Fedora/Microsoft-signed chain cannot cover it; the machine generates its own
@@ -1343,9 +1427,11 @@ RUN chmod 0755 /usr/libexec/qos-disk-encrypt
 # order wrong — keys enrolled, signing hook missing — is what leaves a machine
 # refusing its own kernel.
 COPY os/usr/libexec/qos-secureboot /usr/libexec/qos-secureboot
-COPY os/usr/lib/systemd/system/qos-secureboot-sign.service /usr/lib/systemd/system/qos-secureboot-sign.service
-COPY os/usr/lib/systemd/system/qos-secureboot-sign.path /usr/lib/systemd/system/qos-secureboot-sign.path
-COPY os/usr/lib/systemd/system/qos-secureboot-sign-shutdown.service /usr/lib/systemd/system/qos-secureboot-sign-shutdown.service
+COPY \
+    os/usr/lib/systemd/system/qos-secureboot-sign.service \
+    os/usr/lib/systemd/system/qos-secureboot-sign.path \
+    os/usr/lib/systemd/system/qos-secureboot-sign-shutdown.service \
+    /usr/lib/systemd/system/
 RUN chmod 0755 /usr/libexec/qos-secureboot \
     && systemctl enable qos-secureboot-sign.service qos-secureboot-sign.path \
                         qos-secureboot-sign-shutdown.service
@@ -1364,20 +1450,23 @@ COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardenin
 # image-wide because the allocator costs multiples on allocation-heavy work and
 # most of this system is Rust, which does not produce the bugs it catches. The
 # image owns the list — an app manifest can neither request nor decline it.
-COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
 
 # Which sandboxed packages may map memory writable and executable at once.
 # Read by qos-launcher when it compiles the syscall filter. Same reasoning as
 # the file above and the same format: a package that could name its own
 # profile would be lifting a protection off itself, so the image decides and
 # the manifest only asks.
-COPY os/usr/lib/qos/jit-entitled.conf /usr/lib/qos/jit-entitled.conf
+COPY \
+    os/usr/lib/qos/untrusted-parsers.conf \
+    os/usr/lib/qos/jit-entitled.conf \
+    /usr/lib/qos/
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
-COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
-COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
-COPY os/usr/lib/systemd/system/qos-hidepid.service /usr/lib/systemd/system/qos-hidepid.service
-RUN chmod 0755 /usr/libexec/qos-security-audit
+COPY --chmod=0755 os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
+COPY \
+    os/usr/lib/systemd/system/qos-security-audit.service \
+    os/usr/lib/systemd/system/qos-hidepid.service \
+    /usr/lib/systemd/system/
 
 # ---------------------------------------------------------------------------
 # Bounded rollback protection
@@ -1438,20 +1527,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         tpm2-tools \
     && dnf clean all && ${FINALIZE_RPMDB} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
 
-COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
-COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
-COPY os/usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
-COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
-COPY os/usr/libexec/qos-rollback-initrd-unlock /usr/libexec/qos-rollback-initrd-unlock
-COPY os/usr/lib/systemd/system-generators/qos-rollback-unlock-generator /usr/lib/systemd/system-generators/qos-rollback-unlock-generator
-COPY os/usr/lib/dracut/modules.d/91qos-rollback /usr/lib/dracut/modules.d/91qos-rollback
-COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
-COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
-COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
-COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
+COPY --from=rollback-files / /
 RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
         /usr/libexec/qos-rollback-initrd-unlock \
+        /usr/libexec/qos-root-discover \
         /usr/lib/systemd/system-generators/qos-rollback-unlock-generator \
+        /usr/lib/systemd/system-generators/qos-root-generator \
         /usr/lib/dracut/modules.d/91qos-rollback/module-setup.sh \
         /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
  && install -d -m 0755 /usr/share/qos/pcr-predictions
@@ -1485,58 +1566,21 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # part that decides how to become root to run it — directly when already root,
 # through the polkit-authorised unit from a desktop session, and saying to use
 # sudo rather than failing with a permission error from three layers down.
-COPY --from=builder /out/qos /usr/bin/qos
-COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
-COPY os/usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-activate
-COPY os/usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-system-extension-dispatch
-COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
-COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
-COPY os/usr/libexec/qos-recovery /usr/libexec/qos-recovery
-COPY os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline
-COPY os/usr/lib/systemd/system-generators/qos-boot-mode-generator /usr/lib/systemd/system-generators/qos-boot-mode-generator
-COPY os/usr/lib/systemd/system/qos-boot-entries.service /usr/lib/systemd/system/qos-boot-entries.service
-COPY os/usr/lib/systemd/system/qos-boot-health.service /usr/lib/systemd/system/qos-boot-health.service
-COPY os/usr/lib/systemd/system/qos-repair.target /usr/lib/systemd/system/qos-repair.target
-COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-repair@.service
-COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
-COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
-COPY os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-status.service /usr/lib/systemd/system/qos-system-extension-boot-pack-status.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service
-COPY os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service
-COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket
-COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service
-COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
-COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf
-COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
-COPY os/usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-set
-COPY os/usr/libexec/qos-update-policy-check /usr/libexec/qos-update-policy-check
+COPY --from=recovery-files / /
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
-COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
-COPY os/usr/share/qos/system-extensions /usr/share/qos/system-extensions
-COPY os/usr/share/doc/qos/system-extensions.md /usr/share/doc/qos/system-extensions.md
-COPY docs/recovery.md /usr/share/doc/qos/recovery.md
-COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 # The boot-side check, bundled so it can be re-run on a live machine. It is the
 # only place several of these facts can be established at all — see its header.
-COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
-RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-manager /usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-boot-health \
-        /usr/libexec/qos-repair /usr/libexec/qos-recovery /usr/libexec/qos-uki-cmdline \
-        /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
-        /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
-        /usr/lib/systemd/system-generators/qos-boot-mode-generator
 
 # The signed PCR predictions this image was built with go in
 # /usr/share/qos/pcr-predictions/generation-<N>*.json, produced by
 # `qos-rollback sign-prediction` on the build host — the private half of
 # keys/tpm2-pcr-signing.pem is deliberately not in the image, so a device cannot
-# sign its own expected measurements. Until the UKI is built and measured there is
-# nothing meaningful to predict, so the directory ships empty and the enrollment
-# path refuses to seal a keyslot without a prediction rather than sealing one that
-# can never open.
+# sign its own expected measurements. This layer is necessarily empty because
+# the final composefs-resealed UKI does not exist yet. build-image.sh measures
+# that exact UKI with its paired systemd-measure and adds authority-verified
+# prediction sidecars in a /boot-only layer; published builds fail closed if the
+# protected signer is unavailable.
 
 # Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
 # trusted-base daemon fs.service. Resolve the lib path at build time and bake a
@@ -1600,20 +1644,28 @@ COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/p
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.
-COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
-COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
-COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
-COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
-COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
-COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
+COPY \
+    os/usr/libexec/qos-windows-vm-network \
+    os/usr/libexec/qos-windows-provision \
+    os/usr/libexec/qos-windows-owner \
+    os/usr/libexec/qos-windows-recovery-console \
+    /usr/libexec/
+COPY --from=builder \
+    /out/qos-windows-vm-control \
+    /out/qos-windows-rail \
+    /usr/libexec/
 COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
 COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
 COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
-COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
-COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
-COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
+COPY \
+    os/usr/lib/systemd/system/qos-windows-vm-network.service \
+    os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service \
+    os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer \
+    /usr/lib/systemd/system/
+COPY \
+    docs/windows-vm.md \
+    docs/windows-presentation.md \
+    /usr/share/doc/qos/
 RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
               /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
               /usr/libexec/qos-windows-rail \
@@ -1678,8 +1730,17 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 # `ush` service socket that every app declaring `ush = "required@<v>"` is
 # refused without, which today is the Terminal.
 #
+# Keep service activation in one transaction. On rootless Podman, each RUN
+# otherwise commits a tiny layer by walking the complete bootc rootfs; measured
+# cycle-6 commits took 90--120 seconds apiece. This remains late in the file so
+# all unit-presence checks are unchanged, while earlier package/builder layers
+# retain their useful cache boundaries.
+#
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
-# pipewire + pipewire-pulse, plus the wireplumber session manager).
+# pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
+# socket-activated rather than always-on. Time sync, firewall, Bluetooth,
+# modem, power, homed, hardening, boot assessment, automatic bootc updates and
+# NetworkManager are system services/timers.
 RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
@@ -1689,54 +1750,27 @@ RUN systemctl enable greetd.service && \
     systemctl enable qos-system-extension-boot-pack-status.service && \
     systemctl enable qos-system-extension-boot-pack-stage.path && \
     systemctl --global enable qos-identity.service && \
-    systemctl --global enable qos-model-manager.service && \
+    systemctl --global enable qos-models.service && \
     systemctl --global enable qos-model-gateway.service && \
     systemctl --global enable qos-app-host.service && \
     systemctl --global enable qos-ush.service && \
     systemctl --global enable qos-fs-recipient.service && \
-    systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
-
-# C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
-# Printing is socket-activated rather than always-on: cupsd starts when
-# something first talks to it (the settings pane's lpstat, or a print dialog)
-# and costs nothing on a machine that never prints.
-RUN systemctl enable cups.socket
-
-RUN systemctl enable chronyd.service && \
+    systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
+    systemctl enable cups.socket && \
+    systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
     systemctl enable ModemManager.service && \
     systemctl enable power-profiles-daemon.service && \
     systemctl enable systemd-homed.service && \
-    systemctl enable qos-power.service
-
-# C9 printing. The *socket*, not the service: cupsd starts on first use and
-# stays stopped on a machine that never prints, so the IPP parser is not
-# running for most of the fleet's uptime. cups-browsed is not installed, so
-# there is nothing to disable.
-RUN systemctl enable cups.socket
-
-# §11 hardening services: hidepid remount + the boot security self-check.
-RUN systemctl enable qos-hidepid.service && \
+    systemctl enable qos-power.service && \
+    systemctl enable qos-hidepid.service && \
     systemctl enable qos-security-audit.service && \
     systemctl enable qos-rollback-harden.service && \
-    systemctl enable qos-rollback-confirm.timer
-
-# Boot assessment. qos-boot-health.service installs itself RequiredBy
-# boot-complete.target, which systemd only starts when the boot loader passed a
-# try counter — so on an entry that has already been blessed neither unit runs.
-RUN systemctl enable qos-boot-entries.service && \
-    systemctl enable qos-boot-health.service
-
-# A3: automatic bootc updates. The timer pulls + applies the image at
-# QOS_TARGET_IMGREF (code.sandbox.example/qos/qos:latest, baked at install by
-# qos-install) on a schedule, so installed systems stay current.
-RUN systemctl enable bootc-fetch-apply-updates.timer
-
-# The installer and first-login experience expose NetworkManager-backed
-# connectivity controls. Enable it explicitly instead of depending on a base
-# image preset that may change independently of qOS.
-RUN systemctl enable NetworkManager.service
+    systemctl enable qos-rollback-confirm.timer && \
+    systemctl enable qos-boot-entries.service qos-boot-health.service && \
+    systemctl enable bootc-fetch-apply-updates.timer && \
+    systemctl enable NetworkManager.service
 
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop qOS (offline man-db caching), or a
