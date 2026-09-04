@@ -1,13 +1,11 @@
-name: Package the qOS desktop session
+name: Release / desktop
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# Package builds run serially on the dedicated `qos-package` runner label;
-# lightweight validation and publication use the general pool. amd64
-# containers execute directly. ARM64 packaging remains implemented in dist/ci,
-# but its release lane is deferred until a native ARM64 runner is available;
-# its emulated Nix closure is not reliable enough to be a release gate. Pull requests build and
-# install-test the affected release payload. Version tags additionally publish
+# The amd64 package set runs serially on the dedicated `qos-package` label.
+# Release tags add the native ARM64 runner; ordinary changes retain one amd64
+# lane. Pull requests build and install-test the affected release payload.
+# Version tags additionally publish
 # the verified artifacts to Forgejo releases and its native package registries.
 on:
   pull_request:
@@ -28,7 +26,7 @@ on:
       - "scripts/check-install-contract.py"
   push:
     branches: ["main", "codex/package-desktop-release"]
-    tags: ["v*"]
+    tags: ["desktop-v*"]
     paths:
       - "dist/**"
       - "flake.nix"
@@ -44,10 +42,16 @@ on:
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
   workflow_dispatch:
+    inputs:
+      full_native:
+        description: "Also build and install-test the complete native ARM64 package set."
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: package-desktop-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -56,6 +60,8 @@ env:
 jobs:
   validate:
     runs-on: runner
+    outputs:
+      matrix: ${{ steps.lanes.outputs.matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate packaging inputs before allocating native builders
@@ -91,30 +97,45 @@ jobs:
             echo "packaging preflight failed: $PREFLIGHT_DIAGNOSTIC" >&2
             exit 1
           fi
+      - name: Select native release lanes
+        id: lanes
+        env:
+          FULL_NATIVE: ${{ github.event.inputs.full_native }}
+        shell: bash
+        run: |
+          targets=$(cat <<'EOF'
+          arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|
+          nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
+          ubuntu-24.04|docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316|1+ubuntu24.04
+          debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
+          fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
+          EOF
+          )
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
+            matrix=$(jq -cn --arg targets "$targets" '{include:[
+              {arch:"amd64",runner:"qos-package-optimized",targets:$targets},
+              {arch:"arm64",runner:"runner-arm64",targets:$targets}
+            ]}')
+          else
+            matrix=$(jq -cn --arg targets "$targets" '{include:[
+              {arch:"amd64",runner:"qos-package-optimized",targets:$targets}
+            ]}')
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # This class retains measured headroom for the single shipped fat-LTO
-    # shell binary without reserving memory for the unshipped `shots` binary.
-    runs-on: qos-package-optimized
+    # The amd64 matrix entry uses the measured optimized package class; native
+    # ARM64 tags and explicit full-native runs retain their ARM runner.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
-    # Forgejo 16 starts every matrix entry despite both max-parallel and job
-    # concurrency groups. Model the capacity bound as one sequential lane that
-    # install-tests all five amd64 targets. Restore the ARM64 include only when
-    # a native ARM64 runner can execute its Nix closure without QEMU-user.
+    # Each architecture is one sequential lane so the five userspaces reuse
+    # compiler objects without overcommitting its native host.
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix:
-        include:
-          - arch: amd64
-            targets: |-
-              arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|
-              nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
-              ubuntu-24.04|docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316|1+ubuntu24.04
-              debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
-              fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -194,8 +215,97 @@ jobs:
           path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
 
+  publish-os-payload:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: runner
+    enable-openid-connect: true
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Publish immutable desktop payloads and advance their channels
+        env:
+          DESKTOP_AUDIENCE: ${{ vars.QOS_DESKTOP_RELEASE_AUDIENCE }}
+          CONTINUOUS_OS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n ${DESKTOP_AUDIENCE:-} ]] || {
+            printf 'QOS_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
+            exit 1
+          }
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DESKTOP_AUDIENCE" \
+            | jq -er .value)
+          echo "::add-mask::$jwt"
+          owner=${GITHUB_REPOSITORY%%/*}
+          package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
+          version="0.0.0-$GITHUB_SHA"
+          variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
+          put_immutable() {
+            local file=$1 url=$2 response status remote
+            response=$(mktemp "$RUNNER_TEMP/qos-desktop-response.XXXXXX")
+            status=$(curl --silent --show-error --retry 3 --retry-all-errors \
+              --output "$response" --write-out '%{http_code}' \
+              --header "Authorization: Bearer $jwt" \
+              --request PUT --upload-file "$file" "$url")
+            case "$status" in
+              200|201|204) ;;
+              409)
+                remote=$(mktemp "$RUNNER_TEMP/qos-existing-desktop.XXXXXX")
+                curl --fail --silent --show-error --retry 3 --retry-all-errors \
+                  --header "Authorization: Bearer $jwt" "$url" --output "$remote"
+                cmp --silent "$file" "$remote"
+                ;;
+              *) cat "$response" >&2; exit 1 ;;
+            esac
+          }
+          update_variable() {
+            local name=$1 value=$2 endpoint status method
+            endpoint="$variable_api/$name"
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: Bearer $jwt" "$endpoint")
+            case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
+            curl --fail --silent --show-error --request "$method" \
+              --header "Authorization: Bearer $jwt" \
+              --header 'Content-Type: application/json' \
+              --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
+          }
+          shopt -s nullglob
+          found=0
+          for bundle in release/fedora-44-*/qos-desktop-os-*.tar.gz; do
+            found=1
+            arch=${bundle##*qos-desktop-os-}
+            arch=${arch%.tar.gz}
+            digest_file="$bundle.sha256"
+            (cd "$(dirname "$bundle")" && sha256sum --check --strict "${digest_file##*/}")
+            url="$package_api/qos-desktop-os/$version/${bundle##*/}"
+            put_immutable "$bundle" "$url"
+            put_immutable "$digest_file" "$url.sha256"
+            digest=$(awk '{print $1}' "$digest_file")
+            upper=${arch^^}
+            update_variable "QOS_DESKTOP_PAYLOAD_URL_$upper" "$url"
+            update_variable "QOS_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
+            if [[ $arch == x86_64 ]]; then
+              update_variable QOS_DESKTOP_PAYLOAD_URL "$url"
+              update_variable QOS_DESKTOP_PAYLOAD_SHA256 "$digest"
+            fi
+          done
+          [[ $found == 1 ]]
+          if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
+            dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
+            curl --fail --silent --show-error --request POST \
+              --header "Authorization: Bearer $jwt" \
+              --header 'Content-Type: application/json' \
+              --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true"}}' \
+              "$dispatch_api"
+            echo '::notice::requested continuous desktop/OS integration release'
+          fi
+
   release-guard:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: validate
     runs-on: runner
     steps:
@@ -215,7 +325,7 @@ jobs:
             <<<"$receipt"
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: [package, release-guard]
     runs-on: runner
     steps:
@@ -235,14 +345,14 @@ jobs:
           find release -mindepth 1 -type d -empty -delete
       - name: Check release version and create checksums
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${GITHUB_REF_NAME#desktop-v}"
           test "$version" = "$(<dist/VERSION)"
-          dist/ci/verify-release-artifacts.sh release "$version" amd64
+          dist/ci/verify-release-artifacts.sh release "$version" amd64,arm64
           (cd release && sha256sum -- * > SHA256SUMS)
       - name: Publish package-manager repositories
         env:
           QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#v}"
+        run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#desktop-v}"
       - name: Publish checksummed, install-tested artifacts
         uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
         with:

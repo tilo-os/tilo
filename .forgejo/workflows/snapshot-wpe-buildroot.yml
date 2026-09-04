@@ -1,4 +1,4 @@
-name: Snapshot WPE buildroots
+name: Snapshot / WPE buildroots
 
 # This is the only CI boundary allowed to resolve WPE build dependencies from
 # Fedora. It promotes signed, per-architecture immutable refs; OS release jobs
@@ -28,9 +28,6 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      id-token: write
     enable-openid-connect: true
     strategy:
       fail-fast: true
@@ -171,9 +168,6 @@ jobs:
         os/dev/acquire-wpe-snapshot-credentials.sh
         keys/cosign.pub
         .forgejo/workflows/snapshot-wpe-buildroot.yml
-    permissions:
-      contents: write
-      id-token: write
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

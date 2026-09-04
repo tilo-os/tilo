@@ -75,10 +75,11 @@ descriptor used by the sandboxed writer.
 ## Short-lived credentials
 
 The six credentialed jobs set Forgejo's native `enable-openid-connect: true`.
-`permissions: id-token: write` is retained for compatibility, but by itself
-does not cause Forgejo to inject `ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The exact Forgejo behavior and token fields
-are documented in its
+Do not add GitHub's `permissions: id-token: write`: Forgejo ignores that field
+and emits a workflow warning. Repository capabilities come from Authorized
+Integrations; the native key is what causes Forgejo to inject
+`ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The exact
+Forgejo behavior and token fields are documented in its
 [OIDC guide](https://forgejo.org/docs/latest/user/actions/security-openid-connect/).
 
 Configure the external secret broker with all of these claim checks:
@@ -232,7 +233,7 @@ Before creating a release tag, verify all of the following:
   permitting the release bot, the GitHub fork exists, the bot has signed the
   Microsoft CLA, and no PR already exists for the package version.
 
-Dispatch `Build qOS Imager host downloads` manually on `main` first. That run
+Dispatch `Release / imager` manually on `main` with `full_native` enabled first. That run
 does not sign or publish, but proves every native label and packaged UI. Only
 after it is green should a maintainer create a protected semantic tag such as
 `imager-v1.2.3`. A successful tag must finish the native matrix, release trust

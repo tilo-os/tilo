@@ -18878,7 +18878,7 @@ mod roster_rows {
     }
 
     #[test]
-    fn a_connected_agent_is_tagged_and_followable_like_a_collaborator() {
+    fn a_connected_headless_agent_is_tagged_but_not_followable() {
         let mut tree = tree_with_room();
         {
             let ws = tree.active_workspace_mut().expect("fixture has a room");
@@ -18899,8 +18899,8 @@ mod roster_rows {
             "an agent listed without its tag is the OS reporting a person",
         );
         assert_eq!(rows[0].initial, 'S');
-        assert!(rows[0].followable);
-        assert_eq!(rows[0].activity.as_deref(), Some("Working now"));
+        assert!(!rows[0].followable);
+        assert_eq!(rows[0].activity.as_deref(), Some("Connected"));
     }
 
     /// A row shows what its participant may do here, and nothing where
