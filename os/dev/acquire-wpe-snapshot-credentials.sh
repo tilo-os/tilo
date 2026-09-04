@@ -48,10 +48,18 @@ if [ -n "$broker" ]; then
   : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
   : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
   trusted_root_executable "$broker" 'WPE snapshot credential broker'
+  case "$broker" in
+    "$GITHUB_WORKSPACE"/*|"$RUNNER_TEMP"/*)
+      printf 'WPE snapshot credential broker must not come from the checkout or job temporary directory\n' >&2
+      exit 1
+      ;;
+  esac
 
   lease_dir="$(mktemp -d "$RUNNER_TEMP/qos-wpe-snapshot.XXXXXX")"
   lease="$lease_dir/lease.env"
   trap 'rm -f "$lease"; rmdir "$lease_dir" 2>/dev/null || true' EXIT
+  [ ! -e "$lease" ] \
+    || { printf 'credential broker lease output must not preexist\n' >&2; exit 1; }
   "$broker" "$mode" "$lease"
   [ -f "$lease" ] && [ ! -L "$lease" ] \
     || { printf 'credential broker did not create a regular lease file\n' >&2; exit 1; }
@@ -59,6 +67,10 @@ if [ -n "$broker" ]; then
     || { printf 'credential broker lease file must have mode 0600\n' >&2; exit 1; }
   [ "$(stat -c '%u' "$lease")" = "$(id -u)" ] \
     || { printf 'credential broker lease file must be owned by the runner account\n' >&2; exit 1; }
+  if command -v getfacl >/dev/null 2>&1; then
+    [ "$(getfacl -cp "$lease" | grep -Ev '^(#|$)' | sort)" = $'group::---\nother::---\nuser::rw-' ] \
+      || { printf 'credential broker lease file has an extended or permissive ACL\n' >&2; exit 1; }
+  fi
 
   registry_username=
   registry_password=
@@ -68,7 +80,8 @@ if [ -n "$broker" ]; then
   while IFS= read -r setting || [ -n "$setting" ]; do
     name="${setting%%=*}"
     value="${setting#*=}"
-    [ "$name" != "$setting" ] && [ -z "${seen[$name]:-}" ] \
+    [[ "$setting" != *$'\r'* && "$setting" =~ ^[A-Z0-9_]+=[^[:cntrl:]]+$ ]] \
+      && [ "$name" != "$setting" ] && [ -z "${seen[$name]:-}" ] \
       || { printf 'credential broker returned a malformed or duplicate setting\n' >&2; exit 1; }
     seen[$name]=1
     case "$name" in
@@ -85,6 +98,8 @@ if [ -n "$broker" ]; then
   bounded_expiry "$lease_expiry" 900 'credential broker lease'
 
   if [[ "$mode" = publish-* ]]; then
+    [ "${#seen[@]}" = 4 ] \
+      || { printf 'publish lease must return exactly four settings\n' >&2; exit 1; }
     [[ "$signer" =~ ^/[A-Za-z0-9._/+:-]+$ ]] \
       || { printf 'credential broker did not return an absolute executable signer\n' >&2; exit 1; }
     trusted_root_executable "$signer" 'WPE signer'
@@ -95,9 +110,9 @@ if [ -n "$broker" ]; then
         ;;
     esac
     printf 'QOS_WPE_SIGNER=%s\n' "$signer" >> "$GITHUB_ENV"
-  elif [ -n "$signer" ]; then
-    printf 'non-publish lease must not expose a signing handle\n' >&2
-    exit 1
+  else
+    [ "${#seen[@]}" = 3 ] && [ -z "${seen[QOS_WPE_SIGNER]+x}" ] \
+      || { printf 'non-publish lease must return exactly three settings without a signer\n' >&2; exit 1; }
   fi
 
   printf '%s' "$registry_password" | "$container_cli" login code.sandbox.example \

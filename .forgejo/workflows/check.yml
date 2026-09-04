@@ -113,6 +113,7 @@ jobs:
           bash os/tests/repair_mode.sh
           bash os/tests/installer_profile_transport.sh
           bash os/tests/imager_release_invariants.sh
+          bash os/tests/imager_broker_credentials.sh
           bash os/tests/imager_linux_release_trust.sh
           bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
