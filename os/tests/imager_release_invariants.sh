@@ -217,11 +217,16 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 
 cycle="$repo/os/dev/test-installer-cycle.sh"
+boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
+  && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq 'QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS' "$workflow" \
   && grep -Fq 'qemu-system-aarch64' "$workflow" \
   && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
   && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
+  && grep -Fq 'dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g' "$workflow" \
+  && grep -Fq 'ImageMagick mtools ntfs-3g util-linux' "$workflow" \
+  && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
   && grep -Fq 'name: qos-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
   && grep -Fq '"$vm" boot-target --gl --no-tpm' "$cycle" \
@@ -232,6 +237,11 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
   && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
+  && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'qos-windows.conf' "$cycle" \
+  && grep -Fq 'qos-linux-fedora.conf' "$cycle" \
+  && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
   && grep -Fq "wait_private_screen 'qOS" "$cycle" \
   && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
@@ -243,12 +253,23 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && ! grep -Fq 'cp -f "$run/serial.log" "$out/installer-serial.log"' "$cycle" \
   && grep -Fq "wait_screen 08-oobe-intro" "$cycle" \
   && grep -Fq "wait_screen 09-oobe-ready" "$cycle" \
-  && grep -Fq "wait_screen 10-desktop-config" "$cycle" \
+  && grep -Fq '"$vm" keys tab tab ret' "$cycle" \
+  && grep -Fq "wait_screen 10-tour-move" "$cycle" \
+  && grep -Fq "wait_screen 11-tour-arrange" "$cycle" \
+  && grep -Fq "wait_screen 12-tour-share" "$cycle" \
+  && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
   ok 'every tagged medium must pass a profiled graphical install, encrypted boot, login, OOBE, and desktop cycle'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
 fi
+
+grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
+  && grep -Fq 'BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))' "$boot_verify" \
+  && grep -Fq '"boot_signal": "$BOOT_SIGNAL"' "$boot_verify" \
+  && grep -Fq 'boot reached $BOOT_SIGNAL in ${BOOT_MS}ms' "$boot_verify" \
+  && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
+  || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
 [ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
   && [ "$(grep -Fc '      - "shell/**"' "$workflow")" -eq 2 ] \
