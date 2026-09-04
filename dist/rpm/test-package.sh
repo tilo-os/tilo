@@ -17,3 +17,4 @@ if (( expect_devel )); then
     "$repo_root/dist/verify-devel-payload.sh" /
     rpm -q qos-session-devel >/dev/null
 fi
+"$repo_root/dist/ci/test-installed-host-startup.sh"
