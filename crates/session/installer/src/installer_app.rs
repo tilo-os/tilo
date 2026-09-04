@@ -1965,9 +1965,7 @@ impl InstallerApp {
             )
         } else {
             format!(
-                "Interrupted qOS setup found on this disk: the paired partitions span bytes {}–{} (2 GiB EFI + {} GiB root). Their two matching recovery records and the complete earlier GPT map agree. This is not automatic authorization: continue to Review and type {} again before formatting resumes.",
-                plan.free_start_bytes,
-                plan.free_start_bytes.saturating_add(plan.free_size_bytes),
+                "Interrupted qOS installation found. qOS created its 2 GiB EFI and {} GiB encrypted root partitions, but setup stopped before formatting finished. The disk layout still matches exactly. Nothing resumes automatically: review the location and type {} again to continue.",
                 plan.root_size_bytes / (1024 * 1024 * 1024),
                 self.selected_dev().as_deref().unwrap_or("the disk name")
             )
@@ -2245,9 +2243,9 @@ impl InstallerApp {
                         )
                     } else {
                         format!(
-                            "Resume interrupted pair at bytes {}–{} after fresh confirmation",
+                            "Resume interrupted qOS partitions in {} GiB beginning at byte {} after fresh confirmation",
+                            plan.free_size_bytes / (1024 * 1024 * 1024),
                             plan.free_start_bytes,
-                            plan.free_start_bytes.saturating_add(plan.free_size_bytes)
                         )
                     },
                 ));
