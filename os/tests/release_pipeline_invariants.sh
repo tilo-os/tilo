@@ -52,6 +52,9 @@ python3 "$repo/tools/check_workflow_package_paths.py" \
 grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '/generic/qos-app-collections/' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
+  && grep -Fq 'enable-openid-connect: true' "$apps" \
+  && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
+  && ! grep -Fq 'secrets.REGISTRY_TOKEN' "$apps" \
   && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
   || bad 'app release artifacts cannot be consumed by later component releases'
 

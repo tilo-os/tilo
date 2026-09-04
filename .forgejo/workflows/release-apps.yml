@@ -177,24 +177,36 @@ jobs:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     needs: [plan, build]
     runs-on: runner
+    enable-openid-connect: true
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
       - name: Publish immutable architecture bundles
         env:
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          MAIN_AUDIENCE: ${{ vars.QOS_APP_RELEASE_MAIN_AUDIENCE }}
+          TAG_AUDIENCE: ${{ vars.QOS_APP_RELEASE_TAG_AUDIENCE }}
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          [[ -n ${FORGEJO_TOKEN:-} ]] || { printf 'REGISTRY_TOKEN is required\n' >&2; exit 1; }
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            audience=$TAG_AUDIENCE
+          else
+            audience=$MAIN_AUDIENCE
+          fi
+          [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
+          echo "::add-mask::$jwt"
           owner=${GITHUB_REPOSITORY%%/*}
           for bundle in release/*/qos-apps-*.tar.gz release/*/qos-apps-*.tar.gz.sha256; do
             name=${bundle##*/}
             url="$GITHUB_SERVER_URL/api/packages/$owner/generic/qos-app-collections/$VERSION/$name"
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
               --output response.txt --write-out '%{http_code}' \
-              --user "$GITHUB_ACTOR:$FORGEJO_TOKEN" --request PUT --upload-file "$bundle" "$url")
+              --header "Authorization: Bearer $jwt" \
+              --request PUT --upload-file "$bundle" "$url")
             case "$status" in
               200|201|204) echo "published $name" ;;
               409) printf 'immutable version already contains %s\n' "$name" >&2; exit 1 ;;

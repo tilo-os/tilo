@@ -77,6 +77,11 @@ matrices without publishing, which makes them safe release rehearsals.
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
+- App publication uses two narrowly restricted Forgejo Actions (Local)
+  integrations: app release tags and manual dispatches from `main`. Their
+  audiences are stored in `QOS_APP_RELEASE_TAG_AUDIENCE` and
+  `QOS_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
+  publication job.
 - Keep remote actions pinned to full commit hashes.
 - Use the v3 artifact actions (or Forgejo's patched v4), because upstream v4's
   GitHub Artifact API is not compatible with this instance.
