@@ -162,6 +162,7 @@ struct ReplayPointer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
     OpenResource,
+    StartAgent,
     Launch,
     Start,
     Complete,
@@ -172,6 +173,7 @@ impl TaskAction {
     fn label(self) -> &'static str {
         match self {
             Self::OpenResource => "Open resource",
+            Self::StartAgent => "Start agent",
             Self::Launch => "Launch agent",
             Self::Start => "Mark started",
             Self::Complete => "Mark done",
@@ -340,6 +342,17 @@ pub struct RoomActivityOutcome {
     pub compared: bool,
     pub undo_partial: bool,
     pub task_changed: bool,
+    /// A local managed-agent lifecycle changed. It is intentionally not a
+    /// task-document write: a process beginning to connect is not work done.
+    pub agent_runtime_changed: bool,
+}
+
+const AGENT_START_TIMEOUT: Duration = Duration::from_secs(12);
+
+#[derive(Clone, Debug)]
+enum AgentStartup {
+    Starting { since: Instant },
+    Failed { detail: String },
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -429,6 +442,9 @@ pub struct RoomActivityPane {
     task_agent: Option<String>,
     task_broker: Option<crate::shell::collab_broker::AppActionBroker>,
     task_room: String,
+    /// Local process lifecycle only. Broker subscription remains the source
+    /// of truth for whether an agent may receive a task lease.
+    agent_startup: HashMap<(String, String), AgentStartup>,
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
@@ -560,6 +576,7 @@ impl RoomActivityPane {
             task_agent: None,
             task_broker: None,
             task_room: String::new(),
+            agent_startup: HashMap::new(),
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
@@ -1149,6 +1166,7 @@ impl RoomActivityPane {
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
+        self.refresh_agent_startup();
         if self
             .selected_task
             .as_ref()
@@ -1194,6 +1212,92 @@ impl RoomActivityPane {
         // arrives with their edits.
         self.named = ui::history_groups::read_named_ranges(&tree.doc, self.source.authors());
         self.apply_scope(tree);
+    }
+
+    fn agent_is_live(&self, agent: &str) -> bool {
+        self.task_broker
+            .as_ref()
+            .is_some_and(|broker| broker.agent_is_live_task_capable(&self.task_room, agent))
+    }
+
+    fn agent_startup_state(&self, agent: &str) -> Option<&AgentStartup> {
+        self.agent_startup
+            .get(&(self.task_room.clone(), agent.to_string()))
+    }
+
+    fn refresh_agent_startup(&mut self) {
+        let room = self.task_room.clone();
+        let live_agents = self
+            .agent_startup
+            .keys()
+            .filter(|(launch_room, _)| launch_room == &room)
+            .filter_map(|(_, agent)| self.agent_is_live(agent).then_some(agent.clone()))
+            .collect::<HashSet<_>>();
+        self.agent_startup.retain(|(launch_room, agent), state| {
+            if launch_room != &room {
+                return true;
+            }
+            if live_agents.contains(agent) {
+                return false;
+            }
+            if let AgentStartup::Starting { since } = state
+                && since.elapsed() >= AGENT_START_TIMEOUT
+            {
+                *state = AgentStartup::Failed {
+                    detail: "The agent did not connect to the workspace. Retry to start a new managed session.".into(),
+                };
+            }
+            true
+        });
+    }
+
+    /// Consume one correlated managed-agent launcher event. A process
+    /// starting is not treated as live; only the broker's subscription makes
+    /// the task launchable.
+    pub fn observe_agent_launch_event(
+        &mut self,
+        event: &crate::shell::launcher::LaunchEvent,
+    ) -> bool {
+        let Some(agent) = event.managed_agent_id.as_deref() else {
+            return false;
+        };
+        let Some(workspace) = event.managed_workspace_id.as_deref() else {
+            return false;
+        };
+        let key = (workspace.to_string(), agent.to_string());
+        match &event.kind {
+            crate::shell::launcher::LaunchEventKind::Started { .. } => {
+                self.agent_startup
+                    .entry(key)
+                    .or_insert_with(|| AgentStartup::Starting {
+                        since: Instant::now(),
+                    });
+                true
+            }
+            crate::shell::launcher::LaunchEventKind::SpawnFailed { detail } => {
+                self.agent_startup.insert(
+                    key,
+                    AgentStartup::Failed {
+                        detail: detail.clone(),
+                    },
+                );
+                true
+            }
+            crate::shell::launcher::LaunchEventKind::Failed { code, stderr_tail } => {
+                let detail = if stderr_tail.trim().is_empty() {
+                    code.map_or_else(
+                        || "The managed agent stopped before connecting.".to_string(),
+                        |code| format!("The managed agent launcher exited with status {code}."),
+                    )
+                } else {
+                    stderr_tail.clone()
+                };
+                self.agent_startup
+                    .insert(key, AgentStartup::Failed { detail });
+                true
+            }
+            crate::shell::launcher::LaunchEventKind::Exited => false,
+        }
     }
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
@@ -2753,7 +2857,7 @@ impl RoomActivityPane {
         for task in &self.tasks {
             let selected = self.selected_task.as_deref() == Some(task.id.as_str());
             let audit_rows = if selected { task.audit.len().min(3) } else { 0 };
-            let execution_notice = selected.then(|| task_execution_notice(task)).flatten();
+            let execution_notice = selected.then(|| self.task_execution_notice(task)).flatten();
             let height = 82.0
                 + if selected {
                     72.0 + 18.0 * audit_rows as f64
@@ -2779,13 +2883,13 @@ impl RoomActivityPane {
                 rect,
                 selected,
                 self.now(),
-                execution_notice,
+                execution_notice.as_deref(),
             );
             if selected {
                 let actions = self.task_actions_for(task);
                 let items = actions
                     .iter()
-                    .map(|action| (*action, action.label().to_string()))
+                    .map(|action| (*action, self.task_action_label(*action, task)))
                     .collect::<Vec<_>>();
                 self.task_action_rects = draw_chip_row(
                     scene,
@@ -3322,6 +3426,7 @@ impl RoomActivityPane {
             };
         }
         if action == TaskAction::Launch {
+            let assigned_agent = task.assigned_agent.clone();
             let dispatched = self
                 .task_broker
                 .as_ref()
@@ -3329,10 +3434,50 @@ impl RoomActivityPane {
                 .and_then(|broker| broker.dispatch_task(&self.task_room, &task_id));
             if dispatched.is_ok() {
                 self.refresh(tree);
+            } else if let Some(agent) = assigned_agent {
+                let detail = dispatched
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .unwrap_or_else(|| "agent task dispatch failed".into());
+                self.agent_startup.insert(
+                    (self.task_room.clone(), agent),
+                    AgentStartup::Failed { detail },
+                );
             }
             return RoomActivityOutcome {
                 handled: true,
                 task_changed: dispatched.is_ok(),
+                agent_runtime_changed: dispatched.is_err(),
+                ..RoomActivityOutcome::default()
+            };
+        }
+        if action == TaskAction::StartAgent {
+            let Some(agent) = task.assigned_agent.as_deref() else {
+                return handled_outcome();
+            };
+            let Some(workspace) = tree.active_workspace().cloned() else {
+                return handled_outcome();
+            };
+            let key = (workspace.room.to_string(), agent.to_string());
+            if matches!(
+                self.agent_startup.get(&key),
+                Some(AgentStartup::Starting { .. })
+            ) {
+                return handled_outcome();
+            }
+            let state = match crate::shell::launcher::launch_workspace_agent(agent, &workspace) {
+                Ok(_) => AgentStartup::Starting {
+                    since: Instant::now(),
+                },
+                Err(error) => AgentStartup::Failed {
+                    detail: error.user_message(),
+                },
+            };
+            self.agent_startup.insert(key, state);
+            return RoomActivityOutcome {
+                handled: true,
+                agent_runtime_changed: true,
                 ..RoomActivityOutcome::default()
             };
         }
@@ -3341,6 +3486,7 @@ impl RoomActivityPane {
             TaskAction::Complete => WorkspaceTaskStatus::Done,
             TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
             TaskAction::OpenResource => return handled_outcome(),
+            TaskAction::StartAgent => return handled_outcome(),
             TaskAction::Launch => return handled_outcome(),
         };
         let changed = tree.set_workspace_task_status(
@@ -3361,21 +3507,70 @@ impl RoomActivityPane {
 
     fn task_actions_for(&self, task: &WorkspaceTask) -> Vec<TaskAction> {
         let mut actions = task_actions(task);
-        let live = task.assigned_agent.as_ref().is_some_and(|agent| {
-            self.task_broker
-                .as_ref()
-                .is_some_and(|broker| broker.agent_is_live_task_capable(&self.task_room, agent))
-        });
+        let live = task
+            .assigned_agent
+            .as_ref()
+            .is_some_and(|agent| self.agent_is_live(agent));
         if task.route != WorkspaceTaskRoute::Manual
             && matches!(
                 task.status,
                 WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
             )
-            && live
         {
-            actions.insert(0, TaskAction::Launch);
+            let Some(agent) = task.assigned_agent.as_deref() else {
+                return actions;
+            };
+            if live {
+                actions.insert(0, TaskAction::Launch);
+            } else if !matches!(
+                self.agent_startup_state(agent),
+                Some(AgentStartup::Starting { .. })
+            ) {
+                actions.insert(0, TaskAction::StartAgent);
+            }
         }
         actions
+    }
+
+    fn task_action_label(&self, action: TaskAction, task: &WorkspaceTask) -> String {
+        if action == TaskAction::StartAgent
+            && task.assigned_agent.as_deref().is_some_and(|agent| {
+                matches!(
+                    self.agent_startup_state(agent),
+                    Some(AgentStartup::Failed { .. })
+                )
+            })
+        {
+            "Retry agent".into()
+        } else {
+            action.label().to_string()
+        }
+    }
+
+    fn task_execution_notice(&self, task: &WorkspaceTask) -> Option<String> {
+        if task.route == WorkspaceTaskRoute::Manual
+            || !matches!(
+                task.status,
+                WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+            )
+        {
+            return None;
+        }
+        let Some(agent) = task.assigned_agent.as_deref() else {
+            return Some(
+                "No enabled workspace agent is assigned · this task has not started".into(),
+            );
+        };
+        if self.agent_is_live(agent) {
+            return Some("Agent connected · ready to run this task".into());
+        }
+        match self.agent_startup_state(agent) {
+            Some(AgentStartup::Starting { .. }) => {
+                Some("Starting managed agent · waiting for its broker subscription".into())
+            }
+            Some(AgentStartup::Failed { detail }) => Some(format!("Agent offline · {detail}")),
+            None => Some("Agent runtime not connected · this task has not started".into()),
+        }
     }
 
     fn handle_catchup_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
@@ -4575,15 +4770,6 @@ fn task_actions(task: &WorkspaceTask) -> Vec<TaskAction> {
         WorkspaceTaskStatus::Done | WorkspaceTaskStatus::Cancelled => {}
     }
     actions
-}
-
-fn task_execution_notice(task: &WorkspaceTask) -> Option<&'static str> {
-    (task.route != WorkspaceTaskRoute::Manual
-        && matches!(
-            task.status,
-            WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
-        ))
-    .then_some("Agent runtime not connected · this task has not started")
 }
 
 fn draw_task_button(
@@ -6052,8 +6238,13 @@ mod tests {
                 .contains(&TaskAction::Launch),
             "membership without a live task subscription must not enable Launch"
         );
+        assert!(
+            pane.task_actions_for(automated)
+                .contains(&TaskAction::StartAgent),
+            "offline work offers a managed agent start, never a fake task run"
+        );
         assert_eq!(
-            task_execution_notice(automated),
+            pane.task_execution_notice(automated).as_deref(),
             Some("Agent runtime not connected · this task has not started")
         );
     }
@@ -6088,6 +6279,67 @@ mod tests {
             .expect("task remains stored");
         assert_eq!(task.status, WorkspaceTaskStatus::Queued);
         assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
+    }
+
+    #[test]
+    fn offline_agent_start_is_deduplicated_and_failure_becomes_retry() {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = RoomActivityPane::new();
+        pane.refresh(&mut tree);
+        let task = pane
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .cloned()
+            .expect("task is projected");
+        assert!(
+            pane.task_actions_for(&task)
+                .contains(&TaskAction::StartAgent)
+        );
+
+        pane.agent_startup.insert(
+            (pane.task_room.clone(), "studio-agent".into()),
+            AgentStartup::Starting {
+                since: Instant::now(),
+            },
+        );
+        assert!(
+            !pane
+                .task_actions_for(&task)
+                .contains(&TaskAction::StartAgent),
+            "one pending managed launch suppresses another start click"
+        );
+
+        assert!(
+            pane.observe_agent_launch_event(&crate::shell::launcher::LaunchEvent {
+                package_id: crate::shell::launcher::WORKSPACE_AGENT_PACKAGE_ID.into(),
+                display_name: "Agent".into(),
+            managed_agent_id: Some("studio-agent".into()),
+            managed_workspace_id: Some(pane.task_room.clone()),
+                kind: crate::shell::launcher::LaunchEventKind::SpawnFailed {
+                    detail: "launcher unavailable".into(),
+                },
+            })
+        );
+        assert!(
+            pane.task_actions_for(&task)
+                .contains(&TaskAction::StartAgent)
+        );
+        assert_eq!(
+            pane.task_action_label(TaskAction::StartAgent, &task),
+            "Retry agent"
+        );
+        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
     }
 
     #[test]

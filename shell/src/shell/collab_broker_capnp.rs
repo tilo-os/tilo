@@ -14,6 +14,7 @@
 //! fetch instead.
 
 use std::collections::HashMap;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,6 +25,8 @@ use std::time::Duration;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -48,6 +51,21 @@ use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::state::{
     CapRole, Principal, WorkspaceTask, WorkspaceTaskStatus, WorkspaceTree, WorkspaceTreeHandle,
 };
+
+/// Launcher preambles are deliberately tiny: they only bind a socket to the
+/// shell's already-created process record. The cert presented by the
+/// app still decides workspace membership and delegated-agent authority.
+const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
+const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
+const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollabLaunchHandoff {
+    protocol: u16,
+    app_id: String,
+    workspace_id: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedJoinIdentity {
@@ -4085,11 +4103,149 @@ pub async fn dial_capnp_for_test(
     clippy::future_not_send,
     reason = "capnp-rpc's Rc-based server dispatch (self: Rc<Self> throughout this file) makes this future !Send by construction; it is only ever driven via spawn_local on the single-threaded LocalSet in `spawn`, never tokio::spawn"
 )]
+/// Peek at an incoming descriptor without consuming Cap'n Proto's segment
+/// header. Raw endpoint diagnostics intentionally omit the launcher marker;
+/// only a marker-bearing connection is subject to shell-process attestation.
+async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, capnp::Error> {
+    for _ in 0..LAUNCH_RECORD_RACE_RETRIES {
+        stream.readable().await.map_err(|error| {
+            capnp::Error::failed(format!("collaboration socket unreadable: {error}"))
+        })?;
+        let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
+        // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
+        // the live socket for this entire call. MSG_PEEK leaves the Cap'n
+        // Proto header untouched for legacy/raw clients.
+        let read = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                marker.as_mut_ptr().cast(),
+                marker.len(),
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        if read >= marker.len() as libc::ssize_t {
+            return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC);
+        }
+        if read == 0 {
+            return Err(capnp::Error::disconnected(
+                "collaboration peer closed before its protocol header".into(),
+            ));
+        }
+        if read < 0
+            && !matches!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock
+            )
+        {
+            return Err(capnp::Error::failed(format!(
+                "could not inspect collaboration protocol header: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+    }
+    Err(capnp::Error::failed(
+        "collaboration peer sent an incomplete protocol header".into(),
+    ))
+}
+
+async fn authenticate_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<(), capnp::Error> {
+    if !has_collab_launch_marker(stream).await? {
+        return Ok(());
+    }
+    let credentials = stream.peer_cred().map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration peer credentials: {error}"
+        ))
+    })?;
+    // A socket pathname is not authority. The kernel must identify a process
+    // from this user before it can attest the compositor's launch record.
+    if credentials.uid() != unsafe { libc::geteuid() } {
+        return Err(capnp::Error::failed(
+            "collaboration service rejected a peer from another user".into(),
+        ));
+    }
+    let pid = credentials
+        .pid()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| capnp::Error::failed("collaboration peer has no usable pid".into()))?;
+
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
+    stream.read_exact(&mut marker).await.map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration launch marker: {error}"
+        ))
+    })?;
+    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
+        return Err(capnp::Error::failed(
+            "collaboration launch marker changed while being read".into(),
+        ));
+    }
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length).await.map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration launch handoff length: {error}"
+        ))
+    })?;
+    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| {
+        capnp::Error::failed("collaboration launch handoff length overflows usize".into())
+    })?;
+    if length == 0 || length > MAX_COLLAB_LAUNCH_HANDOFF_BYTES {
+        return Err(capnp::Error::failed(
+            "collaboration launch handoff has an invalid length".into(),
+        ));
+    }
+    let mut bytes = vec![0_u8; length];
+    stream.read_exact(&mut bytes).await.map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration launch handoff: {error}"
+        ))
+    })?;
+    let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
+        capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
+    })?;
+    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(capnp::Error::failed(
+            "collaboration launch handoff has an unsupported or empty identity".into(),
+        ));
+    }
+
+    // `spawn_launch` records immediately after `Command::spawn`; the child
+    // can connect first on a fast machine. Retry only this narrow registration
+    // race. A direct qos-launcher command never obtains a record and fails
+    // closed instead of becoming a way around admin/admission checks.
+    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
+        if crate::shell::launcher::attest_trusted_service_launch_for_pid(
+            pid,
+            &handoff.app_id,
+            &handoff.workspace_id,
+        )
+        .is_some()
+        {
+            return Ok(());
+        }
+        if attempt < LAUNCH_RECORD_RACE_RETRIES {
+            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+        }
+    }
+    Err(capnp::Error::failed(
+        "collaboration launch is not an authenticated shell-managed process".into(),
+    ))
+}
+
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
     peer_id: u64,
 ) -> Result<(), capnp::Error> {
+    let mut stream = stream;
+    authenticate_launcher_handoff(&mut stream).await?;
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
     let writer = writer.compat_write();
