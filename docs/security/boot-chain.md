@@ -418,6 +418,56 @@ uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the
 PIN and must not be presented as hardware-backed protection.
 
+### Fresh-machine provisioning is a trust-model decision, not an installer retry
+
+The common factory-machine case cannot be turned into the short-PIN row by
+remembering installer state across a reboot. The first qOS executable has no
+signature accepted by the factory firmware: qOS intentionally has neither a
+Microsoft/OEM-trusted bootloader nor a qOS certificate in the factory `db`.
+Consequently the live medium has to start with Secure Boot disabled (or with the
+firmware already in setup mode). PCR 7 and kernel lockdown from that boot cannot
+authenticate the installer, and a TPM slot sealed there would protect a PIN from
+neither a replaced installer nor a replaced target UKI.
+
+Nor can the installer portably fix that state itself. While a factory Platform
+Key is active, changing `db`, `KEK`, or `PK` requires an authenticated update
+authorised by a private key qOS does not and must not possess. UEFI provides a
+standard request to enter firmware setup, but no standard, unattended operation
+for clearing the owner's keys, importing a new certificate, or enabling Secure
+Boot. Those controls, confirmation screens, and even support for appending a
+certificate from the ESP vary by firmware.
+
+That leaves two genuinely secure product choices:
+
+1. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
+   later guided ceremony may generate the owner keys in the encrypted target,
+   sign and verify every target UKI, ask the owner to import the public key in
+   firmware, and only after a verified reboot offer to replace the passphrase
+   slot with TPM2+PIN. The ceremony must persist only public progress on the ESP;
+   private signing keys and a pending PIN must never be placed there. It must
+   resume by re-proving the enrolled certificate, UKI signatures, Secure Boot,
+   lockdown, and recovery-key access rather than trusting a progress marker.
+   This is necessarily interactive and firmware-specific, so it cannot be the
+   default nearly-headless path on arbitrary PCs.
+2. **Add a factory-trusted qOS release chain.** This is the prerequisite for a
+   normal fresh PC to boot both installer and target under verified boot and use
+   one TPM-throttled PIN from its first installed boot. It changes the current
+   owner-only trust policy. The release bootloader and every bootable UKI need PE
+   signatures rooted in a certificate accepted by target firmware (through an
+   OEM agreement or an industry Secure Boot signing programme); installation
+   must stop generating target-specific unsigned UKI bytes, or obtain their
+   signatures from an authenticated, availability-safe signing service. Release
+   signing keys belong in an audited HSM/KMS with dual-control policy, short-lived
+   CI identity, rotation/revocation and offline recovery. The resulting media,
+   update, firmware-revocation, BitLocker-coexistence and TPM dictionary-attack
+   paths then need a physical hardware matrix before this becomes the default.
+
+Until one of those choices is deliberately made and delivered end to end, the
+secure product behaviour is the one enforced above: a fresh machine gets a
+strong startup passphrase; a short PIN is shown only for an already continuous,
+verified target chain. `target_verified_boot_ready` must not be relaxed to TPM
+presence, an EFI flag, or a resumable-install marker.
+
 The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.
 Binding to a register that covers the boot artefacts themselves sounds stronger and
