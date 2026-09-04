@@ -174,6 +174,7 @@ fn run(
                 action,
                 argument,
                 actor,
+                ..
             } => {
                 let resources = word_processor_resources(&replica);
                 let update = typed_peer::service_document_invocation(
@@ -476,6 +477,7 @@ fn drive_photo_peer(
                 action,
                 argument,
                 actor,
+                ..
             } => {
                 let resources = photos_resources(&photo_replica);
                 let update = typed_peer::service_document_invocation(

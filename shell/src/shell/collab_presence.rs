@@ -28,6 +28,9 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
         PresencePayload::Following { target } => PeerPresencePayload::Following {
             target: target.clone(),
         },
+        PresencePayload::Interaction(update) => {
+            PeerPresencePayload::InteractionJson(serde_json::to_string(update).ok()?)
+        }
     };
     Some(PeerPresence { key, payload })
 }
@@ -56,6 +59,9 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
         PeerPresencePayload::Arrived => PresencePayload::Arrived,
         PeerPresencePayload::Left => PresencePayload::Left,
         PeerPresencePayload::Following { target } => PresencePayload::Following { target },
+        PeerPresencePayload::InteractionJson(json) => {
+            PresencePayload::Interaction(Box::new(serde_json::from_str(&json).ok()?))
+        }
     };
     Some((key, payload))
 }
@@ -67,7 +73,7 @@ mod tests {
     #[test]
     fn all_local_variants_survive_the_typed_peer_boundary() {
         let key = PresenceKey::surface_pointer("editor/document-7");
-        let variants = [
+        let variants = vec![
             PresencePayload::Pointer { x: 1.25, y: 9.5 },
             PresencePayload::Caret { pos: 17 },
             PresencePayload::Selection { start: 4, end: 11 },
@@ -78,6 +84,30 @@ mod tests {
                 target: Some("peer@7".into()),
             },
             PresencePayload::Following { target: None },
+            PresencePayload::Interaction(Box::new(qos_actions::SemanticInteraction {
+                version: qos_actions::INTERACTION_VERSION,
+                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(7)),
+                sequence: 2,
+                actor: qos_actions::InteractionActor {
+                    id: "quill".into(),
+                    kind: qos_actions::InteractionActorKind::Agent,
+                },
+                phase: qos_actions::InteractionPhase::Committed,
+                action: qos_actions::InteractionAction {
+                    id: "rename".into(),
+                    label: "Rename".into(),
+                    app: None,
+                },
+                resource: qos_actions::ActionResource {
+                    id: "file:draft".into(),
+                    kind: "files.entry".into(),
+                    label: "Draft.md".into(),
+                },
+                anchor: qos_actions::InteractionAnchor::ListItems {
+                    ids: vec!["file:draft".into()],
+                },
+                group: None,
+            })),
         ];
         for payload in variants {
             let wire = to_peer(&key, &payload).expect("encode typed presence");

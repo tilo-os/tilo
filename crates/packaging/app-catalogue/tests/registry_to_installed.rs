@@ -560,10 +560,10 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         false,
         launcher::services::ServiceLaunchContext {
             app_id: PKG,
-            workspace_id: Some("catalogue-test-workspace"),
+            workspace_id: Some("catalogue-e2e-workspace"),
         },
     )
-    .expect("resolution must not fail on optional services");
+    .expect("resolution must not fail with authenticated launch context");
     assert!(
         binds.iter().any(|b| b.name == "collab"),
         "the installed app must be handed a collab descriptor; \

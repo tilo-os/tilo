@@ -42,7 +42,8 @@ pub mod run_undo;
 pub mod runs;
 pub mod seen;
 pub use authors::{
-    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author, short_id, stable_hue,
+    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author,
+    participant_display_label, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};

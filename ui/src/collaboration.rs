@@ -370,6 +370,10 @@ pub enum CollabEvent {
         action: String,
         argument: Option<String>,
         actor: String,
+        /// Broker-owned task/session provenance. The concrete application
+        /// resource and action remain authoritative; this only supplies the
+        /// surrounding purpose and work-group for durable history.
+        context: Option<qos_actions::ActionContext>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
@@ -443,6 +447,10 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
+    /// Truthful action/resource activity. Identity is supplied by the
+    /// authenticated event envelope; this payload never describes a mouse or
+    /// keyboard gesture and therefore cannot create a synthetic cursor.
+    Interaction(Box<qos_actions::SemanticInteraction>),
 }
 
 #[derive(Debug, Clone)]
@@ -580,6 +588,7 @@ enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
+    PrimaryReady(mpsc::SyncSender<Result<(), String>>),
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -823,12 +832,56 @@ impl CollaborationManager {
             record,
             handle,
         });
+        manager.await_primary_route()?;
         Ok(manager)
+    }
+
+    /// Wait until the shovel has processed the initial `Hello`, admitted its
+    /// primary route, and queued the route's initial action catalogue. Without
+    /// this barrier a caller can publish transient presence immediately after
+    /// construction, before the broker knows where to deliver it.
+    fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
+        let Backend::Sdk(channel) = &mut self.backend else {
+            return Err(runtime_portal::NotAvailable::ServiceFdMissing);
+        };
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        channel
+            .outbound_tx
+            .send(SdkCommand::PrimaryReady(ready_tx))
+            .map_err(|_| {
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "collaboration setup thread ended before route readiness",
+                ))
+            })?;
+        match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, error),
+            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "collaboration primary route did not become ready in time",
+                )),
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "collaboration setup thread ended before reporting route readiness",
+                )),
+            ),
+        }
     }
 
     /// Connect a headless participant as a first-class workspace agent.
     /// Its friendly id is both the visible handle and the principal whose
     /// scoped capabilities the broker evaluates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the collaboration
+    /// service or certified join identity is unavailable.
     pub fn for_agent_route(
         app_id: impl Into<String>,
         cluster_id: Uuid,
@@ -849,6 +902,11 @@ impl CollaborationManager {
     /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
     /// still requires a certified endpoint identity; this method merely
     /// preserves the agent principal kind for diagnostic transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the socket cannot be
+    /// joined or the route identity cannot be established.
     pub fn for_agent_route_fd(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -869,6 +927,11 @@ impl CollaborationManager {
 
     /// Certified explicit-socket agent connection used by out-of-process
     /// runtimes that do not inherit the launcher's service descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the socket or certified
+    /// route join fails.
     pub fn for_agent_route_fd_with_identity(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -960,6 +1023,16 @@ impl CollaborationManager {
                     record,
                     handle: presence_handle_env(),
                 });
+                if let Err(error) = manager.await_primary_route() {
+                    tracing::warn!(
+                        ?error,
+                        "collab: primary route unavailable; disabling SDK collaboration"
+                    );
+                    return Self {
+                        backend: Backend::Disabled,
+                        identity: None,
+                    };
+                }
                 manager
             }
             Err(_) => Self {
@@ -1005,6 +1078,9 @@ impl CollaborationManager {
             record: None,
             handle: presence_handle_env(),
         });
+        manager
+            .await_primary_route()
+            .expect("test collaboration primary route becomes ready");
         manager
     }
 
@@ -1483,7 +1559,8 @@ fn run_shovel(
                 return;
             }
         };
-        // Ready. Manager may now hand out `send` / `poll`.
+        // The transport is ready. The manager queues its primary Hello next
+        // and waits for `PrimaryReady` before returning it to the caller.
         let _ = init_tx.send(InitStatus::Ready);
 
         drive_shovel(client, identity, outbound_rx, inbound_tx).await;
@@ -1512,6 +1589,7 @@ async fn drive_shovel(
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
+    let mut primary_result = Err("primary collaboration route was not announced".to_string());
 
     while let Some(command) = outbound_rx.recv().await {
         match command {
@@ -1528,7 +1606,7 @@ async fn drive_shovel(
                     record,
                 };
                 let key = spec.channel_id();
-                ensure_sdk_route(
+                primary_result = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1538,7 +1616,7 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                primary = Some(key);
+                primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
                 let Some(key) = primary.as_ref() else {
@@ -1550,7 +1628,7 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::Join(spec) => {
-                ensure_sdk_route(
+                let _ = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1563,7 +1641,7 @@ async fn drive_shovel(
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
-                ensure_sdk_route(
+                let joined = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1573,9 +1651,14 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                if let Some(route) = routes.get_mut(&key) {
+                if joined.is_ok()
+                    && let Some(route) = routes.get_mut(&key)
+                {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
+            }
+            SdkCommand::PrimaryReady(reply) => {
+                let _ = reply.send(primary_result.clone());
             }
         }
     }
@@ -1604,10 +1687,10 @@ async fn ensure_sdk_route(
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
-) {
+) -> Result<(), String> {
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
-        return;
+        return Ok(());
     }
     let channel = match client
         .join_channel_as_kind(
@@ -1623,15 +1706,19 @@ async fn ensure_sdk_route(
             tracing::warn!(
                 "collab: joining channel {channel_id} failed ({error}); route unavailable"
             );
-            return;
+            return Err(format!("joining collaboration route failed: {error}"));
         }
     };
 
+    // The catalogue is level-triggered and its first snapshot is the route's
+    // decision baseline. Enqueue it before subscribing to document traffic,
+    // so a backlogged snapshot cannot make an agent decide against stale
+    // local fallback data immediately after construction.
+    spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     spawn_op_stream(&channel, inbound_tx).await;
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
-    spawn_action_catalogue_stream(&channel, inbound_tx).await;
     // This intentionally fails quietly for person sessions. An admitted
     // agent gets a separate broker-addressed queue; a document agent never
     // has to infer task work from room traffic.
@@ -1647,6 +1734,7 @@ async fn ensure_sdk_route(
             workspace_controls: std::collections::HashMap::new(),
         },
     );
+    Ok(())
 }
 
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
@@ -1778,6 +1866,7 @@ async fn spawn_invocation_stream(
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
                 let id = invocation.id;
+                let context = parse_invocation_context(id, &invocation.context_json);
                 if tx
                     .send(CollabEvent::Invocation {
                         id,
@@ -1785,6 +1874,7 @@ async fn spawn_invocation_stream(
                         action: invocation.action,
                         argument: invocation.argument,
                         actor: invocation.actor,
+                        context,
                     })
                     .is_err()
                 {
@@ -1813,6 +1903,19 @@ async fn spawn_invocation_stream(
     }
 }
 
+fn parse_invocation_context(id: u64, json: &str) -> Option<qos_actions::ActionContext> {
+    if json.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str(json) {
+        Ok(context) => Some(context),
+        Err(error) => {
+            tracing::warn!(%error, id, "collab: ignoring invalid invocation context");
+            None
+        }
+    }
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
@@ -1820,29 +1923,44 @@ async fn spawn_invocation_stream(
 async fn spawn_action_catalogue_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
-) {
-    if let Ok(stream) = channel.subscribe_action_catalogue().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(snapshot) = stream.read().await {
-                match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
-                    Ok(catalogue) => {
-                        if tx
-                            .send(CollabEvent::ActionCatalogue {
-                                surfaces: catalogue.surfaces,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "collab: invalid broker action catalogue");
+) -> Result<(), String> {
+    let stream = channel
+        .subscribe_action_catalogue()
+        .await
+        .map_err(|error| format!("subscribing to action catalogue failed: {error}"))?;
+    let initial = stream
+        .read()
+        .await
+        .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
+    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
+        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+    inbound_tx
+        .send(CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        })
+        .map_err(|_| "delivering initial action catalogue failed".to_string())?;
+
+    let tx = inbound_tx.clone();
+    tokio::task::spawn_local(async move {
+        while let Ok(snapshot) = stream.read().await {
+            match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
+                Ok(catalogue) => {
+                    if tx
+                        .send(CollabEvent::ActionCatalogue {
+                            surfaces: catalogue.surfaces,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
+                Err(error) => {
+                    tracing::warn!(%error, "collab: invalid broker action catalogue");
+                }
             }
-        });
-    }
+        }
+    });
+    Ok(())
 }
 
 /// Bridge broker-addressed task leases only when this connection is an
@@ -1886,7 +2004,9 @@ async fn spawn_presence_stream(
                 let tx = inbound_tx.clone();
                 tokio::task::spawn_local(async move {
                     while let Ok(event) = stream.read().await {
-                        if tx.send(translate_presence_event(event)).is_err() {
+                        if let Some(event) = translate_presence_event(event)
+                            && tx.send(event).is_err()
+                        {
                             break;
                         }
                     }
@@ -2078,6 +2198,11 @@ async fn dispatch_sdk_request(
                 // directly on the peer-presence route. Apps cannot turn it
                 // into a viewport command through this generic SDK bridge.
                 PresencePayload::Following { .. } => {}
+                PresencePayload::Interaction(update) => {
+                    if let Ok(json) = serde_json::to_string(&update) {
+                        let _ = presence.publish_interaction(&key_bytes, &json).await;
+                    }
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -2373,21 +2498,20 @@ fn unpack_color(packed: u32) -> [f32; 3] {
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
 /// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
-fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
+fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<CollabEvent> {
     // Cursor keeps the legacy `user_id + x + y` shape; every other
-    // variant carries the decoded `PresenceKey`, falling back to a
-    // synthetic key if decoding fails.
+    // variant must carry a decodable semantic `PresenceKey`.
     match evt.payload {
-        runtime_collab::PresencePayload::Cursor { x, y } => CollabEvent::RemoteCursorMoved {
+        runtime_collab::PresencePayload::Cursor { x, y } => Some(CollabEvent::RemoteCursorMoved {
             user_id: evt.user_id,
             x,
             y,
-        },
+        }),
         other => {
-            let key: PresenceKey =
-                postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| PresenceKey::Tab {
-                    id: String::from("<undecodable>"),
-                });
+            // An undecodable scope cannot truthfully identify a target. Drop
+            // it instead of inventing a tab and making malformed presence
+            // look like a collaborator left some unrelated surface.
+            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).ok()?;
             let payload = match other {
                 runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
                     // A wire-supplied offset that doesn't fit `usize` on this
@@ -2408,6 +2532,12 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 runtime_collab::PresencePayload::Following { target } => {
                     PresencePayload::Following { target }
                 }
+                runtime_collab::PresencePayload::InteractionJson(json) => {
+                    let update: qos_actions::SemanticInteraction =
+                        serde_json::from_str(&json).ok()?;
+                    update.validate().ok()?;
+                    PresencePayload::Interaction(Box::new(update))
+                }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this
@@ -2420,11 +2550,11 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     PresencePayload::Pointer { x, y }
                 }
             };
-            CollabEvent::RemotePresenceUpdate {
+            Some(CollabEvent::RemotePresenceUpdate {
                 user_id: evt.user_id,
                 key,
                 payload,
-            }
+            })
         }
     }
 }
@@ -2457,8 +2587,9 @@ mod tests {
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
-        channel_context, channel_handle, collab_service, context_stream, presence_event,
-        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+        action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
+        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
+        stream,
     };
 
     #[derive(Default)]
@@ -2769,6 +2900,24 @@ mod tests {
         }
     }
 
+    struct FakeActionCatalogueStream {
+        initial: RefCell<Option<String>>,
+    }
+
+    impl action_catalogue_stream::Server for FakeActionCatalogueStream {
+        fn read(
+            self: Rc<Self>,
+            _params: action_catalogue_stream::ReadParams,
+            mut results: action_catalogue_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some(initial) = self.initial.borrow_mut().take() else {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            };
+            results.get().set_catalogue_json(&initial);
+            Promise::ok(())
+        }
+    }
+
     struct FakeChannel {
         captures: SharedCaptures,
         op_backlog: OpBacklog,
@@ -2843,6 +2992,21 @@ mod tests {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
             });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+
+        fn subscribe_action_catalogue(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeActionCatalogueParams,
+            mut results: channel_handle::SubscribeActionCatalogueResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: action_catalogue_stream::Client =
+                capnp_rpc::new_client(FakeActionCatalogueStream {
+                    initial: RefCell::new(Some(
+                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                    )),
+                });
             results.get().set_stream(client);
             Promise::ok(())
         }
@@ -3514,7 +3678,7 @@ mod tests {
     #[test]
     fn translate_presence_event_is_symmetric_over_all_payload_variants() {
         // Straight unit test of `translate_presence_event` — no broker or
-        // threading needed. Covers every payload variant + the undecodable-key fallback.
+        // threading needed. Malformed scopes are deliberately not projected.
         let key = PresenceKey::Widget {
             path: vec![crate::presence::PathSegment::Field("body".into())],
         };
@@ -3524,14 +3688,16 @@ mod tests {
             user_id: "peer".into(),
             key_bytes: key_bytes.clone(),
             payload: SdkPayload::Cursor { x: 7.0, y: 8.0 },
-        });
+        })
+        .expect("cursor event");
         matches!(e, CollabEvent::RemoteCursorMoved { .. });
 
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
             key_bytes,
             payload: SdkPayload::Caret { pos: 3 },
-        });
+        })
+        .expect("caret event");
         if let CollabEvent::RemotePresenceUpdate {
             key: k, payload, ..
         } = e
@@ -3547,10 +3713,20 @@ mod tests {
             key_bytes: vec![0xFF, 0xFF, 0xFF],
             payload: SdkPayload::Arrived,
         });
-        if let CollabEvent::RemotePresenceUpdate { key: k, .. } = e {
-            assert!(matches!(k, PresenceKey::Tab { .. }));
-        } else {
-            panic!("expected RemotePresenceUpdate on undecodable key");
-        }
+        assert!(
+            e.is_none(),
+            "an undecodable target is not semantic presence"
+        );
+    }
+
+    #[test]
+    fn invocation_context_json_is_optional_and_fail_closed() {
+        let context = qos_actions::ActionContext::default()
+            .with_purpose("Review the proposal")
+            .with_group("task:review", "Review", "task");
+        let json = serde_json::to_string(&context).unwrap();
+        assert_eq!(parse_invocation_context(7, &json), Some(context));
+        assert_eq!(parse_invocation_context(8, "  "), None);
+        assert_eq!(parse_invocation_context(9, "{not-json"), None);
     }
 }
