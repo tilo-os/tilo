@@ -1944,13 +1944,9 @@ impl InstallerApp {
             && !read_only
             && self.install_method == InstallMethod::Alongside
         {
-            let message = if guided_plans.len() > 1 {
-                "Select one of the unallocated regions above to continue."
-            } else {
-                "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks."
-            };
+            let message = self.alongside_unavailable_message(&guided_plans);
             children.push(Box::new(
-                Text::new(message).with_size(sm).with_color(danger),
+                Text::new(&message).with_size(sm).with_color(danger),
             ));
         } else if self.install_method == InstallMethod::Alongside
             && self.uses_guided_alongside()
@@ -1986,6 +1982,22 @@ impl InstallerApp {
                     .with_color(theme.tokens.colors.semantic.warning),
             ) as Box<dyn Widget>
         })
+    }
+
+    fn alongside_unavailable_message(&self, guided_plans: &[GuidedAlongsidePlan]) -> String {
+        if guided_plans.len() > 1 {
+            return "Select one of the unallocated regions above to continue.".to_string();
+        }
+        if let Some(issue) = self
+            .selected_disk_ref()
+            .filter(|disk| disk.alongside_root().is_some())
+            .and_then(Disk::prepared_efi_issue)
+        {
+            return format!(
+                "{issue} The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+            );
+        }
+        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks.".to_string()
     }
 
     fn compose_guided_extent_choices(
@@ -4116,6 +4128,26 @@ mod tests {
         assert!(
             find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_none(),
             "Linux-only alongside disks must not receive Windows-specific instructions"
+        );
+    }
+
+    #[test]
+    fn alongside_explains_a_determinable_prepared_efi_failure() {
+        let mut disk = sample_disks().remove(0);
+        disk.partitions.pop(); // remove the valid 2 GiB qOS ESP
+        let mut app = InstallerApp::with_disks(vec![disk]);
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+
+        assert!(
+            find_accessible(
+                &app,
+                "/dev/sda1 is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+            )
+            .is_some(),
+            "known ESP failures should be explained before the user leaves storage selection"
         );
     }
 

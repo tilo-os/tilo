@@ -609,7 +609,7 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
                 "could not embed and verify the setup profile: {error}"
             ));
         }
-        finish_target(&req.target);
+        finish_target(&req.target, &result);
     }
     let error = match &result {
         JobResult::Verified => None,
@@ -1050,14 +1050,27 @@ fn prepare_target(_target: &TargetDrive) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn finish_target(target: &TargetDrive) {
-    let _ = std::process::Command::new("diskutil")
-        .args(["eject", &format!("/dev/{}", target.name)])
-        .status();
+fn finish_target(target: &TargetDrive, result: &JobResult) {
+    // Keep a failed target attached so the user can retry without physically
+    // reconnecting it. It remains unmounted from `prepare_target`, which is
+    // also the safe state for another raw-write attempt. Successful media is
+    // ejected so it can be removed immediately.
+    if macos_should_eject(result) {
+        let _ = std::process::Command::new("diskutil")
+            .args(["eject", &format!("/dev/{}", target.name)])
+            .status();
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_should_eject(result: &JobResult) -> bool {
+    result.is_success()
 }
 
 #[cfg(target_os = "windows")]
-fn finish_target(target: &TargetDrive) {
+fn finish_target(target: &TargetDrive, _result: &JobResult) {
+    // Set-Disk took the device offline before opening its raw handle. Always
+    // restore it, including after a failed attempt, so it remains usable.
     if let Some(number) = target.name.strip_prefix("PhysicalDrive") {
         let script =
             format!("Set-Disk -Number {number} -IsOffline $false -ErrorAction SilentlyContinue");
@@ -1068,7 +1081,7 @@ fn finish_target(target: &TargetDrive) {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn finish_target(_target: &TargetDrive) {}
+fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 
 /// Spawn a job on a worker thread and return the receiver the UI drains once
 /// per frame. The returned [`JobStart`] is the validation result; a channel is
@@ -1411,6 +1424,18 @@ mod tests {
         replacement = selected.clone();
         replacement.is_system = true;
         assert!(!target_identity_matches(&selected, &replacement));
+    }
+
+    #[test]
+    fn macos_ejects_only_after_a_fully_verified_job() {
+        assert!(macos_should_eject(&JobResult::Verified));
+        assert!(!macos_should_eject(&JobResult::WriteFailed(
+            "device disconnected".into()
+        )));
+        assert!(!macos_should_eject(&JobResult::VerifyMismatch(42)));
+        assert!(!macos_should_eject(&JobResult::VerifyFailed(
+            "read-back failed".into()
+        )));
     }
 
     // ---- the real engine, proven against temp files (never a device) -------
