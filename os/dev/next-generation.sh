@@ -59,6 +59,30 @@ esac
 # problem rather than a lookup one.
 QOS_REGISTRY_CREDS="${QOS_REGISTRY_CREDS:-}"
 
+# Cosign performs separate registry requests after tag discovery. Give it the
+# same explicit credential in a private Docker config instead of relying on a
+# runner credential helper that may not exist inside the job container.
+QOS_COSIGN_AUTH_DIR=""
+cleanup_auth() {
+  [ -z "$QOS_COSIGN_AUTH_DIR" ] || rm -r "$QOS_COSIGN_AUTH_DIR"
+}
+trap cleanup_auth EXIT
+if [ -n "$QOS_REGISTRY_CREDS" ]; then
+  case "$QOS_REGISTRY_CREDS" in
+    *:*) ;;
+    *) die "QOS_REGISTRY_CREDS must be user:token" ;;
+  esac
+  [ -n "${QOS_REGISTRY_CREDS%%:*}" ] && [ -n "${QOS_REGISTRY_CREDS#*:}" ] \
+    || die "QOS_REGISTRY_CREDS must contain a non-empty user and token"
+  QOS_COSIGN_AUTH_DIR="$(mktemp -d)"
+  chmod 0700 "$QOS_COSIGN_AUTH_DIR"
+  encoded="$(printf '%s' "$QOS_REGISTRY_CREDS" | base64 | tr -d '\n')"
+  printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+    "${QOS_PUBLISH_REPO%%/*}" "$encoded" > "$QOS_COSIGN_AUTH_DIR/config.json"
+  chmod 0600 "$QOS_COSIGN_AUTH_DIR/config.json"
+  export DOCKER_CONFIG="$QOS_COSIGN_AUTH_DIR"
+fi
+
 # skopeo is not installed everywhere this runs — the host is image-based and the CI
 # runner does not ship it — so fall back to running it in a container.
 SKOPEO_IMAGE="${QOS_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
@@ -105,7 +129,7 @@ list_tags() {
 
   if command -v skopeo >/dev/null 2>&1; then
     if [ -n "${auth:-}" ]; then
-      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+      if REGISTRY_AUTH_FILE="$auth" skopeo list-tags "docker://$QOS_PUBLISH_REPO"; then
         rc=0
       else
         rc=$?
@@ -113,7 +137,7 @@ list_tags() {
       rm -r "$tmp"
       return $rc
     fi
-    skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
+    skopeo list-tags "docker://$QOS_PUBLISH_REPO"
     return $?
   fi
 
@@ -127,20 +151,21 @@ list_tags() {
     echo "Log in (podman login ${QOS_PUBLISH_REPO%%/*}), or set" >&2
     echo "QOS_REGISTRY_CREDS=user:token." >&2
     return 1; }
-  # A copy in a directory of our own, mounted with an SELinux relabel. Bind-mounting
-  # the credential file straight in fails "permission denied" reading it — the
-  # container cannot see through the label on $XDG_RUNTIME_DIR — and relabelling the
-  # real file to fix that would rewrite the host's credential store.
+  # Copy into a directory of our own first. The resulting file is streamed over
+  # stdin below: an Actions job commonly controls a host Docker daemon, which
+  # cannot bind-mount paths from the job container's private filesystem.
     tmp="$(mktemp -d)" || return 1
     if ! cp "$auth" "$tmp/auth.json" || ! chmod 0600 "$tmp/auth.json"; then
       rm -r "$tmp"
       return 1
     fi
   fi
-  if "$engine" run --rm \
-      -e REGISTRY_AUTH_FILE=/run/qos-auth/auth.json \
-      -v "$tmp:/run/qos-auth:ro,z" \
-      "$SKOPEO_IMAGE" list-tags "docker://$QOS_PUBLISH_REPO" 2>&1; then
+  if "$engine" run --rm --interactive \
+      --entrypoint /bin/sh \
+      -e REGISTRY_AUTH_FILE=/tmp/qos-auth.json \
+      "$SKOPEO_IMAGE" -ceu \
+      'umask 077; cat > "$REGISTRY_AUTH_FILE"; exec skopeo list-tags "docker://$1"' \
+      sh "$QOS_PUBLISH_REPO" < "$tmp/auth.json"; then
     rc=0
   else
     rc=$?
@@ -174,10 +199,11 @@ verify_signed_generation() {
   signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" "$image")" || die \
     "gen$generation has no valid transparency-logged qOS release signature"
   provenance="$(cosign verify-attestation --key "$QOS_GENERATION_VERIFY_KEY" \
-    --type slsaprovenance "$image")" || die \
+    --type slsaprovenance1 "$image")" || die \
     "gen$generation has no valid transparency-logged SLSA provenance"
   printf '%s' "$provenance" | jq -e --argjson generation "$generation" '
-    [.[].payload | @base64d | fromjson
+    [(if type == "array" then .[] else . end)
+      | .payload | @base64d | fromjson
       | .predicate.buildDefinition.externalParameters.generation]
     | any(. == $generation)
   ' >/dev/null || die \

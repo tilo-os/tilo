@@ -10,11 +10,11 @@ not replace the host's boot chain, greeter, or package manager.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64` (`aarch64` deferred) |
-| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64` (`aarch64` deferred) |
-| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux` (`aarch64-linux` deferred) |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
+| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
+| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
@@ -37,7 +37,7 @@ test-control socket and ffmpeg-backed HDR decoding so the login-session binary
 does not acquire a distribution-specific libavcodec ABI.
 
 The package version has one source of truth: `dist/VERSION`. Before tagging,
-update it, then create a matching `vX.Y.Z` tag. Debian and Ubuntu receive
+update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu receive
 separate package revisions because each binary is linked and dependency-scanned
 inside its own distribution build root.
 
@@ -116,7 +116,7 @@ Nix can build or substitute the package declaratively.
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
 that touch packaging or the packaged binaries execute the current x86-64 matrix.
-Version tags execute it regardless of changed paths, wait for every x86-64 install
+`desktop-v*` tags execute it regardless of changed paths, wait for every x86-64 and ARM64 install
 test, download the artifacts, require the complete current output set, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. The five target userspaces run sequentially in one
@@ -129,14 +129,16 @@ architectures through a job-private PRoot and checksum-pinned QEMU without
 registering a host binfmt handler, but that mechanism is not the release gate:
 the Nix closure must be validated on a native ARM64 runner first.
 The package matrix runs as one sequential x86-64 lane; native Cargo builds use
-at most four compiler jobs. ARM64 packaging remains implemented in `dist/ci`,
-but is deliberately excluded until a native runner can verify its Nix closure.
-This leaves capacity for main-branch checks on the shared runner pool.
+at most four compiler jobs. Ordinary changes allocate only that x86-64 lane;
+tags and manual runs with `full_native` add the native ARM64 lane and verify its
+Nix closure without QEMU-user.
 The Debian-family, Fedora, and Arch jobs reuse the runners' optional remote
-compiler cache in isolated distro/architecture namespaces and fail open to an
+compiler cache in an architecture namespace and fail open to an
 ordinary build if that service is unavailable. Cache credentials are only
 forwarded on trusted branch, tag, and manual runs; pull requests build cold.
-Nix builds remain pure.
+The compiler, flags, system headers, and environment are hashed into each
+sccache key, so incompatible distro objects miss while the common Rust graph
+can hit. Nix builds remain pure.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,

@@ -1,4 +1,4 @@
-name: Build qos-kernel image (publish on tags + dispatch)
+name: Snapshot / kernel
 
 # Rebuilds Fedora's kernel with our config fragment (statically-in boot
 # drivers + PREEMPT + HZ=1000 + THP=always + trim debuginfo) and publishes
@@ -72,6 +72,11 @@ jobs:
       # KBUILD_BUILD_TIMESTAMP to SOURCE_DATE_EPOCH (see os/kernel/Containerfile).
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Set up buildx for registry cache export
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
 
       - name: Extract image metadata (tags, labels)
         id: meta

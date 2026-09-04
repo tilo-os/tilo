@@ -15,6 +15,9 @@
 # Envs:
 #   REPO           repo root, holding apps/*/qos-app.toml   [default: /build]
 #   BIN_DIR        directory of built release binaries      [default: /out]
+#   QPKG_DIR       install these already-verified release qpkgs instead of
+#                  packing BIN_DIR (optional)
+#   EXPECTED_PUBKEY require every prebuilt qpkg to use this publisher (64 hex)
 #   STORE          app store root; becomes QOS_APPS_DATA_DIR
 #                                          [default: /usr/share/qos-apps]
 #   STAGE          scratch for payload trees + .qpkg files  [default: mktemp]
@@ -49,6 +52,8 @@ PKG_BIN="${PKG_BIN:-$BIN_DIR/qos-pkg}"
 INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/qos-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/qos-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/qos-cli-shim}"
+QPKG_DIR="${QPKG_DIR:-}"
+EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
 MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"
 RECOVERY_MAX_QPKG_BYTES="${RECOVERY_MAX_QPKG_BYTES:-50000000}"
@@ -61,20 +66,27 @@ for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
 done
 
 mkdir -p "$STAGE" "$STORE"
+initial_rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" 2>/dev/null || true)"
 
-# --- signing identity ------------------------------------------------------
+# --- source-package signing identity ---------------------------------------
 # Minted per build and discarded with the stage dir, exactly like the runtime
 # bundle's. Nothing needs to sign as this identity again: the packages are
 # already unpacked into the store by the time the image is sealed, so the
 # signature's job (binding manifest to payload during install) is done.
-if [ ! -f "$IDENTITY_JSON" ]; then
-    msg "generating app-signing identity at $IDENTITY_JSON"
-    "$BUNDLE_BIN" key generate --out "$IDENTITY_JSON"
+prebuilt=0
+if [ -n "$QPKG_DIR" ] && compgen -G "$QPKG_DIR/*.qpkg" >/dev/null; then
+    prebuilt=1
+    PUBKEY=''
+else
+    if [ ! -f "$IDENTITY_JSON" ]; then
+        msg "generating app-signing identity at $IDENTITY_JSON"
+        "$BUNDLE_BIN" key generate --out "$IDENTITY_JSON"
+    fi
+    PUBKEY="$("$BUNDLE_BIN" key pubkey --identity "$IDENTITY_JSON")"
+    [ -n "$PUBKEY" ] || die "could not read the signing pubkey"
+    [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
+    msg "signing as ed25519:$PUBKEY"
 fi
-PUBKEY="$("$BUNDLE_BIN" key pubkey --identity "$IDENTITY_JSON")"
-[ -n "$PUBKEY" ] || die "could not read the signing pubkey"
-[ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
-msg "signing as ed25519:$PUBKEY"
 
 # `qos-install` writes a PATH shim per declared CLI command and needs the
 # shim binary to copy. Without it a CLI package installs but its commands
@@ -92,6 +104,41 @@ export QOS_APPS_DATA_DIR="$STORE"
 
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()
+
+if [ "$prebuilt" = 1 ]; then
+    for qpkg in "$QPKG_DIR"/*.qpkg; do
+        qpkg_bytes=$(wc -c < "$qpkg")
+        if [ "$qpkg_bytes" -ge "$MAX_QPKG_BYTES" ]; then
+            failed+=("$(basename "$qpkg"): $qpkg_bytes bytes exceeds $MAX_QPKG_BYTES")
+            continue
+        fi
+        if ! "$PKG_BIN" verify "$qpkg" >"$STAGE/$(basename "$qpkg").verify.log" 2>&1; then
+            failed+=("$(basename "$qpkg"): signature or content verification failed")
+            continue
+        fi
+        package_pubkey=$("$PKG_BIN" inspect "$qpkg" \
+            | sed -n 's/^identity  *= *"ed25519:\([0-9a-fA-F]\{64\}\)".*/\1/p' \
+            | head -1)
+        [ -n "$package_pubkey" ] \
+            || { failed+=("$(basename "$qpkg"): publisher identity is missing"); continue; }
+        if [ -z "$PUBKEY" ]; then
+            PUBKEY=$package_pubkey
+        elif [ "$PUBKEY" != "$package_pubkey" ]; then
+            failed+=("$(basename "$qpkg"): collection mixes publisher identities")
+            continue
+        fi
+        if ! "$INSTALL_BIN" install "$qpkg" --allow-self-signed \
+                >"$STAGE/$(basename "$qpkg").install.log" 2>&1; then
+            failed+=("$(basename "$qpkg"): install failed")
+            continue
+        fi
+        shipped+=("$(basename "$qpkg")")
+    done
+    [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
+    if [ -n "$EXPECTED_PUBKEY" ] && [ "${PUBKEY,,}" != "${EXPECTED_PUBKEY,,}" ]; then
+        die "prebuilt collection publisher does not match EXPECTED_PUBKEY"
+    fi
+else
 
 for manifest in "$REPO"/apps/*/qos-app.toml; do
     [ -e "$manifest" ] || continue
@@ -161,6 +208,7 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
 
     shipped+=("$id ($qpkg_bytes bytes)")
 done
+fi
 
 # --- report ----------------------------------------------------------------
 msg "shipped ${#shipped[@]} size-gated package(s) into $STORE"
@@ -178,6 +226,7 @@ fi
 # palette, which is the failure this whole step exists to prevent.
 [ -s "$STORE/registry.toml" ] || die "$STORE/registry.toml is missing or empty"
 rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" || true)"
-[ "$rows" = "${#shipped[@]}" ] \
-    || die "registry has $rows row(s) but ${#shipped[@]} package(s) installed"
+expected_rows=$((initial_rows + ${#shipped[@]}))
+[ "$rows" = "$expected_rows" ] \
+    || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} installed"
 msg "registry.toml lists $rows package(s)"

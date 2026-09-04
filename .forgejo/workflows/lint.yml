@@ -1,4 +1,4 @@
-name: Fast quality checks
+name: CI / fast quality
 
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
 # This path stays intentionally cheap so it can run on every change.
@@ -54,7 +54,9 @@ jobs:
             xargs -0 -r rustfmt --edition 2024 --check
 
       - name: CI selector unit tests
-        run: python3 -m unittest tools/tests/test_ci_select.py
+        run: |
+          python3 -m unittest tools/tests/test_ci_select.py
+          python3 -m unittest tools/tests/test_app_release.py
 
       - name: Immutable workflow dependency contract
         run: bash os/tests/workflow_dependency_invariants.sh
