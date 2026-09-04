@@ -135,6 +135,11 @@ impl CollaborationLaunchpad {
             .position(|rect| rect.contains(self.last_cursor))
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_precision_loss,
+        reason = "bounded six-card renderer geometry uses f64 logical pixels"
+    )]
     fn card_geometry(rect: Rect) -> ([Rect; 6], usize) {
         let panel_w = (rect.width() - 48.0).clamp(280.0, 900.0);
         let panel_x = rect.center().x - panel_w / 2.0;
@@ -150,7 +155,8 @@ impl CollaborationLaunchpad {
         let rows = 6_usize.div_ceil(columns);
         let available_h = (rect.height() - 168.0 - gap * (rows.saturating_sub(1) as f64)).max(0.0);
         let card_h = (available_h / rows as f64).clamp(64.0, 96.0);
-        let top = rect.center().y - (rows as f64 * card_h + (rows - 1) as f64 * gap) / 2.0 + 32.0;
+        let grid_h = (rows as f64).mul_add(card_h, (rows.saturating_sub(1) as f64) * gap);
+        let top = rect.center().y - grid_h / 2.0 + 32.0;
         let mut cards = [Rect::ZERO; 6];
         for (index, card) in cards.iter_mut().enumerate() {
             let column = index % columns;
@@ -217,6 +223,11 @@ impl Widget for CollaborationLaunchpad {
         (self.card_rects, _) = Self::card_geometry(self.rect);
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        reason = "immediate-mode renderer composes bounded logical-pixel geometry; text width API uses f32"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -247,8 +258,7 @@ impl Widget for CollaborationLaunchpad {
             None,
         );
 
-        for (index, action) in LaunchpadAction::ALL.into_iter().enumerate() {
-            let rect = cards[index];
+        for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
             let surface = if active {
                 theme.accent_primary.with_alpha_factor(0.13)
@@ -315,6 +325,10 @@ impl Widget for CollaborationLaunchpad {
         }
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "pointer scaling and bounded six-card grid navigation use checked/saturating indices"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -338,37 +352,40 @@ impl Widget for CollaborationLaunchpad {
             } => {
                 if let Some(index) = self.hovered() {
                     self.selected = index;
-                    Self::fire(LaunchpadAction::ALL[index], state, path);
-                    *handled = true;
+                    if let Some(action) = LaunchpadAction::ALL.get(index).copied() {
+                        Self::fire(action, state, path);
+                        *handled = true;
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused && event.state == ElementState::Pressed =>
             {
                 let (_, columns) = Self::card_geometry(self.rect);
+                let last_index = LaunchpadAction::ALL.len().saturating_sub(1);
                 let next = match event.logical_key {
                     Key::Named(NamedKey::ArrowRight) => {
-                        Some((self.selected + 1).min(LaunchpadAction::ALL.len() - 1))
+                        Some(self.selected.saturating_add(1).min(last_index))
                     }
                     Key::Named(NamedKey::ArrowLeft) => Some(self.selected.saturating_sub(1)),
                     Key::Named(NamedKey::ArrowDown) => {
-                        Some((self.selected + columns).min(LaunchpadAction::ALL.len() - 1))
+                        Some(self.selected.saturating_add(columns).min(last_index))
                     }
                     Key::Named(NamedKey::ArrowUp) => Some(self.selected.saturating_sub(columns)),
                     Key::Named(NamedKey::Tab) => {
                         if modifiers.state().shift_key() {
-                            Some(
-                                self.selected
-                                    .checked_sub(1)
-                                    .unwrap_or(LaunchpadAction::ALL.len() - 1),
-                            )
+                            Some(self.selected.checked_sub(1).unwrap_or(last_index))
+                        } else if self.selected >= last_index {
+                            Some(0)
                         } else {
-                            Some((self.selected + 1) % LaunchpadAction::ALL.len())
+                            Some(self.selected.saturating_add(1))
                         }
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        Self::fire(LaunchpadAction::ALL[self.selected], state, path);
-                        *handled = true;
+                        if let Some(action) = LaunchpadAction::ALL.get(self.selected).copied() {
+                            Self::fire(action, state, path);
+                            *handled = true;
+                        }
                         None
                     }
                     _ => None,

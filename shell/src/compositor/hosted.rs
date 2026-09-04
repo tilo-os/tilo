@@ -44,6 +44,10 @@ pub fn run_with_options(enable_peer_sync: bool) {
 }
 
 /// Full options-struct form. New flags land here without changing the legacy `run_with_options(bool)` caller; `main.rs` switches over when wiring multiple flags.
+#[allow(
+    clippy::too_many_lines,
+    reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
+)]
 pub fn run_with_full_options(opts: HostedOptions) {
     let HostedOptions {
         enable_peer_sync,
