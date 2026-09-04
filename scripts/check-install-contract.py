@@ -49,15 +49,16 @@ linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["depen
 assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
-assert "Restore the ARM64 include only when" in session_workflow
-assert "arch: amd64" in session_workflow
-assert "arch: arm64" not in session_workflow
+assert "Select native release lanes" in session_workflow
+assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
+assert '{arch:"amd64",runner:"qos-package",targets:$targets}' in session_workflow
+assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]
 for item in targets.values():
-    assert len(item["architectures"]) == 1
-    assert len(item["plannedArchitectures"]) == 1
+    assert len(item["architectures"]) == 2
+    assert item["plannedArchitectures"] == []
     assert item["package"] == "qos-session"
 
 print("install contract matches the current Imager and desktop-session release lanes")

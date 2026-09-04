@@ -10,11 +10,11 @@ not replace the host's boot chain, greeter, or package manager.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64` (`aarch64` deferred) |
-| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64` (`aarch64` deferred) |
-| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux` (`aarch64-linux` deferred) |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
+| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
+| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
