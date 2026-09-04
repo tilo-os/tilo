@@ -1670,6 +1670,10 @@ impl InstallerApp {
         self.reset_viewport();
         self.status_lines
             .push("Installed — remove the medium and reboot.".to_string());
+        // Completion replaces an unfocusable progress surface with recovery
+        // and power controls. Put keyboard users on the first recovery action
+        // deterministically instead of retaining a stale node from Review.
+        self.focus_reset = true;
         self.dirty_structure = true;
     }
 
@@ -4279,8 +4283,8 @@ mod tests {
         app.on_external_event(CTRL_DONE, &mut doc, &root);
         assert_eq!(app.install_state, InstallState::Done);
         assert!(
-            !app.take_focus_reset(),
-            "an asynchronous completion must announce itself without moving focus"
+            app.take_focus_reset(),
+            "completion must focus the first recovery action on the new Finish surface"
         );
     }
 
