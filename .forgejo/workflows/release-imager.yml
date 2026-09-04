@@ -432,26 +432,28 @@ jobs:
             if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "release tag must be imager-vMAJOR.MINOR.PATCH" }
             if ($env:CREDENTIAL_BROKER) {
               & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 broker $env:CREDENTIAL_BROKER |
-                Out-File -FilePath $env:GITHUB_ENV -Append
+                Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             } elseif ($env:EXTERNAL_SIGNER) {
               & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 signer $env:EXTERNAL_SIGNER |
-                Out-File -FilePath $env:GITHUB_ENV -Append
+                Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             } elseif ($env:ALLOW_STATIC_BOOTSTRAP -eq "1") {
               if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) { throw "bootstrap PFX secrets are missing" }
+              if ($env:CERT_PASSWORD -match "[`r`n]") { throw "bootstrap PFX password must be a single line" }
               $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
               if (Test-Path -LiteralPath $Pfx) { throw "bootstrap PFX path already exists" }
               [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
-              "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
-              "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             } else {
               throw "Configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap"
             }
-            "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if (-not $env:EXPECTED_PUBLISHER) { throw "Configure IMAGER_WINDOWS_PUBLISHER" }
-            "QOS_WINDOWS_EXPECTED_PUBLISHER=$env:EXPECTED_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_RELEASE_BASE_URL=https://code.sandbox.example/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+            if ($env:EXPECTED_PUBLISHER -match "[`r`n]") { throw "Windows publisher policy must be a single line" }
+            "QOS_WINDOWS_EXPECTED_PUBLISHER=$env:EXPECTED_PUBLISHER" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "QOS_RELEASE_BASE_URL=https://code.sandbox.example/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked
@@ -581,7 +583,7 @@ jobs:
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
               [[ "${EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] \
                 || { printf 'configure IMAGER_MAC_TEAM_ID\n' >&2; exit 1; }
-              cert_fingerprint="${EXPECTED_CERT_SHA256^^}"
+              cert_fingerprint="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr '[:lower:]' '[:upper:]')"
               cert_fingerprint="${cert_fingerprint//:/}"
               [[ "$cert_fingerprint" =~ ^[A-F0-9]{64}$ ]] \
                 || { printf 'configure IMAGER_MAC_CERT_SHA256\n' >&2; exit 1; }
