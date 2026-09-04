@@ -137,6 +137,12 @@ pub struct ImagerApp {
     /// Makes the destructive action look armed in an offscreen documentation
     /// frame without enabling (or bypassing) the real write backend.
     shot_confirmation_ready: bool,
+    /// False until the first live sync has reconciled any persisted active
+    /// phase with this process's necessarily empty worker channels.
+    startup_write_state_reconciled: bool,
+    /// The previous process lost supervision of an active write. The recovery
+    /// action must rescan and return to drive selection, not jump to Confirm.
+    orphaned_write_recovery: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -193,6 +199,8 @@ impl ImagerApp {
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             shot_confirmation_ready: false,
+            startup_write_state_reconciled: false,
+            orphaned_write_recovery: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -246,7 +254,12 @@ impl ImagerApp {
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
-            Step::Confirm => self.confirm_matches() && self.image_fits() && writer_available,
+            Step::Confirm => {
+                self.startup_write_state_reconciled
+                    && self.confirm_matches()
+                    && self.image_fits()
+                    && writer_available
+            }
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
         }
@@ -3568,6 +3581,11 @@ impl ImagerApp {
         operation: &crate::actions::ImagerOperation,
         state: &mut AutoCommit,
     ) -> Result<(), String> {
+        if matches!(operation, crate::actions::ImagerOperation::Write { .. })
+            && !self.startup_write_state_reconciled
+        {
+            return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
+        }
         if matches!(operation, crate::actions::ImagerOperation::Cancel) {
             let Some(control) = self.job_control.clone() else {
                 return Err("No image write is currently running".into());
@@ -3753,6 +3771,29 @@ impl ImagerApp {
     }
 
     fn write_another(&mut self, state: &mut AutoCommit) {
+        if self.orphaned_write_recovery {
+            self.orphaned_write_recovery = false;
+            self.progress = Progress::default();
+            ImagerDoc::set_progress(state, &self.progress);
+            self.selected = None;
+            ImagerDoc::set_selected(state, None);
+            self.confirm_input.set_text("");
+            let refreshed = !live_probe_enabled() || self.do_rescan(state);
+            if !refreshed {
+                // A stale persisted inventory is not a fresh safety review.
+                // Hide it until a later rescan succeeds.
+                self.targets.clear();
+                ImagerDoc::write_targets(state, &self.targets);
+            }
+            self.goto(state, Step::Drive);
+            let message = if refreshed {
+                "Select the target drive again, review its current contents, and type its name to retry."
+            } else {
+                "The drive list could not be refreshed. Reconnect the target and rescan before reviewing and retrying."
+            };
+            self.set_status(state, message);
+            return;
+        }
         if self.progress.phase == JobPhase::Failed {
             // Preserve the reviewed source, target, and customized setup. A
             // retry still requires a fresh peer-local destructive confirmation
@@ -3786,7 +3827,7 @@ impl ImagerApp {
         self.export_after_sync = true;
     }
 
-    fn do_rescan(&mut self, state: &mut AutoCommit) {
+    fn do_rescan(&mut self, state: &mut AutoCommit) -> bool {
         if live_probe_enabled() {
             // Re-read the live block-device inventory. `probe()` returns `None`
             // only when `lsblk` is unavailable — a transient failure — so in
@@ -3794,14 +3835,20 @@ impl ImagerApp {
             // A real (possibly empty) result is authoritative and replaces it,
             // so unplugging the selected drive genuinely drops it from the list.
             let remembered = self.target().map(|d| d.name.clone());
-            if let Some(t) = crate::probe::probe() {
-                self.targets.clone_from(&t);
-                ImagerDoc::write_targets(state, &t);
-                // Keep the same physical drive selected across a rescan by name,
-                // not by index (indices shift as drives come and go).
-                self.selected =
-                    remembered.and_then(|name| self.targets.iter().position(|d| d.name == name));
-            }
+            let Some(t) = crate::probe::probe() else {
+                self.set_status(
+                    state,
+                    "Drive rescan failed. Check the system disk tools and try again.",
+                );
+                self.dirty = true;
+                return false;
+            };
+            self.targets.clone_from(&t);
+            ImagerDoc::write_targets(state, &t);
+            // Keep the same physical drive selected across a rescan by name,
+            // not by index (indices shift as drives come and go).
+            self.selected =
+                remembered.and_then(|name| self.targets.iter().position(|d| d.name == name));
             let n = self.targets.len();
             let removable = self.removable_count();
             self.set_status(
@@ -3814,6 +3861,7 @@ impl ImagerApp {
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         ImagerDoc::set_selected(state, self.selected);
         self.dirty = true;
+        true
     }
 
     fn dispatch_hit(&mut self, state: &mut AutoCommit, hit: Hit) {
@@ -3834,7 +3882,9 @@ impl ImagerApp {
                 }
             }
             Hit::Target(i) => self.select_target(state, i),
-            Hit::Rescan => self.do_rescan(state),
+            Hit::Rescan => {
+                self.do_rescan(state);
+            }
             Hit::ConfirmField => {
                 self.confirm_input.set_focus(true);
                 self.customize.clear_focus();
@@ -3853,6 +3903,59 @@ impl ImagerApp {
             }
             Hit::WriteAnother => self.write_another(state),
         }
+    }
+
+    /// Reconcile a durable write station with this process's local-only worker
+    /// channels. Active/idle progress has no authenticated terminal outcome;
+    /// an already-persisted terminal event is retained and shown on Done.
+    fn reconcile_persisted_write_state(&mut self, state: &mut AutoCommit) {
+        // A fully supervised in-process job is not an orphan. New app
+        // instances start with both fields empty; spelling this out keeps a
+        // future warm-restore path from rewriting a live operation.
+        if self.job_rx.is_some() && self.job_control.is_some() {
+            self.startup_write_state_reconciled = true;
+            return;
+        }
+        let restored_step = ImagerDoc::step(state);
+        let mut progress = ImagerDoc::progress(state);
+        let idle_write_was_orphaned =
+            restored_step == Step::Write && progress.phase == JobPhase::Idle;
+        if idle_write_was_orphaned {
+            // The step may have persisted immediately before the initial
+            // Writing event. There is no evidence that the device was untouched.
+            progress.mark_supervision_lost();
+        }
+        let transitioned = progress.fail_if_supervision_lost();
+        let supervision_was_lost = idle_write_was_orphaned
+            || transitioned
+            || (progress.phase == JobPhase::Failed
+                && progress.error.as_deref() == Some(crate::model::WRITE_SUPERVISION_LOST));
+        if supervision_was_lost {
+            let message = crate::model::WRITE_SUPERVISION_LOST;
+            ImagerDoc::set_progress(state, &progress);
+            ImagerDoc::set_selected(state, None);
+            ImagerDoc::set_step(state, Step::Done);
+            ImagerDoc::set_status(state, message);
+            self.confirm_input.set_text("");
+            self.orphaned_write_recovery = true;
+        } else if restored_step == Step::Write
+            && matches!(progress.phase, JobPhase::Success | JobPhase::Failed)
+        {
+            // The terminal event persisted before the UI advanced its station.
+            // Preserve that authoritative outcome, but never leave the wizard
+            // stranded on an in-progress screen without a worker.
+            ImagerDoc::set_step(state, Step::Done);
+            let message = if progress.phase == JobPhase::Success {
+                "The previous image write completed and verified."
+            } else {
+                progress
+                    .error
+                    .as_deref()
+                    .unwrap_or("The previous image write failed. Review the drive before retrying.")
+            };
+            ImagerDoc::set_status(state, message);
+        }
+        self.startup_write_state_reconciled = true;
     }
 }
 
@@ -3879,6 +3982,14 @@ impl Widget for ImagerApp {
                     Vec::new()
                 };
                 ImagerDoc::seed(state, &targets);
+            }
+            if live_probe_enabled() {
+                self.reconcile_persisted_write_state(state);
+            } else {
+                // Demo/tests/shots intentionally pose worker-less progress
+                // frames. They still complete startup so operations cannot be
+                // held unavailable forever outside the live binary.
+                self.startup_write_state_reconciled = true;
             }
             self.seeded = true;
         }
@@ -4178,7 +4289,7 @@ impl Widget for ImagerApp {
         let mut job = crate::actions::operation_resource(
             self.target().map(TargetDrive::dev_path).as_deref(),
             available,
-            self.job_rx.is_some(),
+            !self.startup_write_state_reconciled || self.job_rx.is_some(),
             crate::write::write_available(),
         );
         job.actions.push(
@@ -5033,6 +5144,156 @@ mod tests {
         assert!(app.source.is_none(), "no fabricated image");
         assert!(app.recent.is_empty(), "no fabricated recent history");
         assert_eq!(app.step, Step::Source);
+    }
+
+    #[test]
+    fn restored_write_and_verify_phases_fail_closed_and_require_fresh_drive_review() {
+        for phase in [JobPhase::Writing, JobPhase::Verifying] {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            ImagerDoc::seed_demo(&mut doc);
+            ImagerDoc::set_selected(&mut doc, Some(0));
+            ImagerDoc::set_step(&mut doc, Step::Write);
+            ImagerDoc::set_progress(
+                &mut doc,
+                &Progress {
+                    phase,
+                    write_frac: 0.8,
+                    verify_frac: 0.3,
+                    rate_bps: 64_000_000,
+                    error: None,
+                },
+            );
+
+            // This is the live startup transition, called before any resource
+            // operation can be offered. Tests invoke it directly so screenshot
+            // fixtures may continue posing an intentional progress frame.
+            app.reconcile_persisted_write_state(&mut doc);
+            app.sync(&mut doc, &automerge::ROOT);
+
+            assert!(app.startup_write_state_reconciled);
+            assert!(app.orphaned_write_recovery);
+            assert_eq!(app.step, Step::Done);
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert_ne!(app.progress.phase, JobPhase::Success);
+            assert!(app.selected.is_none(), "old target consent is invalidated");
+            assert!(app.confirm_input.value().is_empty());
+            assert!(app.status.contains("outcome is unknown"));
+            assert!(app.status.contains("rescan and review"));
+            let tree = app.accessibility_tree();
+            let result = accessible_named(&tree, "Write failure details")
+                .expect("unknown outcome is exposed as an assertive failure");
+            assert!(
+                result
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("drive may be incomplete"))
+            );
+
+            // Closing again before choosing recovery must not turn the durable
+            // Failed marker into an ordinary retry that skips the rescan.
+            let mut restarted_again = ImagerApp::new();
+            restarted_again.reconcile_persisted_write_state(&mut doc);
+            restarted_again.sync(&mut doc, &automerge::ROOT);
+            assert!(restarted_again.orphaned_write_recovery);
+            assert_eq!(restarted_again.step, Step::Done);
+            app = restarted_again;
+
+            app.write_another(&mut doc);
+            assert_eq!(app.step, Step::Drive);
+            assert_eq!(app.progress.phase, JobPhase::Idle);
+            assert!(app.selected.is_none());
+            assert!(app.confirm_input.value().is_empty());
+            assert!(app.status.contains("Select the target drive again"));
+            assert!(!app.can_advance_with_writer(Step::Drive, true));
+            assert_eq!(ImagerDoc::step(&doc), Step::Drive);
+            assert_eq!(ImagerDoc::progress(&doc).phase, JobPhase::Idle);
+            assert!(ImagerDoc::selected(&doc).is_none());
+        }
+    }
+
+    #[test]
+    fn restored_write_step_normalises_idle_and_terminal_phases_without_a_worker() {
+        for (phase, error) in [
+            (JobPhase::Idle, None),
+            (JobPhase::Failed, Some("device write failed".to_string())),
+            (JobPhase::Success, None),
+        ] {
+            let mut app = ImagerApp::new();
+            let mut doc = AutoCommit::new();
+            ImagerDoc::seed_demo(&mut doc);
+            ImagerDoc::set_selected(&mut doc, Some(0));
+            ImagerDoc::set_step(&mut doc, Step::Write);
+            ImagerDoc::set_progress(
+                &mut doc,
+                &Progress {
+                    phase,
+                    write_frac: 1.0,
+                    verify_frac: 1.0,
+                    rate_bps: 0,
+                    error,
+                },
+            );
+            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
+
+            app.reconcile_persisted_write_state(&mut doc);
+            app.sync(&mut doc, &automerge::ROOT);
+
+            assert_eq!(app.step, Step::Done);
+            assert_eq!(ImagerDoc::step(&doc), Step::Done);
+            match phase {
+                JobPhase::Idle => {
+                    assert_eq!(app.progress.phase, JobPhase::Failed);
+                    assert!(app.orphaned_write_recovery);
+                    assert!(app.selected.is_none());
+                    assert!(app.status.contains("outcome is unknown"));
+                }
+                JobPhase::Failed => {
+                    assert_eq!(app.progress.phase, JobPhase::Failed);
+                    assert!(!app.orphaned_write_recovery);
+                    assert_eq!(app.progress.error.as_deref(), Some("device write failed"));
+                    assert_eq!(app.status, "device write failed");
+                }
+                JobPhase::Success => {
+                    assert_eq!(app.progress.phase, JobPhase::Success);
+                    assert!(!app.orphaned_write_recovery);
+                    assert!(app.status.contains("completed and verified"));
+                }
+                JobPhase::Writing | JobPhase::Verifying => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn write_operations_are_blocked_until_startup_state_is_reconciled() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.startup_write_state_reconciled = false;
+        app.confirm_input.set_text("sdb");
+
+        assert!(!app.can_advance_with_writer(Step::Confirm, true));
+        let error = app
+            .perform_operation(
+                &crate::actions::ImagerOperation::Write {
+                    device: app.target().unwrap().dev_path(),
+                    confirmation: "sdb".into(),
+                },
+                &mut doc,
+            )
+            .expect_err("unreconciled startup must not expose a write");
+        assert!(error.contains("Restoring the previous image-write state"));
+
+        let job = <ImagerApp as Widget>::resources(&app, &doc)
+            .into_iter()
+            .find(|resource| resource.kind == "imager.write-plan")
+            .expect("write operation resource");
+        let write = job
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .expect("write action");
+        assert!(!write.contract.availability.is_available());
     }
 
     /// A release row is a *write source for erasing a drive*, so the live app
