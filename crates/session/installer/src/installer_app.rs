@@ -210,7 +210,7 @@ fn encrypt_description(state: VerifiedBootState) -> &'static str {
             "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
         }
         VerifiedBootState::TargetUnverified => {
-            "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
+            "qOS always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
         }
         VerifiedBootState::KernelLockdownInactive => {
             "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
@@ -3710,7 +3710,7 @@ mod tests {
         assert!(app.encryption_ready());
         assert!(
             encrypt_description(VerifiedBootState::TargetUnverified)
-                .contains("cannot yet prove that the installed target")
+                .contains("Verified boot is unavailable for this installation")
         );
     }
 
