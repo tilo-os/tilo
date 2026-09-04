@@ -1,0 +1,28 @@
+# Named qpkg sets consumed by release-apps.yml. `*` is resolved from the
+# checked-in apps/*/qos-app.toml manifests, so adding an app cannot silently
+# leave the normal desktop/OS collection incomplete.
+
+[collections.default]
+include = ["*"]
+# Browser links the promoted WPE engine and remains an OS-native integration
+# build. The other 46 apps are independently releasable qpkgs.
+exclude = ["browser"]
+
+[collections.desktop]
+extends = ["default"]
+
+[collections.os]
+extends = ["default"]
+
+[collections.recovery]
+include = ["file-explorer", "settings", "terminal"]
+
+[features]
+music = ["audio", "streaming", "live"]
+video-player = ["decode", "portal"]
+camera = ["live-capture"]
+tube = ["live", "media"]
+chat = ["live-media"]
+mail = ["live"]
+disks = ["live"]
+video_editor = ["decode", "gst"]

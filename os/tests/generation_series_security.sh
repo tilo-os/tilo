@@ -30,7 +30,11 @@ if [ "$1" = verify-attestation ]; then
   [ "$generation" != "$image" ] || generation=0
   [ "${MOCK_BAD_PROVENANCE:-0}" != 1 ] || generation=$((generation + 1))
   payload="$(jq -cn --argjson generation "$generation" '{predicate:{buildDefinition:{externalParameters:{generation:$generation}}}}' | base64 -w0)"
-  jq -cn --arg payload "$payload" '[{payload:$payload}]'
+  if [ "${MOCK_COSIGN_OBJECT:-0}" = 1 ]; then
+    jq -cn --arg payload "$payload" '{payload:$payload}'
+  else
+    jq -cn --arg payload "$payload" '[{payload:$payload}]'
+  fi
 else
   jq -cn --arg digest "$digest" '[{critical:{image:{"docker-manifest-digest":$digest}}}]'
 fi
@@ -44,6 +48,7 @@ resolve() {
 }
 
 [ "$(resolve '{"Tags":["latest","gen1","gen2"]}')" = 3 ]
+[ "$(MOCK_COSIGN_OBJECT=1 resolve '{"Tags":["latest","gen1","gen2"]}')" = 3 ]
 
 if resolve '{"Tags":["latest","gen2"]}' >/dev/null; then
   echo 'generation resolver accepted a deleted/gapped history' >&2

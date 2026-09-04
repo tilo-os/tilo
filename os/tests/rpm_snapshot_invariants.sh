@@ -80,7 +80,14 @@ has "$workflow" './os/dev/cache-github-assets.sh' \
 has "$workflow" 'github-assets=os/external-assets/cache' \
   'snapshot receives only the materialized external-input cache'
 has "$snapshot" '/qos-assets/virtio-win-0.1.302-1.noarch.rpm' \
-  'snapshot resolver installs the content-pinned virtio RPM'
+  'snapshot caches the content-pinned virtio RPM for selective extraction'
+has "$repo/os/Containerfile" '# qos-rpm-snapshot-package: virtio-win' \
+  'selectively extracted virtio media remains in the frozen package manifest'
+if grep -q '^    virtio-win \\$' "$repo/os/Containerfile"; then
+  bad 'the full duplicated virtio-win RPM payload is still installed in the OS'
+else
+  ok 'only the required virtio-win media is copied into the OS rootfs'
+fi
 has "$asset_manifest" $'2f58eea024e0221a873032761dc3ed3262409cd80860b7b27d3d5a0f206616c9\tvirtio-win-0.1.302-1.noarch.rpm\t' \
   'virtio RPM has a reviewed SHA-256 pin'
 if grep -Eq 'fedorapeople.org/.*/(stable|latest)/' "$asset_manifest" "$snapshot"; then

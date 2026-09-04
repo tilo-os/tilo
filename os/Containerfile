@@ -73,6 +73,37 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 FROM github-assets AS github-assets
 
 
+# ---- Minimal Windows paravirtual driver media -----------------------------
+# Fedora's pinned virtio-win RPM expands to almost 2 GiB because it contains
+# the same driver tree in several layouts. qOS only consumes the bootable ISO
+# and the signed guest-tools installer. Extract and authenticate those exact
+# payloads in a throwaway stage instead of installing all duplicated files in
+# the immutable OS. Keep the RPM in the frozen snapshot so this remains an
+# offline, digest-pinned build input.
+# qos-rpm-snapshot-package: virtio-win
+FROM ${BASE_REF} AS virtio-win-media
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
+    /bin/bash -euo pipefail -c '\
+      rpm_path=$(find /repo -maxdepth 1 -type f -name "virtio-win-*.rpm" -print -quit); \
+      test -n "$rpm_path"; \
+      mkdir -p /tmp/virtio /out/installer; \
+      cd /tmp/virtio; \
+      rpm2cpio "$rpm_path" \
+        | cpio -idm --quiet \
+            ./usr/share/virtio-win/virtio-win-0.1.302.iso \
+            ./usr/share/virtio-win/installer/virtio-win-guest-tools.exe; \
+      printf "%s  %s\n%s  %s\n" \
+        303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d \
+        usr/share/virtio-win/virtio-win-0.1.302.iso \
+        d8ae9ea1e943384ac195e012cd36f82c3161620e5fc9529be4e42e6f420e222d \
+        usr/share/virtio-win/installer/virtio-win-guest-tools.exe \
+        | sha256sum --check --strict; \
+      mv usr/share/virtio-win/virtio-win-0.1.302.iso /out/virtio-win.iso; \
+      mv usr/share/virtio-win/installer/virtio-win-guest-tools.exe \
+        /out/installer/virtio-win-guest-tools.exe; \
+      chmod 0644 /out/virtio-win.iso /out/installer/virtio-win-guest-tools.exe'
+
+
 # ---- Pinned Windows compatibility runtimes -------------------------------
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
 # launcher and the default Proton build as independently pinned artifacts:
@@ -224,15 +255,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # build can reach the shared compiler cache without leaking credentials into a
 # layer. The archive checksum is also pinned in os/Containerfile.builder.
 ARG SCCACHE_VERSION=0.17.0
-ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
 RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
-    echo "${SCCACHE_SHA256}  /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz" | sha256sum -c - \
-    && tar -xzf /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz -C /tmp \
+    case "$(uname -m)" in \
+      x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
+      aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
+      *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && archive="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl.tar.gz" \
+    && echo "${sccache_sha}  /qos-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/qos-assets/${archive}" -C /tmp \
     && install -m 0755 \
-       "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+       "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl/sccache" \
        /usr/local/bin/sccache \
-    && rm -rf /tmp/sccache.tar.gz \
-       "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
     && /usr/local/bin/sccache --version
 
 WORKDIR /build
@@ -342,6 +379,9 @@ COPY . /build
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
 ARG QOS_WITH_BROWSER
+ARG QOS_PREBUILT_APPS=0
+ARG QOS_PREBUILT_DESKTOP=0
+ARG QOS_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
@@ -359,7 +399,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
+    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+         DESKTOP_RELEASE_ARGS=""; \
+       else \
+         DESKTOP_RELEASE_ARGS="-p shell -p launcher -p qos-unlock-helper"; \
+       fi \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p qos-power -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
@@ -369,6 +414,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin qos-windows-vm-control --bin qos-windows-rail \
     && missing=0 \
     && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
+         case "${QOS_PREBUILT_DESKTOP}:$b" in 1:shell|1:qos-launcher|1:qos-unlock-helper) continue ;; esac; \
          [ -x "target/release/$b" ] || missing=1; \
        done \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
@@ -383,10 +429,20 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               --bin qos-windows-vm-control --bin qos-windows-rail; \
        fi \
     && mkdir -p /out /out/optional /out/thin-apps \
+    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+         cp /build/os/desktop-artifacts/shell \
+            /build/os/desktop-artifacts/qos-launcher \
+            /build/os/desktop-artifacts/qos-unlock-helper \
+            /out/; \
+       else \
+         cp target/release/shell \
+            target/release/qos-launcher \
+            target/release/qos-unlock-helper \
+            /out/; \
+       fi \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
-    && cp target/release/shell \
-          target/release/qos-projector \
+    && cp target/release/qos-projector \
           target/release/fs \
           target/release/qos-relay \
           target/release/qos-relay-admin \
@@ -401,9 +457,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
-          target/release/qos-launcher \
           target/release/qos-power \
-          target/release/qos-unlock-helper \
           target/release/qos-rollback \
           target/release/qos \
           target/release/qos-pkg \
@@ -413,32 +467,48 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-windows-vm-control \
           target/release/qos-windows-rail \
           /out/ \
-    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
-       /build/os/scripts/build-thin-apps.sh \
-    && for m in /build/apps/*/qos-app.toml; do \
-           p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
-           b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
-           case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
-           [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
-       done \
     # Files is also a privileged, directly-invoked system recovery surface.
-    # Package that exact standalone binary so the launcher and /usr/bin route
-    # cannot drift and headless recovery does not depend on runtime-bundle
-    # loader setup. Other ordinary apps keep the smaller shared-runtime build.
-    && cp /out/file-explorer /out/thin-apps/file-explorer \
-    && cp target/thin-app/libruntime_dylib.so /out/ \
-    && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
-    && [ -n "${LIBSTD}" ] \
-    && cp "${LIBSTD}" /out/ \
-    && { sccache --show-stats 2>/dev/null || true; }
+    # In source mode package that standalone binary. With a release collection,
+    # every qpkg already contains its independently built app binary.
+    && if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+         mkdir -p /out/prebuilt-apps /out/browser-app \
+         && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
+         && cp -a /build/os/app-runtime/qos-runtime /usr/lib/ \
+         && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
+         && RUNTIME_DYLIB="$(find /usr/lib/qos-runtime -name libruntime_dylib.so -print -quit)" \
+         && [ -n "$RUNTIME_DYLIB" ] \
+         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
+         && { [ "${QOS_WITH_BROWSER}" = 0 ] \
+              || cp /out/optional/browser /out/browser-app/browser; }; \
+       else \
+         EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+         APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+           /build/os/scripts/build-thin-apps.sh \
+         && for m in /build/apps/*/qos-app.toml; do \
+              p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
+              b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
+              case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
+              [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
+            done \
+         && cp /out/file-explorer /out/thin-apps/file-explorer \
+         && cp target/thin-app/libruntime_dylib.so /out/ \
+         && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+         && [ -n "${LIBSTD}" ] \
+         && cp "${LIBSTD}" /out/; \
+       fi \
+    && { sccache --show-stats 2>/dev/null || true; } \
+    # Every build product needed below now lives in /out. The target cache is
+    # deliberately disposable (sccache holds reusable compiler objects); keep
+    # it from starving the later, large Windows compatibility RPM transaction.
+    && find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
 # the flags; this is what proves they survived to the artifacts this image
 # ships — a dropped linker argument or a target change is otherwise invisible
 # until someone runs readelf on a released image. Fails the build, on purpose.
 RUN /build/os/scripts/verify-elf-hardening.sh /out \
-    && /build/os/scripts/verify-elf-hardening.sh /out/thin-apps \
+    && { [ "${QOS_PREBUILT_APPS}" = 1 ] \
+         || /build/os/scripts/verify-elf-hardening.sh /out/thin-apps; } \
     && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
@@ -468,10 +538,16 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out \
 # the operator to run `qos-install runtime install` — 46 of them, and no image.
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
-RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
-    && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
-    && [ -n "${RUST_LIBSTD}" ] \
-    && /bin/bash -eu -o pipefail -c ' \
+RUN if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+      test -s /out/runtime-bundle-publisher.hex \
+      && /out/qos-runtime-bundle verify \
+        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
+    else \
+      /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+      && [ -n "${RUST_LIBSTD}" ] \
+      && /bin/bash -eu -o pipefail -c ' \
         args=(/out/qos-runtime-bundle build \
           --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
@@ -482,13 +558,14 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' \
-    && /out/qos-runtime-bundle key pubkey \
+      && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
-    && /out/qos-runtime-bundle verify \
+      && /out/qos-runtime-bundle verify \
         "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
-    && rm -f /out/runtime-bundle-identity.json
+      && rm -f /out/runtime-bundle-identity.json; \
+    fi
 
 # ---- Pack + install every app into the image-wide app store -----------------
 # Without this the launcher's registry is empty on a fresh install and the
@@ -503,12 +580,25 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 RUN BIN_DIR=/out/thin-apps \
+    QPKG_DIR=/out/prebuilt-apps \
+    EXPECTED_PUBKEY="${QOS_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/qos-pkg \
     INSTALL_BIN=/out/qos-install \
     BUNDLE_BIN=/out/qos-runtime-bundle \
     SHIM_BIN=/out/qos-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
-    /build/os/scripts/pack-apps.sh
+    /build/os/scripts/pack-apps.sh \
+    && { [ "${QOS_PREBUILT_APPS}" != 1 ] \
+         || [ "${QOS_WITH_BROWSER}" = 0 ] \
+         || BIN_DIR=/out/browser-app \
+            QPKG_DIR= \
+            PKG_BIN=/out/qos-pkg \
+            INSTALL_BIN=/out/qos-install \
+            BUNDLE_BIN=/out/qos-runtime-bundle \
+            SHIM_BIN=/out/qos-cli-shim \
+            REQUIRE_MIN=1 \
+            PUBKEY_OUT=/out/browser-publisher.hex \
+            /build/os/scripts/pack-apps.sh; }
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
@@ -1465,8 +1555,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     echo "scudo wired: $scudo"
 
 # Windows compatibility is intentionally assembled at the end of the rootfs.
-# The pinned VirtIO driver payload is large; placing it earlier makes rootless
-# Podman rescan that immutable 1.6 GiB layer for every subsequent COPY/RUN and
+# The compacted VirtIO media payload is large; placing it earlier makes
+# rootless Podman rescan that immutable layer for every subsequent COPY/RUN and
 # turns safe installer iteration into hours of avoidable layer commits.
 # Wine is the tested desktop-program baseline; UMU + its pinned Proton build are
 # copied below for non-Steam games. The appliance packages provide one
@@ -1483,7 +1573,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     swtpm \
     swtpm-tools \
     edk2-ovmf \
-    virtio-win \
     freerdp \
     xwayland-satellite \
     virt-viewer \
@@ -1491,6 +1580,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     genisoimage \
     udftools \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
+COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
 
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run one packaging target in its own architecture-specific CI userspace.
-# amd64 starts the target container normally. ARM is exported and run through
-# per-job PRoot/QEMU because this runner isolates binfmt_misc registration from
-# the Docker daemon that starts target containers.
+# Native hosts start the matching target container directly. ARM can still use
+# the PRoot/QEMU fallback when this helper is invoked on an x86-only host.
 set -euo pipefail
 
 usage() {
@@ -18,6 +17,10 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     revision=${4:-}
     case "$arch" in amd64|arm64) ;; *) usage ;; esac
     execution_arch=$arch
+    emulated=0
+    if [[ $arch == arm64 && $(uname -m) != aarch64 ]]; then
+        emulated=1
+    fi
     if [[ $arch == arm64 ]]; then
         cargo_jobs=2
     else
@@ -25,7 +28,11 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     fi
     cache_env=()
     if [[ ${QOS_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then
-        export SCCACHE_S3_KEY_PREFIX="quickdesktop/package/v1/$distro/$arch"
+        # sccache hashes compiler identity, flags and native headers into every
+        # object key. Sharing the namespace by architecture safely reuses the
+        # large distro-neutral Rust graph while ABI-specific objects naturally
+        # miss, instead of forcing five entirely isolated cold caches.
+        export SCCACHE_S3_KEY_PREFIX="quickdesktop/package/v2/$arch"
         export SCCACHE_IGNORE_SERVER_IO_ERROR=1
         while IFS= read -r name; do
             cache_env+=(--env "$name")
@@ -70,13 +77,14 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     '
     create_log=$log_dir/create.log
     set +e
-    if [[ $execution_arch == amd64 ]]; then
-        container=$(docker create --platform linux/amd64 \
+    if [[ $emulated == 0 ]]; then
+        container=$(docker create --platform "linux/$arch" \
             --entrypoint /bin/sh \
             --env QOS_IN_PACKAGE_CONTAINER=1 \
             --env QOS_PACKAGE_DISTRO="$distro" \
             --env QOS_EXPECT_ARCH="$arch" \
             --env QOS_EXECUTION_ARCH="$execution_arch" \
+            --env QOS_EMULATED=0 \
             --env QOS_DEB_REVISION="$revision" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
@@ -111,7 +119,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         exit "$container_status"
     fi
     start_log=$log_dir/start.log
-    if [[ $execution_arch == arm64 ]]; then
+    if [[ $emulated == 1 ]]; then
         qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
         proot_sha=b7f2adf5a225000a164f4905aabefeebe11c4c1d5bedff5e1fe8866c48dd70d2
         tools_dir=$log_dir/tools
@@ -188,6 +196,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_PACKAGE_DISTRO="$distro"
         export QOS_EXPECT_ARCH="$arch"
         export QOS_EXECUTION_ARCH="$execution_arch"
+        export QOS_EMULATED=1
         export QOS_DEB_REVISION="$revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
@@ -248,6 +257,7 @@ fi
 distro=${QOS_PACKAGE_DISTRO:?missing QOS_PACKAGE_DISTRO}
 arch=${QOS_EXPECT_ARCH:?missing QOS_EXPECT_ARCH}
 execution_arch=${QOS_EXECUTION_ARCH:-$arch}
+emulated=${QOS_EMULATED:-0}
 export QOS_EXPECT_ARCH="$arch"
 
 stage=bootstrap
@@ -324,12 +334,16 @@ fedora-44)
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
+    stage=collect-os-desktop-payload
+    case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
+    SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+        dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
     ;;
 arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-    if [[ $arch == arm64 ]]; then
+    if [[ $arch == arm64 && $emulated == 1 ]]; then
         sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman\nDBPath = /var/lib/qos-pacman' \
             /etc/pacman.conf
         install -d -m 0755 \
@@ -364,7 +378,7 @@ arch)
     ;;
 nix)
     nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
-    if [[ $arch == arm64 ]]; then
+    if [[ $arch == arm64 && $emulated == 1 ]]; then
         # Nix's seccomp filter observes qemu-user's host syscalls rather than
         # the emulated guest calls and can SIGKILL store realization. Disable
         # only that filter in this architecture-emulated CI userspace; the
