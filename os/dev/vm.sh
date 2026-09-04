@@ -7,6 +7,8 @@
 #                                              start the VM (detached)
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
+#   QOS_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
+#                                             clear and initialize isolated mutable state
 #
 # --tpm attaches a software TPM 2.0 (swtpm), started, state persisted across boots
 # so an enrolled disk can be unlock-tested and a measured boot can be observed.
@@ -23,7 +25,8 @@
 #   ./os/dev/vm.sh wait                        block until the greeter is up
 #   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
 #                                              whether it can measure
-#   ./os/dev/vm.sh login [USER PASS]           type credentials into tuigreet
+#   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
+#   ./os/dev/vm.sh login --passcode-only [PASS] type the installed one-user form
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $QOS_RUN/NAME.png
 #   ./os/dev/vm.sh type STRING                 type a string (sendkey)
 #   ./os/dev/vm.sh keys KEY...                 send named keys (ret tab esc f2..)
@@ -46,6 +49,30 @@
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 mkdir -p "$QOS_RUN"
+
+# Start one installation cycle from provably empty mutable state. The path is
+# derived and validated by _common.sh; the same QOS_VM_CYCLE value must be used
+# for boot-installer and boot-target so disk, TPM and firmware state persist
+# across that reboot and nowhere else.
+cmd_init_cycle() {
+  local expected_run="${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE"
+  [ -n "$QOS_VM_CYCLE" ] && [ -n "$QOS_CYCLE_DIR" ] \
+    || die "set a unique QOS_VM_CYCLE before init-cycle"
+  case "$QOS_CYCLE_DIR" in
+    "$QOS_INSTALLER_OUTPUT"/vm-cycles/"$QOS_VM_CYCLE") ;;
+    *) die "refusing to clear cycle state outside $QOS_INSTALLER_OUTPUT/vm-cycles" ;;
+  esac
+  [ "$QOS_RUN" = "$expected_run" ] \
+    || die "refusing to clear non-cycle runtime $QOS_RUN (expected $expected_run)"
+  [ ! -L "$QOS_CYCLE_DIR" ] || die "refusing to clear symlinked cycle state: $QOS_CYCLE_DIR"
+  [ ! -L "$QOS_RUN" ] || die "refusing to clear symlinked cycle runtime: $QOS_RUN"
+  vm_running && die "VM is still running in cycle $QOS_VM_CYCLE"
+  swtpm_stop
+  [ ! -e "$QOS_CYCLE_DIR" ] || rm -r "$QOS_CYCLE_DIR"
+  [ ! -e "$QOS_RUN" ] || rm -r "$QOS_RUN"
+  install -d -m 0700 "$QOS_CYCLE_DIR" "$QOS_RUN"
+  msg "fresh VM cycle: $QOS_VM_CYCLE ($QOS_CYCLE_DIR)"
+}
 
 # map a single character to a QEMU sendkey keyname
 char_key() {
@@ -195,7 +222,7 @@ cmd_boot_target() {
   fi
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio \
+    -drive file=$disk,format=qcow2,if=virtio,serial=qos-install-target \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-target"
@@ -270,7 +297,19 @@ cmd_type() {
 cmd_keys() { local k; for k in "$@"; do hmp "sendkey $k" >/dev/null; sleep 0.12; done; }
 
 cmd_login() {
+  local passcode_only=0
+  if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
   local u="${1:-$QOS_USER}" p="${2:-$QOS_PASS}"
+  if [ "$passcode_only" -eq 1 ]; then
+    p="${1:-$QOS_PASS}"
+    msg "logging in with the installed user's passcode"
+    local i
+    for i in $(seq 1 64); do hmp "sendkey backspace 20" >/dev/null; sleep 0.03; done
+    cmd_type "$p"
+    cmd_keys ret
+    msg "passcode sent"
+    return
+  fi
   msg "logging in as $u"
   # qos-greeter is a single form: Enter submits the whole form, it does not
   # advance from username to password. The old tuigreet sequence pressed Enter
@@ -350,6 +389,7 @@ cmd_capture_boot() {
 
 sub="${1:-}"; shift || true
 case "$sub" in
+  init-cycle) cmd_init_cycle "$@";;
   boot) cmd_boot "$@";;
   boot-installer) cmd_boot_installer "$@";;
   boot-target) cmd_boot_target "$@";;
