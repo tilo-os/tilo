@@ -27,6 +27,8 @@ use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -234,15 +236,33 @@ pub fn write_profile_block(
     target_size: u64,
     profile: &InstallProfile,
 ) -> io::Result<()> {
+    write_profile_block_bound(dst, target_size, profile, &|| false)
+}
+
+fn write_profile_block_bound(
+    dst: &Path,
+    target_size: u64,
+    profile: &InstallProfile,
+    should_cancel: &impl Fn() -> bool,
+) -> io::Result<()> {
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     let block = encode_profile_block(profile)?;
     let offset = target_size
         .checked_sub(PROFILE_BLOCK_SIZE as u64)
         .ok_or_else(|| io::Error::other("target is too small for installation profile"))?;
     let mut device = OpenOptions::new().read(true).write(true).open(dst)?;
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     device.seek(SeekFrom::Start(offset))?;
     device.write_all(&block)?;
     device.flush()?;
     device.sync_all()?;
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     let mut actual = vec![0u8; PROFILE_BLOCK_SIZE];
     device.seek(SeekFrom::Start(offset))?;
     read_exact_fill(&mut device, &mut actual)?;
@@ -250,6 +270,9 @@ pub fn write_profile_block(
         return Err(io::Error::other(
             "installation profile read-back did not match",
         ));
+    }
+    if should_cancel() {
+        return Err(cancelled_error());
     }
     Ok(())
 }
@@ -265,12 +288,43 @@ pub enum JobResult {
     VerifyMismatch(u64),
     /// The verify pass could not be run (I/O error re-reading).
     VerifyFailed(String),
+    /// The operator requested a cooperative stop. The partially written media
+    /// is never reported as usable and must be rewritten before use.
+    Cancelled,
 }
 
 impl JobResult {
     pub fn is_success(&self) -> bool {
         matches!(self, JobResult::Verified)
     }
+}
+
+/// Peer-local control for one running write. The immutable write request stays
+/// separately digest-bound; cancellation only narrows authority by asking the
+/// worker/helper to stop at its next safe chunk boundary.
+#[derive(Clone, Debug)]
+pub struct JobControl {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl JobControl {
+    pub(crate) fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+fn cancelled_error() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "image write cancelled")
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +348,15 @@ impl JobResult {
 /// sync to `dst` fails.
 pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let expected_size = src.metadata()?.len();
-    stream_copy_bound(src, dst, expected_size, None, None, &mut on_progress)
+    stream_copy_bound(
+        src,
+        dst,
+        expected_size,
+        None,
+        None,
+        &|| false,
+        &mut on_progress,
+    )
 }
 
 /// Copy exactly the source which was reviewed before elevation. The file is
@@ -307,8 +369,12 @@ fn stream_copy_bound(
     expected_size: u64,
     expected_identity: Option<SourceIdentity>,
     expected_sha256: Option<&str>,
+    should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(u64),
 ) -> io::Result<u64> {
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     let mut reader = OpenOptions::new().read(true).open(src)?;
     let metadata = reader.metadata()?;
     if !metadata.is_file() || metadata.len() != expected_size {
@@ -334,7 +400,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_sha256 {
-        let actual = hash_source_exact(&mut reader, expected_size)?;
+        let actual = hash_source_exact(&mut reader, expected_size, should_cancel)?;
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -358,6 +424,9 @@ fn stream_copy_bound(
     let mut written: u64 = 0;
     let mut hash = Sha256::new();
     while written < expected_size {
+        if should_cancel() {
+            return Err(cancelled_error());
+        }
         let remaining = usize::try_from((expected_size - written).min(CHUNK as u64))
             .map_err(|_| io::Error::other("source chunk size is out of range"))?;
         let target = buf
@@ -399,17 +468,27 @@ fn stream_copy_bound(
     }
     writer.flush()?;
     writer.sync_all()?;
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     Ok(written)
 }
 
 /// Hash exactly the reviewed source length and require EOF. This runs before
 /// a catalog-backed write opens its destination, so a corrupt cached image
 /// cannot cause any destructive I/O.
-fn hash_source_exact(reader: &mut impl Read, expected_size: u64) -> io::Result<String> {
+fn hash_source_exact(
+    reader: &mut impl Read,
+    expected_size: u64,
+    should_cancel: &impl Fn() -> bool,
+) -> io::Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0_u8; CHUNK];
     let mut read_total = 0_u64;
     while read_total < expected_size {
+        if should_cancel() {
+            return Err(cancelled_error());
+        }
         let want = usize::try_from((expected_size - read_total).min(CHUNK as u64))
             .map_err(|_| io::Error::other("source hash chunk size is out of range"))?;
         let chunk = buffer
@@ -452,6 +531,19 @@ pub fn verify_readback(
     len: u64,
     mut on_progress: impl FnMut(u64),
 ) -> io::Result<Option<u64>> {
+    verify_readback_bound(src, dst, len, &|| false, &mut on_progress)
+}
+
+fn verify_readback_bound(
+    src: &Path,
+    dst: &Path,
+    len: u64,
+    should_cancel: &impl Fn() -> bool,
+    mut on_progress: impl FnMut(u64),
+) -> io::Result<Option<u64>> {
+    if should_cancel() {
+        return Err(cancelled_error());
+    }
     let mut a = OpenOptions::new().read(true).open(src)?;
     let mut b = OpenOptions::new().read(true).open(dst)?;
     a.seek(SeekFrom::Start(0))?;
@@ -460,6 +552,9 @@ pub fn verify_readback(
     let mut bb = vec![0u8; CHUNK];
     let mut done: u64 = 0;
     while done < len {
+        if should_cancel() {
+            return Err(cancelled_error());
+        }
         let want = CHUNK.min((len - done) as usize);
         // `want` <= CHUNK == ba.len() == bb.len() by construction; still fail
         // loudly instead of trusting that on a device read-back.
@@ -482,6 +577,9 @@ pub fn verify_readback(
         }
         done += want as u64;
         on_progress(done);
+    }
+    if should_cancel() {
+        return Err(cancelled_error());
     }
     Ok(None)
 }
@@ -520,7 +618,7 @@ pub fn run_job_paths(
     total: u64,
     mut on_progress: impl FnMut(Progress),
 ) -> JobResult {
-    run_job_paths_bound(src, dst, total, None, None, &mut on_progress)
+    run_job_paths_bound(src, dst, total, None, None, &|| false, &mut on_progress)
 }
 
 fn run_job_paths_bound(
@@ -529,6 +627,7 @@ fn run_job_paths_bound(
     total: u64,
     expected_identity: Option<SourceIdentity>,
     expected_sha256: Option<&str>,
+    should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(Progress),
 ) -> JobResult {
     let total = total.max(1);
@@ -539,6 +638,7 @@ fn run_job_paths_bound(
         total,
         expected_identity,
         expected_sha256,
+        should_cancel,
         |bytes| {
             on_progress(Progress {
                 phase: JobPhase::Writing,
@@ -551,10 +651,11 @@ fn run_job_paths_bound(
     );
     let written = match copied {
         Ok(n) => n,
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => return JobResult::Cancelled,
         Err(e) => return JobResult::WriteFailed(e.to_string()),
     };
     // Verify phase over exactly the bytes we wrote.
-    let verify = verify_readback(src, dst, written, |bytes| {
+    let verify = verify_readback_bound(src, dst, written, should_cancel, |bytes| {
         on_progress(Progress {
             phase: JobPhase::Verifying,
             write_frac: 1.0,
@@ -570,6 +671,7 @@ fn run_job_paths_bound(
         // single terminal event only after all of those operations finish.
         Ok(None) => JobResult::Verified,
         Ok(Some(off)) => JobResult::VerifyMismatch(off),
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => JobResult::Cancelled,
         Err(e) => JobResult::VerifyFailed(e.to_string()),
     }
 }
@@ -577,37 +679,61 @@ fn run_job_paths_bound(
 /// Run the real job for `req` (source file → target device), streaming
 /// [`Progress`] over `tx`. Only ever called on a worker thread when the
 /// allow-gate selected [`WriteBackend::System`].
-fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> JobResult {
+fn run_system_job(
+    req: &WriteRequest,
+    should_cancel: &impl Fn() -> bool,
+    mut on_progress: impl FnMut(Progress),
+) -> JobResult {
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
     let mut prepared = false;
-    let mut result = if let Err(error) = revalidate_target(&req.target) {
-        JobResult::WriteFailed(format!(
-            "the selected drive changed or was disconnected: {error}"
-        ))
-    } else if let Err(error) = prepare_target(&req.target) {
-        JobResult::WriteFailed(format!(
-            "the drive is still in use and could not be prepared: {error}"
-        ))
-    } else {
-        prepared = true;
-        run_job_paths_bound(
-            &src,
-            &dst,
-            req.source.size,
-            req.source.identity,
-            req.source.expected_sha256.as_deref(),
-            &mut on_progress,
-        )
+    let mut write_frac = 0.0;
+    let mut verify_frac = 0.0;
+    let mut result = {
+        let mut relay_progress = |progress: Progress| {
+            write_frac = progress.write_frac;
+            verify_frac = progress.verify_frac;
+            on_progress(progress);
+        };
+        if should_cancel() {
+            JobResult::Cancelled
+        } else if let Err(error) = revalidate_target(&req.target) {
+            JobResult::WriteFailed(format!(
+                "the selected drive changed or was disconnected: {error}"
+            ))
+        } else if let Err(error) = prepare_target(&req.target) {
+            JobResult::WriteFailed(format!(
+                "the drive is still in use and could not be prepared: {error}"
+            ))
+        } else {
+            prepared = true;
+            run_job_paths_bound(
+                &src,
+                &dst,
+                req.source.size,
+                req.source.identity,
+                req.source.expected_sha256.as_deref(),
+                should_cancel,
+                &mut relay_progress,
+            )
+        }
     };
     if prepared {
         if result.is_success()
             && req.source.installable
-            && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
+            && let Err(error) =
+                write_profile_block_bound(&dst, req.target.size, &req.profile, should_cancel)
         {
-            result = JobResult::VerifyFailed(format!(
-                "could not embed and verify the setup profile: {error}"
-            ));
+            result = if error.kind() == io::ErrorKind::Interrupted {
+                JobResult::Cancelled
+            } else {
+                JobResult::VerifyFailed(format!(
+                    "could not embed and verify the setup profile: {error}"
+                ))
+            };
+        }
+        if result.is_success() && should_cancel() {
+            result = JobResult::Cancelled;
         }
         finish_target(&req.target, &result);
     }
@@ -620,6 +746,10 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
         JobResult::VerifyFailed(message) => {
             Some(format!("Could not verify the finished drive: {message}"))
         }
+        JobResult::Cancelled => Some(
+            "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
+                .into(),
+        ),
     };
     on_progress(Progress {
         phase: if result.is_success() {
@@ -627,12 +757,8 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
         } else {
             JobPhase::Failed
         },
-        write_frac: 1.0,
-        verify_frac: if matches!(result, JobResult::WriteFailed(_)) {
-            0.0
-        } else {
-            1.0
-        },
+        write_frac,
+        verify_frac,
         rate_bps: 0,
         error,
     });
@@ -647,7 +773,7 @@ const WRITE_HELPER_ARG: &str = "--qos-write-helper";
 // single-quoted `'"'` is exactly one double-quote character; `\"` would be a
 // backslash followed by a quote and would not group the path.
 #[cfg(any(test, target_os = "windows"))]
-const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3]); exit $p.ExitCode"#;
+const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
 
 /// Execute the privileged helper mode when `args` requests it. This is called
 /// before the windowing runtime is initialized.
@@ -674,10 +800,17 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     let expected_digest = args
         .get(at + 3)
         .ok_or("write helper request digest is missing")?;
-    if args.get(at + 4).is_some() {
+    let cancel_path = args
+        .get(at + 4)
+        .ok_or("write helper cancellation path is missing")?;
+    if args.get(at + 5).is_some() {
         return Err("write helper received unexpected arguments".into());
     }
-    validate_helper_paths(Path::new(request_path), Path::new(progress_path))?;
+    validate_helper_paths(
+        Path::new(request_path),
+        Path::new(progress_path),
+        Path::new(cancel_path),
+    )?;
     let request_bytes = std::fs::read(request_path)?;
     if request_bytes.len() > 1024 * 1024 {
         return Err("write helper request is unexpectedly large".into());
@@ -698,7 +831,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     // redirect root's append into an arbitrary file.
     let mut progress_file = create_progress_output(Path::new(progress_path))?;
     let mut terminal_sent = false;
-    let result = run_system_job(&request, |progress| {
+    let result = run_system_job(&request, &|| Path::new(cancel_path).exists(), |progress| {
         terminal_sent |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
         if serde_json::to_writer(&mut progress_file, &progress).is_ok() {
             let _ = progress_file.write_all(b"\n");
@@ -719,13 +852,15 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     Ok(Some(i32::from(!result.is_success())))
 }
 
-fn validate_helper_paths(request: &Path, progress: &Path) -> io::Result<()> {
+fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::Result<()> {
     let request_parent = request
         .parent()
         .ok_or_else(|| io::Error::other("write helper request has no parent directory"))?;
     if progress.parent() != Some(request_parent)
+        || cancel.parent() != Some(request_parent)
         || request.file_name().and_then(|name| name.to_str()) != Some("request.json")
         || progress.file_name().and_then(|name| name.to_str()) != Some("progress.jsonl")
+        || cancel.file_name().and_then(|name| name.to_str()) != Some("cancel")
         || !request_parent
             .file_name()
             .and_then(|name| name.to_str())
@@ -748,8 +883,8 @@ fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
 
-fn spawn_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) {
-    let result = run_privileged_helper(req, tx);
+fn spawn_privileged_helper(req: WriteRequest, control: &JobControl, tx: &Sender<Progress>) {
+    let result = run_privileged_helper(req, control, tx);
     if let Err(error) = result {
         let _ = tx.send(Progress {
             phase: JobPhase::Failed,
@@ -761,12 +896,17 @@ fn spawn_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) {
     }
 }
 
-fn run_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) -> io::Result<()> {
+fn run_privileged_helper(
+    req: WriteRequest,
+    control: &JobControl,
+    tx: &Sender<Progress>,
+) -> io::Result<()> {
     let work = tempfile::Builder::new()
         .prefix("qos-imager-write-")
         .tempdir()?;
     let request_path = work.path().join("request.json");
     let progress_path = work.path().join("progress.jsonl");
+    let cancel_path = work.path().join("cancel");
     let mut request_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -778,10 +918,15 @@ fn run_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) -> io::Result
     drop(request_file);
     let request_digest = format!("{:x}", Sha256::digest(&request_bytes));
     let executable = helper_executable()?;
-    let mut child =
-        elevated_helper_command(&executable, &request_path, &progress_path, &request_digest)?
-            .spawn()?;
-    relay_helper_progress(&mut child, &progress_path, tx)
+    let mut child = elevated_helper_command(
+        &executable,
+        &request_path,
+        &progress_path,
+        &request_digest,
+        &cancel_path,
+    )?
+    .spawn()?;
+    relay_helper_progress(&mut child, &progress_path, &cancel_path, control, tx)
 }
 
 fn helper_executable() -> io::Result<std::path::PathBuf> {
@@ -798,9 +943,34 @@ fn helper_executable() -> io::Result<std::path::PathBuf> {
 fn relay_helper_progress(
     child: &mut Child,
     progress_path: &Path,
+    cancel_path: &Path,
+    control: &JobControl,
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
+    let result = relay_helper_progress_inner(child, progress_path, cancel_path, control, tx);
+    if result.is_err() {
+        // Never abandon an elevated raw-device writer merely because its
+        // unprivileged progress channel failed. Keeping the private job
+        // directory alive and waiting for the child prevents the UI from
+        // claiming the operation stopped while destructive I/O may continue.
+        let _ = child.wait();
+    }
+    result
+}
+
+fn relay_helper_progress_inner(
+    child: &mut Child,
+    progress_path: &Path,
+    cancel_path: &Path,
+    control: &JobControl,
+    tx: &Sender<Progress>,
+) -> io::Result<()> {
+    let mut cancel_sent = false;
     let file = loop {
+        // A transient filesystem error must not detach supervision from a
+        // privileged writer. Leave `cancel_sent` false and retry on the next
+        // poll; the UI conservatively rejects a racing Success event too.
+        let _ = relay_cancellation(control, cancel_path, &mut cancel_sent);
         match OpenOptions::new().read(true).open(progress_path) {
             Ok(file) => break file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -832,6 +1002,7 @@ fn relay_helper_progress(
     let mut reader = BufReader::new(file);
     let mut terminal = false;
     loop {
+        let _ = relay_cancellation(control, cancel_path, &mut cancel_sent);
         let mut line = String::new();
         while reader.read_line(&mut line)? != 0 {
             if let Ok(progress) = serde_json::from_str::<Progress>(line.trim_end()) {
@@ -870,6 +1041,22 @@ fn relay_helper_progress(
     }
 }
 
+fn relay_cancellation(control: &JobControl, cancel_path: &Path, sent: &mut bool) -> io::Result<()> {
+    if control.is_cancelled() && !*sent {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(cancel_path)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        *sent = true;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -880,6 +1067,7 @@ fn elevated_helper_command(
     request: &Path,
     progress: &Path,
     digest: &str,
+    cancel: &Path,
 ) -> io::Result<Command> {
     let mut command = Command::new("pkexec");
     command
@@ -888,6 +1076,7 @@ fn elevated_helper_command(
         .arg(request)
         .arg(progress)
         .arg(digest)
+        .arg(cancel)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -904,9 +1093,10 @@ fn elevated_helper_command(
     request: &Path,
     progress: &Path,
     digest: &str,
+    cancel: &Path,
 ) -> io::Result<Command> {
     const SCRIPT: &str = r#"on run argv
-set helperCommand to quoted form of item 1 of argv & " --qos-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv
+set helperCommand to quoted form of item 1 of argv & " --qos-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
 do shell script helperCommand with administrator privileges
 end run"#;
     let mut command = Command::new("osascript");
@@ -917,6 +1107,7 @@ end run"#;
         .arg(request)
         .arg(progress)
         .arg(digest)
+        .arg(cancel)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -933,6 +1124,7 @@ fn elevated_helper_command(
     request: &Path,
     progress: &Path,
     digest: &str,
+    cancel: &Path,
 ) -> io::Result<Command> {
     // Values are positional PowerShell arguments, never interpolated into the
     // script. ArgumentList receives individually quoted native arguments.
@@ -948,6 +1140,7 @@ fn elevated_helper_command(
         .arg(request)
         .arg(progress)
         .arg(digest)
+        .arg(cancel)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -960,6 +1153,7 @@ fn elevated_helper_command(
     _request: &Path,
     _progress: &Path,
     _digest: &str,
+    _cancel: &Path,
 ) -> io::Result<Command> {
     Err(io::Error::other(
         "raw media writing is unsupported on this platform",
@@ -1091,28 +1285,35 @@ fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 /// * Live UI → platform authentication starts the narrow helper.
 /// * Deliberate allow-gated root diagnostics → [`run_system_job`] runs in the
 ///   current process.
-pub fn spawn_job(req: WriteRequest, typed: &str) -> (JobStart, Option<Receiver<Progress>>) {
+pub fn spawn_job(
+    req: WriteRequest,
+    typed: &str,
+) -> (JobStart, Option<Receiver<Progress>>, Option<JobControl>) {
     let start = begin_job(&req, typed);
     if start != JobStart::Started {
-        return (start, None);
+        return (start, None, None);
     }
     let backend = WriteBackend::system();
     if backend == WriteBackend::Disabled {
-        return (JobStart::WriteDisabled, None);
+        return (JobStart::WriteDisabled, None, None);
     }
     let (tx, rx) = std::sync::mpsc::channel();
+    let control = JobControl::new();
+    let worker_control = control.clone();
     let _ = std::thread::Builder::new()
         .name("imager-write".into())
         .spawn(move || match backend {
             WriteBackend::System => {
-                let _ = run_system_job(&req, |p| {
+                let _ = run_system_job(&req, &|| worker_control.is_cancelled(), |p| {
                     let _ = tx.send(p);
                 });
             }
-            WriteBackend::PrivilegedHelper => spawn_privileged_helper(req, &tx),
+            WriteBackend::PrivilegedHelper => {
+                spawn_privileged_helper(req, &worker_control, &tx);
+            }
             WriteBackend::Disabled => {}
         });
-    (JobStart::Started, Some(rx))
+    (JobStart::Started, Some(rx), Some(control))
 }
 
 #[cfg(test)]
@@ -1210,6 +1411,7 @@ mod tests {
             .unwrap();
         let request_path = work.path().join("request.json");
         let progress_path = work.path().join("progress.jsonl");
+        let cancel_path = work.path().join("cancel");
         std::fs::write(&request_path, serde_json::to_vec(&req()).unwrap()).unwrap();
         std::fs::write(&progress_path, []).unwrap();
         let args = vec![
@@ -1218,6 +1420,7 @@ mod tests {
             request_path.display().to_string(),
             progress_path.display().to_string(),
             "0".repeat(64),
+            cancel_path.display().to_string(),
         ];
         let error = maybe_run_write_helper(&args).unwrap_err();
         assert!(error.to_string().contains("changed after authorization"));
@@ -1237,6 +1440,98 @@ mod tests {
         assert_eq!(std::fs::read(progress_path).unwrap(), b"keep-me");
     }
 
+    #[test]
+    fn cancellation_marker_is_separate_from_digest_bound_request() {
+        let work = tempfile::Builder::new()
+            .prefix("qos-imager-write-")
+            .tempdir()
+            .unwrap();
+        let request_path = work.path().join("request.json");
+        let cancel_path = work.path().join("cancel");
+        let request_bytes = serde_json::to_vec(&req()).unwrap();
+        std::fs::write(&request_path, &request_bytes).unwrap();
+        let digest_before = Sha256::digest(&request_bytes);
+        let control = JobControl::new();
+        control.cancel();
+        let mut sent = false;
+
+        relay_cancellation(&control, &cancel_path, &mut sent).unwrap();
+
+        assert!(sent);
+        assert!(cancel_path.is_file());
+        assert_eq!(
+            Sha256::digest(std::fs::read(request_path).unwrap()),
+            digest_before
+        );
+    }
+
+    #[test]
+    fn failed_cancellation_delivery_remains_retryable() {
+        let work = tempfile::tempdir().unwrap();
+        let job_dir = work.path().join("qos-imager-write-retry");
+        let cancel_path = job_dir.join("cancel");
+        let control = JobControl::new();
+        control.cancel();
+        let mut sent = false;
+
+        assert!(relay_cancellation(&control, &cancel_path, &mut sent).is_err());
+        assert!(!sent, "a failed marker write must be retried");
+        std::fs::create_dir(&job_dir).unwrap();
+        relay_cancellation(&control, &cancel_path, &mut sent).unwrap();
+
+        assert!(sent);
+        assert!(cancel_path.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_error_waits_until_the_privileged_child_has_exited() {
+        let work = tempfile::tempdir().unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 0.05"])
+            .spawn()
+            .unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let control = JobControl::new();
+
+        // Opening a directory as the JSONL progress file fails immediately.
+        let error = relay_helper_progress(
+            &mut child,
+            work.path(),
+            &work.path().join("cancel"),
+            &control,
+            &tx,
+        )
+        .unwrap_err();
+
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn helper_rejects_cancellation_marker_outside_private_job_directory() {
+        let work = tempfile::Builder::new()
+            .prefix("qos-imager-write-")
+            .tempdir()
+            .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let request_path = work.path().join("request.json");
+        std::fs::write(&request_path, b"{}").unwrap();
+
+        let error = validate_helper_paths(
+            &request_path,
+            &work.path().join("progress.jsonl"),
+            &outside.path().join("cancel"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("outside its private job directory")
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_elevates_only_the_hidden_helper_mode() {
@@ -1245,13 +1540,14 @@ mod tests {
             Path::new("/tmp/request"),
             Path::new("/tmp/progress"),
             &"a".repeat(64),
+            Path::new("/tmp/cancel"),
         )
         .unwrap();
         assert_eq!(command.get_program(), "pkexec");
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args[0], "/opt/qos-imager-bin");
         assert_eq!(args[1], WRITE_HELPER_ARG);
-        assert_eq!(args.len(), 5);
+        assert_eq!(args.len(), 6);
     }
 
     #[test]
@@ -1261,6 +1557,7 @@ mod tests {
         // around both paths before Start-Process flattens ArgumentList.
         assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
         assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
+        assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[4] + '\"')"));
         assert!(!WINDOWS_ELEVATION_SCRIPT.contains(r#"('\"' +"#));
     }
 
@@ -1409,9 +1706,10 @@ mod tests {
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
-        let (start, rx) = spawn_job(r, "sdb");
+        let (start, rx, control) = spawn_job(r, "sdb");
         assert_eq!(start, JobStart::WriteDisabled);
         assert!(rx.is_none());
+        assert!(control.is_none());
     }
 
     #[test]
@@ -1512,12 +1810,83 @@ mod tests {
     }
 
     #[test]
+    fn cooperative_cancel_stops_between_write_chunks_and_never_verifies() {
+        let data = sample_bytes(CHUNK * 3);
+        let src = tmp_with(&data);
+        let dst = tempfile::NamedTempFile::new().unwrap();
+        let control = JobControl::new();
+        let signal = control.clone();
+        let mut phases = Vec::new();
+
+        let result = run_job_paths_bound(
+            src.path(),
+            dst.path(),
+            data.len() as u64,
+            None,
+            None,
+            &|| control.is_cancelled(),
+            |progress| {
+                phases.push(progress.phase);
+                signal.cancel();
+            },
+        );
+
+        assert_eq!(result, JobResult::Cancelled);
+        assert_eq!(phases, vec![JobPhase::Writing]);
+        assert_eq!(std::fs::metadata(dst.path()).unwrap().len(), CHUNK as u64);
+    }
+
+    #[test]
+    fn cooperative_cancel_stops_during_readback_without_claiming_success() {
+        let data = sample_bytes(CHUNK * 3);
+        let src = tmp_with(&data);
+        let dst = tempfile::NamedTempFile::new().unwrap();
+        let control = JobControl::new();
+        let signal = control.clone();
+        let mut saw_verify = false;
+
+        let result = run_job_paths_bound(
+            src.path(),
+            dst.path(),
+            data.len() as u64,
+            None,
+            None,
+            &|| control.is_cancelled(),
+            |progress| {
+                if progress.phase == JobPhase::Verifying {
+                    saw_verify = true;
+                    signal.cancel();
+                }
+            },
+        );
+
+        assert_eq!(result, JobResult::Cancelled);
+        assert!(saw_verify);
+    }
+
+    #[test]
+    fn profile_write_honours_cancel_before_touching_the_tail() {
+        let target = tmp_with(b"leave this target unchanged");
+        let before = std::fs::read(target.path()).unwrap();
+        let error = write_profile_block_bound(
+            target.path(),
+            before.len() as u64,
+            &InstallProfile::default(),
+            &|| true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(std::fs::read(target.path()).unwrap(), before);
+    }
+
+    #[test]
     fn target_revalidation_failure_still_reports_an_actionable_terminal_event() {
         let mut request = req();
         request.target.name = "qos-test-device-that-cannot-exist".into();
         let mut updates = Vec::new();
 
-        let result = run_system_job(&request, |progress| updates.push(progress));
+        let result = run_system_job(&request, &|| false, |progress| updates.push(progress));
 
         assert!(matches!(result, JobResult::WriteFailed(_)));
         let terminal = updates.last().expect("terminal progress event");
@@ -1565,6 +1934,7 @@ mod tests {
             data.len() as u64,
             Some(wrong_identity),
             None,
+            &|| false,
             |_| {},
         );
         assert!(
@@ -1589,6 +1959,7 @@ mod tests {
             data.len() as u64,
             SourceIdentity::from_metadata(&src.as_file().metadata().unwrap()),
             Some(&wrong_digest),
+            &|| false,
             |_| {},
         );
         assert!(
