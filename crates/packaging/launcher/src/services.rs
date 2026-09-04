@@ -604,8 +604,8 @@ mod tests {
         let previous = std::env::var_os("XDG_RUNTIME_DIR");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().expect("services root");
-        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock"))
-            .expect("listen");
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
         let reader = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
@@ -614,7 +614,10 @@ mod tests {
             stream.read_exact(&mut len).expect("length");
             let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
             stream.read_exact(&mut bytes).expect("payload");
-            (magic, serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"))
+            (
+                magic,
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+            )
         });
         let mut services = BTreeMap::new();
         services.insert(COLLAB_SERVICE.to_string(), "required@1".to_string());

@@ -6982,8 +6982,8 @@ mod tests {
             pane.observe_agent_launch_event(&crate::shell::launcher::LaunchEvent {
                 package_id: crate::shell::launcher::WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
-            managed_agent_id: Some("studio-agent".into()),
-            managed_workspace_id: Some(pane.task_room.clone()),
+                managed_agent_id: Some("studio-agent".into()),
+                managed_workspace_id: Some(pane.task_room.clone()),
                 kind: crate::shell::launcher::LaunchEventKind::SpawnFailed {
                     detail: "launcher unavailable".into(),
                 },
