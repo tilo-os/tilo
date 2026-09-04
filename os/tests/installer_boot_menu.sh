@@ -132,4 +132,17 @@ else
   bad "installer does not invoke the firmware/menu integration"
 fi
 
+provisional_line="$(grep -n 'wrote provisional qOS recovery ownership marker' "$installer" | cut -d: -f1)"
+menu_line="$(grep -n 'BOOT_MENU_RESULT=' "$installer" | cut -d: -f1)"
+final_line="$(grep -n 'finalized qOS recovery ownership marker' "$installer" | cut -d: -f1)"
+if grep -Fq 'marker_tmp="$(mktemp "$DEPLOY_ETC/qos/.install-marker.XXXXXX")"' "$installer" \
+   && grep -Fq 'mv -f -- "$marker_tmp" "$INSTALL_MARKER"' "$installer" \
+   && grep -Fq 'sync -f "$DEPLOY_ETC/qos"' "$installer" \
+   && [ -n "$provisional_line" ] && [ -n "$menu_line" ] && [ -n "$final_line" ] \
+   && [ "$provisional_line" -lt "$menu_line" ] && [ "$menu_line" -lt "$final_line" ]; then
+  ok "an atomic provisional receipt precedes owned boot entries and is finalized afterwards"
+else
+  bad "interruption can leave boot entries without an atomic recovery receipt"
+fi
+
 exit "$fail"
