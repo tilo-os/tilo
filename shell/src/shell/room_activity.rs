@@ -31,7 +31,7 @@ use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest,
     ChangeRun, ColorCompat, GroupNameRequest, HistoryComparison, HistoryFacetIndex,
     HistorySelectionDetail, HistorySource, NamedRange, NarrativeRequest, RecordId, RecordStore,
-    StepState, Theme, Widget, format_relative_time,
+    StepState, Theme, Widget, format_relative_time, participant_display_label,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -4886,12 +4886,7 @@ impl RoomActivityPane {
                 .map(|task| {
                     AccessNode::new(Role::ListItem)
                         .with_name(task.title.clone())
-                        .with_description(format!(
-                            "{}; {}; {} audit events",
-                            task.status.label(),
-                            task.route.label(),
-                            task.audit.len()
-                        ))
+                        .with_description(task_accessibility_description(task, self.now()))
                 })
                 .collect();
             root.children.push(tasks);
@@ -5353,10 +5348,7 @@ fn draw_task_card(
         None,
         ui::text_render::TextWeight::Medium,
     );
-    let assignee = task.assigned_agent.as_ref().map_or_else(
-        || format!("Unassigned · created by {}", task.created_by),
-        |agent| format!("▣ AGENT · {agent}"),
-    );
+    let assignee = task_assignee_label(task);
     let resource = task
         .resource
         .as_ref()
@@ -5403,12 +5395,7 @@ fn draw_task_card(
                 .ok()
                 .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            let line = format!(
-                "{} · {} · {}",
-                event.actor,
-                event.summary,
-                format_relative_time(event_time, now)
-            );
+            let line = task_audit_line(event, event_time, now);
             let line = tr.elide_to_width(
                 &line,
                 theme.tokens.typography.scale.sm,
@@ -5425,6 +5412,58 @@ fn draw_task_card(
             audit_y += 18.0;
         }
     }
+}
+
+fn task_assignee_label(task: &WorkspaceTask) -> String {
+    task.assigned_agent.as_ref().map_or_else(
+        || {
+            format!(
+                "Unassigned · created by {}",
+                participant_display_label(&task.created_by)
+            )
+        },
+        |agent| {
+            // The card already owns the prominent AGENT badge, so reuse the
+            // shared presentation while avoiding a redundant second suffix.
+            let label = participant_display_label(agent);
+            let name = label.strip_suffix(" · Agent").unwrap_or(&label);
+            format!("▣ AGENT · {name}")
+        },
+    )
+}
+
+fn task_audit_line(
+    event: &crate::shell::state::WorkspaceTaskAuditEvent,
+    event_time: SystemTime,
+    now: SystemTime,
+) -> String {
+    format!(
+        "{} · {} · {}",
+        participant_display_label(&event.actor),
+        event.summary,
+        format_relative_time(event_time, now)
+    )
+}
+
+fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> String {
+    let latest = task.audit.last().map(|event| {
+        let event_time = u64::try_from(event.at)
+            .ok()
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        task_audit_line(event, event_time, now)
+    });
+    let mut description = format!(
+        "{}; {}; {}; {} audit events",
+        task.status.label(),
+        task.route.label(),
+        task_assignee_label(task),
+        task.audit.len()
+    );
+    if let Some(latest) = latest {
+        let _ = write!(description, "; latest: {latest}");
+    }
+    description
 }
 
 fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {
@@ -6846,6 +6885,44 @@ mod tests {
         assert!(debug.contains("Prepare screenshots"));
         assert!(debug.contains("rules only"));
         assert!(debug.contains("1 audit events"));
+    }
+
+    #[test]
+    fn task_center_presents_agent_principals_without_leaking_wire_ids() {
+        let event_time = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(42))
+            .expect("fixture time");
+        let task = WorkspaceTask {
+            id: "task:review".into(),
+            title: "Review launch copy".into(),
+            created_by: "ada".into(),
+            assigned_agent: Some("agent:scribe".into()),
+            route: WorkspaceTaskRoute::RulesOnly,
+            status: WorkspaceTaskStatus::InProgress,
+            resource: None,
+            created_at: 42,
+            updated_at: 42,
+            audit: vec![crate::shell::state::WorkspaceTaskAuditEvent {
+                at: 42,
+                actor: "agent:scribe".into(),
+                summary: "Reviewed section 2".into(),
+            }],
+        };
+
+        let byline = task_assignee_label(&task);
+        let audit = task_audit_line(&task.audit[0], event_time, event_time);
+        let accessible = task_accessibility_description(&task, event_time);
+
+        assert_eq!(byline, "▣ AGENT · scribe");
+        assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
+        assert!(accessible.contains("▣ AGENT · scribe"));
+        assert!(accessible.contains("scribe · Agent"));
+        for rendered in [&byline, &audit, &accessible] {
+            assert!(
+                !rendered.contains("agent:"),
+                "wire principal leaked into visible copy: {rendered}"
+            );
+        }
     }
 
     #[test]
