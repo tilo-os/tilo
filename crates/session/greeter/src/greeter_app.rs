@@ -514,6 +514,33 @@ pub enum AuthScenario {
     LongName,
 }
 
+/// Recognise the deliberately small, machine-readable-looking portion of
+/// `fprintd-list`'s output. A successful command alone is insufficient: some
+/// fprintd versions exit successfully while reporting no enrolled prints.
+fn fingerprint_list_has_enrollment(output: &str) -> bool {
+    output.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("- #")
+            || (line.starts_with("- ") && line.trim_end_matches('.').ends_with("-finger"))
+    })
+}
+
+/// Ask fprintd whether `username` has an enrolled factor. Any missing command,
+/// service, reader, permission, non-zero status, malformed output, or empty
+/// enrollment fails closed to `false` so the login screen never offers a
+/// button which can only fail.
+fn enrolled_fingerprint(username: &str) -> bool {
+    let Ok(output) = std::process::Command::new("fprintd-list")
+        .env("LC_ALL", "C")
+        .arg(username)
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && fingerprint_list_has_enrollment(&String::from_utf8_lossy(&output.stdout))
+}
+
 pub struct GreeterApp {
     sessions: Vec<Session>,
     selected_session: usize,
@@ -521,6 +548,10 @@ pub struct GreeterApp {
     /// unambiguous. Its username is fixed and the form asks only for the
     /// passcode; zero/multiple candidates retain the editable username field.
     login_user: Option<LoginUser>,
+    /// Whether the fixed local account has at least one enrolled fingerprint.
+    /// False on every discovery or probe error, and whenever the username is
+    /// editable: the greeter must not advertise a factor it cannot identify.
+    fingerprint_available: bool,
     status: String,
     /// How [`GreeterApp::status`] should read — see [`StatusKind`].
     status_kind: StatusKind,
@@ -576,9 +607,14 @@ impl GreeterApp {
     /// Construct a greeter reading sessions from the standard
     /// `/usr/share/wayland-sessions` directory.
     pub fn new() -> Self {
-        Self::with_sessions_and_login_user(
+        let login_user = discover_default_login_user();
+        let fingerprint_available = login_user
+            .as_ref()
+            .is_some_and(|user| enrolled_fingerprint(&user.username));
+        Self::with_sessions_login_user_and_fingerprint(
             read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)),
-            discover_default_login_user(),
+            login_user,
+            fingerprint_available,
         )
     }
 
@@ -594,10 +630,21 @@ impl GreeterApp {
         sessions: Vec<Session>,
         login_user: Option<LoginUser>,
     ) -> Self {
+        // Deterministic constructor for shots and focused UI tests. Production
+        // uses `new`, which probes the fixed account and fails closed.
+        Self::with_sessions_login_user_and_fingerprint(sessions, login_user, true)
+    }
+
+    fn with_sessions_login_user_and_fingerprint(
+        sessions: Vec<Session>,
+        login_user: Option<LoginUser>,
+        fingerprint_available: bool,
+    ) -> Self {
         Self {
             sessions,
             selected_session: 0,
             login_user,
+            fingerprint_available,
             status: String::new(),
             status_kind: StatusKind::None,
             detail: String::new(),
@@ -815,26 +862,24 @@ impl GreeterApp {
     }
 
     fn build_auth_actions(&self, busy: bool, theme: &Theme) -> VStack {
-        VStack::new(
-            ACTION_STATUS_GAP,
-            vec![
-                Box::new(
-                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
-                        .primary()
-                        .fill_width(ACTION_HEIGHT),
-                ),
-                Box::new(
-                    Button::new(
-                        "greeter.fingerprint",
-                        "Use fingerprint",
-                        Some(FINGERPRINT_PATH),
-                    )
-                    .with_enabled(!busy)
-                    .fill_width(ACTION_HEIGHT),
-                ),
-                Box::new(self.build_status(theme)),
-            ],
-        )
+        let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
+            Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
+                .primary()
+                .fill_width(ACTION_HEIGHT),
+        )];
+        if self.fingerprint_available {
+            actions.push(Box::new(
+                Button::new(
+                    "greeter.fingerprint",
+                    "Use fingerprint",
+                    Some(FINGERPRINT_PATH),
+                )
+                .with_enabled(!busy)
+                .fill_width(ACTION_HEIGHT),
+            ));
+        }
+        actions.push(Box::new(self.build_status(theme)));
+        VStack::new(ACTION_STATUS_GAP, actions)
     }
 
     fn build_account_field(&self, busy: bool, theme: &Theme) -> Box<dyn Widget> {
@@ -1140,6 +1185,10 @@ impl GreeterApp {
     fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
+            return;
+        }
+        if method == AuthMethod::Fingerprint && !self.fingerprint_available {
+            self.set_status("No enrolled fingerprint is available for this account");
             return;
         }
 
@@ -1822,6 +1871,46 @@ mod tests {
         assert_eq!(app.session_label(), "qOS");
         app.selected_session = 1;
         assert_eq!(app.session_label(), "qOS with peer sync");
+    }
+
+    #[test]
+    fn fingerprint_enrollment_output_fails_closed() {
+        assert!(fingerprint_list_has_enrollment(
+            "Fingerprints for user quickuser:\n - #0: right-index-finger\n"
+        ));
+        assert!(fingerprint_list_has_enrollment(
+            "Fingerprints for user quickuser:\n - right-index-finger\n"
+        ));
+        assert!(!fingerprint_list_has_enrollment(
+            "Fingerprints for user quickuser:\nnone\n"
+        ));
+        assert!(!fingerprint_list_has_enrollment("right-index-finger"));
+    }
+
+    #[test]
+    fn fingerprint_action_is_hidden_and_rejected_without_enrollment() {
+        let user = LoginUser {
+            username: "quickuser".into(),
+            display_name: "Quinten Quick".into(),
+        };
+        let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
+            test_sessions(),
+            Some(user),
+            false,
+        );
+        assert!(
+            !focusables(&app).contains(&"greeter.fingerprint".to_string()),
+            "an unavailable factor must not appear in the form or focus order"
+        );
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.attempt_login(&mut doc, &automerge::ROOT, AuthMethod::Fingerprint);
+        assert_eq!(
+            app.status,
+            "No enrolled fingerprint is available for this account"
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
     }
 
     /// The greeter must never put the internal desktop id in front of the
