@@ -100,6 +100,6 @@ fn authenticated_context_marks_agent_presence_before_it_moves() {
     );
     assert_eq!(
         app.presence_ctx().remote_cursors[0].label,
-        "Release assistant",
+        "Release assistant · Agent",
     );
 }
