@@ -279,8 +279,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             let pending = require_pending(&moderation, &package_id)?;
             let _inspection = inspect_for_decision(&pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
-            let record =
-                moderation.approve(&package_id, reviewer, reason, now_unix(), &allowlist)?;
+            let record = moderation.approve(&pending, reviewer, reason, now_unix(), &allowlist)?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {

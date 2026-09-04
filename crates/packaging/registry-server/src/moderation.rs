@@ -105,7 +105,7 @@ impl ModerationService {
     /// conflicts with public state, or cannot be persisted atomically.
     pub fn approve(
         &self,
-        submission_id: &str,
+        reviewed_submission: &PendingSubmission,
         reviewer: impl Into<String>,
         reason: impl Into<String>,
         reviewed_at_unix: u64,
@@ -113,13 +113,20 @@ impl ModerationService {
     ) -> Result<ReviewRecord, ModerationError> {
         let _thread_guard = thread_lock(&self.transition_lock)?;
         let _process_guard = ProcessGuard::acquire(&self.storage)?;
-        let pending = self.require_pending(submission_id)?;
+        let pending = self.require_pending(&reviewed_submission.submission_id)?;
+        if &pending != reviewed_submission {
+            return Err(ModerationError::PendingChanged(
+                reviewed_submission.submission_id.clone(),
+            ));
+        }
         verify_pending(&pending, allowlist)?;
         let review_id = submission_review_id(&pending);
         let prior_review = self.storage.load_review(&review_id)?;
         if let Some(review) = prior_review {
             // Public state is saved before audit, so this is crash cleanup.
-            let _deleted = self.storage.delete_pending(submission_id)?;
+            let _deleted = self
+                .storage
+                .delete_pending(&reviewed_submission.submission_id)?;
             return Ok(review);
         }
         let public = self.storage.load_entry(&pending.change.entry.package_id)?;
@@ -148,7 +155,9 @@ impl ModerationService {
         self.persist_review_if_absent(&review)?;
         // save public state -> save audit -> remove pending. A crash in either
         // gap can be retried without overwriting a newer public revision.
-        let _deleted = self.storage.delete_pending(submission_id)?;
+        let _deleted = self
+            .storage
+            .delete_pending(&reviewed_submission.submission_id)?;
         Ok(review)
     }
 
@@ -593,6 +602,8 @@ pub enum ModerationError {
     ProcessLock(String),
     #[error("no pending submission for {0}")]
     NoPendingSubmission(String),
+    #[error("pending submission for {0} changed after review; inspect it again")]
+    PendingChanged(String),
     #[error("entry {0} already exists")]
     EntryAlreadyExists(String),
     #[error("no public entry for {0}")]
@@ -717,14 +728,14 @@ mod tests {
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
         assert!(matches!(
-            service.approve("dev.qos.editor", "m", "", 101, &PublisherAllowlist::empty()),
+            service.approve(&pending, "m", "", 101, &PublisherAllowlist::empty()),
             Err(ModerationError::Verification(
                 VerifyError::PublisherNotAllowed
             ))
         ));
         service.storage.save_entry(&pending.change.entry).unwrap(); // simulated crash after apply
         let review = service
-            .approve("dev.qos.editor", "m", "", 102, &allow(&key))
+            .approve(&pending, "m", "", 102, &allow(&key))
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Approved);
         assert!(service.pending("dev.qos.editor").unwrap().is_none());
@@ -764,13 +775,37 @@ mod tests {
         let mut public = entry(&key, 10);
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();
-        service
+        let pending = service
             .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
             .unwrap();
         let review = service
-            .approve("dev.qos.editor", "m", "withdrawn", 101, &allow(&key))
+            .approve(&pending, "m", "withdrawn", 101, &allow(&key))
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Approved);
+        assert!(
+            service
+                .storage
+                .load_entry("dev.qos.editor")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn approval_refuses_a_submission_replaced_after_review() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let reviewed = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        service
+            .submit(change(&key, EntryAction::Add, 11), 101)
+            .unwrap();
+
+        assert!(matches!(
+            service.approve(&reviewed, "m", "", 102, &allow(&key)),
+            Err(ModerationError::PendingChanged(package)) if package == "dev.qos.editor"
+        ));
         assert!(
             service
                 .storage

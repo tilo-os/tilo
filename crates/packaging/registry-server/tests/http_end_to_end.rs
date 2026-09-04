@@ -87,8 +87,10 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
 }
 
 fn approve(h: &Harness, package_id: &str) {
-    ModerationService::new(h.storage.clone())
-        .approve(package_id, "test-owner", "reviewed", 500, &h.allowlist)
+    let moderation = ModerationService::new(h.storage.clone());
+    let pending = moderation.pending(package_id).unwrap().unwrap();
+    moderation
+        .approve(&pending, "test-owner", "reviewed", 500, &h.allowlist)
         .expect("approve queued submission");
 }
 
