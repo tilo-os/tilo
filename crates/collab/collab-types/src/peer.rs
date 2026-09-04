@@ -41,12 +41,33 @@ impl PeerPresence {
 /// sized `usize`; conversion back into a local model is checked by the broker.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PeerPresencePayload {
-    Pointer { x: f32, y: f32 },
-    Caret { pos: u64 },
-    Selection { start: u64, end: u64 },
-    Typing { start: u64, end: u64 },
+    Pointer {
+        x: f32,
+        y: f32,
+    },
+    Caret {
+        pos: u64,
+    },
+    Selection {
+        start: u64,
+        end: u64,
+    },
+    Typing {
+        start: u64,
+        end: u64,
+    },
     Arrived,
     Left,
+    /// An ephemeral, room-scoped relationship cue: the authenticated sender
+    /// is following `target`, or has stopped when it is `None`. This is not
+    /// a collaboration command and must never be persisted or interpreted as
+    /// permission to control another participant's view.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only this optional visual enhancement.
+    Following {
+        target: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -61,6 +82,10 @@ mod tests {
             PeerPresencePayload::Typing { start: 8, end: 13 },
             PeerPresencePayload::Arrived,
             PeerPresencePayload::Left,
+            PeerPresencePayload::Following {
+                target: Some("peer@7".into()),
+            },
+            PeerPresencePayload::Following { target: None },
         ]
     }
 

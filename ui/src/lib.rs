@@ -256,7 +256,7 @@ pub use history_source::run_undo::{
     RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
 };
 pub use history_source::runs::{
-    AgentRun, RunStep, forget_run, read_runs, record_run, run_starting_at,
+    AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
 // Channel browser — see `widget/channel_browser.rs` module doc-comment for
 // the design intent. Source-agnostic; consumes `Vec<ChannelEntry>` from

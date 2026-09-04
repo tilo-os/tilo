@@ -54,6 +54,7 @@ enum PersistedStage {
     TourNavigate,
     TourOrganise,
     TourCollaborate,
+    TourStart,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -190,6 +191,7 @@ enum TourPage {
     Navigate,
     Organise,
     Collaborate,
+    Start,
 }
 
 // Keep this copy beside the tour rather than duplicating a second conceptual
@@ -230,12 +232,37 @@ const ORGANISE_CARDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// A concrete hand-off from trusted setup into the otherwise-empty first
+/// workspace.  The earlier tour pages explain the model; this one answers the
+/// more important first-use question: "what should I do now?"  Keep these
+/// labels aligned with real shell surfaces so the checklist never teaches a
+/// product that does not exist.
+const START_CARDS: &[(&str, &str)] = &[
+    (
+        "1  Name the workspace",
+        "Open Workspace Settings from the title in the top bar. Use the project name everyone will recognise.",
+    ),
+    (
+        "2  Open a shared starting point",
+        "Choose Notes for ideas, Calendar for tasks, or Chat for a discussion or meeting. Add more apps beside it whenever you need them.",
+    ),
+    (
+        "3  Invite the right people",
+        "In Workspace Settings, choose Invite people. Review each person's role before sending; nothing else on your desktop is shared.",
+    ),
+    (
+        "4  Check work and recover mistakes",
+        "Open Activity from the top bar to catch up, inspect who changed what, compare versions, or undo only the change that went wrong.",
+    ),
+];
+
 impl TourPage {
     fn number(self) -> u8 {
         match self {
             Self::Navigate => 1,
             Self::Organise => 2,
             Self::Collaborate => 3,
+            Self::Start => 4,
         }
     }
 }
@@ -530,6 +557,7 @@ impl OnboardingView {
                     PersistedStage::TourNavigate => Some(TourPage::Navigate),
                     PersistedStage::TourOrganise => Some(TourPage::Organise),
                     PersistedStage::TourCollaborate => Some(TourPage::Collaborate),
+                    PersistedStage::TourStart => Some(TourPage::Start),
                 };
                 if let Some(error) = load_error {
                     self.progress_error = Some(format!(
@@ -701,6 +729,7 @@ impl OnboardingView {
             TourPage::Navigate => "Move",
             TourPage::Organise => "Arrange",
             TourPage::Collaborate => "Share",
+            TourPage::Start => "Begin",
         };
         let progress = Column::new()
             .with_no_padding()
@@ -715,14 +744,14 @@ impl OnboardingView {
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("{stage}  ·  {number} of 3"))
+                        Text::new(&format!("{stage}  ·  {number} of 4"))
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     )),
             ))
             .push(Box::new(
-                ProgressBar::new(f32::from(number) / 3.0)
-                    .with_label(format!("Desktop tour, step {number} of 3: {stage}")),
+                ProgressBar::new(f32::from(number) / 4.0)
+                    .with_label(format!("Desktop tour, step {number} of 4: {stage}")),
             ));
         let mut content = Column::new()
             .with_intrinsic_height()
@@ -786,6 +815,11 @@ impl OnboardingView {
                     ),
                 ],
             ),
+            TourPage::Start => (
+                "Your first five minutes",
+                "Start with one shared outcome, then let the workspace grow with the project. This checklist remains available from Search as Desktop tour.",
+                START_CARDS,
+            ),
         };
         let mut body = Column::new()
             .with_no_padding()
@@ -801,7 +835,7 @@ impl OnboardingView {
 
     /// Sticky tour navigation, kept outside the scrollable lesson body.
     fn tour_actions(page: TourPage) -> Box<dyn Widget> {
-        let (primary_label, primary_key) = if page == TourPage::Collaborate {
+        let (primary_label, primary_key) = if page == TourPage::Start {
             ("Enter qOS", KEY_FINISH)
         } else {
             ("Continue", KEY_TOUR_NEXT)
@@ -1698,12 +1732,14 @@ impl Widget for OnboardingView {
                 Some(TourPage::Navigate) | None => None,
                 Some(TourPage::Organise) => Some(TourPage::Navigate),
                 Some(TourPage::Collaborate) => Some(TourPage::Organise),
+                Some(TourPage::Start) => Some(TourPage::Collaborate),
             };
             let progress_stage = match next {
                 None => Some(PersistedStage::IdentityReady),
                 Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
                 Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
                 Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+                Some(TourPage::Start) => Some(PersistedStage::TourStart),
             };
             if self.tour_only
                 || progress_stage.is_some_and(|progress| self.persist_progress(progress))
@@ -1717,12 +1753,14 @@ impl Widget for OnboardingView {
             let next = match self.tour_page {
                 Some(TourPage::Navigate) => Some(TourPage::Organise),
                 Some(TourPage::Organise) => Some(TourPage::Collaborate),
+                Some(TourPage::Collaborate) => Some(TourPage::Start),
                 page => page,
             };
             let progress_stage = match next {
                 Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
                 Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
                 Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+                Some(TourPage::Start) => Some(PersistedStage::TourStart),
                 None => None,
             };
             if self.tour_only
@@ -1734,8 +1772,12 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
-            self.finished =
-                self.tour_only || (self.flow.is_done() && self.finish_persisted_progress());
+            let at_tour_end = self.tour_page == Some(TourPage::Start);
+            let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
+            self.finished = (self.tour_only && at_tour_end)
+                || ((at_tour_end || skipping_tour)
+                    && self.flow.is_done()
+                    && self.finish_persisted_progress());
             if self.finished {
                 clear_secret(&self.connect_passphrase);
                 clear_secret(&self.backup_passphrase);
@@ -1955,6 +1997,7 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
         Some(TourPage::Navigate) => 3,
         Some(TourPage::Organise) => 4,
         Some(TourPage::Collaborate) => 5,
+        Some(TourPage::Start) => 6,
         None => screen_order(screen),
     }
 }
@@ -2176,9 +2219,15 @@ mod tests {
 
         let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
         assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
-        press(&mut document, KEY_FINISH);
+        press(&mut document, KEY_TOUR_NEXT);
         collaborate_restart.sync(&mut document, &automerge::ROOT);
-        assert!(collaborate_restart.finished());
+        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
+
+        let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(start_restart.tour_page, Some(TourPage::Start));
+        press(&mut document, KEY_FINISH);
+        start_restart.sync(&mut document, &automerge::ROOT);
+        assert!(start_restart.finished());
         assert!(!has_pending_progress(directory.path()));
 
         let established = OnboardingView::new(directory.path().to_path_buf());
@@ -2371,9 +2420,20 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.tour_page, Some(TourPage::Collaborate));
 
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            !view.finished(),
+            "the tour cannot finish before its hand-off page"
+        );
+
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Start));
+
         press(&mut doc, KEY_TOUR_BACK);
         view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
         press(&mut doc, KEY_TOUR_NEXT);
         view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_FINISH);
@@ -2399,6 +2459,8 @@ mod tests {
         );
 
         let mut view = OnboardingView::new_tour();
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_TOUR_NEXT);
         view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_TOUR_NEXT);
@@ -2437,6 +2499,30 @@ mod tests {
             ["Workspace", "Strip", "Window group", "Tab"],
             "the tour must name every level of the desktop hierarchy"
         );
+    }
+
+    #[test]
+    fn desktop_tour_ends_with_a_concrete_collaboration_handoff() {
+        let handoff = START_CARDS
+            .iter()
+            .flat_map(|(title, body)| [*title, *body])
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for real_surface in [
+            "Workspace Settings",
+            "Notes",
+            "Calendar",
+            "Chat",
+            "Invite people",
+            "Activity",
+        ] {
+            assert!(
+                handoff.contains(real_surface),
+                "first-use handoff must name the real {real_surface} surface"
+            );
+        }
+        assert!(handoff.contains("undo only the change"));
     }
 
     #[test]
@@ -2784,7 +2870,7 @@ mod tests {
         const WIDTH: f32 = 420.0;
         const HEIGHT: f32 = 640.0;
 
-        for next_presses in 0..=2 {
+        for next_presses in 0..=3 {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START] {
