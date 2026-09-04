@@ -407,11 +407,13 @@ pub fn continuation_file_reference_for_surface(
     surface_id: u64,
 ) -> Option<crate::shell::personal_continuity::LaunchIntent> {
     let open = lock_open_documents();
-    let path = &open
+    let path = open
         .iter()
         .find(|document| document.surface == Some(surface_id))?
-        .path;
-    let record_id = xattr::get(path, "user.qos.record-id")
+        .path
+        .clone();
+    drop(open);
+    let record_id = xattr::get(&path, "user.qos.record-id")
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
@@ -426,16 +428,22 @@ pub fn continuation_file_reference_for_surface(
             )
             .records
             .into_iter()
-            .find(|entry| entry.path.canonicalize().unwrap_or(entry.path.clone()) == wanted)
+            .find(|entry| {
+                entry
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| entry.path.clone())
+                    == wanted
+            })
             .map(|entry| *entry.record_id.as_bytes())
         })?;
-    let content_hash = xattr::get(path, "user.qos.content-hash")
+    let content_hash = xattr::get(&path, "user.qos.content-hash")
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     // FUSE exposes preview bytes, never a path. Persist only their hash so
     // the receiver can request/cache its own projected thumbnail.
-    let thumbnail_hash = xattr::get(path, "user.qos.thumb")
+    let thumbnail_hash = xattr::get(&path, "user.qos.thumb")
         .ok()
         .flatten()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -1382,7 +1390,7 @@ mod tests {
             state
                 .tree_mut()
                 .continuation_file_references
-                .insert(0x77, reference.clone());
+                .insert(0x77, reference);
         }
         assert!(activate_continuity_file_tab(&chrome, 0x77));
         let launch = launched_commands(&log, 1);

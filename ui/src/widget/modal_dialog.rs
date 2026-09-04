@@ -704,6 +704,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         }
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.open {
+            visitor(&self.content);
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.open {
             vec![&mut self.content]

@@ -2420,10 +2420,9 @@ impl TerminalWidget {
             let rows = usize::try_from(placement.rows.clamp(1, 1024)).unwrap_or(1);
             let columns = usize::try_from(placement.columns.clamp(1, 1024)).unwrap_or(1);
             let placement_end = placement.row.saturating_add(rows);
-            if placement.col >= self.width
-                || placement_end <= start_y
-                || placement.row >= viewport_end
-            {
+            let outside_columns = placement.col >= self.width;
+            let outside_visible_rows = placement_end <= start_y || placement.row >= viewport_end;
+            if outside_columns || outside_visible_rows {
                 continue;
             }
             let left = grid_rect.x0 + self.last_padding_x + placement.col as f64 * self.char_w;

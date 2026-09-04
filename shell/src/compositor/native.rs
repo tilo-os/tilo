@@ -1274,6 +1274,15 @@ impl ControlState for FrameBuilderControlState<'_> {
             .enumerate()
             .into_iter()
             .map(|a| {
+                let hierarchy = if a.resource.provider
+                    == crate::shell::search::providers::live_app_actions::PROVIDER_ID
+                {
+                    crate::shell::search::providers::live_app_actions::LiveAppActionsProvider::hierarchy(
+                        &a.resource.id,
+                    )
+                } else {
+                    None
+                };
                 serde_json::json!({
                     "provider": a.resource.provider,
                     "id": a.resource.id,
@@ -1285,6 +1294,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                     // an invocation, it is not one, so enumeration stays side-effect-free.
                     "params": params_json(&a.params),
                     "contract": a.contract,
+                    // Canonical application actions already carry this hierarchy in
+                    // their opaque palette id. Expose it as data for headless clients;
+                    // presentation-only providers leave the fields null.
+                    "application": hierarchy.map(|parts| parts.0),
+                    "room": hierarchy.map(|parts| parts.1),
+                    "record": hierarchy.map(|parts| parts.2),
+                    "resource": hierarchy.map(|parts| parts.3),
+                    "operation": hierarchy.map(|parts| parts.4),
                 })
             })
             .collect();
@@ -4698,7 +4715,7 @@ pub fn run() -> ! {
                                 stream.local_peer,
                                 &stream.app_id,
                                 &stream.codec,
-                                stream.hdr_static_metadata.clone(),
+                                stream.hdr_static_metadata,
                                 Arc::clone(&stream.input_sink),
                             );
                         if !mounted {
@@ -4752,7 +4769,9 @@ pub fn run() -> ! {
                             ),
                         }
                     }
-                    _ => unreachable!("legacy inbox contains only live legacy messages"),
+                    _ => {
+                        tracing::debug!("ignoring non-stream message in the legacy inbox");
+                    }
                 }
             }
             for stream in pending_legacy_streams.values() {
@@ -4763,7 +4782,7 @@ pub fn run() -> ! {
                         stream.local_peer,
                         &stream.app_id,
                         &stream.codec,
-                        stream.hdr_static_metadata.clone(),
+                        stream.hdr_static_metadata,
                         Arc::clone(&stream.input_sink),
                     );
                 }

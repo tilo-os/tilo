@@ -25,6 +25,8 @@
 //! cargo run -p ui --release --example ui-perf -- dashboard_perf_bench
 //! ```
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
+//! Override the render target: `QUICK_UI_DASH_WIDTH=3840
+//! QUICK_UI_DASH_HEIGHT=2160`.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -68,6 +70,14 @@ fn canvas_f32(v: u32) -> f32 {
 )]
 fn idx_f64(i: usize) -> f64 {
     i as f64
+}
+
+fn env_u32(name: &str, fallback: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
 }
 
 /// One panel of the dashboard: header + a column of mixed widgets.
@@ -192,6 +202,22 @@ struct Phase {
     draw_us: u128,
     render_us: u128,
     total_us: u128,
+    raster_pixels: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResourceSnapshot {
+    rss_kib: Option<u64>,
+    known_gpu_bytes: u64,
+}
+
+struct BenchRun {
+    histo: Vec<Phase>,
+    total_redraws: usize,
+    total_skipped: usize,
+    allocations: Option<crate::AllocationSnapshot>,
+    resources_before: ResourceSnapshot,
+    resources_after: ResourceSnapshot,
 }
 
 /// Everything one bench frame needs to lay out, dispatch events to, and
@@ -208,13 +234,15 @@ struct BenchState<'a> {
     theme: &'a Theme,
     scene: &'a mut Scene,
     renderer: &'a mut OffscreenRenderer,
+    damage_regions: &'a mut Vec<vello::kurbo::Rect>,
     canvas_w: u32,
     canvas_h: u32,
 }
 
 fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
     let t_layout = Instant::now();
-    if state.root.is_layout_dirty() {
+    let layout_dirty = state.root.is_layout_dirty();
+    if layout_dirty {
         let node_map = state.node_map;
         let text_renderer = &mut *state.text_renderer;
         let _ = state.taffy.compute_layout_with_measure(
@@ -262,9 +290,30 @@ fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
     phase.draw_us = t_draw.elapsed().as_micros();
 
     let t_render = Instant::now();
-    let _ = state
-        .renderer
-        .render(state.scene, state.theme.tokens.colors.surfaces.base);
+    // Layout can expose both old and new pixels, so it conservatively damages
+    // the complete native target. Visual-only changes use the union of dirty
+    // leaves plus a 16px safety margin for AA, focus rings, and small shadows.
+    state.damage_regions.clear();
+    if layout_dirty {
+        state.damage_regions.push(vp);
+    } else {
+        state.root.collect_damage(state.damage_regions);
+        for rect in &mut *state.damage_regions {
+            *rect = rect.inflate(16.0, 16.0).intersect(vp);
+        }
+        state.damage_regions.retain(|rect| !rect.is_zero_area());
+        if state.damage_regions.is_empty() {
+            state.damage_regions.push(vp);
+        }
+    }
+    if std::env::var_os("QUICK_UI_DASH_DAMAGE").is_some() {
+        println!("damage regions: {:?}", state.damage_regions);
+    }
+    phase.raster_pixels = state.renderer.render_damage_regions_gpu_wait(
+        state.scene,
+        state.theme.tokens.colors.surfaces.base,
+        state.damage_regions,
+    );
     phase.render_us = t_render.elapsed().as_micros();
 
     state.root.mark_drawn();
@@ -377,6 +426,35 @@ fn count_pct(count: usize, total: usize) -> f64 {
 )]
 fn us_to_ms(us: u128) -> f64 {
     (us as f64) / 1000.0
+}
+
+fn process_memory_kib() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let value = |key: &str| {
+        status.lines().find_map(|line| {
+            line.strip_prefix(key)?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+    };
+    Some((value("VmRSS:")?, value("VmHWM:")?))
+}
+
+fn resource_snapshot(renderer: &OffscreenRenderer) -> ResourceSnapshot {
+    ResourceSnapshot {
+        rss_kib: process_memory_kib().map(|(rss, _)| rss),
+        known_gpu_bytes: renderer.memory_stats().known_gpu_bytes(),
+    }
+}
+
+fn delta_label(before: u64, after: u64) -> String {
+    if let Some(growth) = after.checked_sub(before) {
+        format!("+{growth}")
+    } else {
+        format!("-{}", before.saturating_sub(after))
+    }
 }
 
 /// Widens a histogram length (bounded by `iters`, far below f64's
@@ -523,7 +601,8 @@ fn run_bench_loop(
     iters: usize,
     scroll_mode: bool,
     frozen: bool,
-) -> (Vec<Phase>, usize, usize) {
+    profile_allocations: bool,
+) -> BenchRun {
     let positions = [
         (400.0, 300.0),
         (200.0, 200.0),
@@ -534,9 +613,16 @@ fn run_bench_loop(
 
     let mut total_redraws = 0usize;
     let mut total_skipped = 0usize;
-    let mut histo: Vec<Phase> = Vec::with_capacity(iters);
+    // Materialize and touch the histogram before the resource baseline. This
+    // keeps harness-owned pages out of the measured heap-growth delta.
+    let mut histo = vec![Phase::default(); iters];
+    let resources_before = resource_snapshot(state.renderer);
+    if profile_allocations {
+        // The timing histogram is harness storage, not framework work.
+        crate::begin_allocation_profile();
+    }
 
-    for i in 0..iters {
+    for (i, sample) in (0..iters).zip(&mut histo) {
         let t_total = Instant::now();
         let mut phase = Phase::default();
 
@@ -552,10 +638,19 @@ fn run_bench_loop(
             total_skipped = total_skipped.saturating_add(1);
         }
         phase.total_us = t_total.elapsed().as_micros();
-        histo.push(phase);
+        *sample = phase;
     }
 
-    (histo, total_redraws, total_skipped)
+    let allocations = profile_allocations.then(crate::end_allocation_profile);
+    let resources_after = resource_snapshot(state.renderer);
+    BenchRun {
+        histo,
+        total_redraws,
+        total_skipped,
+        allocations,
+        resources_before,
+        resources_after,
+    }
 }
 
 fn print_timing_table(histo: &[Phase]) {
@@ -600,6 +695,19 @@ fn print_timing_table(histo: &[Phase]) {
     );
 }
 
+fn native_pixels_per_redraw(histo: &[Phase], total_redraws: usize) -> u128 {
+    if total_redraws == 0 {
+        return 0;
+    }
+    histo
+        .iter()
+        .filter(|phase| phase.render_us > 0 || phase.draw_us > 0)
+        .map(|phase| u128::from(phase.raster_pixels))
+        .sum::<u128>()
+        .checked_div(total_redraws as u128)
+        .unwrap_or(0)
+}
+
 fn print_throughput_report(histo: &[Phase], total_redraws: usize) {
     let mean_total = mean(histo, |p| p.total_us).max(1);
     let mean_redraw_only: u128 = if total_redraws == 0 {
@@ -624,6 +732,8 @@ fn print_throughput_report(histo: &[Phase], total_redraws: usize) {
             1_000_000_u128.checked_div(mean_redraw_only).unwrap_or(0),
             us_to_ms(mean_redraw_only),
         );
+        let raster_pixels = native_pixels_per_redraw(histo, total_redraws);
+        println!("native pixels rasterized per redraw:      {raster_pixels}");
     }
 }
 
@@ -633,6 +743,8 @@ fn print_final_report(
     iters: usize,
     total_redraws: usize,
     total_skipped: usize,
+    resources_before: ResourceSnapshot,
+    resources_after: ResourceSnapshot,
 ) {
     println!();
     println!(
@@ -658,6 +770,239 @@ fn print_final_report(
             usize::try_from(hits_end.saturating_add(misses_end)).unwrap_or(usize::MAX),
         ),
     );
+    let memory = state.renderer.memory_stats();
+    println!(
+        "known GPU bytes: {} (output={} damage={} vello_pool={} vello_live={} images={}; policy_budget={})",
+        memory.known_gpu_bytes(),
+        memory.output_target_bytes,
+        memory.damage_target_bytes,
+        memory.vello.pooled_buffer_bytes,
+        memory.vello.live_buffer_bytes,
+        memory.vello.image_bytes,
+        memory.vello.bump_budget_bytes,
+    );
+    println!(
+        "CPU readback bytes: {} (must be 0 in timing-only runs)",
+        memory.readback_bytes,
+    );
+    if let Some((rss, peak)) = process_memory_kib() {
+        println!("process memory: rss={rss} KiB peak={peak} KiB");
+    }
+    println!(
+        "known GPU growth after warm-up: {} bytes (before={} after={})",
+        delta_label(
+            resources_before.known_gpu_bytes,
+            resources_after.known_gpu_bytes
+        ),
+        resources_before.known_gpu_bytes,
+        resources_after.known_gpu_bytes,
+    );
+    if let (Some(before), Some(after)) = (resources_before.rss_kib, resources_after.rss_kib) {
+        println!(
+            "RSS growth after harness preallocation: {} KiB (before={} after={})",
+            delta_label(before, after),
+            before,
+            after,
+        );
+    }
+}
+
+#[allow(
+    clippy::exit,
+    reason = "a benchmark budget is an executable acceptance gate for CI and target-hardware runs"
+)]
+fn enforce_frame_budget(histo: &[Phase], budget_us: u128) {
+    let redrawing = histo
+        .iter()
+        .filter(|phase| phase.draw_us > 0 || phase.render_us > 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    if redrawing.is_empty() {
+        eprintln!(
+            "frame-budget: FAIL (no redrawing frames were measured; use animated or scroll mode)"
+        );
+        std::process::exit(2);
+    }
+
+    let mean_us = mean(&redrawing, |phase| phase.total_us);
+    let p99_us = pct(&redrawing, 99.0, |phase| phase.total_us);
+    let max_us = redrawing
+        .iter()
+        .map(|phase| phase.total_us)
+        .max()
+        .unwrap_or(0);
+    let passed = p99_us <= budget_us;
+    println!();
+    println!(
+        "frame-budget: {} budget={}us mean={}us p99={}us max={}us samples={}",
+        if passed { "PASS" } else { "FAIL" },
+        budget_us,
+        mean_us,
+        p99_us,
+        max_us,
+        redrawing.len(),
+    );
+    if !passed {
+        std::process::exit(2);
+    }
+}
+
+#[allow(
+    clippy::exit,
+    reason = "benchmark budgets are executable acceptance gates for CI and target-hardware runs"
+)]
+fn enforce_event_budget(histo: &[Phase], budget_us: u128) {
+    let p99_us = pct(histo, 99.0, |phase| phase.total_us);
+    let passed = p99_us <= budget_us;
+    println!(
+        "event-budget: {} budget={}us p99={}us samples={}",
+        if passed { "PASS" } else { "FAIL" },
+        budget_us,
+        p99_us,
+        histo.len(),
+    );
+    if !passed {
+        std::process::exit(2);
+    }
+}
+
+#[allow(
+    clippy::exit,
+    reason = "raster work is an executable partial-redraw regression gate"
+)]
+fn enforce_raster_pixel_budget(histo: &[Phase], total_redraws: usize, budget: u128) {
+    if total_redraws == 0 {
+        eprintln!("raster-pixel-budget: FAIL (no redrawing frames were measured)");
+        std::process::exit(2);
+    }
+    let observed = native_pixels_per_redraw(histo, total_redraws);
+    println!(
+        "raster-pixel-budget: {} budget={}px/redraw observed={}px/redraw",
+        if observed <= budget { "PASS" } else { "FAIL" },
+        budget,
+        observed,
+    );
+    if observed > budget {
+        std::process::exit(2);
+    }
+}
+
+#[allow(
+    clippy::exit,
+    reason = "benchmark budgets are executable acceptance gates for CI and target-hardware runs"
+)]
+fn enforce_resource_budgets(
+    renderer: &OffscreenRenderer,
+    before: ResourceSnapshot,
+    after: ResourceSnapshot,
+) {
+    if let Ok(raw) = std::env::var("QUICK_UI_DASH_RSS_BUDGET_KIB")
+        && let Ok(budget) = raw.parse::<u64>()
+        && budget > 0
+    {
+        let rss = process_memory_kib().map_or(u64::MAX, |(rss, _)| rss);
+        println!(
+            "rss-budget: {} budget={}KiB observed={}KiB",
+            if rss <= budget { "PASS" } else { "FAIL" },
+            budget,
+            rss,
+        );
+        if rss > budget {
+            std::process::exit(2);
+        }
+    }
+    if let Ok(raw) = std::env::var("QUICK_UI_DASH_GPU_BUDGET_BYTES")
+        && let Ok(budget) = raw.parse::<u64>()
+        && budget > 0
+    {
+        let observed = renderer.memory_stats().known_gpu_bytes();
+        println!(
+            "gpu-budget: {} budget={}B observed={}B",
+            if observed <= budget { "PASS" } else { "FAIL" },
+            budget,
+            observed,
+        );
+        if observed > budget {
+            std::process::exit(2);
+        }
+    }
+    if let Ok(raw) = std::env::var("QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB")
+        && let Ok(budget) = raw.parse::<u64>()
+    {
+        let observed = match (before.rss_kib, after.rss_kib) {
+            (Some(start), Some(end)) => end.saturating_sub(start),
+            _ => u64::MAX,
+        };
+        println!(
+            "rss-growth-budget: {} budget={}KiB observed={}KiB",
+            if observed <= budget { "PASS" } else { "FAIL" },
+            budget,
+            observed,
+        );
+        if observed > budget {
+            std::process::exit(2);
+        }
+    }
+    if let Ok(raw) = std::env::var("QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES")
+        && let Ok(budget) = raw.parse::<u64>()
+    {
+        let observed = after.known_gpu_bytes.saturating_sub(before.known_gpu_bytes);
+        println!(
+            "gpu-growth-budget: {} budget={}B observed={}B",
+            if observed <= budget { "PASS" } else { "FAIL" },
+            budget,
+            observed,
+        );
+        if observed > budget {
+            std::process::exit(2);
+        }
+    }
+}
+
+#[allow(
+    clippy::exit,
+    reason = "allocation budgets are executable acceptance gates for CI and target-hardware runs"
+)]
+fn report_and_enforce_allocations(
+    snapshot: crate::AllocationSnapshot,
+    iters: usize,
+    budget_per_1000: Option<u64>,
+) {
+    let denominator = u64::try_from(iters).unwrap_or(u64::MAX).max(1);
+    let calls_per_1000 = snapshot
+        .calls
+        .saturating_mul(1000)
+        .checked_div(denominator)
+        .unwrap_or(0);
+    let bytes_per_1000 = snapshot
+        .bytes
+        .saturating_mul(1000)
+        .checked_div(denominator)
+        .unwrap_or(0);
+    println!(
+        "allocations: calls={} bytes={} realloc_calls={} realloc_bytes={} calls_per_1000={} bytes_per_1000={}",
+        snapshot.calls,
+        snapshot.bytes,
+        snapshot.realloc_calls,
+        snapshot.realloc_bytes,
+        calls_per_1000,
+        bytes_per_1000,
+    );
+    if let Some(budget) = budget_per_1000 {
+        println!(
+            "allocation-budget: {} budget={}calls/1000 observed={}calls/1000",
+            if calls_per_1000 <= budget {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+            budget,
+            calls_per_1000,
+        );
+        if calls_per_1000 > budget {
+            std::process::exit(2);
+        }
+    }
 }
 
 pub fn run(_args: &[String]) {
@@ -669,7 +1014,8 @@ pub fn run(_args: &[String]) {
         .unwrap_or(500);
     let static_mode = std::env::var("QUICK_UI_DASH_STATIC").is_ok();
     let include_animated = !static_mode;
-    let (canvas_w, canvas_h) = (1800u32, 1200u32);
+    let canvas_w = env_u32("QUICK_UI_DASH_WIDTH", 1800);
+    let canvas_h = env_u32("QUICK_UI_DASH_HEIGHT", 1200);
     println!(
         "mode: {}",
         if static_mode {
@@ -679,6 +1025,7 @@ pub fn run(_args: &[String]) {
         }
     );
 
+    println!("output target: {canvas_w}x{canvas_h} (native; 1:1 damage raster, no upscale)");
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
@@ -691,6 +1038,7 @@ pub fn run(_args: &[String]) {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
     let mut scene = Scene::new();
+    let mut damage_regions = Vec::with_capacity(8);
 
     let tree_size = count_widgets(root.as_ref());
     println!("dashboard widget tree: {tree_size} widgets");
@@ -706,6 +1054,7 @@ pub fn run(_args: &[String]) {
         theme: &theme,
         scene: &mut scene,
         renderer: &mut renderer,
+        damage_regions: &mut damage_regions,
         canvas_w,
         canvas_h,
     };
@@ -726,8 +1075,50 @@ pub fn run(_args: &[String]) {
         prime_frozen_cursor(&mut state, &mut doc);
     }
 
-    let (histo, total_redraws, total_skipped) =
-        run_bench_loop(&mut state, &mut doc, iters, scroll_mode, frozen);
+    let allocation_budget = std::env::var("QUICK_UI_DASH_ALLOC_BUDGET_PER_1000")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let profile_allocations = allocation_budget.is_some()
+        || std::env::var_os("QUICK_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
+    let run = run_bench_loop(
+        &mut state,
+        &mut doc,
+        iters,
+        scroll_mode,
+        frozen,
+        profile_allocations,
+    );
 
-    print_final_report(&state, &histo, iters, total_redraws, total_skipped);
+    print_final_report(
+        &state,
+        &run.histo,
+        iters,
+        run.total_redraws,
+        run.total_skipped,
+        run.resources_before,
+        run.resources_after,
+    );
+    if let Some(snapshot) = run.allocations {
+        report_and_enforce_allocations(snapshot, iters, allocation_budget);
+    }
+
+    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_FRAME_BUDGET_US")
+        && let Ok(budget_us) = raw_budget.parse::<u128>()
+        && budget_us > 0
+    {
+        enforce_frame_budget(&run.histo, budget_us);
+    }
+    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_EVENT_BUDGET_US")
+        && let Ok(budget_us) = raw_budget.parse::<u128>()
+        && budget_us > 0
+    {
+        enforce_event_budget(&run.histo, budget_us);
+    }
+    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_RASTER_PIXEL_BUDGET")
+        && let Ok(budget) = raw_budget.parse::<u128>()
+        && budget > 0
+    {
+        enforce_raster_pixel_budget(&run.histo, run.total_redraws, budget);
+    }
+    enforce_resource_budgets(state.renderer, run.resources_before, run.resources_after);
 }

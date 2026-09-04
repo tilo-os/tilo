@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Optional build accelerators for Cargo's `build.rustc-wrapper`.
+#
+# Cargo passes the real rustc path as argv[1]. Native Linux builds select mold
+# when it is available; explicit targets keep rustc's selected cross-linker.
+# sccache is used when available. Both paths fall back cleanly when the optional
+# tool is absent.
+
+set -euo pipefail
+
+rustc=${1:?Cargo did not provide a rustc path}
+shift
+rustc_args=("$@")
+linker_args=()
+
+# `-fuse-ld=mold` is an argument to rustc's C compiler driver, not to mold
+# itself. Restrict it to native Linux builds: an explicit --target may be WASM
+# or may require a cross-linker whose mold support cannot be inferred here. Do
+# not add the argument to metadata/rlib compilations either: they never invoke
+# a linker, and changing their command line would waste otherwise valid cache
+# entries.
+explicit_target=false
+compiler_query=false
+emit_spec=
+crate_types=
+next_value=
+for arg in "${rustc_args[@]}"; do
+    if [[ -n $next_value ]]; then
+        case $next_value in
+            target) explicit_target=true ;;
+            emit) emit_spec=$arg ;;
+            crate_type) crate_types=$arg ;;
+        esac
+        next_value=
+        continue
+    fi
+    case $arg in
+        --target) next_value=target ;;
+        --target=*) explicit_target=true ;;
+        --emit) next_value=emit ;;
+        --emit=*) emit_spec=${arg#--emit=} ;;
+        --crate-type) next_value=crate_type ;;
+        --crate-type=*) crate_types=${arg#--crate-type=} ;;
+        -vV|-V|--version|--print|--print=*) compiler_query=true ;;
+    esac
+done
+
+emits_link=true
+if [[ -n $emit_spec && ,$emit_spec, != *,link,* ]]; then
+    emits_link=false
+fi
+linkable_crate=true
+if [[ -n $crate_types \
+    && ! $crate_types =~ (^|,)(bin|dylib|cdylib|proc-macro)(,|$) ]]; then
+    linkable_crate=false
+fi
+
+if [[ $(uname -s) == Linux && $explicit_target == false \
+    && $compiler_query == false && $emits_link == true && $linkable_crate == true ]] \
+    && command -v mold >/dev/null 2>&1; then
+    linker_args=(-C link-arg=-fuse-ld=mold)
+    if [[ -n ${QOS_LINKER_TRACE:-} ]]; then
+        printf 'qos-rustc: mold (%s)\n' "$(command -v mold)" >&2
+    fi
+fi
+
+if ! command -v sccache >/dev/null 2>&1; then
+    exec "$rustc" "${rustc_args[@]}" "${linker_args[@]}"
+fi
+
+# distrobox/toolbox containers share the host network. A shared default port can
+# therefore connect a container build to the host server, which then cannot see
+# the container's headers. Keep the servers and their local stores distinct.
+if [[ -f /run/.containerenv || -n ${CONTAINER_ID:-} ]]; then
+    # Deliberately replace inherited SCCACHE_* values: distrobox copies the
+    # host environment, and preserving its port would reconnect to the host.
+    export SCCACHE_SERVER_PORT="${QOS_SCCACHE_CONTAINER_PORT:-4226}"
+    export SCCACHE_DIR="${QOS_SCCACHE_CONTAINER_DIR:-$HOME/.cache/sccache-distrobox}"
+else
+    export SCCACHE_SERVER_PORT="${QOS_SCCACHE_HOST_PORT:-4227}"
+    export SCCACHE_DIR="${QOS_SCCACHE_HOST_DIR:-$HOME/.cache/sccache}"
+fi
+
+# This workspace has thousands of cacheable units. Keep enough generations to
+# reuse dependencies and shared workspace crates across worktrees, while still
+# bounding the cache on developer machines. Explicit caller settings win.
+if [[ -z ${SCCACHE_CACHE_SIZE:-} ]]; then
+    # The cache directory need not exist before the first compiler call. `df`
+    # its nearest existing parent in that case; never let sizing disable builds.
+    cache_fs_path=$SCCACHE_DIR
+    while [[ ! -e $cache_fs_path && $cache_fs_path != / ]]; do
+        cache_fs_path=${cache_fs_path%/*}
+        [[ -n $cache_fs_path ]] || cache_fs_path=/
+    done
+    filesystem_kib=$(df -Pk "$cache_fs_path" 2>/dev/null | awk 'NR == 2 { print $2 }' || true)
+    if [[ $filesystem_kib =~ ^[0-9]+$ ]]; then
+        cache_gib=$((filesystem_kib / 1048576 / 5))
+        ((cache_gib < 64)) && cache_gib=64
+        ((cache_gib > 200)) && cache_gib=200
+        export SCCACHE_CACHE_SIZE="${cache_gib}G"
+    else
+        export SCCACHE_CACHE_SIZE=64G
+    fi
+fi
+
+exec sccache "$rustc" "${rustc_args[@]}" "${linker_args[@]}"

@@ -1,9 +1,14 @@
 [build]
 # `tools/cargo-shim`, if installed as `cargo`, routes builds into the container named in
-# `.build-container` and picks that namespace's sccache server. See DEVELOPMENT.md.
+# `.build-container`. The compiler wrapper below enables sccache and mold when they are
+# installed and otherwise falls through to the ordinary compiler/linker, so neither optional
+# accelerator can break a build. It also gives native and container builds separate cache
+# servers: an sccache server executes rustc itself and therefore has to share the compiler's
+# mount namespace. See DEVELOPMENT.md.
+rustc-wrapper = "tools/rustc-wrapper"
 #
 # Jobs are memory-bound, not core-bound: rustc peaks ~7 GB here. The shim derives
-# CARGO_BUILD_JOBS from RAM; this is the floor when it is bypassed (CI).
+# CARGO_BUILD_JOBS from RAM; this is the fallback when it is bypassed (CI).
 jobs = 4
 # CPU floor is `x86-64-v3` — Haswell/Excavator (2013+), the intersection
 # of "vast majority of installed hardware" and "enough SIMD to matter"

@@ -385,6 +385,11 @@ impl AvailabilityRegistry {
     /// Cancel durable automatic-hydration state below a pin that was removed.
     /// This is paid once by the explicit unpin action, allowing the periodic
     /// worker to take the zero-scan fast path whenever no pins remain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the effective policy graph is invalid or the
+    /// updated registry cannot be persisted.
     pub fn clear_automatic_transfer_subtree(
         &mut self,
         root: FileRecordId,
@@ -437,6 +442,11 @@ impl AvailabilityRegistry {
     /// evidence for it. Ordinary whole-workspace records use the same durable
     /// availability path as record-scoped shares; without this row a valid NAS
     /// acknowledgement would be discarded as `UnknownRecord`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the revision is invalid or the updated registry
+    /// cannot be persisted.
     pub fn track_current_revision(
         &mut self,
         revision: collab_types::ContentRevisionV1,

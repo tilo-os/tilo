@@ -109,7 +109,10 @@ pub use executor::{
     dispatch_with_context, replay,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
-pub use outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+pub use outcome::{
+    ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, InvocationId, InvocationUpdate,
+    content_hash, content_resource,
+};
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType,
     validate_json_schema,

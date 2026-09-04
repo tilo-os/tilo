@@ -203,11 +203,11 @@ fn xlsx_keeps_theme_backed_styles_and_declares_minimal_styles() {
         "xl/theme/theme1.xml".into(),
         br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Brand"><a:themeElements/></a:theme>"#.to_vec(),
     ));
-    let refs: Vec<(&str, Vec<u8>)> = entries
+    let archive_entries: Vec<(&str, Vec<u8>)> = entries
         .iter()
         .map(|(n, b)| (n.as_str(), b.clone()))
         .collect();
-    let wb = imp(&XlsxCodec, &zip_of(&refs));
+    let wb = imp(&XlsxCodec, &zip_of(&archive_entries));
     let out = XlsxCodec.export(&wb).unwrap();
     let mut exported = ZipArchive::new(Cursor::new(out)).unwrap();
     assert!(exported.by_name("xl/styles.xml").is_ok());

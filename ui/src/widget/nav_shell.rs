@@ -1037,6 +1037,16 @@ impl Widget for NavShell {
         v
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.overview.as_ref());
+        if let Some(detail) = &self.detail {
+            visitor(detail.as_ref());
+        }
+        if let Some(sidebar) = &self.sidebar {
+            visitor(sidebar.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = vec![self.overview.as_mut()];
         if let Some(d) = self.detail.as_mut() {

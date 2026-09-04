@@ -192,6 +192,10 @@ impl Relay {
     /// [`RelayError::Store`] if the persistent iroh secret or any
     /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "relay startup constructs one shared endpoint and its interdependent protocol handlers"
+    )]
     pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
         import_home_peer_bindings(&mut cfg)?;
         validate_relay_identity(&identity)?;
@@ -588,7 +592,7 @@ impl RelayHandle {
 /// Derive the relay transport key from the enrolled device secret. The relay
 /// application handshake still proves possession of the certified device key;
 /// this domain-separated transport key prevents the relay and filesystem
-/// processes from publishing competing address records for one Iroh NodeId.
+/// processes from publishing competing address records for one Iroh `NodeId`.
 pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
     let service_secret =
         blake3::derive_key("qos-relay-iroh-service-key-v1", &device_key.to_bytes());
@@ -706,6 +710,12 @@ struct AuthorityRefreshState {
     /// leaving the last good projection active forever.
     governed_rooms: std::collections::HashSet<u64>,
 }
+
+type AuthorityProjection = (
+    Vec<String>,
+    HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+    std::collections::HashSet<u64>,
+);
 
 fn authority_high_water_path(cache_dir: &std::path::Path) -> PathBuf {
     cache_dir.join(AUTHORITY_HIGH_WATER_FILE)
@@ -858,14 +868,7 @@ async fn refresh_home_peer_authority_once(
     state: &mut AuthorityRefreshState,
     now: u64,
 ) -> bool {
-    let mut refresh = || -> Result<
-        (
-            Vec<String>,
-            HashMap<u64, std::collections::HashSet<[u8; 32]>>,
-            std::collections::HashSet<u64>,
-        ),
-        String,
-    > {
+    let mut refresh = || -> Result<AuthorityProjection, String> {
         let bytes = std::fs::read(bundle_path)
             .map_err(|error| format!("could not read {}: {error}", bundle_path.display()))?;
         let text = std::str::from_utf8(&bytes)
@@ -878,8 +881,9 @@ async fn refresh_home_peer_authority_once(
         let mut governed_rooms = std::collections::HashSet::new();
 
         for workspace in bundle.workspaces {
-            let ticket = fs::Ticket::decode(&workspace.ticket)
-                .map_err(|_| "home-peer authority refresh rejected an invalid Files ticket".to_string())?;
+            let ticket = fs::Ticket::decode(&workspace.ticket).map_err(|_| {
+                "home-peer authority refresh rejected an invalid Files ticket".to_string()
+            })?;
             governed_rooms.extend(workspace.relay_workspace_ids.iter().copied());
             // Remember rooms as soon as their bundle mapping is readable, so
             // an invalid current authority clears them below.
@@ -892,7 +896,10 @@ async fn refresh_home_peer_authority_once(
             }
             users.push(hex::encode(authority.governor));
             for room in &workspace.relay_workspace_ids {
-                room_users.entry(*room).or_default().insert(authority.governor);
+                room_users
+                    .entry(*room)
+                    .or_default()
+                    .insert(authority.governor);
             }
             for capability in &authority.capabilities {
                 let collab_types::Scope::Room(room) = &capability.scope else {
@@ -1122,6 +1129,10 @@ impl std::fmt::Debug for ManagementProtocol {
 }
 
 impl ProtocolHandler for ManagementProtocol {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the management handshake and authorized lifecycle response form one protocol transaction"
+    )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         if self.state_root.join("decommissioned").exists() {
             return Err(AcceptError::from_err(std::io::Error::other(
@@ -1263,6 +1274,10 @@ impl std::fmt::Debug for DiscoveryProtocol {
 }
 
 impl ProtocolHandler for DiscoveryProtocol {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the discovery handshake, authorization, and advertisement form one protocol transaction"
+    )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         if self
             .autobind
@@ -1447,15 +1462,14 @@ async fn handle_conn(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let client_peer = match auth::accept_hello(
-        &hello,
-        &ctx.own_user_pk,
-        &ctx.trust_policy
+    let authentication = {
+        let trust_policy = ctx
+            .trust_policy
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-        &revs,
-        now_ns,
-    ) {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        auth::accept_hello(&hello, &ctx.own_user_pk, &trust_policy, &revs, now_ns)
+    };
+    let client_peer = match authentication {
         Ok(p) => p,
         Err(e) => {
             ctx.metrics.inc_auth_rejected();

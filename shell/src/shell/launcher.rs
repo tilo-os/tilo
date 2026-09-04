@@ -259,10 +259,12 @@ pub fn attest_trusted_service_launch_for_pid(
     let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
     launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
     let launch = launches.get(&pid)?;
-    (launch.start_time == start_time
+    let identity = (launch.start_time == start_time
         && launch.identity.app_id == app_id
         && launch.identity.workspace_id == workspace_id)
-        .then(|| launch.identity.clone())
+        .then(|| launch.identity.clone());
+    drop(launches);
+    identity
 }
 
 /// Publish the server-owned compatibility entries that a newly launched
@@ -538,9 +540,9 @@ static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// toplevel in two trees and consuming here would desync them.
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
-static PENDING_CONTINUATION_RESUME: LazyLock<
-    Mutex<HashMap<(RoomId, u64), (Option<(u16, Vec<u8>)>, u64)>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+type StagedResume = (Option<(u16, Vec<u8>)>, u64);
+static PENDING_CONTINUATION_RESUME: LazyLock<Mutex<HashMap<(RoomId, u64), StagedResume>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Locks `mutex`, recovering the guard instead of panicking a second time
 /// if some other thread poisoned it. None of this module's locked state
@@ -1468,8 +1470,9 @@ fn launch_with_context(
     // still receives a newly allocated record identity until it adopts a tab.
     let continuity_instance = staged_resume
         .as_ref()
-        .map(|(_, record_instance)| *record_instance)
-        .unwrap_or_else(crate::shell::state::next_id);
+        .map_or_else(crate::shell::state::next_id, |(_, record_instance)| {
+            *record_instance
+        });
     command.env.push((
         "QOS_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
@@ -1588,6 +1591,14 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.qpkg`
 /// via `qos-launcher run` and a host app via `run-host` — since they
 /// differ only in what the launcher does, not in how it's supervised.
+///
+/// # Errors
+///
+/// Returns an error if the supervisor thread cannot be spawned.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the supervisor owns one child lifecycle from launch through the terminal event"
+)]
 pub fn spawn_launch(
     package_id: String,
     display_name: String,
@@ -1913,7 +1924,7 @@ pub fn stage_continuation_record(room: RoomId, tab: u64, record_instance: u64) {
 fn take_staged_resume(
     placement: crate::compositor::tab_binding::Placement,
     room: RoomId,
-) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
+) -> Option<StagedResume> {
     let crate::compositor::tab_binding::Placement::IntoTab(tab) = placement else {
         return None;
     };
@@ -1923,7 +1934,7 @@ fn take_staged_resume(
 pub(crate) fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
-) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
+) -> Option<StagedResume> {
     let placement = lock(&PENDING_PLACEMENT)
         .iter()
         .rev()
