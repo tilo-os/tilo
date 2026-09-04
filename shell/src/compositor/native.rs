@@ -4715,7 +4715,7 @@ pub fn run() -> ! {
                                 stream.local_peer,
                                 &stream.app_id,
                                 &stream.codec,
-                                stream.hdr_static_metadata,
+                                stream.hdr_static_metadata.clone(),
                                 Arc::clone(&stream.input_sink),
                             );
                         if !mounted {
@@ -4769,9 +4769,7 @@ pub fn run() -> ! {
                             ),
                         }
                     }
-                    _ => {
-                        tracing::debug!("ignoring non-stream message in the legacy inbox");
-                    }
+                    _ => unreachable!("legacy inbox contains only live legacy messages"),
                 }
             }
             for stream in pending_legacy_streams.values() {
@@ -4782,7 +4780,7 @@ pub fn run() -> ! {
                         stream.local_peer,
                         &stream.app_id,
                         &stream.codec,
-                        stream.hdr_static_metadata,
+                        stream.hdr_static_metadata.clone(),
                         Arc::clone(&stream.input_sink),
                     );
                 }
