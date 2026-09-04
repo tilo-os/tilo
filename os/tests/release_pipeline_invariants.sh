@@ -21,6 +21,23 @@ apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
+cache_driver_ok=1
+for workflow in build-builder-image.yml build-image.yml build-kernel.yml qos-relay.yaml snapshot-rpms.yml; do
+  file="$workflows/$workflow"
+  if grep -Fq 'cache-to: type=registry' "$file" \
+     && { ! grep -Fq 'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f' "$file" \
+          || ! grep -Fq 'driver: docker-container' "$file"; }; then
+    printf 'registry cache workflow lacks a cache-export-capable Buildx driver: %s\n' \
+      "$workflow" >&2
+    cache_driver_ok=0
+  fi
+done
+if [ "$cache_driver_ok" = 1 ]; then
+  ok 'registry cache workflows select the docker-container Buildx driver'
+else
+  bad 'a registry cache workflow still uses the default docker driver'
+fi
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \
