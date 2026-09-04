@@ -106,13 +106,13 @@ impl TypedPeer {
         else {
             anyhow::bail!("the first request must announce the peer route")
         };
-        self.link = Some(Link::connect_endpoint(
+        self.link = Some(Link::connect_person_endpoint(
             path,
             app_id,
             *cluster_id,
             record.clone(),
             handle.clone(),
-            Some(endpoint_identity(handle.as_deref().unwrap_or(app_id))),
+            endpoint_identity(handle.as_deref().unwrap_or(app_id)),
         )?);
         Ok(())
     }
@@ -302,6 +302,25 @@ pub fn service_document_invocation(
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
 pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
+    spawn_with_agent_actions(
+        path,
+        &[
+            ("dev.qos.word-processor", "align-center"),
+            ("dev.qos.word-processor", "delete"),
+            ("dev.qos.word-processor", "insert-table"),
+            ("dev.qos.photos", "rotate-right"),
+        ],
+    )
+}
+
+/// Spawn the production broker harness with precisely the action grants a
+/// scenario reviews. Document-write authority is separate so a denied agent
+/// can still write a human-readable refusal without discovering the denied
+/// action.
+pub fn spawn_with_agent_actions(
+    path: &Path,
+    actions: &[(&str, &str)],
+) -> shell::shell::collab_broker::BrokerHandle {
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -313,7 +332,42 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
         "Agent integration room",
     );
     workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
-    workspace.set_owner(principal);
+    workspace.set_owner(principal.clone());
+    workspace
+        .grant_as(
+            &principal,
+            ui::permissions::CapOverride::membership(
+                ui::permissions::Subject::agent("Scribe"),
+                workspace.room.to_string(),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the harness owner admits the test agent");
+    workspace
+        .grant_as(
+            &principal,
+            ui::permissions::CapOverride::grant(
+                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the harness owner lets the test agent answer in documents");
+    for (app, action) in actions {
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::grant(
+                    ui::permissions::Subject::agent("Scribe"),
+                    ui::permissions::Scope::Action {
+                        app: (*app).to_string(),
+                        action: (*action).to_string(),
+                    },
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner grants a reviewed test action");
+    }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let trusted_devices = ["ada", "Scribe", "files"]

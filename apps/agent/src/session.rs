@@ -871,7 +871,7 @@ impl Session {
         held: &[(&'static AppContract, &automerge::AutoCommit)],
         view: &View,
     ) -> Vec<surface::Offer> {
-        let mut offers = surface::broker_offers(&self.broker_surfaces);
+        let mut offers = Self::document_broker_offers(&self.broker_surfaces, &self.cfg.permissions);
         for local in surface::offers(held, view, &self.cfg.permissions) {
             if !offers
                 .iter()
@@ -881,6 +881,21 @@ impl Session {
             }
         }
         offers
+    }
+
+    /// Broker authorization is necessary but the invitation carried by this
+    /// document session remains an independent upper bound. Task leases use
+    /// the broker catalogue directly; document instructions use the
+    /// intersection so a stale or narrower launch grant cannot be widened by
+    /// a broader workspace catalogue.
+    fn document_broker_offers(
+        surfaces: &[ui::collaboration::BrokerActionSurface],
+        permissions: &PermissionContext,
+    ) -> Vec<surface::Offer> {
+        surface::broker_offers(surfaces)
+            .into_iter()
+            .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
+            .collect()
     }
 
     /// Where the agent is looking: `focus` on a document, and the
@@ -909,11 +924,55 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<(), String>> {
-        let offers = surface::broker_offers(&self.broker_surfaces);
-        if let Some(offer) = surface::find(&offers, id).cloned() {
+        if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
         }
         self.perform_local(id, arguments, confirmation)
+    }
+
+    /// Give the broker's independently delivered catalogue stream a chance
+    /// to catch up with the document stream before falling back to local
+    /// execution. An app publishes its actions before its snapshot, but the
+    /// two replies travel on separate Cap'n Proto streams and therefore have
+    /// no cross-stream ordering guarantee.
+    fn wait_for_broker_offer(&mut self, id: &str) -> Result<Option<surface::Offer>> {
+        // A broker-prefixed id pins an exact live publisher. Only a local
+        // compatibility offer may be upgraded to the matching broker route;
+        // never silently retarget a vanished broker selection to another app.
+        let wanted = (!id.starts_with("broker:"))
+            .then(|| surface::decode_address(id))
+            .flatten();
+        let permissions = self.cfg.permissions.clone();
+        let find = |surfaces: &[ui::collaboration::BrokerActionSurface]| {
+            let offers = Self::document_broker_offers(surfaces, &permissions);
+            surface::find(&offers, id).cloned().or_else(|| {
+                wanted
+                    .as_ref()
+                    .and_then(|address| offers.into_iter().find(|offer| offer.address() == address))
+            })
+        };
+        if let Some(offer) = find(&self.broker_surfaces) {
+            return Ok(Some(offer));
+        }
+        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let mut deferred = Vec::new();
+        let mut found = None;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                    if let Some(offer) = find(&self.broker_surfaces) {
+                        found = Some(offer);
+                        break;
+                    }
+                }
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+        self.link.defer(deferred);
+        Ok(found)
     }
 
     fn perform_broker(
