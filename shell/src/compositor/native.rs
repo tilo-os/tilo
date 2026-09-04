@@ -2090,6 +2090,7 @@ fn pump_test_control_conn(
                         // settled per command, not per action: idempotent, and cheap relative to
                         // the round-trip that asked for it.
                         frame_builder.relayout();
+                        frame_builder.reconcile_native_focus(&mut ctx.focus);
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
@@ -2123,6 +2124,7 @@ fn pump_test_control_conn(
                 if !actions.is_empty() {
                     injected_input = true;
                     frame_builder.relayout();
+                    frame_builder.reconcile_native_focus(&mut ctx.focus);
                 }
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
@@ -3842,9 +3844,11 @@ pub fn run() -> ! {
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
-    // Per-process scratch context for executing PlannedActions off the
-    // test-control socket — the only place a `Modifiers`/`AutoCommit`/focus-cursor lives, since real winit input isn't yet routed to the host.
+    // Per-process input context shared by the physical-seat and optional
+    // test-control paths. Keeping one focus cursor makes injected and real
+    // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -4878,6 +4882,7 @@ pub fn run() -> ! {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             frame_builder.relayout();
+            frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
             let t_scene_start = Instant::now();
@@ -5161,6 +5166,7 @@ pub fn run() -> ! {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
+            frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
         }
         let t_paint_done = iter_t0.elapsed();
 
