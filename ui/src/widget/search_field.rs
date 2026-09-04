@@ -95,6 +95,15 @@ impl SearchField {
         std::mem::take(&mut self.palette_requested)
     }
 
+    /// Keep pointer and semantic activation on one latched request path.
+    fn request_palette(&mut self) -> bool {
+        if !self.opens_palette {
+            return false;
+        }
+        self.palette_requested = true;
+        true
+    }
+
     #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.input.set_placeholder(hint);
@@ -375,7 +384,7 @@ impl Widget for SearchField {
             } = event
                 && self.rect.contains(self.last_cursor)
             {
-                self.palette_requested = true;
+                self.request_palette();
                 *handled = true;
             }
             return;
@@ -478,7 +487,7 @@ impl Widget for SearchField {
         path: &ObjId,
     ) -> bool {
         if self.opens_palette {
-            return false;
+            return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
         Widget::perform_action(&mut self.input, action, state, path)
     }
@@ -753,5 +762,19 @@ mod tests {
             "launcher is a button, not a text field"
         );
         assert!(node.state.focusable);
+    }
+
+    #[test]
+    fn launcher_semantic_activate_latches_the_same_palette_request_as_click() {
+        let mut sf = SearchField::new().opens_palette();
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut sf,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(sf.take_palette_request());
+        assert!(!sf.take_palette_request(), "semantic request drains once");
     }
 }
