@@ -69,34 +69,59 @@ chmod 0700 "$lease_dir"
 lease="$lease_dir/lease.env"
 trap 'rm -rf -- "$lease_dir"' EXIT
 [ ! -e "$lease" ] || { printf 'credential lease output already exists\n' >&2; exit 1; }
-"$broker" "$platform" "$lease"
+"$broker" "$platform" "$lease" >/dev/null
 private_regular_file "$lease"
 
-declare -A values=()
+linux_signer=
+linux_verify_key=
+mac_signing_identity=
+notary_keychain_profile=
+setting_count=0
 while IFS= read -r setting || [ -n "$setting" ]; do
   [[ "$setting" != *$'\r'* && "$setting" =~ ^([A-Z0-9_]+)=([^[:cntrl:]]+)$ ]] \
     || { printf 'credential broker returned a malformed setting\n' >&2; exit 1; }
   name="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
-  [ -z "${values[$name]+x}" ] \
-    || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
-  values[$name]="$value"
+  setting_count=$((setting_count + 1))
+  case "$name" in
+    QOS_LINUX_SIGNER)
+      [ -z "$linux_signer" ] \
+        || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
+      linux_signer="$value"
+      ;;
+    QOS_LINUX_VERIFY_KEY)
+      [ -z "$linux_verify_key" ] \
+        || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
+      linux_verify_key="$value"
+      ;;
+    QOS_MAC_SIGNING_IDENTITY)
+      [ -z "$mac_signing_identity" ] \
+        || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
+      mac_signing_identity="$value"
+      ;;
+    QOS_NOTARY_KEYCHAIN_PROFILE)
+      [ -z "$notary_keychain_profile" ] \
+        || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
+      notary_keychain_profile="$value"
+      ;;
+    *) printf 'credential broker returned unsupported setting %s\n' "$name" >&2; exit 1 ;;
+  esac
 done < "$lease"
 
 if [ "$platform" = linux ]; then
-  [ "${#values[@]}" = 2 ] && [ -n "${values[QOS_LINUX_SIGNER]:-}" ] \
-    && [ -n "${values[QOS_LINUX_VERIFY_KEY]:-}" ] \
+  [ "$setting_count" = 2 ] && [ -n "$linux_signer" ] \
+    && [ -n "$linux_verify_key" ] \
     || { printf 'Linux broker must return exactly signer and verification-key paths\n' >&2; exit 1; }
-  trusted_path "${values[QOS_LINUX_SIGNER]}" executable 'Linux signer'
-  trusted_path "${values[QOS_LINUX_VERIFY_KEY]}" file 'Linux verification key'
+  trusted_path "$linux_signer" executable 'Linux signer'
+  trusted_path "$linux_verify_key" file 'Linux verification key'
   printf 'QOS_LINUX_SIGNER=%s\nQOS_LINUX_VERIFY_KEY=%s\n' \
-    "${values[QOS_LINUX_SIGNER]}" "${values[QOS_LINUX_VERIFY_KEY]}"
+    "$linux_signer" "$linux_verify_key"
 else
-  [ "${#values[@]}" = 2 ] && [ -n "${values[QOS_MAC_SIGNING_IDENTITY]:-}" ] \
-    && [ -n "${values[QOS_NOTARY_KEYCHAIN_PROFILE]:-}" ] \
+  [ "$setting_count" = 2 ] && [ -n "$mac_signing_identity" ] \
+    && [ -n "$notary_keychain_profile" ] \
     || { printf 'macOS broker must return exactly a signing identity and notary profile\n' >&2; exit 1; }
   identity_re='^[A-Za-z0-9][A-Za-z0-9 .,:()/_+-]{0,255}$'
-  [[ "${values[QOS_MAC_SIGNING_IDENTITY]}" =~ $identity_re ]]
-  [[ "${values[QOS_NOTARY_KEYCHAIN_PROFILE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+  [[ "$mac_signing_identity" =~ $identity_re ]]
+  [[ "$notary_keychain_profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
   printf 'QOS_MAC_SIGNING_IDENTITY=%s\nQOS_NOTARY_KEYCHAIN_PROFILE=%s\n' \
-    "${values[QOS_MAC_SIGNING_IDENTITY]}" "${values[QOS_NOTARY_KEYCHAIN_PROFILE]}"
+    "$mac_signing_identity" "$notary_keychain_profile"
 fi

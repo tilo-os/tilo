@@ -23,7 +23,7 @@ done
 : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
 : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
 [ ! -e "$output" ] || { printf 'credential output must not preexist\n' >&2; exit 1; }
-"$broker" "$kind" "$output"
+"$broker" "$kind" "$output" >/dev/null
 [ -f "$output" ] && [ ! -L "$output" ] || { printf 'credential broker did not create a regular token file\n' >&2; exit 1; }
 if stat -c '%u %a' "$output" >/dev/null 2>&1; then read -r owner mode < <(stat -c '%u %a' "$output"); else read -r owner mode < <(stat -f '%u %Lp' "$output"); fi
 [ "$owner" = "$(id -u)" ] && [ "$mode" = 600 ] || { printf 'token file must be runner-owned mode 0600\n' >&2; exit 1; }

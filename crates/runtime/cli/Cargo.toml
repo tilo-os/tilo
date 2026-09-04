@@ -18,10 +18,18 @@ path = "src/lib.rs"
 # fallback under $XDG_DATA_HOME / ~/.local/share.
 
 [dependencies]
-runtime          = { path = "../runtime" }
-runtime-fs       = { path = "../runtime-fs" }
+# The CLI helpers only need the shared availability error/session probe on
+# every host. Avoid linking the full runtime umbrella: that would drag the
+# Unix service clients and identity store into native host applications which
+# merely reuse `standalone_state_dir`.
+runtime-portal   = { path = "../runtime-portal" }
 
 anyhow.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Direct service-FD access is a Unix capability. Native Windows callers keep
+# the same path helpers and gracefully run without an RPC filesystem client.
+runtime-fs       = { path = "../runtime-fs" }
 
 [dev-dependencies]
 tempfile.workspace = true

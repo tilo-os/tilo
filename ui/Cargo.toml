@@ -80,7 +80,6 @@ runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # Load the launcher-bound identity and certified device presentation used to
 # authenticate collaboration joins and sign document mutations. Without the
 # identity service or a device certificate, collaboration stays disabled.
-runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # The canonical per-package Automerge store. Living here rather than in
 # each app is what makes persistence a three-line change in an app's `main`
 # instead of a bespoke storage module per app.
@@ -251,7 +250,17 @@ accesskit_winit = "0.34.0"
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../crates/system/tts" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `smithay-clipboard` speaks Wayland protocols and does not compile on native
+# Windows/macOS targets. The only call sites are already Linux-gated in
+# `clipboard.rs`, so keep the backend out of host bundles on other platforms.
 smithay-clipboard = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+# Launcher-provided identity capabilities use inherited Unix socket file
+# descriptors. Native Windows apps run without that optional qOS service.
+runtime-identity = { path = "../crates/runtime/runtime-identity" }
 
 [build-dependencies]
 # Locates the WPE WebKit stack when the `webview-wpe` feature is on
