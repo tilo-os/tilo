@@ -96,12 +96,13 @@ switching install methods clears that confirmation.
 ### Install alongside
 
 This preserves the GPT and existing OS partitions. The guided path is offered
-when exactly one aligned, unallocated GPT extent of at least 34 GiB exists. The
-review names the exact extent and the new 2 GiB qOS ESP plus >=32 GiB root. The
-privileged backend locks the disk, revalidates its stable hardware identity,
-GPT UUID, logical sector size, and the PARTUUID/start/size of every existing
-partition, then appends only those two new partitions. It never deletes, moves,
-resizes, or formats an existing partition.
+when the disk has an aligned, unallocated GPT extent of at least 34 GiB. When
+several extents are eligible, choose one explicitly; changing that choice clears
+the destructive confirmation. The review names the exact extent and the new
+2 GiB qOS ESP plus >=32 GiB root. The privileged backend locks the disk,
+revalidates its stable hardware identity, GPT UUID, logical sector size, and the
+PARTUUID/start/size of every existing partition, then appends only those two new
+partitions. It never deletes, moves, resizes, or formats an existing partition.
 
 If power is lost after those GPT entries become durable but before their EFI
 filesystem is ready, the helper has already written the same pending-transaction
@@ -134,7 +135,8 @@ filesystem health, and EFI free space just before formatting. It formats only th
 mounts the EFI partition without formatting it. Small Windows/Linux EFI
 partitions are deliberately ignored: they cannot hold qOS's rollback, staged
 update, and repair boot images safely. If anything changed since discovery,
-install stops. Automatic filesystem shrinking and ambiguous free extents are rejected.
+install stops. Automatic filesystem shrinking is rejected; free-space choices
+are never guessed when more than one extent is safe.
 
 Encryption remains available in alongside mode. qOS uses LUKS2 for its root;
 Windows/macOS partitions retain their own protection. A recovery key is always
@@ -155,12 +157,13 @@ When installation completes, remove the USB drive and reboot. The signed UKI
 shows the qOS splash directly—routine boot chatter stays on the serial journal,
 and fatal errors still replace the splash. Select qOS from
 the firmware menu if it is not already first. Unlock the disk, sign in with the
-new account, and finish the desktop's onboarding. Confirm keyboard, time zone,
-network, display scaling, accessibility, and recovery-key storage. The first
-login then offers a short, skippable tour of search and overview, the
-Workspace → Strip → Window group model, and deliberate collaboration. Signed qOS
-updates are checked after first boot when online; the installer never silently
-swaps the offline image for a network download.
+new account, and finish the desktop's onboarding. Choices already completed in
+the Imager or installer are applied without asking again. First login creates
+or imports the local collaboration identity, offers an encrypted portable
+identity backup, and then presents a short, skippable tour of search and
+overview, the Workspace → Strip → Window group model, and deliberate
+collaboration. Signed qOS updates are checked after first boot when online; the
+installer never silently swaps the offline image for a network download.
 
 For dual boot, reboot once into the other operating system too. A BitLocker
 recovery prompt is possible after the firmware change. Confirm both operating
