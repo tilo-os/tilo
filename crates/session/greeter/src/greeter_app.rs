@@ -514,6 +514,16 @@ pub enum AuthScenario {
     /// The normal personal-device form: one known local account and an
     /// enrolled fingerprint, so only the passcode is editable.
     Personal,
+    /// Personal-device form after an incorrect passcode.
+    PersonalError,
+    /// Personal-device form while password authentication is in flight.
+    PersonalAuthenticating,
+    /// Personal-device form with its Caps-Lock warning visible.
+    PersonalCapsLock,
+    /// Personal-device form after an empty passcode submission.
+    PersonalHint,
+    /// Personal-device form while the accepted session is starting.
+    PersonalStarting,
     /// One known local account but no enrolled fingerprint. The unavailable
     /// capability must disappear rather than becoming a dead action.
     PersonalNoFingerprint,
@@ -710,13 +720,25 @@ impl GreeterApp {
         let sessions = crate::sessions::read_sessions(std::path::Path::new(&dir));
         let personal = matches!(
             scenario,
-            AuthScenario::Personal | AuthScenario::PersonalNoFingerprint
+            AuthScenario::Fingerprint
+                | AuthScenario::Personal
+                | AuthScenario::PersonalError
+                | AuthScenario::PersonalAuthenticating
+                | AuthScenario::PersonalCapsLock
+                | AuthScenario::PersonalHint
+                | AuthScenario::PersonalStarting
+                | AuthScenario::PersonalNoFingerprint
         )
         .then(|| LoginUser {
             username: "ada".to_string(),
             display_name: "ada Example".to_string(),
         });
-        let fingerprint_available = scenario != AuthScenario::PersonalNoFingerprint;
+        // Live discovery only probes enrollment after it has resolved one
+        // unambiguous local account. Keep shot fixtures inside that same
+        // capability contract: a fallback username form cannot truthfully
+        // advertise an account-specific enrolled print.
+        let fingerprint_available =
+            personal.is_some() && !matches!(scenario, AuthScenario::PersonalNoFingerprint);
         let mut app = Self::with_sessions_login_user_and_fingerprint(
             sessions,
             personal,
@@ -727,26 +749,26 @@ impl GreeterApp {
             | AuthScenario::LongName
             | AuthScenario::Personal
             | AuthScenario::PersonalNoFingerprint => {}
-            AuthScenario::Error => {
+            AuthScenario::Error | AuthScenario::PersonalError => {
                 app.status = "Incorrect username or passcode".to_string();
                 app.status_kind = StatusKind::Error;
             }
-            AuthScenario::Authenticating => {
+            AuthScenario::Authenticating | AuthScenario::PersonalAuthenticating => {
                 app.phase = AuthPhase::Authenticating;
             }
             AuthScenario::Fingerprint => {
                 app.phase = AuthPhase::Authenticating;
                 app.prompt = "Place your finger on the reader".to_string();
             }
-            AuthScenario::CapsLock => {
+            AuthScenario::CapsLock | AuthScenario::PersonalCapsLock => {
                 // Force the heuristic "on" so the warning renders.
                 app.caps_lock.observe('A', false);
             }
-            AuthScenario::Hint => {
+            AuthScenario::Hint | AuthScenario::PersonalHint => {
                 app.status = "Enter your passcode".to_string();
                 app.status_kind = StatusKind::Hint;
             }
-            AuthScenario::Starting => {
+            AuthScenario::Starting | AuthScenario::PersonalStarting => {
                 app.phase = AuthPhase::Starting;
             }
         }
@@ -904,14 +926,17 @@ impl GreeterApp {
                 .primary()
                 .fill_width(ACTION_HEIGHT),
         )];
-        if self.fingerprint == FingerprintAvailability::Enrolled {
+        // Once an attempt is running this action is inert and the live PAM
+        // prompt is the information the person needs. Removing the disabled
+        // duplicate keeps that assertive instruction visible at large text
+        // sizes instead of pushing it below the scroll viewport.
+        if self.fingerprint == FingerprintAvailability::Enrolled && !busy {
             actions.push(Box::new(
                 Button::new(
                     "greeter.fingerprint",
                     "Use fingerprint",
                     Some(FINGERPRINT_PATH),
                 )
-                .with_enabled(!busy)
                 .fill_width(ACTION_HEIGHT),
             ));
         }
@@ -957,6 +982,17 @@ impl GreeterApp {
     fn build_brand(&self, theme: &Theme) -> Box<dyn Widget> {
         let c = &theme.tokens.colors;
         if let Some(user) = &self.login_user {
+            let compact_for_large_text = theme.text_scale >= 1.75;
+            let caption = if compact_for_large_text {
+                Text::new(&user.username)
+                    .with_id("greeter.account")
+                    .with_size(13.0)
+                    .with_color(c.text_dim)
+            } else {
+                Text::new("Enter your passcode to open your desktop.")
+                    .with_size(13.0)
+                    .with_color(c.text_dim)
+            };
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
@@ -970,11 +1006,7 @@ impl GreeterApp {
                             .with_id("greeter.welcome")
                             .with_size(28.0),
                     ),
-                    Box::new(
-                        Text::new("Enter your passcode to open your desktop.")
-                            .with_size(13.0)
-                            .with_color(c.text_dim),
-                    ),
+                    Box::new(caption),
                 ],
             ))
         } else {
@@ -1024,7 +1056,13 @@ impl GreeterApp {
         // Persistent labels above each field. Two unlabelled rounded boxes
         // leave the user guessing which one is which; a placeholder alone
         // disappears the moment they start typing.
-        children.push(self.build_account_field(busy, theme));
+        // At the maximum supported text scale, fold the already-known local
+        // username into the welcome lockup (see `build_brand`). This preserves
+        // account context while keeping both authentication actions above the
+        // fixed power footer on a 640x480 logical display.
+        if self.login_user.is_none() || theme.text_scale < 1.75 {
+            children.push(self.build_account_field(busy, theme));
+        }
 
         let mut password_group: Vec<Box<dyn Widget>> = vec![
             Box::new(Self::field_label("Passcode", theme)),
@@ -1847,6 +1885,15 @@ mod tests {
             .find_map(|child| rect_for(child, id))
     }
 
+    fn rect_for_accessible_name(w: &dyn Widget, name: &str) -> Option<Rect> {
+        if w.accessibility().and_then(|node| node.name).as_deref() == Some(name) {
+            return Some(w.get_rect());
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| rect_for_accessible_name(child, name))
+    }
+
     fn subtree_min_y(w: &dyn Widget) -> f64 {
         w.children()
             .into_iter()
@@ -1855,7 +1902,11 @@ mod tests {
             })
     }
 
-    fn layout_at(app: &mut GreeterApp, viewport: (f32, f32)) -> (TaffyTree<()>, NodeId) {
+    fn layout_at_with_theme(
+        app: &mut GreeterApp,
+        viewport: (f32, f32),
+        theme: &Theme,
+    ) -> (TaffyTree<()>, NodeId) {
         use std::collections::HashMap;
         use taffy::AvailableSpace;
 
@@ -1863,18 +1914,28 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         let mut taffy = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let node = app.build_layout(&mut taffy, theme, &mut node_map);
+        let mut text = TextRenderer::new();
         taffy
-            .compute_layout(
+            .compute_layout_with_measure(
                 node,
                 Size {
                     width: AvailableSpace::Definite(viewport.0),
                     height: AvailableSpace::Definite(viewport.1),
                 },
+                |known, available, node_id, _, _| {
+                    node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                        (*ptr).measure(known, available, &mut text)
+                    })
+                },
             )
             .unwrap();
         app.apply_layout(&taffy, node, Point::ZERO);
         (taffy, node)
+    }
+
+    fn layout_at(app: &mut GreeterApp, viewport: (f32, f32)) -> (TaffyTree<()>, NodeId) {
+        layout_at_with_theme(app, viewport, &Theme::dark())
     }
 
     /// The card's focusable widgets, identified by stable id, in tab order.
@@ -2839,6 +2900,11 @@ mod tests {
             AuthScenario::CapsLock,
             AuthScenario::LongName,
             AuthScenario::Personal,
+            AuthScenario::PersonalError,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalCapsLock,
+            AuthScenario::PersonalHint,
+            AuthScenario::PersonalStarting,
             AuthScenario::PersonalNoFingerprint,
         ] {
             let app = GreeterApp::for_shot(scenario);
@@ -2865,7 +2931,9 @@ mod tests {
     #[test]
     fn personal_shot_variants_match_discovered_capabilities() {
         let with_fingerprint = card_of(&GreeterApp::for_shot(AuthScenario::Personal));
+        let fingerprint_prompt = card_of(&GreeterApp::for_shot(AuthScenario::Fingerprint));
         let passcode_only = card_of(&GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint));
+        let ambiguous = card_of(&GreeterApp::for_shot(AuthScenario::Form));
         let mut with_ids = Vec::new();
         let mut passcode_ids = Vec::new();
         collect_focusables(with_fingerprint.as_ref(), &mut with_ids);
@@ -2874,6 +2942,14 @@ mod tests {
         assert!(!passcode_ids.contains(&"greeter.username".to_string()));
         assert!(with_ids.contains(&"greeter.fingerprint".to_string()));
         assert!(!passcode_ids.contains(&"greeter.fingerprint".to_string()));
+        assert!(
+            accessible_name_for(fingerprint_prompt.as_ref(), "greeter.username").is_none(),
+            "the fingerprint prompt must model the known account required for enrollment"
+        );
+        assert!(
+            accessible_name_for(ambiguous.as_ref(), "greeter.fingerprint").is_none(),
+            "the ambiguous-account shot must not invent an enrolled fingerprint"
+        );
     }
 
     #[test]
@@ -2918,17 +2994,16 @@ mod tests {
         let mut app = GreeterApp::for_shot(AuthScenario::LongName);
         let _layout = layout_at(&mut app, (320.0, 640.0));
 
-        for id in [
-            "greeter.login",
-            "greeter.fingerprint",
-            "greeter.reboot",
-            "greeter.poweroff",
-        ] {
+        for id in ["greeter.login", "greeter.reboot", "greeter.poweroff"] {
             let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
             assert!(rect.x0 >= 15.5, "{id} escaped left: {rect:?}");
             assert!(rect.x1 <= 304.5, "{id} escaped right: {rect:?}");
             assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{id} clipped: {rect:?}");
         }
+        assert!(
+            rect_for(&app, "greeter.fingerprint").is_none(),
+            "an ambiguous-account fallback must not advertise an account-specific fingerprint"
+        );
     }
 
     /// At the 640×480 logical viewport produced by common 2× display
@@ -2937,37 +3012,66 @@ mod tests {
     /// in a persistent footer rather than disappearing with it.
     #[test]
     fn large_text_viewport_keeps_auth_visible_and_power_reachable() {
-        for scenario in [
-            AuthScenario::Form,
-            AuthScenario::Error,
-            AuthScenario::Fingerprint,
-            AuthScenario::CapsLock,
-            AuthScenario::LongName,
-        ] {
-            let mut app = GreeterApp::for_shot(scenario);
-            let _layout = layout_at(&mut app, (640.0, 480.0));
-            let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
-            assert!(
-                subtree_min_y(&app) >= 0.0,
-                "{scenario:?} starts with content above the viewport: {}",
-                subtree_min_y(&app)
-            );
-
-            for id in [
-                "greeter.login",
-                "greeter.fingerprint",
-                "greeter.reboot",
-                "greeter.poweroff",
+        for scale in [1.3, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            for scenario in [
+                AuthScenario::Form,
+                AuthScenario::Error,
+                AuthScenario::Authenticating,
+                AuthScenario::CapsLock,
+                AuthScenario::LongName,
+                AuthScenario::Personal,
+                AuthScenario::PersonalError,
+                AuthScenario::PersonalAuthenticating,
+                AuthScenario::Fingerprint,
+                AuthScenario::PersonalCapsLock,
+                AuthScenario::PersonalHint,
+                AuthScenario::PersonalStarting,
+                AuthScenario::PersonalNoFingerprint,
             ] {
-                let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+                let mut app = GreeterApp::for_shot(scenario);
+                let _layout = layout_at_with_theme(&mut app, (640.0, 480.0), &theme);
+                let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
                 assert!(
-                    rect.y0 >= 0.0 && rect.y1 <= 480.0,
-                    "{scenario:?} clips {id}: {rect:?}"
+                    subtree_min_y(&app) >= 0.0,
+                    "{scenario:?} at {scale}x starts with content above the viewport: {}",
+                    subtree_min_y(&app)
                 );
-                if matches!(id, "greeter.login" | "greeter.fingerprint") {
+
+                for id in ["greeter.login", "greeter.reboot", "greeter.poweroff"] {
+                    let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
                     assert!(
-                        rect.y1 <= footer_top,
-                        "{scenario:?} lets the footer cover {id}: {rect:?}"
+                        rect.y0 >= 0.0 && rect.y1 <= 480.0,
+                        "{scenario:?} at {scale}x clips {id}: {rect:?}"
+                    );
+                    if id == "greeter.login" {
+                        assert!(
+                            rect.y1 <= footer_top,
+                            "{scenario:?} at {scale}x lets the footer cover {id}: {rect:?}"
+                        );
+                    }
+                }
+                if app.fingerprint == FingerprintAvailability::Enrolled && !app.phase.is_busy() {
+                    let rect =
+                        rect_for(&app, "greeter.fingerprint").expect("enrolled fingerprint action");
+                    assert!(
+                        rect.y0 >= 0.0 && rect.y1 <= footer_top,
+                        "{scenario:?} at {scale}x clips fingerprint action: {rect:?}"
+                    );
+                } else {
+                    assert!(rect_for(&app, "greeter.fingerprint").is_none());
+                }
+                let required_live_message = match scenario {
+                    AuthScenario::Fingerprint => Some("Place your finger on the reader"),
+                    AuthScenario::PersonalStarting => Some(STARTING_MESSAGE),
+                    _ => None,
+                };
+                if let Some(message) = required_live_message {
+                    let rect = rect_for_accessible_name(&app, message)
+                        .unwrap_or_else(|| panic!("missing live message {message:?}"));
+                    assert!(
+                        rect.y0 >= 0.0 && rect.y1 <= footer_top,
+                        "{scenario:?} at {scale}x clips live message {message:?}: {rect:?}"
                     );
                 }
             }
@@ -2976,7 +3080,8 @@ mod tests {
         // The installed image can offer the standard and peer-sync sessions;
         // the additional picker must not push authentication out of reach.
         let mut app = GreeterApp::with_sessions(test_sessions());
-        let _layout = layout_at(&mut app, (640.0, 480.0));
+        let theme = Theme::dark().with_text_scale(2.0);
+        let _layout = layout_at_with_theme(&mut app, (640.0, 480.0), &theme);
         let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
         for id in [
             "greeter.login",
