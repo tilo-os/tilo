@@ -96,4 +96,3 @@ management operation; it does not authorize a general command runner.
 All lifecycle changes are durable and auditable: requested, downloading,
 verifying, staging, restart-required, starting, ready, stopped, failed, removed.
 Passwords, provider keys, and bearer tokens are excluded from status and logs.
-
