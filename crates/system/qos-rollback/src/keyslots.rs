@@ -326,6 +326,7 @@ pub fn unseal(
     let key_name = token.decoded_key_name()?;
     let predictions = token.decoded_predictions()?;
     let selection = policy::pcr_selection(&token.pcr_bank, &token.pcrs);
+    let platform_selection = policy::pcr_selection(&token.pcr_bank, &token.platform_pcrs);
     let parent = primary(runner, ws)?;
     let pub_file = ws.put("unseal.pub", &token.decoded_public()?)?;
     let priv_file = ws.put("unseal.priv", &token.decoded_private()?)?;
@@ -340,6 +341,7 @@ pub fn unseal(
             pred,
             token.generation,
             &selection,
+            &platform_selection,
             token.nv_index,
             token.nv_operand,
             token.pin,
@@ -729,6 +731,7 @@ pub fn enroll_generation(
         runner,
         ws,
         &key_name,
+        &policy::pcr_selection(&cfg.pcr_bank, &cfg.platform_pcrs),
         generation,
         cfg.nv_index,
         operand,
@@ -746,6 +749,7 @@ pub fn enroll_generation(
         floor.base,
         &cfg.pcr_bank,
         &cfg.pcrs,
+        &cfg.platform_pcrs,
         pin.is_some(),
         &pu,
         &pr,

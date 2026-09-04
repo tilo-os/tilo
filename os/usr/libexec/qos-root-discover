@@ -1,0 +1,55 @@
+#!/usr/bin/bash
+# Resolve the one qOS root on the disk whose ESP systemd-stub booted from.
+set -euo pipefail
+
+QOS_ROOT_TYPE=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+sysroot="${QOS_ROOT_SYSROOT:-/sys}"
+devroot="${QOS_ROOT_DEVROOT:-/dev}"
+runtime="${QOS_ROOT_RUNTIME:-/run}"
+lsblk_bin="${QOS_ROOT_LSBLK:-lsblk}"
+cryptsetup_bin="${QOS_ROOT_CRYPTSETUP:-systemd-cryptsetup}"
+cryptsetup_probe="${QOS_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
+unlock_bin="${QOS_ROOT_UNLOCK:-/usr/libexec/qos-rollback-initrd-unlock}"
+
+die() { printf 'qos-root: %s\n' "$*" >&2; exit 1; }
+
+loader_var="${QOS_ROOT_LOADER_PARTUUID:-}"
+if [ -z "$loader_var" ]; then
+  var="$(find "$sysroot/firmware/efi/efivars" -maxdepth 1 -type f \
+    -name 'LoaderDevicePartUUID-*' -print -quit 2>/dev/null || true)"
+  [ -n "$var" ] || die "systemd-stub did not identify the boot ESP"
+  loader_var="$(dd if="$var" bs=1 skip=4 status=none | tr -d '\000' | tr '[:upper:]' '[:lower:]')"
+fi
+case "$loader_var" in
+  ????????-????-????-????-????????????) ;;
+  *) die "invalid LoaderDevicePartUUID" ;;
+esac
+
+esp="$devroot/disk/by-partuuid/$loader_var"
+for _ in $(seq 1 100); do [ -e "$esp" ] && break; udevadm settle 2>/dev/null || true; sleep .05; done
+[ -e "$esp" ] || die "boot ESP $loader_var did not appear"
+esp="$(readlink -f "$esp")"
+parent="$("$lsblk_bin" -dno PKNAME "$esp" | head -1 | xargs)"
+[ -n "$parent" ] || die "could not identify the boot ESP's physical disk"
+case "$parent" in /*) disk="$parent" ;; *) disk="$devroot/$parent" ;; esac
+
+mapfile -t roots < <("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk" \
+  | awk -v t="$QOS_ROOT_TYPE" 'tolower($2)=="part" && tolower($3)==t {print $1}')
+[ "${#roots[@]}" -eq 1 ] \
+  || die "expected exactly one qOS root on the boot ESP's disk; found ${#roots[@]}"
+root="${roots[0]}"
+
+install -d -m 0700 "$runtime/qos-root" "$runtime/cryptsetup-keys.d"
+if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
+  "$unlock_bin" "$root" root || true
+  "$cryptsetup_bin" attach root "$root" - 'tpm2-device=auto,fido2-device=auto' \
+    || die "encrypted qOS root did not unlock"
+  target="$devroot/mapper/root"
+else
+  target="$root"
+fi
+if [ "${QOS_ROOT_ALLOW_NONBLOCK:-0}" != 1 ]; then
+  [ -b "$target" ] || die "resolved qOS root is not a block device"
+fi
+ln -sfn "$target" "$runtime/qos-root/device"
+printf '%s\n' "$root" > "$runtime/qos-root/source"

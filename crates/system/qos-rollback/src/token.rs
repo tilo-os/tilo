@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 pub const TOKEN_TYPE: &str = "qos-rollback";
 
 /// Schema version, so a later change can be recognised rather than misparsed.
-pub const TOKEN_VERSION: u32 = 1;
+pub const TOKEN_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedPrediction {
@@ -74,6 +74,8 @@ pub struct RollbackToken {
     pub nv_base: i64,
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
+    /// Device-local PCRs applied after PolicyAuthorize.
+    pub platform_pcrs: Vec<u32>,
     /// Is a PIN part of the policy?
     pub pin: bool,
     /// base64 `TPM2B_PUBLIC` of the sealed object.
@@ -98,6 +100,7 @@ impl RollbackToken {
         nv_base: i64,
         pcr_bank: &str,
         pcrs: &[u32],
+        platform_pcrs: &[u32],
         pin: bool,
         sealed_public: &[u8],
         sealed_private: &[u8],
@@ -115,6 +118,7 @@ impl RollbackToken {
             nv_base,
             pcr_bank: pcr_bank.into(),
             pcrs: pcrs.to_vec(),
+            platform_pcrs: platform_pcrs.to_vec(),
             pin,
             sealed_public: B64.encode(sealed_public),
             sealed_private: B64.encode(sealed_private),
@@ -214,6 +218,12 @@ impl RollbackToken {
                 self.generation
             );
         }
+        if self.pcrs.is_empty() || self.platform_pcrs.is_empty() {
+            bail!("token PCR selections must include authorized and platform PCRs");
+        }
+        if self.pcrs.iter().any(|p| self.platform_pcrs.contains(p)) {
+            bail!("authorized and platform PCR selections must not overlap");
+        }
         // `nv_operand` must equal `nv_base + generation`, or the token was built
         // by something that does not agree with us about the mapping.
         let expect = crate::counter::operand(self.nv_base, self.generation)
@@ -261,7 +271,8 @@ mod tests {
             107,
             100,
             "sha256",
-            &[7, 11],
+            &[11],
+            &[7],
             true,
             b"pub",
             b"priv",

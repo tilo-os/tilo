@@ -106,7 +106,7 @@ expected_map="$(printf '%s\n' \
   || { printf 'FAIL  final PARTUUID/geometry map differs from the reviewed plan\nexpected:\n%s\nactual:\n%s\n' "$expected_map" "$after_map" >&2; exit 1; }
 types="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print("\n".join("{}={}".format(p["uuid"].lower(),p["type"].lower()) for p in json.load(sys.stdin)["partitiontable"]["partitions"]))')"
 grep -Fqx "$efi_uuid=c12a7328-f81f-11d2-ba4b-00a0c93ec93b" <<<"$types"
-grep -Fqx "$root_uuid=0fc63daf-8483-4772-8e79-3d69d8477de4" <<<"$types"
+grep -Fqx "$root_uuid=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab" <<<"$types"
 
 # A second invocation must refuse even the exact UUID/geometry pair. Those
 # values live on the writable target and cannot authenticate qOS ownership.

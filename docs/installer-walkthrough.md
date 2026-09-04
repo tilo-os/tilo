@@ -140,12 +140,14 @@ are never guessed when more than one extent is safe.
 
 Encryption remains available in alongside mode. qOS uses LUKS2 for its root;
 Windows/macOS partitions retain their own protection. A recovery key is always
-created and verified, and a strong boot passphrase is required. FIDO2 can be
-enrolled as an additional convenience factor, never a replacement for recovery.
-A TPM device does not weaken the passphrase requirement in this release:
-automatic TPM unlock remains disabled until it can be bound to signed, measured
-qOS boot artifacts. Save the displayed recovery key away from the computer
-before rebooting.
+created and verified. On a Secure Boot + TPM2 machine whose exact target UKI and
+PCR11 policy carry the release authority's signatures, setup accepts a short
+numeric PIN and binds the key to that release measurement plus the machine's
+PCR7 platform state. If any prerequisite is absent or changes during setup, it
+requires a strong ordinary boot passphrase instead; it never creates a PCR7-only
+or weak passphrase slot. FIDO2 can be enrolled as an additional convenience
+factor, never a replacement for recovery. Save the displayed recovery key away
+from the computer before rebooting.
 
 ## Account setup and first boot
 
