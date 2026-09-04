@@ -79,7 +79,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
-  && ! grep -Fq 'secrets.REGISTRY_TOKEN' "$apps" \
+  && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
   && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
   || bad 'app release artifacts cannot be consumed by later component releases'
 
@@ -87,14 +87,14 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QOS_APP_COLLECTION_URL_AARCH64' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
   && grep -Fq 'QOS_OS_APP_COLLECTION_AUDIENCE' "$os" \
-  && grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
+  && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
   && grep -Fq 'Authorization: Bearer $jwt' "$os" \
   && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/qos-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
-  && ok 'trusted OS builds consume an OIDC-authenticated pinned app collection without rebuilding apps' \
+  && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \

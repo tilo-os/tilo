@@ -43,8 +43,9 @@ binaries. A successful `main` build publishes it immutably and advances
 `QOS_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
 downloads the matching architecture and omits those three Cargo packages from
 its build. OS-only changes therefore test the desktop/OS integration without
-recompiling the desktop; pull requests retain a source fallback and receive no
-package-reading credential.
+recompiling the desktop. Pull requests receive only a short-lived, workflow-
+restricted package-read token, so they exercise the same immutable integration
+boundary without a reusable registry credential.
 
 Each architecture collection also contains the signed `qos-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
@@ -131,8 +132,9 @@ rehearsal while the production signing key is unavailable.
 - Trusted OS builds read the private immutable app collection with a separate
   read-only Forgejo Actions (Local) integration. The same integration reads the
   immutable desktop payload. Store its audience in
-  `QOS_OS_APP_COLLECTION_AUDIENCE`. Pull-request jobs never receive or use that
-  package capability; main, scheduled, and manual builds test the integration.
+  `QOS_OS_APP_COLLECTION_AUDIENCE`. Restrict it to **Release / OS** events;
+  pull requests may use its short-lived package-read capability so their OS
+  builds test the same pinned integration inputs as `main`.
 - Desktop payload publication uses a package-write/repository-write integration
   restricted to `package-desktop.yml` pushes on `main`; store its audience in
   `QOS_DESKTOP_RELEASE_AUDIENCE`.

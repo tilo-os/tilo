@@ -112,14 +112,12 @@ jobs:
           COLLECTION_URL_AARCH64: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
           COLLECTION_SHA256_AARCH64: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
           COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           echo 'QOS_PREBUILT_APPS=0' >> "$GITHUB_ENV"
-          # Do not expose a package-reading capability to pull-request code.
-          # Main pushes, scheduled builds and explicit dispatches exercise the
-          # immutable app/OS integration boundary instead.
-          [[ $EVENT_NAME != pull_request ]] || exit 0
+          # The Authorized Integration grants only short-lived package read to
+          # this workflow. Pull requests therefore test the exact immutable
+          # app/OS boundary without receiving a reusable registry credential.
           case "$(uname -m)" in
             x86_64)
               COLLECTION_URL=${COLLECTION_URL_INPUT:-${COLLECTION_URL_X86_64:-$COLLECTION_URL_DEFAULT}}
@@ -200,11 +198,9 @@ jobs:
           PAYLOAD_SHA256_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_X86_64 }}
           PAYLOAD_URL_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_AARCH64 }}
           PAYLOAD_SHA256_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           echo 'QOS_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
-          [[ $EVENT_NAME != pull_request ]] || exit 0
           case "$(uname -m)" in
             x86_64)
               architecture=x86_64
