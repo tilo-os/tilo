@@ -207,7 +207,7 @@ jobs:
         with:
           path: os/external-assets/cache
           key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-      - name: Build and install-test all five target userspaces
+      - name: Build four native ABI payloads and install-test five userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}

@@ -279,10 +279,12 @@ stage=architecture-check
 dist/ci/assert-native-arch.sh "$execution_arch"
 
 case "$distro" in
-ubuntu-24.04|debian-13)
+ubuntu-24.04)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
     export PATH=$CARGO_HOME/bin:$PATH
     export QOS_DEB_REVISION=${QOS_DEB_REVISION:?missing QOS_DEB_REVISION}
+    stage=test-deb-revision-reuse
+    dist/ci/tests/revise-debs.sh
     stage=install-dependencies
     dist/ci/install-build-deps.sh debian
     stage=install-compiler-cache
@@ -298,6 +300,28 @@ ubuntu-24.04|debian-13)
     dist/debian/test-package.sh \
         dist/debian/build/qos-session_[0-9]*.deb \
         dist/debian/build/qos-session-devel_*.deb
+    stage=collect-deb
+    cp dist/debian/build/qos-session_[0-9]*_"$arch".deb /artifacts/
+    if [[ $arch == amd64 ]]; then
+        cp dist/debian/build/qos-session-devel_*_all.deb /artifacts/
+    fi
+    ;;
+debian-13)
+    export QOS_DEB_REVISION=${QOS_DEB_REVISION:?missing QOS_DEB_REVISION}
+    stage=repackage-deb-without-native-rebuild
+    source_dir=/workspace/dist/ci-output/ubuntu-24.04-$arch
+    test -n "$(find "$source_dir" -maxdepth 1 -name 'qos-session_*.deb' -print -quit)"
+    dist/debian/revise-debs.sh "$source_dir" dist/debian/build "$QOS_DEB_REVISION"
+    stage=inspect-deb
+    for package in dist/debian/build/qos-session*.deb; do
+        dpkg-deb --info "$package"
+    done
+    stage=install-test-deb
+    packages=(dist/debian/build/qos-session_[0-9]*.deb)
+    if compgen -G 'dist/debian/build/qos-session-devel_*.deb' >/dev/null; then
+        packages+=(dist/debian/build/qos-session-devel_*.deb)
+    fi
+    dist/debian/test-package.sh "${packages[@]}"
     stage=collect-deb
     cp dist/debian/build/qos-session_[0-9]*_"$arch".deb /artifacts/
     if [[ $arch == amd64 ]]; then
