@@ -6338,7 +6338,11 @@ impl ShellOverlayHost {
             self.last_cursor = Some(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
-            let hover = if self.overlay_flags().overview {
+            let flags = self.overlay_flags();
+            let hover = if flags.overview
+                || flags.quick_settings
+                || self.qs_transition.is_visible(Instant::now())
+            {
                 None
             } else {
                 self.strip_ribbon().hit(p)
@@ -10850,9 +10854,17 @@ impl ShellOverlayHost {
     ) {
         // Both drawn under the popovers, hidden under the overview since
         // it isn't showing strips.
-        if !self.overlay_flags().overview {
-            let ribbon = self.strip_ribbon();
-            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+        if !flags.overview {
+            // The strip selector occupies the same right edge and vertical
+            // band as this dropdown. Showing it beside Quick Settings makes
+            // its focused segment look exactly like an overflow scrollbar,
+            // even though the panel itself fits. Keep the bottom window rail,
+            // but hide this unrelated behind-the-popover control for the
+            // entire open/close transition.
+            if !flags.quick_settings && !self.qs_transition.is_visible(Instant::now()) {
+                let ribbon = self.strip_ribbon();
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            }
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
