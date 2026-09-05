@@ -157,7 +157,7 @@ use debug::DebugLayers;
 #[cfg(feature = "wgpu")]
 use vello_encoding::Resolver;
 #[cfg(feature = "wgpu")]
-use wgpu_engine::{ExternalResource, WgpuEngine};
+use wgpu_engine::{ExternalResource, WgpuEngine, default_enabled_from_env};
 
 #[cfg(feature = "wgpu")]
 use std::{num::NonZeroUsize, sync::atomic::AtomicBool};
@@ -750,8 +750,7 @@ impl Renderer {
             sparse_coarse_tiles: Vec::new(),
             defer_bump_readback: std::env::var_os("VELLO_DEFER_BUMP_READBACK")
                 .is_some_and(|value| value == "1"),
-            sparse_upload_reuse: std::env::var_os("VELLO_SPARSE_UPLOAD_REUSE")
-                .is_some_and(|value| value == "1"),
+            sparse_upload_reuse: default_enabled_from_env("VELLO_SPARSE_UPLOAD_REUSE"),
             sparse_upload: None,
             #[cfg(feature = "debug_layers")]
             debug,
@@ -786,20 +785,29 @@ impl Renderer {
         self.engine.clear_pool();
     }
 
-    /// Enable or disable experimental shared compute-pass encoding for future
-    /// recordings. Intended for A/B verification only.
+    /// Whether shared compute-pass encoding is effective for future recordings.
+    ///
+    /// This is enabled by default in release GPU rendering. Full CPU and
+    /// profiler builds retain their unbatched fallback paths.
+    #[doc(hidden)]
+    pub fn compute_pass_batching_enabled(&self) -> bool {
+        self.engine.compute_pass_batching_enabled()
+    }
+
+    /// Enable or disable shared compute-pass encoding for future recordings.
+    /// Intended for A/B verification only.
     #[doc(hidden)]
     pub fn set_compute_pass_batching(&mut self, enabled: bool) {
         self.engine.set_compute_pass_batching(enabled);
     }
 
-    /// Whether the opt-in GPU direct path-count/tiling dispatch is active.
+    /// Whether the default GPU direct path-count/tiling dispatch is active.
     #[doc(hidden)]
     pub fn direct_path_dispatch_enabled(&self) -> bool {
         !self.options.use_cpu && self.engine.direct_path_dispatch_enabled()
     }
 
-    /// Toggle the opt-in direct GPU path-count/tiling dispatch.
+    /// Toggle direct GPU path-count/tiling dispatch for A/B comparison.
     #[doc(hidden)]
     pub fn set_direct_path_dispatch_enabled(&mut self, enabled: bool) {
         self.engine.set_direct_path_dispatch_enabled(enabled);
@@ -870,8 +878,8 @@ impl Renderer {
         self.engine.gpu_dispatch_timestamp_buffer_bytes()
     }
 
-    /// Whether this renderer was constructed with opt-in sparse Area-AA fine
-    /// shaders and can attempt [`Self::render_to_texture_with_damage`].
+    /// Whether default sparse Area-AA fine shaders are available for
+    /// [`Self::render_to_texture_with_damage`].
     #[doc(hidden)]
     pub fn sparse_fine_supported(&self) -> bool {
         self.engine.sparse_fine_enabled()
@@ -901,7 +909,7 @@ impl Renderer {
             !self.options.use_cpu && self.engine.cpu_draw_prefix_enabled();
     }
 
-    /// Whether selective CPU path-tag host-buffer reuse was configured.
+    /// Whether bounded selective CPU path-tag host-buffer reuse is active.
     #[doc(hidden)]
     pub fn cpu_pathtag_reuse_enabled(&self) -> bool {
         !self.options.use_cpu && self.engine.cpu_pathtag_reuse_enabled()
@@ -961,8 +969,8 @@ impl Renderer {
     }
 
     /// Enable or disable sparse fine recording after construction. Enabling is
-    /// effective only when the renderer was initially created with
-    /// `VELLO_SPARSE_FINE=1` and therefore compiled the required shader.
+    /// effective only when the renderer was initially created with Area-AA
+    /// support and therefore compiled the default sparse shader.
     #[doc(hidden)]
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
         self.engine.set_sparse_fine_enabled(enabled);
@@ -970,7 +978,7 @@ impl Renderer {
 
     #[doc(hidden)]
     pub fn sparse_upload_reuse_enabled(&self) -> bool {
-        self.sparse_upload_reuse
+        self.sparse_upload_reuse && self.sparse_fine_supported()
     }
 
     fn prepare_sparse_upload(
