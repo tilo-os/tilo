@@ -2,7 +2,7 @@ name: Release / desktop
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# The amd64 package set runs serially on the dedicated `qos-package` label.
+# The amd64 package set runs serially on an available generic runner.
 # Release tags add the native ARM64 runner only when the explicit capability
 # switch below is enabled; ordinary changes retain one amd64 lane. Pull
 # requests build and install-test the affected release payload.
@@ -121,12 +121,12 @@ jobs:
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             release_arches=amd64,arm64
             matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package-optimized",targets:$targets},
+              {arch:"amd64",runner:"runner",targets:$targets},
               {arch:"arm64",runner:"runner-arm64",targets:$targets}
             ]}')
           else
             matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package-optimized",targets:$targets}
+              {arch:"amd64",runner:"runner",targets:$targets}
             ]}')
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -135,8 +135,8 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # The amd64 matrix entry uses the measured optimized package class; native
-    # ARM64 tags and explicit full-native runs retain their ARM runner.
+    # AMD64 uses the registered generic runner; native ARM64 tags and explicit
+    # full-native runs retain their architecture-specific runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     # Each architecture is one sequential lane so the five userspaces reuse
