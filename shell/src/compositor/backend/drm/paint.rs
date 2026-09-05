@@ -260,6 +260,49 @@ impl VelloDrmBridge {
         self.last_phase_timing
     }
 
+    /// Current opt-in Vello per-dispatch timestamp diagnostic state.
+    ///
+    /// This is a deliberately thin diagnostic facade: ordinary DRM paints never call it or
+    /// allocate timestamp bookkeeping. A benchmark that opts in to Vello timestamps should read
+    /// [`Self::gpu_dispatch_timestamp_latest_submission_id`] after a completed paint, then take
+    /// the sample and compare its submission id exactly rather than assigning a delayed sample to
+    /// a different frame.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
+        self.renderer.gpu_dispatch_timestamp_status()
+    }
+
+    /// Consume the one bounded Vello per-dispatch timestamp sample, if its asynchronous map has
+    /// completed. Diagnostic callers must match [`vello::GpuDispatchTimestampSample::submission_id`]
+    /// to [`Self::gpu_dispatch_timestamp_latest_submission_id`].
+    #[doc(hidden)]
+    pub fn take_gpu_dispatch_timestamp_sample(
+        &mut self,
+    ) -> Option<vello::GpuDispatchTimestampSample> {
+        self.renderer.take_gpu_dispatch_timestamp_sample()
+    }
+
+    /// Identity assigned to the latest Vello recording when opt-in per-dispatch timestamps are
+    /// available. The id advances even when the bounded diagnostic readback slot was busy, so a
+    /// missing sample must remain missing rather than being attributed to a newer paint.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
+        self.renderer.gpu_dispatch_timestamp_latest_submission_id()
+    }
+
+    /// Bytes allocated exclusively for opt-in per-dispatch timestamp resolve/readback buffers.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
+        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
+    }
+
+    /// Effective initialization-time direct path workgroup count, exposed only for an explicit
+    /// diagnostic benchmark header. Normal paint behavior does not query or alter it.
+    #[doc(hidden)]
+    pub fn direct_path_workgroups(&self) -> u32 {
+        self.renderer.direct_path_workgroups()
+    }
+
     /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
     /// (`width * height * 4`). The slice's lifetime is tied to `&mut self`; callers must clone bytes out before the next `paint`.
     ///
