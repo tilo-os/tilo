@@ -836,6 +836,7 @@ fn run_job_paths_bound(
 /// Run the same exact write, digest, read-back and profile pipeline against an
 /// already-authorized device descriptor. `UDisks2` uses this seam so raw-device
 /// authority never has to be represented by a sandbox-visible path.
+#[cfg(any(test, all(target_os = "linux", feature = "flatpak-media-writer")))]
 #[allow(
     clippy::too_many_lines,
     reason = "the descriptor stays borrowed through one linear write, verify, and profile transaction; splitting ownership across helpers would obscure the destructive-I/O lifecycle"
