@@ -3738,7 +3738,17 @@ impl ShellOverlayHost {
                 continue;
             };
             let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
-            dest_row.accept_cross_strip_drop(payload.desc, payload.host, release);
+            // One globally unique id is shared by the rendered group, the
+            // durable cache and the replicated document. Generating an id
+            // independently inside each strip made a later resync unable to
+            // identify the group the person had just moved.
+            let new_group_id = crate::shell::state::next_id();
+            let destination = dest_row.accept_cross_strip_drop(
+                new_group_id,
+                payload.desc,
+                payload.host,
+                release,
+            );
             // Mirror into the persisted tree so a restart sees the tab
             // in its new strip.
             if dest_strip_id != src_strip_id
@@ -3746,7 +3756,13 @@ impl ShellOverlayHost {
             {
                 let st = chrome.borrow_mut();
                 st.tree_mut()
-                    .move_tab_across_strips(src_strip_id, dest_strip_id, payload.tab_id);
+                    .move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        payload.tab_id,
+                        new_group_id,
+                        destination,
+                    );
             }
         }
     }
