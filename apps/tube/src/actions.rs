@@ -171,6 +171,11 @@ pub fn provide_device_resources(view: &crate::sync::SyncView) -> Resource {
     root
 }
 
+/// Decode an operation received from the resource/action host.
+///
+/// # Errors
+///
+/// Returns an error when a payload for Tube's operation type is not valid JSON.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TubeOperation>, String> {
     if type_id != TUBE_OPERATION_TYPE {
         return Ok(None);
@@ -189,7 +194,7 @@ fn legacy_comment_key(video_id: &str, index: usize) -> String {
 /// id, so hash all immutable source fields with an explicitly fixed FNV-1a
 /// algorithm rather than addressing a row by its current list position.
 fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for field in [
         video_id,
         comment.author.as_str(),
@@ -199,7 +204,7 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
     ] {
         for byte in field.bytes().chain(std::iter::once(0xff)) {
             hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
     format!("{video_id}#{hash:016x}")
@@ -267,12 +272,16 @@ impl Action for TubeAction {
         let tube = tube_map(doc)?;
         match self {
             TubeAction::LikeVideo { video_id } => {
-                let likes = child_map(doc, &tube, "likes")?;
-                let liked = doc
-                    .get(&likes, video_id.as_str())?
+                let likes_map = child_map(doc, &tube, "likes")?;
+                let is_liked = doc
+                    .get(&likes_map, video_id.as_str())?
                     .and_then(|(value, _)| value.to_bool())
                     .unwrap_or(false);
-                doc.put(&likes, video_id.as_str(), ScalarValue::Boolean(!liked))?;
+                doc.put(
+                    &likes_map,
+                    video_id.as_str(),
+                    ScalarValue::Boolean(!is_liked),
+                )?;
             }
             TubeAction::AddToQueue { video_id } => {
                 let queue = child_list(doc, &tube, "queue")?;
@@ -462,52 +471,59 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
         }));
     }
     if include_comments {
-        for (index, comment) in video
-            .comments
-            .iter()
-            .take(MAX_RESOURCE_COMMENTS)
-            .enumerate()
-        {
-            let comment_id = comment_key(video_id, comment);
-            let vid = video_id.to_string();
-            let vid2 = vid.clone();
-            let stable_id = comment_id.clone();
-            let child = Resource::new(
-                format!("tube.comment:{comment_id}"),
-                "tube.comment",
-                comment_label(&comment.author, &comment.text),
-            )
-            .with_action(
-                immediate_spec(
-                    "like",
-                    "Like comment",
-                    &TubeAction::LikeComment {
-                        video_id: vid.clone(),
-                        index,
-                        comment_id: comment_id.clone(),
-                    },
-                )
-                .reversible(),
-            )
-            .with_action(ActionSpec::prompted(
-                "reply",
-                "Reply to comment",
-                "Reply",
-                "your reply…",
-                ExecutionLocus::ServerPreferred,
-                move |text: &str| {
-                    encode(&TubeAction::ReplyToComment {
-                        video_id: vid2.clone(),
-                        index,
-                        comment_id: stable_id.clone(),
-                        text: text.to_string(),
-                    })
-                },
-            ));
-            resource = resource.with_child(child);
-        }
+        resource = add_comment_resources(resource, video_id, &video.comments);
     }
     Some(resource)
+}
+
+fn add_comment_resources(
+    mut parent: Resource,
+    video_id: &str,
+    comments: &[crate::model::Comment],
+) -> Resource {
+    for (index, comment) in comments.iter().take(MAX_RESOURCE_COMMENTS).enumerate() {
+        parent = parent.with_child(comment_resource(video_id, index, comment));
+    }
+    parent
+}
+
+fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Comment) -> Resource {
+    let comment_id = comment_key(video_id, comment);
+    let reply_comment_id = comment_id.clone();
+    let like_video_id = video_id.to_string();
+    let reply_video_id = like_video_id.clone();
+    Resource::new(
+        format!("tube.comment:{comment_id}"),
+        "tube.comment",
+        comment_label(&comment.author, &comment.text),
+    )
+    .with_action(
+        immediate_spec(
+            "like",
+            "Like comment",
+            &TubeAction::LikeComment {
+                video_id: like_video_id,
+                index,
+                comment_id,
+            },
+        )
+        .reversible(),
+    )
+    .with_action(ActionSpec::prompted(
+        "reply",
+        "Reply to comment",
+        "Reply",
+        "your reply…",
+        ExecutionLocus::ServerPreferred,
+        move |text: &str| {
+            encode(&TubeAction::ReplyToComment {
+                video_id: reply_video_id.clone(),
+                index,
+                comment_id: reply_comment_id.clone(),
+                text: text.to_string(),
+            })
+        },
+    ))
 }
 
 /// Publish one stable app root with bounded, hierarchical library and current
@@ -515,19 +531,6 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
 /// the watch page is not open, without materialising an unbounded catalogue.
 pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
     let mut app = Resource::new("tube.app", "tube.application", "Tube");
-    let mut navigation = Resource::new("tube.navigation", "tube.navigation", "Navigate");
-    for (id, label, route) in [
-        ("home", "Open Home", Route::Home),
-        ("trending", "Open Trending", Route::Trending),
-        ("subscriptions", "Open subscriptions", Route::Subscriptions),
-        ("history", "Open watch history", Route::History),
-        ("settings", "Open settings", Route::Settings),
-    ] {
-        if let Some(spec) = view_spec(id, label, &TubeOperation::Navigate { route }) {
-            navigation = navigation.with_action(spec);
-        }
-    }
-
     // Current context is deliberately first: bounded palettes surface what the
     // user is looking at before the broader known library.
     if let Route::Watch(id) = &model.route
@@ -543,8 +546,31 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
         }
         app = app.with_child(current);
     }
-    app = app.with_child(navigation);
+    app = app
+        .with_child(navigation_resource())
+        .with_child(library_resource(model))
+        .with_child(settings_resource(model));
+    vec![app]
+}
 
+fn navigation_resource() -> Resource {
+    let mut navigation = Resource::new("tube.navigation", "tube.navigation", "Navigate");
+    for (id, label, route) in [
+        ("home", "Open Home", Route::Home),
+        ("trending", "Open Trending", Route::Trending),
+        ("subscriptions", "Open subscriptions", Route::Subscriptions),
+        ("history", "Open watch history", Route::History),
+        ("settings", "Open settings", Route::Settings),
+    ] {
+        if let Some(spec) = view_spec(id, label, &TubeOperation::Navigate { route }) {
+            navigation = navigation.with_action(spec);
+        }
+    }
+
+    navigation
+}
+
+fn library_resource(model: &TubeModel) -> Resource {
     let mut library = Resource::new("tube.library", "tube.library", "Known library");
     for video in model.videos.iter().take(MAX_RESOURCE_ENTITIES) {
         if let Some(resource) = video_resource(
@@ -602,8 +628,10 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
         playlists = playlists.with_child(resource);
     }
     library = library.with_child(creators).with_child(playlists);
-    app = app.with_child(library);
+    library
+}
 
+fn settings_resource(model: &TubeModel) -> Resource {
     let mut settings = Resource::new("tube.settings", "tube.settings", "Playback settings");
     for (id, label, setting, enabled) in [
         (
@@ -649,18 +677,16 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
             .reversible(),
         );
     }
-    app = app.with_child(settings);
-
-    vec![app]
+    settings
 }
 
 impl ResourceProvider for crate::app::TubeApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut resources = provide_resources(self.model_ref());
-        if let Some(view) = self.device_sync_view()
-            && let Some(app) = resources.first_mut()
-        {
-            app.children.push(provide_device_resources(view));
+        #[cfg(feature = "grayjay-sync")]
+        if let Some(app) = resources.first_mut() {
+            app.children
+                .push(provide_device_resources(self.device_sync_view()));
         }
         resources
     }

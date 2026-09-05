@@ -4254,6 +4254,7 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 name = "file-explorer"
 version = "0.2.0"
 dependencies = [
+ "accounts",
  "automerge",
  "chrono",
  "collab-types",
@@ -4274,6 +4275,8 @@ dependencies = [
  "qos-actions",
  "qos-app",
  "qos-user-identity",
+ "reqwest 0.12.28",
+ "roxmltree",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4290,6 +4293,7 @@ dependencies = [
  "vello",
  "winit",
  "xattr",
+ "zeroize",
  "zip 4.6.1",
 ]
 
@@ -15966,7 +15970,6 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
- "bip39",
  "capnp",
  "capnp-rpc",
  "chacha20poly1305",
