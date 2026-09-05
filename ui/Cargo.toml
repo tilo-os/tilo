@@ -215,9 +215,9 @@ base32.workspace = true
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `qos-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
-# Phase 8 pairing-channel encryption (placeholder; in-memory shim for
-# the v1 widget tests). HMAC is used as a one-time pairing MAC over
-# the round-1 broadcast keyed by the 6-digit code's full nonce.
+# Pairing-channel authentication. HMAC binds the round-1 broadcast to
+# the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
+# and authenticates the exchanged DKG payloads.
 hmac.workspace = true
 # Identity-flow encode helpers — canonical-bytes for the invite
 # envelope's owner signature view, hex for the pairing-channel JSON
