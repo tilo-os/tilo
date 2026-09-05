@@ -9,6 +9,7 @@ fine
 coarse
 + coarse
 + coarse_sparse: sparse
++ coarse_sparse_active: sparse active_bins
 draw_leaf
 + draw_leaf
 + draw_leaf_prefix: cpu_prefix

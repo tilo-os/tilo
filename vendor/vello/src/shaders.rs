@@ -38,6 +38,7 @@ pub struct FullShaders {
     pub path_count_direct: ShaderId,
     pub coarse: ShaderId,
     pub coarse_sparse: Option<ShaderId>,
+    pub coarse_sparse_active: Option<ShaderId>,
     pub path_tiling_setup: ShaderId,
     pub path_tiling: ShaderId,
     pub path_tiling_direct: ShaderId,
@@ -241,6 +242,30 @@ pub(crate) fn full_shaders(
     } else {
         None
     };
+    let coarse_sparse_active = if engine.sparse_fine_enabled()
+        && engine.sparse_coarse_active_bins_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area
+    {
+        Some(add_shader!(
+            coarse_sparse_active,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+                Uniform,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
     let path_tiling_setup = add_shader!(path_tiling_setup, [Buffer, Buffer, Buffer]);
     let path_tiling = add_shader!(
         path_tiling,
@@ -349,6 +374,7 @@ pub(crate) fn full_shaders(
         backdrop,
         coarse,
         coarse_sparse,
+        coarse_sparse_active,
         path_tiling_setup,
         path_tiling,
         path_tiling_direct,

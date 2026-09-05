@@ -1,0 +1,14 @@
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE VELLO_SPARSE_COARSE=1 cargo test -p ui --lib sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames --locked -- --nocapture --test-threads=1
+Exit: 0
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.44s
+     Running unittests src/lib.rs (target/debug/deps/ui-3cddfcbb77ce42a7)
+
+running 1 test
+test offscreen::tests::sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2667 filtered out; finished in 1.35s
