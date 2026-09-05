@@ -98,8 +98,11 @@ sudo rpm-ostree install qos-session
 Save your work and reboot into the prepared deployment. GDM will continue to
 offer the existing desktop and will also offer qOS in its session menu. The
 layering transaction preserves other requested and locally installed packages;
-removing qOS later uses `sudo rpm-ostree uninstall qos-session` and another
-reboot. Do not use the development subpackage for an ordinary installation.
+applications installed system-wide or for your user, including Flatpaks, remain
+installed and discoverable from qOS under **Host Apps**. Select the existing
+desktop in GDM whenever you want to switch back. Removing qOS later uses
+`sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
+development subpackage for an ordinary installation.
 
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
