@@ -1,10 +1,10 @@
-//! CPU-fallback vello → RGBA bridge for the DRM backend.
+//! CPU-fallback Vello → XRGB bridge for the DRM backend.
 //!
-//! Vello renders into a wgpu texture; smithay's DRM path drives GLES. Zero-copy would need
-//! `wgpu::Texture` → DMA-BUF fd → `GlesRenderer::import_dmabuf` → page-flip, which on the
-//! Vulkan wgpu backend needs `hal_texture` → `vulkan::Image` → external memory fd — a
-//! multi-week, Vulkan-only build. Instead this renders to an offscreen wgpu texture, copies
-//! bytes back to a CPU buffer, and exposes tight-packed `&[u8]` for the DRM upload side.
+//! Vello renders into a wgpu texture, then this bridge reads it back and swizzles directly into
+//! the scanout's mapped XRGB dumb buffer. The DRM path does not use GLES; `Scanout::present_into`
+//! owns the dumb buffer and page flip. Zero-copy would require exporting the wgpu texture as a
+//! DMA-BUF that KMS can scan out, which remains a backend-specific follow-up. Until then this
+//! bridge keeps the production render → readback → XRGB path explicit.
 //!
 //! `wgpu::copy_texture_to_buffer` requires `bytes_per_row` to be a multiple of
 //! `COPY_BYTES_PER_ROW_ALIGNMENT` (256); for unaligned tight strides we allocate a padded
@@ -34,6 +34,9 @@ pub enum BridgeError {
     #[error("vello render_to_texture failed: {0}")]
     Render(String),
 
+    #[error("vello still overflowed after {attempts} full render attempts")]
+    RecoveryExhausted { attempts: usize },
+
     #[error("wgpu buffer mapping failed: {0}")]
     Map(String),
 
@@ -46,6 +49,11 @@ pub enum BridgeError {
 
 /// One-shot latch so the "CPU fallback active" warning fires once per process; shared across all bridges since the message is process-global.
 static WARNED_CPU_FALLBACK: AtomicBool = AtomicBool::new(false);
+
+/// A complex first frame can require Vello to grow its bump allocation before it produces every
+/// pixel. Retrying is deliberately bounded: an exhausted recovery reports an error rather than
+/// presenting incomplete geometry as a successful frame.
+const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
@@ -67,6 +75,8 @@ pub struct VelloDrmBridge {
     size: (u32, u32),
     /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
+    /// Full Vello submissions used by the latest paint, including bounded bump-budget retries.
+    last_render_attempts: usize,
 }
 
 impl VelloDrmBridge {
@@ -123,6 +133,7 @@ impl VelloDrmBridge {
             readback: Vec::new(),
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
+            last_render_attempts: 0,
         })
     }
 
@@ -149,16 +160,28 @@ impl VelloDrmBridge {
         }
 
         let (width, height) = self.size;
-        self.render_to_readback(scene)?;
+        let padded_bytes_per_row = self.padded_bytes_per_row;
+        let mapped = Self::render_to_readback(
+            &mut self.renderer,
+            &self.context,
+            self.dev_id,
+            &self.texture,
+            &self.view,
+            &self.readback_buf,
+            padded_bytes_per_row,
+            (width, height),
+            self.base_color,
+            &mut self.last_render_attempts,
+            scene,
+        )?;
 
         // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
-        let mapped = self.map_readback()?;
         let tight_row = (width as usize).saturating_mul(4);
         let needed = tight_row.saturating_mul(height as usize);
         self.readback.clear();
         self.readback.reserve(needed);
         for row in 0..height as usize {
-            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let start = row.saturating_mul(padded_bytes_per_row as usize);
             let end = start.saturating_add(tight_row);
             let Some(src_row) = mapped.get(start..end) else {
                 tracing::warn!(
@@ -177,10 +200,8 @@ impl VelloDrmBridge {
     /// Render `scene` and write it **directly** into an XRGB8888 destination (little-endian
     /// `[B, G, R, X]`), fusing the wgpu padding-strip and the RGBA→XRGB swizzle into one pass.
     ///
-    /// The copy-eliminating sibling of [`paint`](Self::paint): `paint()` produces a tight RGBA
-    /// `Vec` that the DRM scanout then swizzles into the dumb buffer (two full-frame copies after
-    /// GPU readback); this swizzles the mapped wgpu readback straight into the caller's destination
-    /// (a DRM dumb-buffer mmap), leaving only the unavoidable GPU→CPU readback plus one swizzle.
+    /// [`paint`](Self::paint) exposes tight RGBA bytes; this method writes the mapped readback as
+    /// XRGB into the caller's destination, which is normally a DRM dumb-buffer mmap.
     ///
     /// `dst_pitch` may exceed `width * 4` for hardware pitch alignment; rows/columns are clamped to what `dst` can hold, so a short destination is logged-and-truncated rather than panicking.
     ///
@@ -195,18 +216,31 @@ impl VelloDrmBridge {
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
                 "DRM paint: CPU fallback active — vello → wgpu readback → XRGB8888 \
-                 (fused swizzle, one copy eliminated vs. the tight-RGBA path); \
+                 (direct mapped RGBA→XRGB swizzle); \
                  zero-copy DMA-BUF interop remains a follow-up. \
                  Expect ~several ms per frame for a 1080p output."
             );
         }
 
         let (width, height) = self.size;
-        self.render_to_readback(scene)?;
-        let mapped = self.map_readback()?;
+        let padded_bytes_per_row = self.padded_bytes_per_row;
+        let mapped = Self::render_to_readback(
+            &mut self.renderer,
+            &self.context,
+            self.dev_id,
+            &self.texture,
+            &self.view,
+            &self.readback_buf,
+            padded_bytes_per_row,
+            (width, height),
+            self.base_color,
+            &mut self.last_render_attempts,
+            scene,
+        )?;
 
         let tight_row = (width as usize).saturating_mul(4);
         if dst_pitch == 0 {
+            drop(mapped);
             self.readback_buf.unmap();
             return Ok(());
         }
@@ -217,7 +251,7 @@ impl VelloDrmBridge {
             .min(height as usize);
         let cols = (dst_pitch / 4).min(width as usize);
         for row in 0..max_rows {
-            let s_start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let s_start = row.saturating_mul(padded_bytes_per_row as usize);
             let s_end = s_start.saturating_add(tight_row);
             let Some(srow) = mapped.get(s_start..s_end) else {
                 tracing::warn!(
@@ -244,65 +278,101 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// Render `scene` into the offscreen texture and stage the texture→`readback_buf` copy (padded
-    /// to wgpu's row alignment); shared prologue for [`paint`](Self::paint) and [`paint_into_xrgb8888`](Self::paint_into_xrgb8888).
-    fn render_to_readback(&mut self, scene: &Scene) -> Result<(), BridgeError> {
-        let (width, height) = self.size;
-        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+    /// Render `scene`, append the texture→`readback_buf` copy to Vello's own submission, then
+    /// map the completed copy. A failed bump-budget attempt is unmapped and retried before its
+    /// pixels can reach either public output path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the owned mapped view keeps paint's destination and tight RGBA buffer independently available to its caller"
+    )]
+    fn render_to_readback(
+        renderer: &mut Renderer,
+        context: &RenderContext,
+        dev_id: usize,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        readback_buf: &wgpu::Buffer,
+        padded_bytes_per_row: u32,
+        size: (u32, u32),
+        base_color: Color,
+        last_render_attempts: &mut usize,
+        scene: &Scene,
+    ) -> Result<wgpu::BufferView, BridgeError> {
+        let (width, height) = size;
+        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
         })?;
         let device = &dev_handle.device;
         let queue = &dev_handle.queue;
 
-        self.renderer
-            .render_to_texture(
-                device,
-                queue,
-                scene,
-                &self.view,
-                &RenderParams {
-                    base_color: self.base_color,
-                    width,
-                    height,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
+        *last_render_attempts = 0;
+        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+            *last_render_attempts = (*last_render_attempts).saturating_add(1);
+            renderer
+                .render_to_texture_with_post_render(
+                    device,
+                    queue,
+                    scene,
+                    view,
+                    &RenderParams {
+                        base_color,
+                        width,
+                        height,
+                        antialiasing_method: AaConfig::Area,
+                    },
+                    |encoder| {
+                        encoder.copy_texture_to_buffer(
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyBufferInfo {
+                                buffer: readback_buf,
+                                layout: wgpu::TexelCopyBufferLayout {
+                                    offset: 0,
+                                    bytes_per_row: Some(padded_bytes_per_row),
+                                    rows_per_image: Some(height),
+                                },
+                            },
+                            wgpu::Extent3d {
+                                width,
+                                height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    },
+                )
+                .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback_buf,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(std::iter::once(encoder.finish()));
-        Ok(())
+            // `map_readback` is the only blocking wait: its one-second fence deadline covers
+            // both Vello and this appended copy. Only once that work completed do we consume the
+            // bump counter; its internal poll is then an already-complete, non-serial settle.
+            let mapped = Self::map_readback(context, dev_id, readback_buf)?;
+            if !renderer.settle_bump_budget(device) {
+                return Ok(mapped);
+            }
+            drop(mapped);
+            readback_buf.unmap();
+        }
+        Err(BridgeError::RecoveryExhausted {
+            attempts: *last_render_attempts,
+        })
     }
 
-    /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The returned view borrows `readback_buf`; the caller must drop it then call `readback_buf.unmap()`.
-    fn map_readback(&self) -> Result<wgpu::BufferView, BridgeError> {
-        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+    /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The
+    /// returned view owns a buffer handle; the caller must drop it before `readback_buf.unmap()`.
+    fn map_readback(
+        context: &RenderContext,
+        dev_id: usize,
+        readback_buf: &wgpu::Buffer,
+    ) -> Result<wgpu::BufferView, BridgeError> {
+        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
         })?;
         let device = &dev_handle.device;
-        let slice = self.readback_buf.slice(..);
+        let slice = readback_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             tx.send(r).ok();
@@ -315,11 +385,22 @@ impl VelloDrmBridge {
             timeout: Some(std::time::Duration::from_secs(1)),
         });
         if let Err(e) = waited {
+            // Cancels an in-flight map request (or releases a map that raced to completion) so
+            // the next production frame can retry instead of seeing this buffer as pending.
+            readback_buf.unmap();
             return Err(BridgeError::Map(format!("fence wait: {e:?}")));
         }
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .map_err(|e| BridgeError::Map(format!("map_async channel: {e}")))?
-            .map_err(|e| BridgeError::Map(format!("{e:?}")))?;
+        match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                readback_buf.unmap();
+                return Err(BridgeError::Map(format!("{e:?}")));
+            }
+            Err(e) => {
+                readback_buf.unmap();
+                return Err(BridgeError::Map(format!("map_async channel: {e}")));
+            }
+        }
         Ok(slice.get_mapped_range())
     }
 
@@ -357,6 +438,12 @@ impl VelloDrmBridge {
     /// Current (width, height); useful in tests and for comparing against the connector's mode size before resizing.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// Full Vello submissions used by the latest [`paint`](Self::paint) or
+    /// [`paint_into_xrgb8888`](Self::paint_into_xrgb8888), including recovery retries.
+    pub fn last_render_attempts(&self) -> usize {
+        self.last_render_attempts
     }
 
     /// Allocate (texture, view, `readback_buf`, `padded_bytes_per_row`) for the given size; shared by `new` and `resize`.
@@ -596,7 +683,7 @@ mod subrect_tests {
 
     #[test]
     fn whole_buffer_swizzles_like_paint_into_xrgb8888() {
-        // A single output at the origin: src_x=src_y=0, out size == src size. Every pixel swizzles R,G,B -> B,G,R,0xFF — the fused single-output path's output.
+        // A single output at the origin: src_x=src_y=0, out size == src size. Every pixel swizzles R,G,B -> B,G,R,0xFF.
         let (w, h) = (4usize, 3usize);
         let src = ramp_rgba(w, h);
         let pitch = w * 4;
@@ -780,6 +867,25 @@ mod tests {
         scene
     }
 
+    /// 512 individually-recorded opaque full-target fills. Their overlapping coverage overflows
+    /// tiles in the initial 384×256 reservation, exercising bounded recovery.
+    fn opaque_rect_stack_scene(w: u32, h: u32) -> Scene {
+        let mut scene = Scene::new();
+        let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        for index in 0..512_u32 {
+            let red = u8::try_from(index & 0xFF).unwrap_or(u8::MAX);
+            let green = u8::try_from((index.saturating_mul(3)) & 0xFF).unwrap_or(u8::MAX);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(red, green, 0xA5),
+                None,
+                &rect,
+            );
+        }
+        scene
+    }
+
     #[test]
     fn bridge_paint_returns_non_empty_buffer_for_non_empty_scene() {
         let Some(mut bridge) = bridge_or_skip(64, 64) else {
@@ -837,7 +943,8 @@ mod tests {
 
     #[test]
     fn paint_into_xrgb8888_matches_paint_swizzled() {
-        // The fused path must produce the same pixels as tight-RGBA `paint()` output swizzled to XRGB8888 — proving copy-elimination is byte-exact, not just "close".
+        // The direct XRGB path must produce the same pixels as tight-RGBA `paint()` output
+        // swizzled to XRGB8888.
         let Some(mut bridge) = bridge_or_skip(40, 24) else {
             return;
         };
@@ -860,7 +967,7 @@ mod tests {
             .expect("paint_into_xrgb8888");
         assert_eq!(
             dst, expected,
-            "fused XRGB output must equal swizzled paint()"
+            "direct XRGB output must equal swizzled paint()"
         );
     }
 
@@ -904,6 +1011,62 @@ mod tests {
         assert_eq!(bytes.len(), 33 * 16 * 4);
         for p in bytes.chunks_exact(4) {
             assert_eq!((p[0], p[1], p[2]), (0xAA, 0xBB, 0xCC));
+        }
+    }
+
+    #[test]
+    fn overflow_recovery_retries_before_xrgb_output() {
+        let (width, height) = (384, 256);
+        let Some(mut xrgb_bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let scene = opaque_rect_stack_scene(width, height);
+        let pitch = width as usize * 4;
+        let mut xrgb = vec![0_u8; pitch * height as usize];
+        xrgb_bridge
+            .paint_into_xrgb8888(&scene, &mut xrgb, pitch)
+            .expect("cold opaque-stack XRGB paint");
+        assert!(
+            xrgb_bridge.last_render_attempts() >= 2,
+            "512 opaque rects at 384x256 must exercise bounded bump recovery"
+        );
+        for (index, pixel) in xrgb.chunks_exact(4).enumerate() {
+            // Fill 511 is the visible opaque top layer: RGB=(0xFF, 0xFD, 0xA5).
+            assert_eq!(pixel, &[0xA5, 0xFD, 0xFF, 0xFF], "XRGB pixel {index}");
+        }
+
+        // Use a separate cold renderer so this comparison cannot inherit the XRGB bridge's grown
+        // budget. Both public outputs must agree after their own recovery path.
+        let Some(mut rgba_bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let rgba = rgba_bridge
+            .paint(&scene)
+            .expect("cold opaque-stack RGBA paint")
+            .to_vec();
+        assert!(rgba_bridge.last_render_attempts() >= 2);
+        for (index, (rgba, xrgb)) in rgba.chunks_exact(4).zip(xrgb.chunks_exact(4)).enumerate() {
+            assert_eq!(rgba, &[0xFF, 0xFD, 0xA5, 0xFF], "RGBA pixel {index}");
+            assert_eq!(xrgb, &[rgba[2], rgba[1], rgba[0], 0xFF], "pixel {index}");
+        }
+    }
+
+    #[test]
+    fn zero_destination_pitch_unmaps_before_the_next_frame() {
+        let Some(mut bridge) = bridge_or_skip(8, 4) else {
+            return;
+        };
+        let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
+        bridge
+            .paint_into_xrgb8888(&scene, &mut [], 0)
+            .expect("zero-pitch paint");
+
+        let mut destination = vec![0_u8; 8 * 4 * 4];
+        bridge
+            .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
+            .expect("paint after zero-pitch paint");
+        for pixel in destination.chunks_exact(4) {
+            assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
         }
     }
 }
