@@ -155,12 +155,19 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Content-follows-finger scrolling. Off by default, matching the Settings pane.
+    /// Legacy scrolling preference used when the device-specific fields are
+    /// absent in an older settings document.
     pub natural_scroll: bool,
+    /// Content-follows-finger scrolling for touchpads.
+    pub touchpad_natural_scroll: Option<bool>,
+    /// Content-follows-finger scrolling for mice and trackballs.
+    pub mouse_natural_scroll: Option<bool>,
     /// Tap the touchpad to click. **On** by default — see the module docs.
     pub tap_to_click: bool,
     /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5` being libinput's neutral profile.
     pub pointer_speed: f64,
+    pub touchpad_pointer_speed: Option<f64>,
+    pub mouse_pointer_speed: Option<f64>,
     /// Keyboard auto-repeat, `0.0` (slow, long delay) … `1.0` (fast, short delay).
     pub key_repeat: f64,
     pub tap_drag: bool,
@@ -175,8 +182,12 @@ impl Default for InputSettings {
     fn default() -> Self {
         Self {
             natural_scroll: false,
+            touchpad_natural_scroll: None,
+            mouse_natural_scroll: None,
             tap_to_click: true,
             pointer_speed: 0.5,
+            touchpad_pointer_speed: None,
+            mouse_pointer_speed: None,
             key_repeat: 0.5,
             tap_drag: true,
             disable_while_typing: true,
@@ -208,8 +219,24 @@ impl InputSettings {
         };
         Self {
             natural_scroll: bool_at(NATURAL_SCROLL_KEY, d.natural_scroll),
+            touchpad_natural_scroll: section
+                .get("touchpad_natural_scroll")
+                .and_then(serde_json::Value::as_bool),
+            mouse_natural_scroll: section
+                .get("mouse_natural_scroll")
+                .and_then(serde_json::Value::as_bool),
             tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
             pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
+            touchpad_pointer_speed: section
+                .get("touchpad_pointer_speed")
+                .and_then(serde_json::Value::as_f64)
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0)),
+            mouse_pointer_speed: section
+                .get("mouse_pointer_speed")
+                .and_then(serde_json::Value::as_f64)
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0)),
             key_repeat: unit_at(KEY_REPEAT_KEY, d.key_repeat),
             tap_drag: bool_at("tap_drag", d.tap_drag),
             disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
@@ -231,6 +258,25 @@ impl InputSettings {
     /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint lands exactly on the untouched default of `0.0`.
     pub fn accel_speed(&self) -> f64 {
         (self.pointer_speed.clamp(0.0, 1.0) * 2.0) - 1.0
+    }
+
+    pub fn accel_speed_for(&self, touchpad: bool) -> f64 {
+        let speed = if touchpad {
+            self.touchpad_pointer_speed.unwrap_or(self.pointer_speed)
+        } else {
+            self.mouse_pointer_speed.unwrap_or(self.pointer_speed)
+        };
+        (speed.clamp(0.0, 1.0) * 2.0) - 1.0
+    }
+
+    /// Resolve the per-device preference, falling back to the legacy global
+    /// toggle for settings documents written before the split.
+    pub fn natural_scroll_for(&self, touchpad: bool) -> bool {
+        if touchpad {
+            self.touchpad_natural_scroll.unwrap_or(self.natural_scroll)
+        } else {
+            self.mouse_natural_scroll.unwrap_or(self.natural_scroll)
+        }
     }
 
     /// Keyboard auto-repeat as `(delay, rate in keys per second)`. The two move together in
@@ -390,7 +436,7 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
             .then_some(settings.tap_to_click && settings.tap_drag),
         natural_scroll: caps
             .supports_natural_scroll
-            .then_some(settings.natural_scroll),
+            .then_some(settings.natural_scroll_for(caps.is_touchpad())),
         // Only touchpads get disable-while-typing, and unconditionally: it's what makes tap-to-click safe to default on, so it's not a separate preference to forget to set.
         disable_while_typing: caps.supports_dwt.then_some(settings.disable_while_typing),
         // A touchpad with no physical middle button is the norm; without emulation there's no way to middle-click at all.
@@ -405,7 +451,7 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
                 clippy::cast_possible_truncation,
                 reason = "accel_speed() is bounded to [-1.0, 1.0]; milli-units stay within [-1000, 1000]"
             )]
-            let milli = (settings.accel_speed() * 1000.0).round() as i32;
+            let milli = (settings.accel_speed_for(caps.is_touchpad()) * 1000.0).round() as i32;
             milli
         }),
         left_handed: caps.supports_left_handed.then_some(settings.left_handed),
@@ -636,6 +682,18 @@ mod tests {
         assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
         // …and none that doesn't.
         assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
+    }
+
+    #[test]
+    fn mouse_and_touchpad_can_keep_independent_scroll_directions() {
+        let s = InputSettings {
+            natural_scroll: false,
+            touchpad_natural_scroll: Some(true),
+            mouse_natural_scroll: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
+        assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
     }
 
     #[test]
