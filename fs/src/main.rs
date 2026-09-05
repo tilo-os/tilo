@@ -38,6 +38,7 @@ use fs::{
     load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -449,7 +450,7 @@ enum Command {
     UnregisterContentPeer {
         #[arg(long)]
         cache_dir: PathBuf,
-        /// Hex-encoded relay service NodeId from the removed home-peer record.
+        /// Hex-encoded relay service `NodeId` from the removed home-peer record.
         #[arg(long)]
         relay_service_id: String,
     },
@@ -503,37 +504,12 @@ async fn main() -> Result<()> {
             link,
             link_stdin,
             cache_dir,
-        } => {
-            Box::pin(mount_share(
-                mount_point,
-                SharedCredential::Bearer(FileShareLinkV2::decode_uri(&read_share_uri(
-                    link, link_stdin,
-                )?)?),
-                cache_dir,
-            ))
-            .await
-        }
+        } => mount_bearer_share(mount_point, link, link_stdin, cache_dir).await,
         Command::MountNamedShare {
             mount_point,
             envelope_stdin,
             cache_dir,
-        } => {
-            if !envelope_stdin {
-                bail!("named-share envelope stdin is required");
-            }
-            let encoded =
-                read_bounded_stdin(fs::named_share_delivery::MAX_NAMED_SHARE_ENVELOPE_BYTES * 2)?;
-            let bytes =
-                hex::decode(encoded).context("named-share envelope is not canonical hex")?;
-            let envelope: fs::NamedShareEnvelopeV1 =
-                collab_types::canonical::from_canonical_bytes(&bytes)?;
-            Box::pin(mount_share(
-                mount_point,
-                SharedCredential::Named(envelope),
-                cache_dir,
-            ))
-            .await
-        }
+        } => mount_named_share(mount_point, envelope_stdin, cache_dir).await,
         Command::RecipientService {
             socket,
             mounts_root,
@@ -550,10 +526,10 @@ async fn main() -> Result<()> {
             principals,
             relay_workspace_ids,
         } => export_home_peer(
-            cache_dir,
-            acl,
-            output,
-            replica_cache_dir,
+            &cache_dir,
+            &acl,
+            &output,
+            &replica_cache_dir,
             status_file,
             principals,
             relay_workspace_ids,
@@ -609,9 +585,41 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
     Ok(())
 }
 
+async fn mount_bearer_share(
+    mount_point: PathBuf,
+    link: Option<String>,
+    link_stdin: bool,
+    cache_dir: PathBuf,
+) -> Result<()> {
+    Box::pin(mount_share(
+        mount_point,
+        SharedCredential::Bearer(FileShareLinkV2::decode_uri(&read_share_uri(
+            link, link_stdin,
+        )?)?),
+        cache_dir,
+    ))
+    .await
+}
+
+async fn mount_named_share(
+    mount_point: PathBuf,
+    envelope_stdin: bool,
+    cache_dir: PathBuf,
+) -> Result<()> {
+    anyhow::ensure!(envelope_stdin, "named-share envelope stdin is required");
+    let encoded = read_bounded_stdin(fs::named_share_delivery::MAX_NAMED_SHARE_ENVELOPE_BYTES * 2)?;
+    let bytes = hex::decode(encoded).context("named-share envelope is not canonical hex")?;
+    let envelope: fs::NamedShareEnvelopeV1 = collab_types::canonical::from_canonical_bytes(&bytes)?;
+    Box::pin(mount_share(
+        mount_point,
+        SharedCredential::Named(envelope),
+        cache_dir,
+    ))
+    .await
+}
+
 async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Result<()> {
     anyhow::ensure!(endpoint_stdin, "content endpoint must be supplied on stdin");
-    use std::io::Read;
     let mut encoded = Vec::new();
     std::io::stdin().take(64 * 1024).read_to_end(&mut encoded)?;
     anyhow::ensure!(
@@ -960,15 +968,15 @@ fn managed_system_service() -> bool {
 /// already serving. The ticket is written by `fs serve`, so no terminal ticket
 /// or per-file configuration needs to be copied by hand.
 fn export_home_peer(
-    cache_dir: PathBuf,
-    acl: PathBuf,
-    output: PathBuf,
-    replica_cache_dir: PathBuf,
+    cache_dir: &Path,
+    acl: &Path,
+    output: &Path,
+    replica_cache_dir: &Path,
     status_file: PathBuf,
     principals: Vec<String>,
     mut relay_workspace_ids: Vec<u64>,
 ) -> Result<()> {
-    let ticket_path = workspace_ticket_path(&cache_dir);
+    let ticket_path = workspace_ticket_path(cache_dir);
     let ticket = std::fs::read_to_string(&ticket_path)
         .with_context(|| format!("read active workspace ticket {}", ticket_path.display()))?;
     let decoded_ticket =
@@ -976,7 +984,7 @@ fn export_home_peer(
     if !acl.is_file() {
         bail!("capability list {} is not a regular file", acl.display());
     }
-    let capability_json = std::fs::read_to_string(&acl)
+    let capability_json = std::fs::read_to_string(acl)
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
@@ -1005,7 +1013,7 @@ fn export_home_peer(
         relay_workspace_ids,
     };
     let mut bundle = if output.exists() {
-        toml::from_str::<HomePeerSet>(&std::fs::read_to_string(&output)?)
+        toml::from_str::<HomePeerSet>(&std::fs::read_to_string(output)?)
             .context("parse existing home-peer bundle")?
     } else {
         HomePeerSet {
@@ -1017,11 +1025,10 @@ fn export_home_peer(
     // workspace instead of leaving duplicate workers in the bundle.
     bundle.workspaces.retain(|entry| {
         Ticket::decode(&entry.ticket)
-            .map(|ticket| ticket.workspace != decoded_ticket.workspace)
-            .unwrap_or(true)
+            .map_or(true, |ticket| ticket.workspace != decoded_ticket.workspace)
     });
     bundle.workspaces.push(workspace);
-    atomic_file::write(&output, toml::to_string_pretty(&bundle)?.as_bytes())?;
+    atomic_file::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
     println!("exported home-peer bundle to {}", output.display());
     Ok(())
 }
@@ -1056,10 +1063,13 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     drop(status_tx);
     let mut states = vec![fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
     loop {
-        let Some((index, status)) = status_rx.recv().await else {
+        let Some((index, worker_status)) = status_rx.recv().await else {
             bail!("all home-peer workspace workers exited");
         };
-        states[index] = status;
+        let Some(state) = states.get_mut(index) else {
+            bail!("home-peer worker returned an invalid workspace index");
+        };
+        *state = worker_status;
         let aggregate = aggregate_status(&states);
         save_status(&bundle.status_file, &aggregate)?;
     }
@@ -1507,7 +1517,7 @@ async fn serve(
             .and_then(|records| records.workspace_authority.as_ref()),
     ) {
         (Some(socket), Some(authority)) => {
-            Some(serve_local_authority(socket.clone(), Arc::clone(authority)).await?)
+            Some(serve_local_authority(socket, Arc::clone(authority))?)
         }
         _ => None,
     };
@@ -1522,16 +1532,13 @@ async fn serve(
     let managed_service = managed_system_service();
     let (rebind_tx, rebind_rx) = tokio::sync::mpsc::unbounded_channel();
     let content_socket_task = match content_socket.as_ref() {
-        Some(socket) => Some(
-            serve_local_content_peer(
-                socket.clone(),
-                hydrator.clone(),
-                cache_dir.clone(),
-                workspace_id,
-                managed_service.then_some(rebind_tx),
-            )
-            .await?,
-        ),
+        Some(socket) => Some(serve_local_content_peer(
+            socket,
+            hydrator.clone(),
+            cache_dir.clone(),
+            workspace_id,
+            managed_service.then_some(rebind_tx),
+        )?),
         None => None,
     };
     // A discovered NAS ticket changes the namespace and record-plane UUID.
@@ -1628,7 +1635,7 @@ async fn serve(
     // never substitute their device key and recipient mounts never host this
     // service.
     let share_task = match (
-        (!joined_remote).then(|| share_socket.as_ref()).flatten(),
+        (!joined_remote).then_some(share_socket.as_ref()).flatten(),
         &record_repository,
         &share_authority,
         (!joined_remote).then_some(share_issuer).flatten(),
@@ -2995,7 +3002,7 @@ async fn run_mount(
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
         },
-        _ = async {
+        () = async {
             match rebind.as_mut() {
                 Some(receiver) => { let _ = receiver.recv().await; }
                 None => std::future::pending::<()>().await,

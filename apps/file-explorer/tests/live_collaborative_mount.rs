@@ -126,7 +126,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     assert_eq!(folder_availability.policy, AvailabilityPolicy::Pinned);
     assert!(!folder_availability.policy_inherited);
     assert_eq!(
-        xattr::get(&mount.join("Offline"), fs::syncstate::PIN_XATTR)
+        xattr::get(mount.join("Offline"), fs::syncstate::PIN_XATTR)
             .unwrap()
             .as_deref(),
         Some(b"pinned".as_slice())

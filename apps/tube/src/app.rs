@@ -725,15 +725,9 @@ impl TubeApp {
         &self.model
     }
 
-    pub(crate) fn device_sync_view(&self) -> Option<&crate::sync::SyncView> {
-        #[cfg(feature = "grayjay-sync")]
-        {
-            Some(self.device_sync.view())
-        }
-        #[cfg(not(feature = "grayjay-sync"))]
-        {
-            None
-        }
+    #[cfg(feature = "grayjay-sync")]
+    pub(crate) fn device_sync_view(&self) -> &crate::sync::SyncView {
+        self.device_sync.view()
     }
 
     /// Test accessor: whether the navigation rail is currently shown (resolves

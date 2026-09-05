@@ -96,7 +96,7 @@ mod relay_workspace_ids_serde {
 /// qOS currently has one global Files namespace and one certified filesystem
 /// transport identity per device. Shell rooms are mapped through
 /// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
-/// bundles would bind competing endpoints under that same certified NodeId.
+/// bundles would bind competing endpoints under that same certified `NodeId`.
 /// Reject that unsafe topology before any worker starts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +106,10 @@ pub struct HomePeerSet {
 }
 
 /// Validate the topology before binding an authenticated filesystem endpoint.
+///
+/// # Errors
+///
+/// Returns an error unless exactly one global filesystem workspace is configured.
 pub fn validate_home_peer_set(bundle: &HomePeerSet) -> anyhow::Result<()> {
     anyhow::ensure!(
         bundle.workspaces.len() == 1,
@@ -157,7 +161,7 @@ impl FullReplicaStatus {
         }
     }
 
-    fn failed(mut self, error: anyhow::Error) -> Self {
+    fn failed(mut self, error: &impl std::fmt::Display) -> Self {
         self.state = "failed".into();
         self.error = Some(error.to_string());
         self.full_content_replication = false;
@@ -187,8 +191,12 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
     .into();
     aggregate.error = states.iter().find_map(|status| status.error.clone());
     if aggregate.full_content_replication {
-        if states.len() == 1 {
-            aggregate.namespace_generation = states[0].namespace_generation.clone();
+        if states.len() == 1
+            && let Some(status) = states.first()
+        {
+            aggregate
+                .namespace_generation
+                .clone_from(&status.namespace_generation);
         }
         for status in states {
             for endpoint in &status.filesystem_endpoints {
@@ -206,6 +214,10 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
 }
 
 /// Atomically write the status consumed by `qos-relay` and status tooling.
+///
+/// # Errors
+///
+/// Returns an error when serialization or atomic persistence fails.
 pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = unix_now_ms();
@@ -223,6 +235,10 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Read the last complete status record, if any.
+///
+/// # Errors
+///
+/// Returns an error when the existing status cannot be read or decoded.
 pub fn load_status(path: &Path) -> Result<Option<FullReplicaStatus>> {
     if !path.exists() {
         return Ok(None);
@@ -241,13 +257,13 @@ pub async fn hydrate_full_workspace(
     hydrator: &Hydrator,
 ) -> FullReplicaStatus {
     let mut status = FullReplicaStatus::syncing();
-    let roots = match namespace
+    let root_scan = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)
-    {
+        .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN);
+    let roots = match root_scan {
         Ok(roots) => roots,
-        Err(error) => return status.failed(error.into()),
+        Err(error) => return status.failed(&error),
     };
     status.records = u64::try_from(roots.len()).unwrap_or(u64::MAX);
 
@@ -264,28 +280,28 @@ pub async fn hydrate_full_workspace(
                 .await
             {
                 Ok(bytes) => bytes,
-                Err(error) => return status.failed(error),
+                Err(error) => return status.failed(&error),
             };
             if u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > MAX_REPLICA_MANIFEST_BYTES
             {
-                return status.failed(anyhow::anyhow!("manifest exceeds replica byte budget"));
+                return status.failed(&anyhow::anyhow!("manifest exceeds replica byte budget"));
             }
             let manifest = match Manifest::decode(&manifest_bytes) {
                 Ok(manifest) => manifest,
-                Err(error) => return status.failed(error.into()),
+                Err(error) => return status.failed(&error),
             };
             if manifest.chunks.len() > MAX_REPLICA_CHUNKS_PER_RECORD {
-                return status.failed(anyhow::anyhow!("manifest exceeds replica chunk budget"));
+                return status.failed(&anyhow::anyhow!("manifest exceeds replica chunk budget"));
             }
             for chunk in manifest.chunks {
                 if chunk.len == 0 || chunk.len > MAX_REPLICA_CHUNK_BYTES {
-                    return status.failed(anyhow::anyhow!("manifest has an invalid chunk length"));
+                    return status.failed(&anyhow::anyhow!("manifest has an invalid chunk length"));
                 }
                 hydrated_bytes = match hydrated_bytes.checked_add(u64::from(chunk.len)) {
                     Some(total) if total <= MAX_REPLICA_TOTAL_BYTES => total,
                     _ => {
                         return status
-                            .failed(anyhow::anyhow!("workspace exceeds replica byte budget"));
+                            .failed(&anyhow::anyhow!("workspace exceeds replica byte budget"));
                     }
                 };
                 let chunk_hash = Hash::from(chunk.hash);
@@ -294,22 +310,24 @@ pub async fn hydrate_full_workspace(
                     .await
                 {
                     Ok(bytes) => bytes,
-                    Err(error) => return status.failed(error),
+                    Err(error) => return status.failed(&error),
                 };
                 if chunk_bytes.len() != chunk.len as usize {
-                    return status.failed(anyhow::anyhow!("durable chunk length mismatch"));
+                    return status.failed(&anyhow::anyhow!("durable chunk length mismatch"));
                 }
                 // `read_blob` returning bytes is not enough proof if a future
                 // store backend changes cache behavior; check the durable
                 // content-addressed store explicitly.
                 if !hydrator.store.has(chunk_hash).await {
                     return status
-                        .failed(anyhow::anyhow!("chunk was not retained after hydration"));
+                        .failed(&anyhow::anyhow!("chunk was not retained after hydration"));
                 }
                 status.chunks = status.chunks.saturating_add(1);
             }
             if !hydrator.store.has(manifest_hash).await {
-                return status.failed(anyhow::anyhow!("manifest was not retained after hydration"));
+                return status.failed(&anyhow::anyhow!(
+                    "manifest was not retained after hydration"
+                ));
             }
         }
         if let Some(thumbnail_hash) = roots.thumbnail {
@@ -322,13 +340,13 @@ pub async fn hydrate_full_workspace(
                 .await
             {
                 Ok(bytes) => bytes,
-                Err(error) => return status.failed(error),
+                Err(error) => return status.failed(&error),
             };
             if u64::try_from(thumbnail.len()).unwrap_or(u64::MAX) > MAX_REPLICA_THUMBNAIL_BYTES {
-                return status.failed(anyhow::anyhow!("thumbnail exceeds replica byte budget"));
+                return status.failed(&anyhow::anyhow!("thumbnail exceeds replica byte budget"));
             }
             if !hydrator.store.has(thumbnail_hash).await {
-                return status.failed(anyhow::anyhow!(
+                return status.failed(&anyhow::anyhow!(
                     "thumbnail was not retained after hydration"
                 ));
             }
@@ -351,6 +369,11 @@ pub async fn hydrate_full_workspace(
 /// selected historical bytes separately. Callers invoke this only after a
 /// stable hydration pass and withdraw readiness if the pass changes
 /// underneath it.
+///
+/// # Errors
+///
+/// Returns an error when namespace roots, retained manifests, blob listing, or
+/// a bounded deletion batch cannot be read or updated.
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
@@ -394,12 +417,10 @@ pub async fn prune_obsolete_workspace_content(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let current = *blake3::hash(&namespace.save()).as_bytes();
-            if current != generation {
-                None
-            } else {
+            if current == generation {
                 let selected = hashes.iter().copied().collect::<HashSet<_>>();
                 let store = Arc::clone(&hydrator.store);
-                Some(std::thread::scope(|scope| {
+                let batch_removed = std::thread::scope(|scope| {
                     scope
                         .spawn(|| {
                             // A dedicated runtime keeps the generation lease
@@ -415,7 +436,15 @@ pub async fn prune_obsolete_workspace_content(
                         })
                         .join()
                         .map_err(|_| anyhow::anyhow!("replica GC worker panicked"))?
-                })?)
+                })?;
+                // Keep the namespace generation lease through the physical
+                // deletion. This also makes the lease explicit at the point
+                // it is released rather than accidentally shortening it.
+                let lease_held = *blake3::hash(&namespace.save()).as_bytes() == generation;
+                drop(namespace);
+                lease_held.then_some(batch_removed)
+            } else {
+                None
             }
         };
         let Some(batch_removed) = batch_removed else {
@@ -569,7 +598,7 @@ mod tests {
         };
         assert!(validate_home_peer_set(&one).is_ok());
         let many = HomePeerSet {
-            status_file: one.status_file.clone(),
+            status_file: one.status_file,
             workspaces: vec![workspace.clone(), workspace],
         };
         assert!(validate_home_peer_set(&many).is_err());
@@ -654,17 +683,11 @@ mod tests {
         reader_endpoint.close().await;
     }
 
-    #[tokio::test]
-    async fn two_user_owner_offline_revoke_delete_and_restart_lifecycle() {
-        use crate::{Access, IdentityKey};
-        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
-
-        let temp = tempfile::tempdir().unwrap();
-        let owner_endpoint = Endpoint::bind(presets::N0).await.unwrap();
-        let owner_store = ContentStore::memory();
-        let bytes = b"owner-created bytes";
-        let chunk = owner_store.ingest(bytes.as_slice()).await.unwrap();
-        let manifest = owner_store
+    async fn owner_manifest_source(bytes: &[u8]) -> (Endpoint, Router, Hash, Hash) {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = ContentStore::memory();
+        let chunk = store.ingest(bytes.to_vec()).await.unwrap();
+        let manifest = store
             .ingest(
                 Manifest {
                     chunks: vec![ChunkRef {
@@ -677,9 +700,67 @@ mod tests {
             )
             .await
             .unwrap();
-        let owner_router = Router::builder(owner_endpoint.clone())
-            .accept(iroh_blobs::ALPN, owner_store.blobs_protocol(None))
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
             .spawn();
+        (endpoint, router, chunk, manifest)
+    }
+
+    fn verify_targeted_revocation(
+        authority: &crate::workspace_authority::WorkspaceAuthority,
+        workspace: uuid::Uuid,
+        governor: &ed25519_dalek::SigningKey,
+        collaborator: crate::IdentityKey,
+    ) {
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+        authority
+            .apply(
+                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+                    workspace,
+                    1,
+                    vec![CapOverride::new(
+                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                        Scope::FsPath("/".into()),
+                        Effect::Grant,
+                        Verb::Read,
+                    )],
+                    false,
+                    governor,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+        authority
+            .apply(
+                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+                    workspace,
+                    2,
+                    Vec::new(),
+                    true,
+                    governor,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            !authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+    }
+
+    #[tokio::test]
+    async fn two_user_owner_offline_revoke_delete_and_restart_lifecycle() {
+        use crate::IdentityKey;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"owner-created bytes";
+        let (owner_endpoint, owner_router, chunk, manifest) = owner_manifest_source(bytes).await;
 
         let nas_store = Arc::new(
             ContentStore::open_with_gc_interval(
@@ -736,45 +817,7 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        authority
-            .apply(
-                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
-                    workspace,
-                    1,
-                    vec![CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                        Scope::FsPath("/".into()),
-                        Effect::Grant,
-                        Verb::Read,
-                    )],
-                    false,
-                    &governor,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        assert!(
-            authority
-                .handle()
-                .permits(&collaborator, "/shared", Access::Read)
-        );
-        authority
-            .apply(
-                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
-                    workspace,
-                    2,
-                    Vec::new(),
-                    true,
-                    &governor,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        assert!(
-            !authority
-                .handle()
-                .permits(&collaborator, "/shared", Access::Read)
-        );
+        verify_targeted_revocation(&authority, workspace, &governor, collaborator);
 
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(

@@ -526,6 +526,7 @@ impl RecordProtocol {
                         observed_at,
                     )
                 });
+                drop(availability);
                 match result {
                     Ok(()) => RecordProtocolResponseV1::ReplicaAcknowledged {
                         session: binding.into(),

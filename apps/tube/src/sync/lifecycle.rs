@@ -189,6 +189,14 @@ enum Event {
     Pulled(SyncState),
 }
 
+struct WorkerContext {
+    transport: Box<dyn SyncTransport>,
+    store: PeerStore,
+    public_key: String,
+    commands: mpsc::Receiver<Command>,
+    events: mpsc::Sender<Event>,
+}
+
 /// UI-side handle for the bounded background worker.
 pub struct DeviceSync {
     commands: Option<mpsc::SyncSender<Command>>,
@@ -296,11 +304,17 @@ impl DeviceSync {
     fn spawn(transport: Box<dyn SyncTransport>, store: PeerStore, public_key: String) -> Self {
         let (command_tx, command_rx) = mpsc::sync_channel(8);
         let (event_tx, event_rx) = mpsc::channel();
-        let worker_public_key = public_key.clone();
+        let worker_public_key = public_key;
         let spawned = thread::Builder::new()
             .name("tube-grayjay-sync".into())
             .spawn(move || {
-                worker(transport, store, worker_public_key, command_rx, event_tx);
+                worker(WorkerContext {
+                    transport,
+                    store,
+                    public_key: worker_public_key,
+                    commands: command_rx,
+                    events: event_tx,
+                });
             })
             .is_ok();
         if !spawned {
@@ -401,7 +415,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
     let transport = GrayjaySyncTransport::with_device(key, device_name);
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::state_dir())
+        .or_else(dirs::state_dir)
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,
@@ -425,14 +439,15 @@ fn publish(
     }));
 }
 
-fn worker(
-    mut transport: Box<dyn SyncTransport>,
-    store: PeerStore,
-    public_key: String,
-    commands: mpsc::Receiver<Command>,
-    events: mpsc::Sender<Event>,
-) {
-    let mut peers = match store.load() {
+fn worker(context: WorkerContext) {
+    let WorkerContext {
+        transport,
+        store,
+        public_key,
+        commands,
+        events,
+    } = context;
+    let peers = match store.load() {
         Ok(peers) => peers,
         Err(error) => {
             publish(
@@ -445,224 +460,246 @@ fn worker(
             return;
         }
     };
-    for peer in peers.iter().filter(|peer| peer.is_active()) {
-        if let Err(error) = transport.restore_peer(&peer.descriptor) {
-            publish(
-                &events,
-                SyncStatus::Error,
-                format!("Could not restore {}: {error}", peer.name),
-                &public_key,
-                &peers,
-            );
-            return;
+    let mut worker = SyncWorker {
+        transport,
+        store,
+        public_key,
+        events,
+        peers,
+        latest_state: None,
+    };
+    if !worker.restore_active_peers() {
+        return;
+    }
+    worker.publish_ready();
+    worker.run(&commands);
+}
+
+struct SyncWorker {
+    transport: Box<dyn SyncTransport>,
+    store: PeerStore,
+    public_key: String,
+    events: mpsc::Sender<Event>,
+    peers: Vec<PeerRecord>,
+    latest_state: Option<SyncState>,
+}
+
+impl SyncWorker {
+    fn publish(&self, status: SyncStatus, summary: impl Into<String>) {
+        publish(&self.events, status, summary, &self.public_key, &self.peers);
+    }
+    fn restore_active_peers(&mut self) -> bool {
+        for peer in self.peers.iter().filter(|peer| peer.is_active()) {
+            if let Err(error) = self.transport.restore_peer(&peer.descriptor) {
+                self.publish(
+                    SyncStatus::Error,
+                    format!("Could not restore {}: {error}", peer.name),
+                );
+                return false;
+            }
+        }
+        true
+    }
+    fn publish_ready(&self) {
+        self.publish(
+            SyncStatus::Ready,
+            if self.peers.iter().any(PeerRecord::is_active) {
+                "Approved devices are ready to sync."
+            } else {
+                "Paste a Grayjay pairing invite to add your first device."
+            },
+        );
+    }
+    fn run(&mut self, commands: &mpsc::Receiver<Command>) {
+        loop {
+            let command = match commands.recv_timeout(AUTO_SYNC_INTERVAL) {
+                Ok(command) => command,
+                Err(mpsc::RecvTimeoutError::Timeout) => match self.latest_state.clone() {
+                    Some(state) => Command::Sync(state),
+                    None => continue,
+                },
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            };
+            if !self.handle(command) {
+                return;
+            }
         }
     }
-    publish(
-        &events,
-        SyncStatus::Ready,
-        if peers.iter().any(PeerRecord::is_active) {
-            "Approved devices are ready to sync."
-        } else {
-            "Paste a Grayjay pairing invite to add your first device."
-        },
-        &public_key,
-        &peers,
-    );
-
-    let mut latest_state = None;
-    loop {
-        let command = match commands.recv_timeout(AUTO_SYNC_INTERVAL) {
-            Ok(command) => command,
-            Err(mpsc::RecvTimeoutError::Timeout) => match latest_state.clone() {
-                Some(state) => Command::Sync(state),
-                None => continue,
-            },
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        };
+    fn handle(&mut self, command: Command) -> bool {
         match command {
-            Command::Stop => return,
-            Command::Pair(blob) => {
-                publish(
-                    &events,
-                    SyncStatus::Pairing,
-                    "Waiting for approval on the other device…",
-                    &public_key,
-                    &peers,
-                );
-                match transport.pair(blob.as_str()).and_then(|id| {
-                    if peers
-                        .iter()
-                        .any(|peer| peer.id == id.0 && !peer.is_active())
-                    {
-                        transport.forget_peer(&id);
-                        return Err(SyncError::Revoked);
-                    }
-                    let descriptor = transport.peer_descriptor(&id).ok_or_else(|| {
-                        SyncError::Persistence(
-                            "transport did not expose a public peer route".into(),
-                        )
-                    })?;
-                    let name = format!("Grayjay {}", id.0.chars().take(8).collect::<String>());
-                    let mut candidate = peers.clone();
-                    if let Some(existing) = candidate.iter_mut().find(|peer| peer.id == id.0) {
-                        existing.descriptor = descriptor;
-                        existing.pending_approval = true;
-                        existing.last_error = None;
-                    } else {
-                        if candidate.len() >= MAX_PEERS {
-                            transport.forget_peer(&id);
-                            return Err(SyncError::Persistence(
-                                "the approved-device limit has been reached".into(),
-                            ));
-                        }
-                        candidate.push(PeerRecord {
-                            id: id.0,
-                            name,
-                            descriptor,
-                            approved_at: now(),
-                            pending_approval: true,
-                            revoked_at: None,
-                            last_sync_at: None,
-                            last_error: None,
-                        });
-                    }
-                    store.save(&candidate)?;
-                    peers = candidate;
-                    Ok(())
-                }) {
-                    Ok(()) => publish(
-                        &events,
-                        SyncStatus::Ready,
-                        "Device authenticated. Review its fingerprint and approve access.",
-                        &public_key,
-                        &peers,
-                    ),
-                    Err(error) => publish(
-                        &events,
-                        SyncStatus::Error,
-                        error.to_string(),
-                        &public_key,
-                        &peers,
-                    ),
-                }
+            Command::Stop => false,
+            Command::Pair(invite) => {
+                self.pair(&invite);
+                true
             }
             Command::Approve(id) => {
-                let mut candidate = peers.clone();
-                if let Some(peer) = candidate
-                    .iter_mut()
-                    .find(|peer| peer.id == id && peer.revoked_at.is_none())
-                {
-                    peer.pending_approval = false;
-                    peer.approved_at = now();
-                    let descriptor = peer.descriptor.clone();
-                    let result = store.save(&candidate).and_then(|()| {
-                        transport.restore_peer(&descriptor)?;
-                        peers = candidate;
-                        Ok(())
-                    });
-                    publish(
-                        &events,
-                        if result.is_ok() {
-                            SyncStatus::Ready
-                        } else {
-                            SyncStatus::Error
-                        },
-                        result.map_or_else(
-                            |error| error.to_string(),
-                            |_| "Device approved. Sync is ready.".into(),
-                        ),
-                        &public_key,
-                        &peers,
-                    );
-                }
+                self.approve(&id);
+                true
             }
             Command::Revoke(id) => {
-                let mut candidate = peers.clone();
-                if let Some(peer) = candidate.iter_mut().find(|peer| peer.id == id) {
-                    peer.revoked_at = Some(now());
-                    peer.last_error = None;
-                    let result = store.save(&candidate).map(|()| {
-                        peers = candidate;
-                        transport.forget_peer(&PeerId(id));
-                    });
-                    publish(
-                        &events,
-                        if result.is_ok() {
-                            SyncStatus::Ready
-                        } else {
-                            SyncStatus::Error
-                        },
-                        result.map_or_else(
-                            |error| error.to_string(),
-                            |_| "Device revoked. Its key can no longer sync.".into(),
-                        ),
-                        &public_key,
-                        &peers,
-                    );
-                }
+                self.revoke(&id);
+                true
             }
             Command::Sync(state) => {
-                latest_state = Some(state.clone());
-                publish(
-                    &events,
-                    SyncStatus::Syncing,
-                    "Syncing approved devices…",
-                    &public_key,
-                    &peers,
-                );
-                let active = peers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, peer)| peer.is_active())
-                    .map(|(index, peer)| (index, PeerId(peer.id.clone())))
-                    .collect::<Vec<_>>();
-                let mut pulled = SyncState::default();
-                let mut failures = 0usize;
-                for (index, id) in active {
-                    match transport.pull(&id) {
-                        Ok(remote) => merge_sync_states(&mut pulled, remote),
-                        Err(error) => {
-                            peers[index].last_error = Some(error.to_string());
-                            failures += 1;
-                            continue;
-                        }
-                    }
-                    match transport.push(&id, &state) {
-                        Ok(()) => {
-                            peers[index].last_sync_at = Some(now());
-                            peers[index].last_error = None;
-                        }
-                        Err(error) => {
-                            peers[index].last_error = Some(error.to_string());
-                            failures += 1;
-                        }
-                    }
-                }
-                if let Err(error) = store.save(&peers) {
-                    failures += 1;
-                    if let Some(peer) = peers.first_mut() {
-                        peer.last_error = Some(error.to_string());
-                    }
-                }
-                if pulled != SyncState::default() {
-                    let _ = events.send(Event::Pulled(pulled));
-                }
-                publish(
-                    &events,
-                    if failures == 0 {
-                        SyncStatus::Ready
-                    } else {
-                        SyncStatus::Error
-                    },
-                    if failures == 0 {
-                        "Device sync is up to date.".into()
-                    } else {
-                        format!("{failures} device operation(s) failed.")
-                    },
-                    &public_key,
-                    &peers,
+                self.sync(&state);
+                true
+            }
+        }
+    }
+    fn pair(&mut self, invite: &Zeroizing<String>) {
+        self.publish(
+            SyncStatus::Pairing,
+            "Waiting for approval on the other device…",
+        );
+        let result = self
+            .transport
+            .pair(invite.as_str())
+            .and_then(|id| self.persist_paired_peer(&id));
+        match result {
+            Ok(()) => self.publish(
+                SyncStatus::Ready,
+                "Device authenticated. Review its fingerprint and approve access.",
+            ),
+            Err(error) => self.publish(SyncStatus::Error, error.to_string()),
+        }
+    }
+    fn persist_paired_peer(&mut self, id: &PeerId) -> SyncResult<()> {
+        if self
+            .peers
+            .iter()
+            .any(|peer| peer.id == id.0 && !peer.is_active())
+        {
+            self.transport.forget_peer(id);
+            return Err(SyncError::Revoked);
+        }
+        let descriptor = self.transport.peer_descriptor(id).ok_or_else(|| {
+            SyncError::Persistence("transport did not expose a public peer route".into())
+        })?;
+        let mut candidate = self.peers.clone();
+        if let Some(existing) = candidate.iter_mut().find(|peer| peer.id == id.0) {
+            existing.descriptor = descriptor;
+            existing.pending_approval = true;
+            existing.last_error = None;
+        } else {
+            if candidate.len() >= MAX_PEERS {
+                self.transport.forget_peer(id);
+                return Err(SyncError::Persistence(
+                    "the approved-device limit has been reached".into(),
+                ));
+            }
+            candidate.push(PeerRecord {
+                id: id.0.clone(),
+                name: format!("Grayjay {}", id.0.chars().take(8).collect::<String>()),
+                descriptor,
+                approved_at: now(),
+                pending_approval: true,
+                revoked_at: None,
+                last_sync_at: None,
+                last_error: None,
+            });
+        }
+        self.store.save(&candidate)?;
+        self.peers = candidate;
+        Ok(())
+    }
+    fn approve(&mut self, id: &str) {
+        let mut candidate = self.peers.clone();
+        let Some(peer) = candidate
+            .iter_mut()
+            .find(|peer| peer.id == id && peer.revoked_at.is_none())
+        else {
+            return;
+        };
+        peer.pending_approval = false;
+        peer.approved_at = now();
+        let descriptor = peer.descriptor.clone();
+        match self
+            .store
+            .save(&candidate)
+            .and_then(|()| self.transport.restore_peer(&descriptor))
+        {
+            Ok(()) => {
+                self.peers = candidate;
+                self.publish(SyncStatus::Ready, "Device approved. Sync is ready.");
+            }
+            Err(error) => self.publish(SyncStatus::Error, error.to_string()),
+        }
+    }
+    fn revoke(&mut self, id: &str) {
+        let mut candidate = self.peers.clone();
+        let Some(peer) = candidate.iter_mut().find(|peer| peer.id == id) else {
+            return;
+        };
+        peer.revoked_at = Some(now());
+        peer.last_error = None;
+        match self.store.save(&candidate) {
+            Ok(()) => {
+                self.peers = candidate;
+                self.transport.forget_peer(&PeerId(id.to_string()));
+                self.publish(
+                    SyncStatus::Ready,
+                    "Device revoked. Its key can no longer sync.",
                 );
             }
+            Err(error) => self.publish(SyncStatus::Error, error.to_string()),
+        }
+    }
+    fn sync(&mut self, state: &SyncState) {
+        self.latest_state = Some(state.clone());
+        self.publish(SyncStatus::Syncing, "Syncing approved devices…");
+        let active = self
+            .peers
+            .iter()
+            .filter(|peer| peer.is_active())
+            .map(|peer| PeerId(peer.id.clone()))
+            .collect::<Vec<_>>();
+        let mut pulled = SyncState::default();
+        let mut failures = 0;
+        for id in active {
+            if let Err(error) = self.sync_peer(&id, state, &mut pulled) {
+                self.mark_error(&id.0, &error);
+                failures += 1;
+            }
+        }
+        if let Err(error) = self.store.save(&self.peers) {
+            failures += 1;
+            if let Some(peer) = self.peers.first_mut() {
+                peer.last_error = Some(error.to_string());
+            }
+        }
+        if pulled != SyncState::default() {
+            let _ = self.events.send(Event::Pulled(pulled));
+        }
+        self.publish(
+            if failures == 0 {
+                SyncStatus::Ready
+            } else {
+                SyncStatus::Error
+            },
+            if failures == 0 {
+                "Device sync is up to date.".into()
+            } else {
+                format!("{failures} device operation(s) failed.")
+            },
+        );
+    }
+    fn sync_peer(
+        &mut self,
+        id: &PeerId,
+        state: &SyncState,
+        pulled: &mut SyncState,
+    ) -> SyncResult<()> {
+        merge_sync_states(pulled, self.transport.pull(id)?);
+        self.transport.push(id, state)?;
+        if let Some(peer) = self.peers.iter_mut().find(|peer| peer.id == id.0) {
+            peer.last_sync_at = Some(now());
+            peer.last_error = None;
+        }
+        Ok(())
+    }
+    fn mark_error(&mut self, id: &str, error: &SyncError) {
+        if let Some(peer) = self.peers.iter_mut().find(|peer| peer.id == id) {
+            peer.last_error = Some(error.to_string());
         }
     }
 }
@@ -716,24 +753,22 @@ pub fn merge_remote_state(model: &mut TubeModel, remote: &SyncState) -> bool {
     let remote_channels = remote
         .subscriptions
         .iter()
-        .filter_map(|url| url.split('/').filter(|part| !part.is_empty()).next_back())
+        .filter_map(|url| url.split('/').rfind(|part| !part.is_empty()))
         .collect::<HashSet<_>>();
     for channel in &model.channels {
-        if remote_channels.contains(channel.id.as_str())
+        if (remote_channels.contains(channel.id.as_str())
             || remote_channels.contains(channel.handle.trim_start_matches('@'))
-            || remote_channels.contains(channel.handle.as_str())
+            || remote_channels.contains(channel.handle.as_str()))
+            && !model.subscriptions.contains(&channel.id)
         {
-            if !model.subscriptions.contains(&channel.id) {
-                model.subscriptions.push(channel.id.clone());
-                changed = true;
-            }
+            model.subscriptions.push(channel.id.clone());
+            changed = true;
         }
     }
     for remote_id in &remote.watch_history {
         let id = remote_id
             .split(['/', '='])
-            .filter(|part| !part.is_empty())
-            .next_back()
+            .rfind(|part| !part.is_empty())
             .unwrap_or(remote_id);
         if model.video(id).is_some() && !model.history.iter().any(|local| local == id) {
             model.history.push(id.to_string());

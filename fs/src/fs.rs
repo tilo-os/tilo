@@ -4986,7 +4986,7 @@ mod availability_control_tests {
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: collab_types::FileRecordId,
-        predicate: impl Fn(&RecordAvailability) -> bool,
+        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         wait_for_availability_with_timeout(registry, record, Duration::from_secs(8), predicate)
             .await;
@@ -4996,7 +4996,7 @@ mod availability_control_tests {
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         record: collab_types::FileRecordId,
         timeout: Duration,
-        predicate: impl Fn(&RecordAvailability) -> bool,
+        predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         tokio::time::timeout(timeout, async {
             loop {
@@ -5013,6 +5013,31 @@ mod availability_control_tests {
         })
         .await
         .expect("availability state barrier");
+    }
+
+    async fn pinned_content_source() -> (Endpoint, Router, Hash, Hash) {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = ContentStore::memory();
+        let first = store
+            .write_content(b"first remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .write_content(b"second remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+            .spawn();
+        (endpoint, router, first, second)
+    }
+
+    async fn close_pinned_test_source(router: Router, source: Endpoint, client: Endpoint) {
+        router.shutdown().await.unwrap();
+        source.close().await;
+        client.close().await;
     }
 
     fn current_pinned_candidate(
@@ -5100,6 +5125,7 @@ mod availability_control_tests {
             let mut record = registry.get(record_id).unwrap().clone();
             record.policy = AvailabilityPolicy::Automatic;
             registry.put(record).unwrap();
+            drop(registry);
             wake.send_modify(|generation| *generation = generation.wrapping_add(1));
         });
 
@@ -5151,8 +5177,7 @@ mod availability_control_tests {
         .unwrap();
         assert_eq!(projected.policy, AvailabilityPolicy::Pinned);
 
-        drop(fs);
-        drop(registry);
+        drop((fs, registry));
         let reopened = AvailabilityRegistry::open(registry_path).unwrap();
         let folder_id = namespace
             .lock()
@@ -5169,22 +5194,7 @@ mod availability_control_tests {
     async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
-        let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
-        let source_store = ContentStore::memory();
-        let first = source_store
-            .write_content(b"first remote version")
-            .await
-            .unwrap()
-            .unwrap();
-        let second = source_store
-            .write_content(b"second remote version")
-            .await
-            .unwrap()
-            .unwrap();
-        let source_router = Router::builder(source_endpoint.clone())
-            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
-            .spawn();
-
+        let (source_endpoint, source_router, first, second) = pinned_content_source().await;
         let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store));
@@ -5232,7 +5242,6 @@ mod availability_control_tests {
         // This is the same wake issued after a local namespace publish. It
         // must not wait for the deliberately slow repair scan.
         fs.wake_pinned_hydration();
-
         // No peer is configured yet. The worker records an actionable error
         // and a durable backoff rather than spinning or claiming success.
         wait_for_availability(&registry, record_id, |record| {
@@ -5264,7 +5273,6 @@ mod availability_control_tests {
                 && record.transfer.last_error.is_none()
         })
         .await;
-
         // A later immutable version invalidates the old residency proof and
         // is hydrated under the same durable ancestor pin.
         let second_version = collab_types::FileVersionId::new();
@@ -5295,9 +5303,7 @@ mod availability_control_tests {
         .await;
 
         drop(fs);
-        source_router.shutdown().await.unwrap();
-        source_endpoint.close().await;
-        client_endpoint.close().await;
+        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
     #[tokio::test]
@@ -5318,7 +5324,7 @@ mod availability_control_tests {
                 .unwrap()
                 .create_file(
                     folder,
-                    &format!("{index}.bin"),
+                    format!("{index}.bin"),
                     Some(&Hash::from([index.saturating_add(1); 32])),
                     1,
                     2,
@@ -5352,19 +5358,19 @@ mod availability_control_tests {
                 .records()
                 .filter(|record| record.kind == RecordKind::File)
                 .collect::<Vec<_>>();
-            (
-                children
-                    .iter()
-                    .filter(|record| record.transfer.retry_count == 1)
-                    .count(),
-                children
-                    .iter()
-                    .filter(|record| {
-                        record.transfer.phase == TransferPhase::Queued
-                            && record.transfer.retry_count == 0
-                    })
-                    .count(),
-            )
+            let attempted = children
+                .iter()
+                .filter(|record| record.transfer.retry_count == 1)
+                .count();
+            let queued = children
+                .iter()
+                .filter(|record| {
+                    record.transfer.phase == TransferPhase::Queued
+                        && record.transfer.retry_count == 0
+                })
+                .count();
+            drop(registry);
+            (attempted, queued)
         };
         assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
         assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);

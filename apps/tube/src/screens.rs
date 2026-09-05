@@ -1916,9 +1916,34 @@ fn settings_impl(
     sync: Option<&crate::sync::SyncView>,
     pairing_input: Option<Arc<Mutex<String>>>,
 ) -> Scrollable {
-    let s = &model.settings;
+    let playback = playback_settings_card(model, theme, bus);
+    let sponsorblock = sponsorblock_settings_card(model, theme, bus);
+    let dearrow = dearrow_settings_card(model, theme, bus);
+    let device_sync = device_sync_card(theme, bus, sync, pairing_input);
 
-    let playback = settings_card(
+    // Explicit spacers between sections: the scroll wrapper lays out as a block,
+    // which ignores flex `gap`, so without these the cards would touch.
+    scroll(
+        Flex::col()
+            .fill_w()
+            .max_w(820.0)
+            .pad(24.0)
+            .push(section_header(theme, Icon::Settings, "Settings", ""))
+            .push(vspace(18.0))
+            .push(playback)
+            .push(vspace(16.0))
+            .push(sponsorblock)
+            .push(vspace(16.0))
+            .push(dearrow)
+            .push(vspace(16.0))
+            .push(device_sync)
+            .push(vspace(24.0)),
+    )
+}
+
+fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    settings_card(
         theme,
         "Playback",
         vec![
@@ -1965,60 +1990,64 @@ fn settings_impl(
                 quality_menu(model, theme, bus),
             ),
         ],
-    );
+    )
+}
 
-    let sponsorblock = {
-        let mut rows = vec![setting_row(
-            theme,
-            "Enable SponsorBlock",
-            "Use community segment data to mark and skip parts of videos.",
-            Switch::new(
-                s.sponsorblock_enabled,
-                bus,
-                Action::ToggleSetting(SettingFlag::SponsorBlock),
-            )
-            .id("switch_sponsorblock")
-            .accessible_name("Enable SponsorBlock"),
-        )];
-        for cat in Category::ALL {
-            let (r, g, b) = cat.rgb();
-            let label = Flex::row()
-                .gap(10.0)
-                .align(Align::Center)
-                .grow(1.0)
-                .push(Flex::row().fixed(14.0, 14.0).surface(Surface {
-                    fill: Some(Color::from_rgb8(r, g, b)),
-                    radius: 4.0,
-                    border: None,
-                }))
-                .push(
-                    Flex::col()
-                        .grow(1.0)
-                        .gap(2.0)
-                        .push(text(cat.label(), 14.0))
-                        .push(dim(theme, cat.blurb(), 12.0)),
-                );
-            // The stored per-category mode (not the master-gated one) so the
-            // selector shows the user's choice even when SponsorBlock is off.
-            let stored = s
-                .categories
-                .get(cat.api_key())
-                .copied()
-                .unwrap_or(SkipMode::Skip);
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .gap(16.0)
-                    .pad_xy(0.0, 8.0)
-                    .align(Align::Center)
-                    .push(label)
-                    .push(mode_pill(theme, bus, cat, stored)),
+fn sponsorblock_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    let mut rows = vec![setting_row(
+        theme,
+        "Enable SponsorBlock",
+        "Use community segment data to mark and skip parts of videos.",
+        Switch::new(
+            s.sponsorblock_enabled,
+            bus,
+            Action::ToggleSetting(SettingFlag::SponsorBlock),
+        )
+        .id("switch_sponsorblock")
+        .accessible_name("Enable SponsorBlock"),
+    )];
+    for cat in Category::ALL {
+        let (r, g, b) = cat.rgb();
+        let label = Flex::row()
+            .gap(10.0)
+            .align(Align::Center)
+            .grow(1.0)
+            .push(Flex::row().fixed(14.0, 14.0).surface(Surface {
+                fill: Some(Color::from_rgb8(r, g, b)),
+                radius: 4.0,
+                border: None,
+            }))
+            .push(
+                Flex::col()
+                    .grow(1.0)
+                    .gap(2.0)
+                    .push(text(cat.label(), 14.0))
+                    .push(dim(theme, cat.blurb(), 12.0)),
             );
-        }
-        settings_card(theme, "SponsorBlock", rows)
-    };
+        // The stored per-category mode (not the master-gated one) so the
+        // selector shows the user's choice even when SponsorBlock is off.
+        let stored = s
+            .categories
+            .get(cat.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip);
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .gap(16.0)
+                .pad_xy(0.0, 8.0)
+                .align(Align::Center)
+                .push(label)
+                .push(mode_pill(theme, bus, cat, stored)),
+        );
+    }
+    settings_card(theme, "SponsorBlock", rows)
+}
 
-    let dearrow = settings_card(
+fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    settings_card(
         theme,
         "DeArrow",
         vec![
@@ -2065,27 +2094,6 @@ fn settings_impl(
                 s.dearrow_enabled,
             ),
         ],
-    );
-
-    let device_sync = device_sync_card(theme, bus, sync, pairing_input);
-
-    // Explicit spacers between sections: the scroll wrapper lays out as a block,
-    // which ignores flex `gap`, so without these the cards would touch.
-    scroll(
-        Flex::col()
-            .fill_w()
-            .max_w(820.0)
-            .pad(24.0)
-            .push(section_header(theme, Icon::Settings, "Settings", ""))
-            .push(vspace(18.0))
-            .push(playback)
-            .push(vspace(16.0))
-            .push(sponsorblock)
-            .push(vspace(16.0))
-            .push(dearrow)
-            .push(vspace(16.0))
-            .push(device_sync)
-            .push(vspace(24.0)),
     )
 }
 
@@ -2145,214 +2153,249 @@ fn device_sync_card(
         #[cfg(feature = "grayjay-sync")]
         crate::sync::SyncStatus::Error => "Needs attention",
     });
-    let mut rows = vec![
-        Flex::row()
-            .fill_w()
-            .gap(14.0)
-            .align(Align::Center)
-            .push(
-                Flex::row()
-                    .fixed(42.0, 42.0)
-                    .justify(Justify::Center)
-                    .align(Align::Center)
-                    .surface(Surface {
-                        fill: Some(theme.bg_active),
-                        radius: 12.0,
-                        border: None,
-                    })
-                    .push(icon(Icon::Wifi, 20.0, theme.accent_primary)),
-            )
-            .push(
-                Flex::col()
-                    .grow(1.0)
-                    .gap(3.0)
-                    .push(text("Grayjay devices", 15.0))
-                    .push(dim(theme, summary, 12.0)),
-            )
-            .push(
-                Flex::row()
-                    .pad_xy(10.0, 6.0)
-                    .surface(Surface {
-                        fill: Some(subtle_fill(theme)),
-                        radius: f64::from(theme.tokens.radii.full),
-                        border: Some((1.0, theme.border_standard)),
-                    })
-                    .push(text_c(status, 12.0, theme.text_dim)),
-            ),
-    ];
+    let mut rows = vec![device_sync_header(theme, summary, status)];
 
     if let (Some(state), Some(input)) = (sync, pairing_input) {
         if matches!(state.status, crate::sync::SyncStatus::Unavailable) {
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .pad(16.0)
-                    .surface(subtle_surface(theme))
-                    .push(dim(
-                        theme,
-                        "Unlock the desktop keyring, then reopen Tube to enable encrypted device sync.",
-                        12.5,
-                    )),
-            );
+            rows.push(device_sync_unavailable(theme));
             return settings_card(theme, "Device sync", rows);
         }
-        if let Some(public_key) = &state.device_public_key {
-            let fingerprint = public_key.chars().take(18).collect::<String>();
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .gap(10.0)
-                    .align(Align::Center)
-                    .push(icon(Icon::Shield, 16.0, theme.status_success))
-                    .push(dim(
-                        theme,
-                        &format!(
-                            "This device · {fingerprint}… · key held by desktop secret broker"
-                        ),
-                        12.0,
-                    )),
-            );
-        }
-        rows.push(
+        add_device_identity_and_pairing(&mut rows, theme, bus, state, input);
+        add_pending_devices(&mut rows, theme, bus, state);
+        add_active_devices(&mut rows, theme, bus, state);
+    }
+    settings_card(theme, "Device sync", rows)
+}
+
+fn device_sync_header(theme: &Theme, summary: &str, status: &str) -> Flex {
+    Flex::row()
+        .fill_w()
+        .gap(14.0)
+        .align(Align::Center)
+        .push(
+            Flex::row()
+                .fixed(42.0, 42.0)
+                .justify(Justify::Center)
+                .align(Align::Center)
+                .surface(Surface {
+                    fill: Some(theme.bg_active),
+                    radius: 12.0,
+                    border: None,
+                })
+                .push(icon(Icon::Wifi, 20.0, theme.accent_primary)),
+        )
+        .push(
             Flex::col()
+                .grow(1.0)
+                .gap(3.0)
+                .push(text("Grayjay devices", 15.0))
+                .push(dim(theme, summary, 12.0)),
+        )
+        .push(
+            Flex::row()
+                .pad_xy(10.0, 6.0)
+                .surface(Surface {
+                    fill: Some(subtle_fill(theme)),
+                    radius: f64::from(theme.tokens.radii.full),
+                    border: Some((1.0, theme.border_standard)),
+                })
+                .push(text_c(status, 12.0, theme.text_dim)),
+        )
+}
+
+fn device_sync_unavailable(theme: &Theme) -> Flex {
+    Flex::row()
+        .fill_w()
+        .pad(16.0)
+        .surface(subtle_surface(theme))
+        .push(dim(
+            theme,
+            "Unlock the desktop keyring, then reopen Tube to enable encrypted device sync.",
+            12.5,
+        ))
+}
+
+fn add_device_identity_and_pairing(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+    input: Arc<Mutex<String>>,
+) {
+    if let Some(public_key) = &state.device_public_key {
+        let fingerprint = public_key.chars().take(18).collect::<String>();
+        rows.push(
+            Flex::row()
                 .fill_w()
-                .gap(8.0)
-                .push(text("Pair a device", 14.0))
+                .gap(10.0)
+                .align(Align::Center)
+                .push(icon(Icon::Shield, 16.0, theme.status_success))
                 .push(dim(
                     theme,
-                    "In Grayjay, open Sync → Add device, then paste its invite here.",
+                    format!("This device · {fingerprint}… · key held by desktop secret broker"),
                     12.0,
-                ))
-                .push(
-                    TextInput::local()
-                        .with_id("grayjay_pairing_invite")
-                        .with_external_buffer(input)
-                        .with_placeholder("grayjay:// pairing invite")
-                        .with_accessible_name("Grayjay pairing invite")
-                        .with_enter_submits(true),
-                )
+                )),
+        );
+    }
+    rows.push(
+        Flex::col()
+            .fill_w()
+            .gap(8.0)
+            .push(text("Pair a device", 14.0))
+            .push(dim(
+                theme,
+                "In Grayjay, open Sync → Add device, then paste its invite here.",
+                12.0,
+            ))
+            .push(
+                TextInput::local()
+                    .with_id("grayjay_pairing_invite")
+                    .with_external_buffer(input)
+                    .with_placeholder("grayjay:// pairing invite")
+                    .with_accessible_name("Grayjay pairing invite")
+                    .with_enter_submits(true),
+            )
+            .push(device_action(
+                theme,
+                bus,
+                "grayjay_pair",
+                "Pair device",
+                Action::PairDevice,
+                false,
+            )),
+    );
+}
+
+fn add_pending_devices(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+) {
+    for peer in state
+        .peers
+        .iter()
+        .filter(|peer| peer.pending_approval && peer.revoked_at.is_none())
+    {
+        rows.push(pending_device_row(theme, bus, peer));
+    }
+}
+
+fn pending_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRecord) -> Flex {
+    Flex::row()
+        .fill_w()
+        .gap(12.0)
+        .align(Align::Center)
+        .pad(12.0)
+        .surface(Surface {
+            fill: Some(theme.bg_active),
+            radius: 12.0,
+            border: Some((1.0, theme.border_focus)),
+        })
+        .push(icon(Icon::Shield, 19.0, theme.accent_primary))
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(2.0)
+                .push(text("Confirm this device", 13.5))
+                .push(dim(
+                    theme,
+                    format!("Fingerprint {} · verify it on Grayjay", peer.short_id()),
+                    11.5,
+                )),
+        )
+        .push(device_action(
+            theme,
+            bus,
+            &format!("grayjay_approve_{}", peer.short_id()),
+            "Approve",
+            Action::ApproveDevice(peer.id.clone()),
+            false,
+        ))
+}
+
+fn add_active_devices(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+) {
+    let active = state
+        .peers
+        .iter()
+        .filter(|peer| peer.is_active())
+        .collect::<Vec<_>>();
+    if active.is_empty() {
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .pad(16.0)
+                .surface(subtle_surface(theme))
+                .push(dim(
+                    theme,
+                    "No approved devices yet. Pairing requires confirmation on both devices.",
+                    12.5,
+                )),
+        );
+    } else {
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .align(Align::Center)
+                .push(text("Approved devices", 14.0))
+                .push(spring())
                 .push(device_action(
                     theme,
                     bus,
-                    "grayjay_pair",
-                    "Pair device",
-                    Action::PairDevice,
+                    "grayjay_sync_now",
+                    "Sync now",
+                    Action::SyncDevices,
                     false,
                 )),
         );
-
-        for peer in state
-            .peers
-            .iter()
-            .filter(|peer| peer.pending_approval && peer.revoked_at.is_none())
-        {
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .gap(12.0)
-                    .align(Align::Center)
-                    .pad(12.0)
-                    .surface(Surface {
-                        fill: Some(theme.bg_active),
-                        radius: 12.0,
-                        border: Some((1.0, theme.border_focus)),
-                    })
-                    .push(icon(Icon::Shield, 19.0, theme.accent_primary))
-                    .push(
-                        Flex::col()
-                            .grow(1.0)
-                            .gap(2.0)
-                            .push(text("Confirm this device", 13.5))
-                            .push(dim(
-                                theme,
-                                &format!("Fingerprint {} · verify it on Grayjay", peer.short_id()),
-                                11.5,
-                            )),
-                    )
-                    .push(device_action(
-                        theme,
-                        bus,
-                        &format!("grayjay_approve_{}", peer.short_id()),
-                        "Approve",
-                        Action::ApproveDevice(peer.id.clone()),
-                        false,
-                    )),
-            );
-        }
-
-        let active = state
-            .peers
-            .iter()
-            .filter(|peer| peer.is_active())
-            .collect::<Vec<_>>();
-        if active.is_empty() {
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .pad(16.0)
-                    .surface(subtle_surface(theme))
-                    .push(dim(
-                        theme,
-                        "No approved devices yet. Pairing requires confirmation on both devices.",
-                        12.5,
-                    )),
-            );
-        } else {
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .align(Align::Center)
-                    .push(text("Approved devices", 14.0))
-                    .push(spring())
-                    .push(device_action(
-                        theme,
-                        bus,
-                        "grayjay_sync_now",
-                        "Sync now",
-                        Action::SyncDevices,
-                        false,
-                    )),
-            );
-            for peer in active {
-                let detail = peer.last_error.as_ref().map_or_else(
-                    || {
-                        peer.last_sync_at.map_or("Not synced yet".into(), |time| {
-                            let current = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map_or(0, |duration| duration.as_secs() as i64);
-                            format!("Last synced {}", ui::format::relative(current - time))
-                        })
-                    },
-                    |error| format!("Could not sync · {error}"),
-                );
-                rows.push(
-                    Flex::row()
-                        .fill_w()
-                        .gap(12.0)
-                        .align(Align::Center)
-                        .pad(12.0)
-                        .surface(subtle_surface(theme))
-                        .push(icon(Icon::Monitor, 19.0, theme.text_dim))
-                        .push(
-                            Flex::col()
-                                .grow(1.0)
-                                .gap(2.0)
-                                .push(text(&peer.name, 13.5))
-                                .push(dim(theme, &format!("{} · {detail}", peer.short_id()), 11.5)),
-                        )
-                        .push(device_action(
-                            theme,
-                            bus,
-                            &format!("grayjay_revoke_{}", peer.short_id()),
-                            "Revoke",
-                            Action::RevokeDevice(peer.id.clone()),
-                            true,
-                        )),
-                );
-            }
+        for peer in active {
+            rows.push(active_device_row(theme, bus, peer));
         }
     }
-    settings_card(theme, "Device sync", rows)
+}
+
+fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRecord) -> Flex {
+    let detail = peer.last_error.as_ref().map_or_else(
+        || {
+            peer.last_sync_at
+                .map_or_else(|| "Not synced yet".into(), relative_sync_time)
+        },
+        |error| format!("Could not sync · {error}"),
+    );
+    Flex::row()
+        .fill_w()
+        .gap(12.0)
+        .align(Align::Center)
+        .pad(12.0)
+        .surface(subtle_surface(theme))
+        .push(icon(Icon::Monitor, 19.0, theme.text_dim))
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(2.0)
+                .push(text(&peer.name, 13.5))
+                .push(dim(theme, format!("{} · {detail}", peer.short_id()), 11.5)),
+        )
+        .push(device_action(
+            theme,
+            bus,
+            &format!("grayjay_revoke_{}", peer.short_id()),
+            "Revoke",
+            Action::RevokeDevice(peer.id.clone()),
+            true,
+        ))
+}
+
+fn relative_sync_time(time: i64) -> String {
+    let current = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
+    format!("Last synced {}", ui::format::relative(current - time))
 }
 
 // ---------------------------------------------------------------------------
