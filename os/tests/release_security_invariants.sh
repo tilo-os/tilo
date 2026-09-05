@@ -63,6 +63,8 @@ fi
 
 if grep -Fq "key='\${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
    && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
+   && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]" "$workflow" \
+   && grep -Fq 'publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
    && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
    && grep -Fxq 'ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
   ok 'fresh images carry a release-validated pinned marketplace owner key'
