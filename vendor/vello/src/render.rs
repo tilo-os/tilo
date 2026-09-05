@@ -48,11 +48,32 @@ struct FineResources {
     segments_buf: ResourceProxy,
     ptcl_buf: ResourceProxy,
     gradient_image: ResourceProxy,
+    gradient_image_is_transient: bool,
     info_bin_data_buf: ResourceProxy,
     image_atlas: ResourceProxy,
     blend_spill_buf: ResourceProxy,
 
     out_image: ImageProxy,
+}
+
+fn no_ramp_gradient_image(zero_gradient: Option<ImageProxy>) -> (ResourceProxy, bool) {
+    let is_transient = zero_gradient.is_none();
+    (
+        zero_gradient
+            .unwrap_or_else(|| ImageProxy::new(1, 1, ImageFormat::Rgba8))
+            .into(),
+        is_transient,
+    )
+}
+
+fn free_transient_gradient(
+    recording: &mut Recording,
+    gradient_image: ResourceProxy,
+    gradient_image_is_transient: bool,
+) {
+    if gradient_image_is_transient {
+        recording.free_resource(gradient_image);
+    }
 }
 
 /// A collection of internal buffers that are used for debug visualization when the
@@ -92,6 +113,7 @@ pub(crate) fn render_full(
     budget: &vello_encoding::BumpBudget,
     measure: bool,
     defer_bump_readback: bool,
+    zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     render_encoding_full(
         scene.encoding(),
@@ -104,6 +126,7 @@ pub(crate) fn render_full(
         budget,
         measure,
         defer_bump_readback,
+        zero_gradient,
     )
 }
 
@@ -126,6 +149,7 @@ pub(crate) fn render_encoding_full(
     budget: &vello_encoding::BumpBudget,
     measure: bool,
     defer_bump_readback: bool,
+    zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
     render.render_encoding_coarse(
@@ -141,6 +165,7 @@ pub(crate) fn render_encoding_full(
         false,
         None,
         defer_bump_readback,
+        zero_gradient,
     );
     let out_image = render.out_image();
     let bump = render.bump_buf();
@@ -167,6 +192,7 @@ pub(crate) fn render_encoding_sparse_fine(
     external_damage_tiles: Option<BufferProxy>,
     coarse_tiles: Option<&[u32]>,
     defer_bump_readback: bool,
+    zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
     render.render_encoding_coarse(
@@ -182,6 +208,7 @@ pub(crate) fn render_encoding_sparse_fine(
         false,
         coarse_tiles,
         defer_bump_readback,
+        zero_gradient,
     );
     let out_image = render.out_image();
     let bump = render.bump_buf();
@@ -245,6 +272,7 @@ impl Render {
         capture_debug: bool,
         coarse_tiles: Option<&[u32]>,
         defer_bump_readback: bool,
+        zero_gradient: Option<ImageProxy>,
     ) {
         use vello_encoding::RenderConfig;
         recording.reset_reusing_scene_upload(packed);
@@ -257,16 +285,19 @@ impl Render {
         });
 
         let (layout, ramps, images) = resolver.resolve(encoding, packed);
-        let gradient_image = if ramps.height == 0 {
-            ResourceProxy::new_image(1, 1, ImageFormat::Rgba8)
+        let (gradient_image, gradient_image_is_transient) = if ramps.height == 0 {
+            no_ramp_gradient_image(zero_gradient)
         } else {
             let data: &[u8] = bytemuck::cast_slice(ramps.data);
-            ResourceProxy::Image(recording.upload_image(
-                ramps.width,
-                ramps.height,
-                ImageFormat::Rgba8,
-                data,
-            ))
+            (
+                ResourceProxy::Image(recording.upload_image(
+                    ramps.width,
+                    ramps.height,
+                    ImageFormat::Rgba8,
+                    data,
+                )),
+                true,
+            )
         };
         let atlas_width = images.width.max(1);
         let atlas_height = images.height.max(1);
@@ -763,6 +794,7 @@ impl Render {
             segments_buf,
             ptcl_buf,
             gradient_image,
+            gradient_image_is_transient,
             info_bin_data_buf,
             blend_spill_buf: ResourceProxy::Buffer(blend_spill_buf),
             image_atlas: ResourceProxy::Image(image_atlas),
@@ -860,7 +892,11 @@ impl Render {
         recording.free_resource(fine.tile_buf);
         recording.free_resource(fine.segments_buf);
         recording.free_resource(fine.ptcl_buf);
-        recording.free_resource(fine.gradient_image);
+        free_transient_gradient(
+            recording,
+            fine.gradient_image,
+            fine.gradient_image_is_transient,
+        );
         recording.free_resource(fine.info_bin_data_buf);
         recording.free_resource(fine.blend_spill_buf);
         // TODO: make mask buf persistent
@@ -906,7 +942,11 @@ impl Render {
         recording.free_resource(fine.tile_buf);
         recording.free_resource(fine.segments_buf);
         recording.free_resource(fine.ptcl_buf);
-        recording.free_resource(fine.gradient_image);
+        free_transient_gradient(
+            recording,
+            fine.gradient_image,
+            fine.gradient_image_is_transient,
+        );
         recording.free_resource(fine.info_bin_data_buf);
         recording.free_resource(fine.blend_spill_buf);
         if owns_damage_tiles {
@@ -971,6 +1011,30 @@ mod tests {
 
         assert!(
             matches!(recording.commands.as_slice(), [Command::FreeBuffer(buf)] if buf.id == bump.id)
+        );
+    }
+
+    #[test]
+    fn zero_gradient_is_stable_and_not_freed_with_the_frame() {
+        let zero_gradient = ImageProxy::new(1, 1, ImageFormat::Rgba8);
+        let (gradient, is_transient) = no_ramp_gradient_image(Some(zero_gradient));
+        assert!(!is_transient);
+        assert!(gradient.as_image().unwrap().id == zero_gradient.id);
+
+        let mut recording = Recording::default();
+        free_transient_gradient(&mut recording, gradient, is_transient);
+        assert!(recording.commands.is_empty());
+    }
+
+    #[test]
+    fn disabled_zero_gradient_reuse_keeps_the_transient_lifetime() {
+        let (gradient, is_transient) = no_ramp_gradient_image(None);
+        assert!(is_transient);
+
+        let mut recording = Recording::default();
+        free_transient_gradient(&mut recording, gradient, is_transient);
+        assert!(
+            matches!(recording.commands.as_slice(), [Command::FreeImage(image)] if image.id == gradient.as_image().unwrap().id)
         );
     }
 }
