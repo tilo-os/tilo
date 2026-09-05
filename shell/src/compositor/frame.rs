@@ -15,12 +15,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
     BlendMode, Blob, Color, Compose, Extend, Fill, ImageAlphaType, ImageBrush, ImageData,
     ImageFormat, Mix,
 };
+use vello::{FineDamageRect, Scene};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -39,6 +39,108 @@ struct FloatingTransferProxy {
     key: String,
     rect: Rect,
     image: ImageData,
+}
+
+/// Append-only receipt for the capture pass. It avoids cloning a scene merely to detect an
+/// externally appended mirror, while covering both ordinary encoding streams and late resources.
+#[derive(Clone, Copy)]
+struct CaptureSceneLengths {
+    path_tags: usize,
+    path_data: usize,
+    draw_tags: usize,
+    draw_data: usize,
+    transforms: usize,
+    styles: usize,
+    patches: usize,
+    color_stops: usize,
+    glyphs: usize,
+    glyph_runs: usize,
+    normalized_coords: usize,
+}
+
+impl CaptureSceneLengths {
+    fn grew_from(self, before: Self) -> bool {
+        self.path_tags > before.path_tags
+            || self.path_data > before.path_data
+            || self.draw_tags > before.draw_tags
+            || self.draw_data > before.draw_data
+            || self.transforms > before.transforms
+            || self.styles > before.styles
+            || self.patches > before.patches
+            || self.color_stops > before.color_stops
+            || self.glyphs > before.glyphs
+            || self.glyph_runs > before.glyph_runs
+            || self.normalized_coords > before.normalized_coords
+    }
+}
+
+fn capture_scene_lengths(scene: &Scene) -> CaptureSceneLengths {
+    let encoding = scene.encoding();
+    let streams = encoding.stream_offsets();
+    let resources = &encoding.resources;
+    CaptureSceneLengths {
+        path_tags: streams.path_tags,
+        path_data: streams.path_data,
+        draw_tags: streams.draw_tags,
+        draw_data: streams.draw_data,
+        transforms: streams.transforms,
+        styles: streams.styles,
+        patches: resources.patches.len(),
+        color_stops: resources.color_stops.len(),
+        glyphs: resources.glyphs.len(),
+        glyph_runs: resources.glyph_runs.len(),
+        normalized_coords: resources.normalized_coords.len(),
+    }
+}
+
+/// A produced shell scene plus a conservative retained-damage relation to its predecessor.
+/// `None` regions request a dense render; an empty region list is never emitted as sparse work.
+pub struct FramePaint {
+    pub scene: Scene,
+    pub revision: u64,
+    pub previous_revision: Option<u64>,
+    pub damage_regions: Option<Vec<FineDamageRect>>,
+}
+
+impl FramePaint {
+    /// Wrap a scene from a producer without retained-damage authority.
+    pub fn full(scene: Scene) -> Self {
+        Self {
+            scene,
+            revision: 0,
+            previous_revision: None,
+            damage_regions: None,
+        }
+    }
+
+    /// External scene mutation invalidates every retained-damage proof.
+    pub fn force_full(&mut self) {
+        // Revision zero is deliberately never produced by `paint_with_damage`. It makes this
+        // frame an unversioned boundary, so a later retained frame cannot reuse pixels from
+        // commands appended outside the captured sections.
+        self.revision = 0;
+        self.damage_regions = None;
+        self.previous_revision = None;
+    }
+}
+
+#[derive(Clone)]
+struct ProducedSections {
+    backdrop: Scene,
+    topbar: Scene,
+    workspace: Scene,
+    topbar_bounds: Option<Rect>,
+    quick_settings: Scene,
+    above_quick_settings: Scene,
+    quick_settings_bounds: Option<Rect>,
+    global_filter: bool,
+    revision: u64,
+}
+
+enum QuickSettingsDamage {
+    Absent,
+    Bounds(FineDamageRect),
+    Unknown,
 }
 
 // The four flags are independent lifecycle signals from the handoff protocol;
@@ -249,6 +351,10 @@ pub struct FrameBuilder {
     /// matching `ui::App`; an explicit focus-reset ignores it and starts the
     /// replacement wizard step at its first enabled control.
     native_focus_ordinal: Option<usize>,
+    /// Latest produced sections, not an acknowledgement. A skipped presenter therefore creates a
+    /// revision mismatch at the bridge and safely selects its dense path.
+    last_produced_sections: Option<ProducedSections>,
+    next_scene_revision: u64,
 }
 
 impl FrameBuilder {
@@ -370,6 +476,8 @@ impl FrameBuilder {
             osk_active: false,
             focus_tree_changed: true,
             native_focus_ordinal: None,
+            last_produced_sections: None,
+            next_scene_revision: 1,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -833,6 +941,214 @@ impl FrameBuilder {
         scene
     }
 
+    /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
+    /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
+    /// independent for capture and pixel-oracle use.
+    pub fn paint_with_damage(&mut self) -> FramePaint {
+        self.refresh_configured_theme();
+        let mut sections = self.host.draw_scene_sections(
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &self.presence,
+        );
+        for proxy in &self.floating_transfer_proxies {
+            proxy.draw(&mut sections.above_quick_settings);
+        }
+        for (_, surface) in &mut self.floating_overlays {
+            if surface.is_mapped() {
+                surface.draw(
+                    &mut sections.above_quick_settings,
+                    Affine::IDENTITY,
+                    &mut self.text_renderer,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
+        if self.osk_active
+            && let Some(keyboard) = self.osk_overlay.as_mut()
+            && keyboard.is_mapped()
+        {
+            keyboard.draw(
+                &mut sections.above_quick_settings,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            );
+        }
+
+        let revision = self.next_scene_revision;
+        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let previous_revision = self
+            .last_produced_sections
+            .as_ref()
+            .map(|last| last.revision);
+        let global_filter = self.watch_configured_theme
+            && (self.night_light
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
+                || self.visual_accessibility.magnifier_zoom > 1
+                || self.visual_accessibility.cursor_crosshair);
+        let damage_regions = (!global_filter)
+            .then(|| self.damage_from_sections(&sections, global_filter))
+            .flatten();
+
+        let mut scene = Scene::new();
+        scene.append(&sections.backdrop, None);
+        scene.append(&sections.topbar, None);
+        scene.append(&sections.workspace, None);
+        scene.append(&sections.quick_settings, None);
+        scene.append(&sections.above_quick_settings, None);
+        if self.watch_configured_theme && self.night_light {
+            let (w, h) = self.viewport;
+            let bounds = Rect::new(0.0, 0.0, w, h);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::new(Mix::Multiply, Compose::SrcOver),
+                1.0,
+                Affine::IDENTITY,
+                &bounds,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                night_light_multiplier(self.night_light_temperature),
+                None,
+                &bounds,
+            );
+            scene.pop_layer();
+        }
+        if self.watch_configured_theme {
+            self.apply_visual_accessibility(&mut scene);
+        }
+
+        self.last_produced_sections = Some(ProducedSections {
+            backdrop: sections.backdrop,
+            topbar: sections.topbar,
+            workspace: sections.workspace,
+            topbar_bounds: sections.topbar_bounds,
+            quick_settings: sections.quick_settings,
+            above_quick_settings: sections.above_quick_settings,
+            quick_settings_bounds: sections.quick_settings_bounds,
+            global_filter,
+            revision,
+        });
+        FramePaint {
+            scene,
+            revision,
+            previous_revision,
+            damage_regions,
+        }
+    }
+
+    fn damage_from_sections(
+        &self,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        current_global_filter: bool,
+    ) -> Option<Vec<FineDamageRect>> {
+        let previous = self.last_produced_sections.as_ref()?;
+        if previous.global_filter || current_global_filter {
+            return None;
+        }
+        if !previous.backdrop.encoding_eq(&current.backdrop)
+            || !previous.workspace.encoding_eq(&current.workspace)
+            || !previous
+                .above_quick_settings
+                .encoding_eq(&current.above_quick_settings)
+        {
+            return None;
+        }
+        let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
+        let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
+        if !topbar_changed && !quick_settings_changed {
+            return None;
+        }
+        let mut regions = Vec::with_capacity(2);
+        if topbar_changed {
+            let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
+            let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
+            regions.extend([old, new]);
+        }
+        if quick_settings_changed {
+            let old = self.damage_rect_for_quick_settings(
+                &previous.quick_settings,
+                previous.quick_settings_bounds,
+            );
+            let new = self.damage_rect_for_quick_settings(
+                &current.quick_settings,
+                current.quick_settings_bounds,
+            );
+            match (old, new) {
+                (QuickSettingsDamage::Unknown, _) | (_, QuickSettingsDamage::Unknown) => {
+                    return None;
+                }
+                (QuickSettingsDamage::Absent, QuickSettingsDamage::Absent) => {}
+                (QuickSettingsDamage::Bounds(old), QuickSettingsDamage::Absent) => {
+                    regions.push(old);
+                }
+                (QuickSettingsDamage::Absent, QuickSettingsDamage::Bounds(new)) => {
+                    regions.push(new);
+                }
+                (QuickSettingsDamage::Bounds(old), QuickSettingsDamage::Bounds(new)) => {
+                    regions.extend([old, new]);
+                }
+            }
+        }
+        (!regions.is_empty()).then_some(regions)
+    }
+
+    fn topbar_damage_rect(&self, section: &Scene, bounds: Option<Rect>) -> Option<FineDamageRect> {
+        // An empty topbar is valid only for a non-production/test root; because a changed empty
+        // section has no pixels to repair, it must not be the sole sparse authority.
+        if section.encoding_eq(&Scene::new()) {
+            return None;
+        }
+        self.native_damage_rect(bounds)
+    }
+
+    /// An empty section with no reported visual extent is a proven absent QS layer. A nonempty
+    /// section without bounds is not safe to retain, even if the caller believes it is a close.
+    fn damage_rect_for_quick_settings(
+        &self,
+        section: &Scene,
+        bounds: Option<Rect>,
+    ) -> QuickSettingsDamage {
+        match bounds {
+            Some(bounds) => self
+                .native_damage_rect(Some(bounds))
+                .map_or(QuickSettingsDamage::Unknown, QuickSettingsDamage::Bounds),
+            None if section.encoding_eq(&Scene::new()) => QuickSettingsDamage::Absent,
+            None => QuickSettingsDamage::Unknown,
+        }
+    }
+
+    fn native_damage_rect(&self, rect: Option<Rect>) -> Option<FineDamageRect> {
+        let rect = rect?;
+        let (width, height) = self.viewport;
+        let x0 = rect.x0.floor().clamp(0.0, width);
+        let y0 = rect.y0.floor().clamp(0.0, height);
+        let x1 = rect.x1.ceil().clamp(0.0, width);
+        let y1 = rect.y1.ceil().clamp(0.0, height);
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "damage bounds are clamped to the positive viewport and rounded outward first"
+        )]
+        Some(FineDamageRect {
+            x: x0 as u32,
+            y: y0 as u32,
+            width: (x1 - x0) as u32,
+            height: (y1 - y0) as u32,
+        })
+    }
+
     fn apply_color_filter(&self, scene: &mut Scene, bounds: Rect) {
         let mut overlay = |mix: Mix, color: Color| {
             scene.push_layer(
@@ -1234,7 +1550,9 @@ impl FrameBuilder {
     /// Append compositor-owned capture surfaces after the clean desktop
     /// source has been consumed. This keeps live mirrors recursive-safe and
     /// recording status out of the encoded pixels.
-    pub fn draw_capture_overlays(&mut self, scene: &mut Scene) {
+    /// Returns whether compositor-owned capture chrome appended encoded scene data.
+    pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
+        let before = capture_scene_lengths(scene);
         self.host.draw_capture_overlays(
             scene,
             Affine::IDENTITY,
@@ -1242,6 +1560,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        capture_scene_lengths(scene).grew_from(before)
     }
 
     pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
@@ -2092,6 +2411,23 @@ mod tests {
         assert_ne!(night_light_multiplier(2_800), night_light_multiplier(4_500));
     }
 
+    #[test]
+    fn external_scene_append_is_an_unversioned_retained_boundary() {
+        let mut frame = FramePaint::full(Scene::new());
+        frame.revision = 42;
+        frame.previous_revision = Some(41);
+        frame.damage_regions = Some(vec![FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }]);
+        frame.force_full();
+        assert_eq!(frame.revision, 0);
+        assert_eq!(frame.previous_revision, None);
+        assert_eq!(frame.damage_regions, None);
+    }
+
     /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
     /// The exact byte-count would change with any rendering tweak, so we
     /// only assert the scene encoded *something*.
@@ -2483,3 +2819,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "frame_retained_tests.rs"]
+mod retained_tests;

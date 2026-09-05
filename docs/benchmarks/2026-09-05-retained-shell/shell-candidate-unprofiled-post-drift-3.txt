@@ -1,0 +1,39 @@
+Command: timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE /home/xaver/qos/target/ui-perf-comparison/shell-redraw-retained-default-release-20260905
+Started: 2026-09-05 18:10:02 UTC
+Completion collected: 2026-09-05 18:10:58 UTC
+Exit: 1
+
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+DRM bridge adapter: name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+DRM render/readback at 3840x2160: samples=1000 mean=40528us p99=107512us min=23394us max=385260us
+gates: mean<=8000us p99<=30000us (Fail)
+Vello render attempts: total=1000 sparse=999 full=1 recovery=0
+presentation: unavailable in this harness (no DRM/KMS device, dumb-buffer page flip, or display scanout timed)
+Error: "redraw gate failed: total=40528668us / 1000 samples, p99=107512us"
+Command exited with non-zero status 1
+	Command being timed: "env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE /home/xaver/qos/target/ui-perf-comparison/shell-redraw-retained-default-release-20260905"
+	User time (seconds): 109.37
+	System time (seconds): 25.43
+	Percent of CPU this job got: 324%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:41.58
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 530624
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 4
+	Minor (reclaiming a frame) page faults: 916057
+	Voluntary context switches: 217596
+	Involuntary context switches: 66397
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16320
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

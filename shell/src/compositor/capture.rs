@@ -446,7 +446,7 @@ impl CaptureExecutor {
         &mut self,
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &mut Scene,
-    ) -> Vec<CaptureOutcome> {
+    ) -> (Vec<CaptureOutcome>, bool) {
         let closed = frame_builder.take_closed_capture_mirrors();
         let mut outcomes: Vec<CaptureOutcome> = closed
             .iter()
@@ -782,8 +782,8 @@ impl CaptureExecutor {
         frame_builder.relayout();
         // Appended only after every mirror sampled the clean desktop, so a
         // region overlapping its own PiP never feeds back recursively.
-        frame_builder.draw_capture_overlays(clean_screen_scene);
-        outcomes
+        let capture_overlays_appended = frame_builder.draw_capture_overlays(clean_screen_scene);
+        (outcomes, capture_overlays_appended)
     }
 
     pub fn has_live_mirrors(&self) -> bool {
@@ -2148,7 +2148,8 @@ mod tests {
         let mut frame_builder = FrameBuilder::new((800, 600));
         let mut clean = frame_builder.paint();
 
-        let outcomes = executor.execute_ready(&mut frame_builder, &mut clean);
+        let (outcomes, _capture_overlays_appended) =
+            executor.execute_ready(&mut frame_builder, &mut clean);
         assert_eq!(
             outcomes,
             vec![CaptureOutcome::FloatingClosed {

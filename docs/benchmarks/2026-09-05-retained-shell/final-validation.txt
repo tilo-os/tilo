@@ -1,0 +1,162 @@
+Final source-frozen validation. Performance measurements had completed before this sequence. Earlier failures remain in validation.txt.
+
+Command: cargo test -p shell --lib compositor::frame::retained_tests --locked -- --nocapture --test-threads=1
+Exit: 0
+   Compiling shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 10s
+     Running unittests src/lib.rs (target/debug/deps/shell-8f7db88827fd0341)
+
+running 5 tests
+test compositor::frame::retained_tests::damage_policy_allows_only_a_bounded_quick_settings_change ... ok
+test compositor::frame::retained_tests::damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline ... ok
+test compositor::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2263 filtered out; finished in 20.40s
+
+
+
+Command: cargo test -p shell --lib compositor::backend::drm::paint --locked -- --nocapture --test-threads=1
+Exit: 0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+     Running unittests src/lib.rs (target/debug/deps/shell-8f7db88827fd0341)
+
+running 23 tests
+test compositor::backend::drm::paint::subrect_tests::destination_pitch_padding_is_untouched ... ok
+test compositor::backend::drm::paint::subrect_tests::offset_subrect_picks_the_right_source_region ... ok
+test compositor::backend::drm::paint::subrect_tests::overhanging_output_is_clamped_not_panicking ... ok
+test compositor::backend::drm::paint::subrect_tests::profiled_path_copies_only_the_output_viewport ... ok
+test compositor::backend::drm::paint::subrect_tests::rotate_90_maps_portrait_scene_to_landscape_scanout ... ok
+test compositor::backend::drm::paint::subrect_tests::whole_buffer_swizzles_like_paint_into_xrgb8888 ... ok
+test compositor::backend::drm::paint::tests::base_color_and_resize_invalidate_versioned_sparse_backing ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::bridge_handles_non_aligned_width_via_padding ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::bridge_paint_returns_non_empty_buffer_for_non_empty_scene ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::bridge_paint_uses_base_color_for_empty_scene ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::bridge_resize_changes_buffer_size ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::diagnostic_xrgb_counts_written_bytes_without_changing_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::diagnostic_zero_pitch_records_readback_but_no_output_bytes ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::failed_versioned_paint_invalidates_sparse_backing_before_retry ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::l_shaped_damage_does_not_expand_to_a_bounding_box ... ok
+test compositor::backend::drm::paint::tests::overflow_recovery_retries_before_xrgb_output ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 3176 KB. Set VELLO_BUMP_LOG=1 for detail.
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 3176 KB. Set VELLO_BUMP_LOG=1 for detail.
+ok
+test compositor::backend::drm::paint::tests::overlapping_disjoint_and_edge_damage_matches_dense_oracle ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::paint_into_xrgb8888_matches_paint_swizzled ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::paint_into_xrgb8888_respects_destination_pitch ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::revision_gap_and_empty_damage_force_full_readback ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::sparse_overflow_recovers_dense_without_publishing_partial_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 6208 KB. Set VELLO_BUMP_LOG=1 for detail.
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 6208 KB. Set VELLO_BUMP_LOG=1 for detail.
+ok
+test compositor::backend::drm::paint::tests::versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test compositor::backend::drm::paint::tests::zero_destination_pitch_unmaps_before_the_next_frame ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 2245 filtered out; finished in 10.18s
+
+
+
+Command: cargo clippy -p ui -p shell -p vello --lib --example ui-perf --example redraw_bench --example retained_scene_probe --locked --no-deps -- -D warnings
+Exit: 0
+    Checking ui v0.1.0 (/home/xaver/qos/ui)
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.32s
+
+
+Command: cargo fmt --all -- --check
+Exit: 0
+
+
+Command: cargo fmt --manifest-path vendor/vello/Cargo.toml -- --check
+Exit: 0
+
+
+Command: git diff --check
+Exit: 0

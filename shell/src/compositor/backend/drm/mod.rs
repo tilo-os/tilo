@@ -26,9 +26,12 @@ use std::sync::mpsc::Receiver;
 
 use vello::Scene;
 
-use paint::{SubrectSource, copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed};
+use paint::{
+    SceneDamage, SubrectSource, copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed,
+};
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
+use crate::compositor::frame::FramePaint;
 use crate::compositor::present::Presenter;
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry};
@@ -146,6 +149,26 @@ impl DrmPresenter {
             &mut self.paint,
             self.pointer,
             scene,
+            None,
+        );
+    }
+
+    fn render_frame(&mut self, frame: &FramePaint) {
+        self.drain_commands();
+        if self.blanked || self.paused {
+            return;
+        }
+        paint_scanouts(
+            &mut self.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            self.pointer,
+            &frame.scene,
+            (frame.revision != 0).then_some(SceneDamage {
+                revision: frame.revision,
+                previous_revision: frame.previous_revision,
+                regions: frame.damage_regions.as_deref(),
+            }),
         );
     }
 
@@ -239,6 +262,7 @@ fn paint_scanouts(
     paint: &mut Option<paint::VelloDrmBridge>,
     pointer: (f64, f64),
     scene: &Scene,
+    damage: Option<SceneDamage<'_>>,
 ) {
     if scanouts.is_empty() {
         return;
@@ -281,6 +305,16 @@ fn paint_scanouts(
             s.transform == settings_store::hardware::OutputTransform::Normal
                 && s.color_transform.is_none()
         });
+    // Fine damage is in the combined scene's native pixels. The existing fast path can still
+    // present scaled/offset logical metadata densely, but sparse repair must not assume that
+    // mapping is one-to-one until the renderer owns an explicit transform contract.
+    let sparse_coordinates_match = outputs.len() == 1
+        && outputs.first().is_some_and(|output| {
+            output.position == (0, 0)
+                && output.scale.to_bits() == 1.0_f32.to_bits()
+                && output.size == target_size
+                && output.transform == settings_store::hardware::OutputTransform::Normal
+        });
     if fast_path {
         // `fast_path` only goes true when `scanouts.first()` matched above,
         // so neither `first_mut()` nor `paint.as_mut()` can miss here.
@@ -289,7 +323,11 @@ fn paint_scanouts(
         };
         let cursor = Some(pointer);
         entry.scanout.present_into(cursor, |dst, pitch| {
-            if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+            let result = match damage.filter(|_| sparse_coordinates_match) {
+                Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),
+                None => bridge.paint_into_xrgb8888(scene, dst, pitch),
+            };
+            if let Err(e) = result {
                 tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
             }
         });
@@ -439,6 +477,10 @@ impl Presenter for DrmPresenter {
         self.render(scene);
     }
 
+    fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
+        self.render_frame(frame);
+    }
+
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
         for e in &mut self.scanouts {
@@ -451,6 +493,10 @@ impl Backend for DrmBackend {
     /// The hardware cursor plane composites itself; where there is none, the scanout draws the
     /// fallback into the framebuffer (`scanout::draw_cursor`) — either way the pointer is on screen without the scene carrying it.
     fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
+    fn supports_retained_scene_damage(&self) -> bool {
         true
     }
 
@@ -468,6 +514,26 @@ impl Backend for DrmBackend {
             &mut self.paint,
             pointer,
             scene,
+            None,
+        );
+    }
+
+    fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {
+        if self.blanked || self.paused {
+            return;
+        }
+        let pointer = self.inner.dispatch.pointer;
+        paint_scanouts(
+            &mut self.inner.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            pointer,
+            &frame.scene,
+            (frame.revision != 0).then_some(SceneDamage {
+                revision: frame.revision,
+                previous_revision: frame.previous_revision,
+                regions: frame.damage_regions.as_deref(),
+            }),
         );
     }
 

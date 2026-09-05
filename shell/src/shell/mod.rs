@@ -121,6 +121,16 @@ use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
+
+/// Stable addresses of the three production workspace layers. The enclosing widget tree owns
+/// these boxes; `ShellOverlayHost` uses them only for its sequential retained-scene draw pass.
+/// Hand-built roots deliberately do not provide this capability and stay conservatively dense.
+#[derive(Clone, Copy)]
+pub(crate) struct WorkspaceSceneParts {
+    pub backdrop: *mut dyn Widget,
+    pub topbar: *mut topbar_chrome::TopBarChrome,
+    pub workspace: *mut dyn Widget,
+}
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
 pub use collaboration_launchpad::{
@@ -1049,6 +1059,19 @@ pub fn build_workspace_root(
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
 ) {
+    let (root, rows, _) = build_workspace_root_with_scene_parts(tree, records, chrome);
+    (root, rows)
+}
+
+pub(crate) fn build_workspace_root_with_scene_parts(
+    tree: &WorkspaceTree,
+    records: &ui::record::RecordStore,
+    chrome: &chrome_state::Chrome,
+) -> (
+    Box<dyn Widget>,
+    std::collections::HashMap<state::StripId, *mut GroupRow>,
+    WorkspaceSceneParts,
+) {
     let strips_for_view: Vec<String> = tree
         .active_workspace()
         .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
@@ -1062,8 +1085,9 @@ pub fn build_workspace_root(
             .unwrap_or(0),
     ));
 
-    let topbar: Box<dyn Widget> =
+    let mut topbar =
         Box::new(topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()));
+    let topbar_ptr = &raw mut *topbar;
 
     let mut content_col = Column::new()
         // Fills the viewport height remaining AFTER the topbar's 40px
@@ -1129,7 +1153,7 @@ pub fn build_workspace_root(
     // Full-screen siblings-underneath layer so the translucent topbar
     // (alpha 204) picks up the gradient tint behind it — a Vello stand-in
     // for backdrop-blur.
-    let backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
+    let mut backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
             Box::new(desktop_backdrop::DesktopBackdrop::for_workspace(
@@ -1137,10 +1161,10 @@ pub fn build_workspace_root(
             )) as Box<dyn Widget>
         },
     );
-    let foreground_col = Column::new()
-        .with_no_padding()
-        .push(topbar)
-        .push(Box::new(content_col));
+    let backdrop_ptr = &raw mut *backdrop;
+    let mut workspace: Box<dyn Widget> = Box::new(content_col);
+    let workspace_ptr = &raw mut *workspace;
+    let foreground_col = Column::new().with_no_padding().push(topbar).push(workspace);
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
     let root: Box<dyn Widget> = Box::new(
@@ -1149,7 +1173,15 @@ pub fn build_workspace_root(
             .with_child(Box::new(stack))
             .filling(),
     );
-    (root, group_row_ptrs)
+    (
+        root,
+        group_row_ptrs,
+        WorkspaceSceneParts {
+            backdrop: backdrop_ptr,
+            topbar: topbar_ptr,
+            workspace: workspace_ptr,
+        },
+    )
 }
 
 /// As [`build_nirios_overlay_host_with_handle`], but with the store the
@@ -1186,7 +1218,8 @@ pub fn build_nirios_overlay_host_with_records(
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }
 
-    let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
+    let (root, group_row_ptrs, scene_parts) =
+        build_workspace_root_with_scene_parts(&tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
@@ -1218,6 +1251,7 @@ pub fn build_nirios_overlay_host_with_records(
         .with_sidebar(sidebar)
         .with_sidebar_top(sidebar_top)
         .with_group_row_ptrs(group_row_ptrs)
+        .with_workspace_scene_parts(scene_parts)
         .with_content_workspace(tree.active.raw())
         .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
