@@ -37,6 +37,11 @@ pub struct ScanStats {
     pub unparseable: usize,
     /// Dropped because a higher-precedence directory already provided the same ID.
     pub shadowed: usize,
+    /// A differently-named desktop file described the exact same visible
+    /// application command.  Packaging aliases are common when an app moves
+    /// between distribution and Flatpak ownership; presenting both is not a
+    /// useful second application.
+    pub duplicate_aliases: usize,
     /// Removed by a `Hidden=true` tombstone.
     pub tombstoned: usize,
     /// `Type=` was not `Application`.
@@ -182,7 +187,16 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             stats.try_exec_missing = stats.try_exec_missing.saturating_add(1);
             continue;
         }
-        entries.push(entry);
+        let duplicate = entries.iter().any(|existing| {
+            existing.name.eq_ignore_ascii_case(&entry.name)
+                && existing.exec == entry.exec
+                && existing.source == entry.source
+        });
+        if duplicate {
+            stats.duplicate_aliases = stats.duplicate_aliases.saturating_add(1);
+        } else {
+            entries.push(entry);
+        }
     }
     entries.sort_by(|a, b| {
         a.name
@@ -325,6 +339,34 @@ mod tests {
         );
         assert_eq!(scan.entries[0].name, "Mine");
         assert_eq!(scan.stats.shadowed, 1);
+    }
+
+    #[test]
+    fn differently_named_files_for_the_same_application_are_one_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = "[Desktop Entry]\nType=Application\nName=Chat\n\
+                    Exec=/usr/bin/chat %U\nStartupWMClass=Chat\n";
+        write(tmp.path(), "vendor-chat.desktop", body);
+        write(tmp.path(), "chat.desktop", body);
+
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
+        assert_eq!(scan.stats.duplicate_aliases, 1);
+    }
+
+    #[test]
+    fn distinct_modes_of_one_program_remain_distinct_apps() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "editor.desktop", &app("Editor"));
+        write(
+            tmp.path(),
+            "editor-safe.desktop",
+            "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true --safe\n",
+        );
+
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 2);
+        assert_eq!(scan.stats.duplicate_aliases, 0);
     }
 
     #[test]

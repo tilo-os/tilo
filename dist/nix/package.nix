@@ -85,7 +85,8 @@ rustPlatform.buildRustPackage rec {
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/qos-session" \
       --replace-fail 'QOS_SHELL=/usr/bin/qos-shell' "QOS_SHELL=$out/bin/qos-shell" \
-      --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl"
+      --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl" \
+      --replace-fail 'SYSTEMD_CAT=/usr/bin/systemd-cat' "SYSTEMD_CAT=${systemd}/bin/systemd-cat"
     substituteInPlace "$out/share/wayland-sessions/qos.desktop" \
       --replace-fail 'Exec=/usr/libexec/qos-session' "Exec=$out/libexec/qos-session" \
       --replace-fail 'TryExec=/usr/bin/qos-shell' "TryExec=$out/bin/qos-shell"

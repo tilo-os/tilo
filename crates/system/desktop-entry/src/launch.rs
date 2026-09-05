@@ -63,6 +63,16 @@ const INHERITED_ENV: &[&str] = &[
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
     "DBUS_SESSION_BUS_ADDRESS",
+    // Input-method bridges are desktop interoperability, not qOS authority.
+    // Omitting these makes compose/IME input fail specifically in Electron,
+    // GTK and Qt host applications while native qOS fields keep working.
+    "XMODIFIERS",
+    "GTK_IM_MODULE",
+    "QT_IM_MODULE",
+    // Qt 6 on Fedora advertises its ordered Wayland/IBus fallback through
+    // the plural spelling; keeping only QT_IM_MODULE loses that selection.
+    "QT_IM_MODULES",
+    "SDL_IM_MODULE",
 ];
 
 /// Variables that are always cleared, whatever the parent had. `DISPLAY` and
@@ -262,7 +272,18 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         "XDG_CURRENT_DESKTOP".to_string(),
         XDG_CURRENT_DESKTOP.to_string(),
     );
+    env.insert(
+        "XDG_SESSION_DESKTOP".to_string(),
+        XDG_CURRENT_DESKTOP.to_string(),
+    );
     env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
+    // Electron releases differ on whether Wayland auto-selection is the
+    // default.  This asks Electron to inspect the authoritative Wayland/X11
+    // pair above instead of inheriting a stale backend preference.
+    env.insert(
+        "ELECTRON_OZONE_PLATFORM_HINT".to_string(),
+        "auto".to_string(),
+    );
     env.insert(HOST_APP_ENV.to_string(), "1".to_string());
     for key in CLEARED_ENV {
         env.remove(*key);
@@ -408,6 +429,50 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn host_apps_keep_input_methods_and_select_the_qos_desktop() {
+        let previous = [
+            "XMODIFIERS",
+            "GTK_IM_MODULE",
+            "QT_IM_MODULE",
+            "QT_IM_MODULES",
+            "SDL_IM_MODULE",
+        ]
+        .map(|key| {
+            let value = std::env::var_os(key);
+            unsafe { std::env::set_var(key, "ibus-test") };
+            (key, value)
+        });
+        let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+        for key in [
+            "XMODIFIERS",
+            "GTK_IM_MODULE",
+            "QT_IM_MODULE",
+            "QT_IM_MODULES",
+            "SDL_IM_MODULE",
+        ] {
+            assert_eq!(launch.env.get(key).map(String::as_str), Some("ibus-test"));
+        }
+        assert_eq!(
+            launch.env.get("XDG_SESSION_DESKTOP").map(String::as_str),
+            Some("nirios")
+        );
+        assert_eq!(
+            launch
+                .env
+                .get("ELECTRON_OZONE_PLATFORM_HINT")
+                .map(String::as_str),
+            Some("auto")
+        );
+        for (key, value) in previous {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+    }
+
+    #[test]
     fn a_document_reaches_the_command_line() {
         let launch = plan(
             &spotify(),
@@ -477,5 +542,46 @@ mod tests {
             assert!(vars.contains(k), "{k} must reach the child");
         }
         assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
+    }
+
+    #[test]
+    fn a_real_host_process_receives_only_the_planned_desktop_handoff() {
+        let probe = entry(
+            "[Desktop Entry]\nType=Application\nName=Environment probe\nExec=/usr/bin/env\n",
+            "org.example.EnvProbe",
+        );
+        let launch = plan(
+            &probe,
+            &LaunchEnv {
+                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-qos")),
+                x11_display: Some(":71".into()),
+                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                ..Default::default()
+            },
+        )
+        .expect("plans");
+        let output = launch.to_command().output().expect("run environment probe");
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
+        for expected in [
+            "WAYLAND_DISPLAY=wayland-qos",
+            "XDG_RUNTIME_DIR=/run/user/1000",
+            "DISPLAY=:71",
+            "XDG_CURRENT_DESKTOP=nirios",
+            "XDG_SESSION_DESKTOP=nirios",
+            "ELECTRON_OZONE_PLATFORM_HINT=auto",
+            "QOS_HOST_APP=1",
+        ] {
+            assert!(
+                stdout.lines().any(|line| line == expected),
+                "missing {expected}"
+            );
+        }
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.starts_with("QOS_WORKSPACE_ID=")),
+            "portal attribution must never become ambient workspace authority"
+        );
     }
 }
