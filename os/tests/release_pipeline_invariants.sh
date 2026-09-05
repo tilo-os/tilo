@@ -38,6 +38,11 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
+grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+  && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
+  || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \
@@ -75,13 +80,12 @@ grep -Fq 'with_browser=0' "$os" \
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
-  && ok 'imager branch validation uses one native smoke lane' \
-  || bad 'imager changes still allocate the complete host matrix'
-
-python3 "$repo/tools/check_workflow_package_paths.py" \
-  imager .forgejo/workflows/release-imager.yml \
-  && ok 'imager path filters match its live workspace dependency closure' \
-  || bad 'imager dependency path filters are stale'
+  && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
+  && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
+  && ! grep -Fq 'pull_request:' "$imager" \
+  && ! grep -Fq 'branches: ["main"]' "$imager" \
+  && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
+  || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \

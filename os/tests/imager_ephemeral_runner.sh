@@ -19,10 +19,10 @@ else
 fi
 
 case "$(uname -s):$(uname -m)" in
-  Linux:x86_64|Linux:amd64) label=runner ;;
-  Linux:aarch64|Linux:arm64) label=runner-arm64 ;;
-  Darwin:x86_64|Darwin:amd64) label=macos-x64 ;;
-  Darwin:aarch64|Darwin:arm64) label=macos-arm64 ;;
+  Linux:x86_64|Linux:amd64) label=imager-linux-x86_64 ;;
+  Linux:aarch64|Linux:arm64) label=imager-linux-aarch64 ;;
+  Darwin:x86_64|Darwin:amd64) label=imager-macos-x86_64 ;;
+  Darwin:aarch64|Darwin:arm64) label=imager-macos-aarch64 ;;
   *) printf 'skip  unsupported test host architecture\n'; exit 0 ;;
 esac
 
@@ -97,8 +97,8 @@ fi
 [ ! -e "$trusted/metadata/uuid" ] && [ ! -e "$trusted/metadata/token" ]
 
 install_metadata
-wrong=runner-arm64
-[ "$label" = runner ] || wrong=runner
+wrong=imager-linux-aarch64
+[ "$label" = imager-linux-x86_64 ] || wrong=imager-linux-x86_64
 if QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_TEST_ARGUMENTS="$tmp/rejected" \
     "$repo/tools/run-imager-ephemeral-runner.sh" "$wrong" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then

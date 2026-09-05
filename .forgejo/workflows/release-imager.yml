@@ -1,80 +1,12 @@
 name: Release / imager
 
-# Pushes and pull requests continuously prove the Linux x86_64 smoke lane. An
-# imager-v* tag expands to all native hosts; those jobs require protected credentials and
-# fail closed unless the resulting package is signed (and notarized on macOS).
+# Ordinary commits exercise imager code and release-policy invariants in
+# check.yml. This workflow allocates native release hosts only for an explicit
+# manual rehearsal or an imager-v* tag. Tags expand to every native host and
+# fail closed unless packages are signed (and notarized on macOS).
 on:
   push:
-    branches: ["main"]
     tags: ["imager-v*"]
-    paths:
-      - "apps/imager/**"
-      - "ui/**"
-      - "crates/app/qos-app/**"
-      - "crates/collab/actions/**"
-      - "crates/collab/collab-types/**"
-      - "crates/collab/threshold-identity/**"
-      - "crates/dev/headless-schema/**"
-      - "crates/dev/ui-graph/**"
-      - "crates/doc/qdoc/**"
-      - "crates/media/**"
-      - "crates/runtime/cli/**"
-      - "crates/runtime/runtime-collab/**"
-      - "crates/runtime/runtime-fs/**"
-      - "crates/runtime/runtime-identity/**"
-      - "crates/runtime/runtime-portal/**"
-      - "crates/system/app-state/**"
-      - "crates/system/atomic-file/**"
-      - "crates/system/qos-startup-metrics/**"
-      - "crates/system/settings-store/**"
-      - "crates/system/tts/**"
-      - "crates/text/spellcheck/**"
-      - "vendor/vello/**"
-      - "vendor/vello_encoding/**"
-      - "vendor/winit/**"
-      - "docs/installer-walkthrough.md"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "os/**"
-      - "shell/**"
-      - ".forgejo/workflows/release-imager.yml"
-      - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "apps/imager/**"
-      - "ui/**"
-      - "crates/app/qos-app/**"
-      - "crates/collab/actions/**"
-      - "crates/collab/collab-types/**"
-      - "crates/collab/threshold-identity/**"
-      - "crates/dev/headless-schema/**"
-      - "crates/dev/ui-graph/**"
-      - "crates/doc/qdoc/**"
-      - "crates/media/**"
-      - "crates/runtime/cli/**"
-      - "crates/runtime/runtime-collab/**"
-      - "crates/runtime/runtime-fs/**"
-      - "crates/runtime/runtime-identity/**"
-      - "crates/runtime/runtime-portal/**"
-      - "crates/system/app-state/**"
-      - "crates/system/atomic-file/**"
-      - "crates/system/qos-startup-metrics/**"
-      - "crates/system/settings-store/**"
-      - "crates/system/tts/**"
-      - "crates/text/spellcheck/**"
-      - "vendor/vello/**"
-      - "vendor/vello_encoding/**"
-      - "vendor/winit/**"
-      - "docs/installer-walkthrough.md"
-      - "Cargo.toml"
-      - "rust-toolchain.toml"
-      - "os/**"
-      - "shell/**"
-      - ".forgejo/workflows/release-imager.yml"
-      - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
   workflow_dispatch:
     inputs:
       full_native:
@@ -85,25 +17,35 @@ on:
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
-  # pointers, so tags share a non-cancelling lane. Branch validation is scoped
-  # to its ref and superseded by the next push; an unavailable native runner
-  # must not leave stale validations queued ahead of the current commit.
+  # pointers, so tags share a non-cancelling lane. Repeated manual rehearsals
+  # on one ref supersede stale queued work when a native host is unavailable.
   group: release-imager-${{ startsWith(github.ref, 'refs/tags/imager-v') && 'promotion' || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
 
 jobs:
+  plan:
+    runs-on: runner
+    outputs:
+      linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
+    steps:
+      - name: Select native Linux lanes
+        id: lanes
+        env:
+          FULL_NATIVE: ${{ github.event.inputs.full_native }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
   medium:
-    # Build and boot-test install media before promotion, on trusted main
-    # pushes where the private image credential is available. Pull requests
-    # still exercise the cheap invariants without receiving that credential.
-    if: github.event_name != 'pull_request'
+    # Build and boot-test install media only on dedicated, native hosts. The
+    # generic `runner` label executes in a container without Podman, KVM, or
+    # DRI and must never be eligible for this job.
+    needs: plan
     strategy:
-      matrix:
-        include:
-          - arch: x86_64
-            runner: runner
-          - arch: aarch64
-            runner: runner-arm64
+      matrix: ${{ fromJSON(needs.plan.outputs.linux-matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
       REGISTRY_AUTH_FILE: /tmp/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
@@ -246,11 +188,10 @@ jobs:
           if-no-files-found: error
 
   catalog:
-    if: always()
-    needs: medium
+    needs: [plan, medium]
     runs-on: runner
     outputs:
-      linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
+      linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -265,16 +206,6 @@ jobs:
             mkdir -p dist/qos-installer-catalog
             cp apps/imager/release-catalog.json \
               dist/qos-installer-catalog/qos-installer-catalog-v1.json
-          fi
-      - name: Select native lanes
-        id: lanes
-        env:
-          FULL_NATIVE: ${{ github.event.inputs.full_native }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${FULL_NATIVE:-false} == true ]]; then
-            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner"},{"arch":"aarch64","runner":"runner-arm64"}]' >> "$GITHUB_OUTPUT"
-          else
-            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -467,7 +398,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     needs: catalog
     enable-openid-connect: true
-    runs-on: windows
+    runs-on: imager-windows-x86_64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -579,9 +510,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: macos-x64
+            runner: imager-macos-x86_64
           - arch: aarch64
-            runner: macos-arm64
+            runner: imager-macos-aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -781,7 +712,7 @@ jobs:
   homebrew:
     if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: publish
-    runs-on: macos-arm64
+    runs-on: imager-macos-aarch64
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -816,13 +747,13 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: runner
+          - runner: imager-linux-x86_64
             package_kind: formula
-          - runner: runner-arm64
+          - runner: imager-linux-aarch64
             package_kind: formula
-          - runner: macos-x64
+          - runner: imager-macos-x86_64
             package_kind: cask
-          - runner: macos-arm64
+          - runner: imager-macos-aarch64
             package_kind: cask
     runs-on: ${{ matrix.runner }}
     steps:

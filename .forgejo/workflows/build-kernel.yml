@@ -113,7 +113,11 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
           cache-from: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:latest
-          cache-to: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:latest,mode=max
+          # The kernel builder's intermediate source tree is tens of GiB.
+          # Export only final-stage dependencies: mode=max duplicated that
+          # tree during export and exhausted the runner after a successful
+          # compile.
+          cache-to: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:latest,mode=min
           provenance: false
 
       # Same cosign-attach flow as the OS image (offline-friendly, no Rekor
