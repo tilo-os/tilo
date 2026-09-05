@@ -7,7 +7,19 @@
 //! [`State`] lives for the compositor's lifetime; [`ClientState`] is
 //! per-client data attached at `insert_client` time. Trait impls and `delegate_*!` macros follow.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, Copy)]
+enum ForeignCommitCapture {
+    NoBuffer,
+    Removed,
+    DirectBuffer,
+    Dmabuf(u64),
+}
+
+#[derive(Default)]
+struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -1538,19 +1550,50 @@ impl State {
     /// so its tab can paint the client's actual pixels.
     ///
     /// Split out of [`CompositorHandler::commit`] to keep the hook a plain
-    /// dispatch. `wl_shm` and dmabuf are both handled by
-    /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`]; a buffer neither path can decode is recorded as an error the tile renders, never a silently stale frame.
+    /// dispatch. `wl_shm` is copied here; a dmabuf worker result was staged by
+    /// the pre-commit barrier and is activated here. A buffer neither path can
+    /// decode is recorded as an error the tile renders, never a silently stale frame.
     fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
+            // SurfaceAttributes.current().buffer is intentionally aggregated
+            // until a compositor clears it; therefore it may still contain a
+            // previous NewBuffer on a damage-only commit. Consume the marker
+            // created by this exact pre-commit hook instead of inferring the
+            // commit kind from that sticky current state.
+            let association = states
+                .data_map
+                .get::<ForeignCommitCaptures>()
+                .and_then(|commits| {
+                    commits
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pop_front()
+                })
+                .unwrap_or(ForeignCommitCapture::NoBuffer);
+            if matches!(association, ForeignCommitCapture::NoBuffer) {
+                return;
+            }
+            if matches!(association, ForeignCommitCapture::Removed) {
+                store().clear_frame(surface_id);
+                return;
+            }
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    if let CaptureOutcome::Failed(reason) =
-                        store().capture_commit(surface_id, buffer)
-                    {
+                    let outcome = match association {
+                        ForeignCommitCapture::DirectBuffer => {
+                            store().capture_commit(surface_id, buffer)
+                        }
+                        ForeignCommitCapture::Dmabuf(token) => {
+                            store().capture_commit_associated(surface_id, buffer, Some(token))
+                        }
+                        ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
+                    };
+                    if let CaptureOutcome::Failed(reason) = outcome {
                         tracing::warn!(
                             target: "shell::compositor::foreign",
                             surface_id,
@@ -2172,6 +2215,71 @@ impl RemoteInputSink for State {
     }
 }
 
+impl State {
+    fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
+        let surface_id = crate::compositor::state::surface_id(surface);
+        let captured_here = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
+            .is_some()
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id);
+        if !captured_here {
+            return;
+        }
+        let association = wl_compositor::with_states(surface, |states| {
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
+            let buffer = match &attrs.pending().buffer {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer,
+                Some(wl_compositor::BufferAssignment::Removed) => {
+                    return ForeignCommitCapture::Removed;
+                }
+                None => return ForeignCommitCapture::NoBuffer,
+            };
+            let Some(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned() else {
+                return ForeignCommitCapture::DirectBuffer;
+            };
+            drop(attrs);
+            let Some(client) = surface.client() else {
+                return ForeignCommitCapture::NoBuffer;
+            };
+            if let Some((token, barrier)) = crate::compositor::foreign::store()
+                .prepare_dmabuf_capture(surface_id, client, dmabuf)
+            {
+                wl_compositor::add_blocker(surface, barrier);
+                ForeignCommitCapture::Dmabuf(token)
+            } else {
+                ForeignCommitCapture::NoBuffer
+            }
+        });
+        wl_compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .insert_if_missing_threadsafe(ForeignCommitCaptures::default);
+            if let Some(commits) = states.data_map.get::<ForeignCommitCaptures>() {
+                commits
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_back(association);
+            }
+        });
+    }
+
+    /// Re-evaluate transactions whose off-thread buffer capture completed.
+    /// Called by the compositor loop on its owning thread; worker threads only
+    /// flip barriers and enqueue owning client handles.
+    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) {
+        let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
+        for client in completed {
+            let Some(client_state) = client.get_data::<ClientState>() else {
+                continue;
+            };
+            client_state.compositor_state.blocker_cleared(self, display);
+        }
+    }
+}
+
 /// Per-client state stored in the `wayland-server` `Client` user-data slot.
 /// `CompositorHandler::client_compositor_state` must hand back a
 /// `&CompositorClientState`; smithay's convention is to stash one inside a `ClientData` impl so it's lifetime-tied to the client.
@@ -2289,6 +2397,12 @@ impl CompositorHandler for State {
             crate::compositor::state::surface_id(surface),
             surface.clone(),
         );
+        // A dmabuf remains client-owned until wl_buffer.release. Capture it
+        // from pending state on a worker, and block this commit from replacing
+        // (and releasing) the previous buffer until that read is done.
+        wl_compositor::add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
+            state.prepare_pending_foreign_capture(surface);
+        });
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -2460,7 +2574,9 @@ impl DmabufHandler for State {
         // [`smithay::wayland::dmabuf::get_dmabuf`]. We don't stash the
         // Dmabuf here since we don't yet know which surface it will land
         // on — a client can import DMABUFs eagerly and attach them later.
-        // Per-surface caches are populated at commit time (`foreign::ForeignFrameStore::capture_commit` for tiles, `SurfaceTracker::note_dmabuf_committed` for share sessions).
+        // Per-surface caches are populated around commit time (the foreign
+        // tile pre-commit worker plus `capture_commit`, and
+        // `SurfaceTracker::note_dmabuf_committed` for share sessions).
         let _ = notifier.successful::<Self>();
         tracing::debug!(
             target: "shell::compositor::dmabuf",
