@@ -94,9 +94,9 @@ concurrency:
 jobs:
   medium:
     # Build and boot-test install media before promotion, on trusted main
-    # pushes where the private image credential is available. Pull requests
-    # still exercise the cheap invariants without receiving that credential.
-    if: github.event_name != 'pull_request'
+    # release tags or an explicit full-native dispatch. Ordinary main pushes
+    # run the x86_64 smoke lane and must not queue unavailable ARM64 work.
+    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     strategy:
       matrix:
         include:
