@@ -38,6 +38,11 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
+grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+  && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
+  || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \
@@ -75,13 +80,12 @@ grep -Fq 'with_browser=0' "$os" \
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
-  && ok 'imager branch validation uses one native smoke lane' \
-  || bad 'imager changes still allocate the complete host matrix'
-
-python3 "$repo/tools/check_workflow_package_paths.py" \
-  imager .forgejo/workflows/release-imager.yml \
-  && ok 'imager path filters match its live workspace dependency closure' \
-  || bad 'imager dependency path filters are stale'
+  && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
+  && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
+  && ! grep -Fq 'pull_request:' "$imager" \
+  && ! grep -Fq 'branches: ["main"]' "$imager" \
+  && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
+  || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
@@ -106,6 +110,9 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QOS_APP_COLLECTION_URL_AARCH64' "$os" \
   && grep -Fq 'enable-openid-connect: true' "$os" \
   && grep -Fq 'QOS_OS_APP_COLLECTION_AUDIENCE' "$os" \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)' "$os")" -eq 2 \
+  && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 2 \
+  && test "$(grep -Fc -- "--proto '=http' --fail --retry 3" "$os")" -eq 2 \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
   && grep -Fq 'Authorization: Bearer $jwt' "$os" \
   && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
@@ -118,6 +125,8 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \
+  && grep -Fq 'sccache backend unavailable; compiling normally' "$repo/os/Containerfile" \
+  && grep -Fq 'export RUSTC_WRAPPER=' "$repo/os/Containerfile" \
   && grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile.builder" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile.builder" \
   && ok 'OS and CI builder images install checksum-pinned native cache clients' \
