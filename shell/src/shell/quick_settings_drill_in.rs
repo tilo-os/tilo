@@ -42,6 +42,13 @@ pub struct DrillInList {
 
 impl DrillInList {
     pub fn layout(&mut self, panel: Rect, row_count: usize) {
+        self.layout_from(panel, row_count, LIST_TOP);
+    }
+
+    /// Layout a list below a pane-owned compact control.  Wi-Fi uses this
+    /// for the Hotspot row so a nonessential radio does not occupy the root
+    /// dashboard while remaining discoverable with the rest of Wi-Fi.
+    pub fn layout_from(&mut self, panel: Rect, row_count: usize, list_top: f64) {
         self.back = Rect::new(
             panel.x0 + 8.0,
             panel.y0 + 8.0,
@@ -50,7 +57,7 @@ impl DrillInList {
         );
         self.rows.clear();
         self.rows.extend((0..row_count).map(|index| {
-            let y = panel.y0 + LIST_TOP + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            let y = panel.y0 + list_top + usize_to_f64_lossy(index) * ROW_HEIGHT;
             Rect::new(
                 panel.x0 + ROW_INSET,
                 y,
