@@ -407,6 +407,12 @@ impl Widget for Column {
             .collect()
     }
 
+    fn mark_drawn(&mut self) {
+        for child in &mut self.children {
+            child.mark_drawn();
+        }
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }

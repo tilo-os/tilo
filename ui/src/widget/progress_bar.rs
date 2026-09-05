@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn indeterminate_wrap_keeps_disconnected_damage_regions_separate() {
+    fn indeterminate_wrap_damage_is_available_immediately_after_draw() {
         use std::time::Duration;
 
         let mut bar = ProgressBar::indeterminate();
@@ -634,6 +634,9 @@ mod tests {
         bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
         bar.start = Instant::now() - Duration::from_millis(300);
         bar.dirty = false;
+        // The frame owner must collect immediately after `draw`, before it
+        // clears dirty flags. `draw` is what records this frame's outgoing
+        // and incoming segment geometry.
         let _ = render(&mut bar);
 
         let mut regions = Vec::new();
