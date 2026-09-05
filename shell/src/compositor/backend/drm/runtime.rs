@@ -1895,8 +1895,12 @@ impl KeyboardXkb {
     fn repeat_event(&self, keycode: xkb::Keycode) -> Option<WindowEvent> {
         let sym = self.state.key_get_one_sym(keycode);
         let logical = keysym_to_winit_key(sym.raw())?;
-        let mut input =
-            keyboard_input_event(logical, text_for(sym.key_char(), self.current_mods()), true);
+        let mut input = keyboard_input_event(
+            logical,
+            text_for(sym.key_char(), self.current_mods()),
+            true,
+            keycode.raw().saturating_sub(8),
+        );
         if let WindowEvent::KeyboardInput { event, .. } = &mut input {
             event.repeat = true;
         }
