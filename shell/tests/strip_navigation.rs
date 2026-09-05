@@ -629,14 +629,14 @@ fn the_apps_filter_does_not_outlive_the_picker() {
 }
 
 #[test]
-fn bracket_keys_cycle_tabs_inside_the_focused_group() {
+fn ctrl_tab_cycles_tabs_inside_the_focused_group() {
     let mut h = Harness::new();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
 
-    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
     assert_eq!(
         h.active_window(),
         (h.groups[0], h.tabs[0][0]),
@@ -680,6 +680,105 @@ fn shifted_arrow_reorders_the_focused_group() {
     };
     assert_eq!(order[0], h.groups[1]);
     assert_eq!(order[1], h.groups[0]);
+}
+
+/// The visible close button must be the same durable operation as Super+W.
+/// This was a separate widget-only path: it faded the tab, never removed it
+/// from the tree and never sent xdg_toplevel.close, so the next unrelated
+/// revision visibly restored the window.
+#[test]
+fn clicking_close_commits_the_exact_surface_and_survives_restart() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
+    let tab = h.tabs[0][0];
+    {
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+            app_id: "com.openai.chatgpt".into(),
+            surface_id: 41,
+        };
+        // Real sessions always carry a room document. Lifecycle operations
+        // intentionally refuse a cache-only mutation because the next peer
+        // revision would undo it.
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+    }
+
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(tab))
+        .expect("active tab must expose a real close hit target after layout");
+    h.click(close.center());
+
+    {
+        let state = h.chrome.borrow();
+        let tree = state.tree();
+        let live_tabs = &tree.workspaces[0].strips[0].window_groups[0].tabs;
+        assert!(
+            live_tabs.iter().all(|candidate| candidate.id != tab),
+            "the pointer close must remove the tab from the durable tree in the same event"
+        );
+    }
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![41],
+        "the close must address the exact surface, not an app id shared by other windows"
+    );
+
+    // Both historical resurrection edges: a later chrome revision and a
+    // fresh compositor load.
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "an unrelated revision must not restore the clicked-close tab"
+    );
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("pointer close must atomically persist a loadable state");
+    assert!(
+        restarted.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "a normal restart must keep the clicked-close tab absent"
+    );
+
+    // Close the remaining tab through its newly laid-out hit target. The
+    // whole group must disappear durably as one consequence of its last
+    // window closing; this is the live-session "closed group came back"
+    // failure, not merely the two-tabs case above.
+    let remaining = h.tabs[0][1];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(remaining))
+        .expect("remaining tab must expose a close hit target after resync");
+    h.click(close.center());
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "closing the last tab must remove its whole group in the same event"
+    );
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("last-tab close must atomically persist a loadable state");
+    assert!(
+        restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "revision plus restart must not resurrect a group closed by pointer"
+    );
 }
 
 #[test]

@@ -222,6 +222,10 @@ pub struct WindowGroup {
     pending_search_open: Option<u64>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
+    /// Close-button requests still awaiting the shell's durable workspace
+    /// and client-lifecycle transaction. The widget owns the fade; the
+    /// shell owns whether a window actually remains open.
+    pending_close_commit: Vec<u64>,
     /// `None` while alive; `Some` once the last tab-close drains with no
     /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
     /// once `close_complete()` is true.
@@ -278,6 +282,7 @@ impl WindowGroup {
             pending_tab_reorder: None,
             pending_search_open: None,
             pending_new_tab: None,
+            pending_close_commit: Vec::new(),
         }
     }
     pub fn width(&self) -> WindowWidth {
@@ -422,6 +427,13 @@ impl WindowGroup {
         self.pending_new_tab.take()
     }
 
+    /// Drain user-initiated close intents for the shell lifecycle owner.
+    /// Programmatic closes do not enter this queue because their caller has
+    /// already committed the workspace mutation before starting the fade.
+    pub fn take_pending_close_commits(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.pending_close_commit)
+    }
+
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
@@ -533,6 +545,7 @@ impl WindowGroup {
         // Drop lingering close-fade state for the moved id, or a stale
         // entry keeps `needs_animation_frame` pumping until it ages out.
         self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
         self.bar.finalize_close(tab_id);
         Some((desc, host))
     }
@@ -579,6 +592,7 @@ impl WindowGroup {
             pending_tab_reorder: None,
             pending_search_open: None,
             pending_new_tab: None,
+            pending_close_commit: Vec::new(),
         }
     }
 
@@ -707,6 +721,11 @@ impl WindowGroup {
     }
 
     #[cfg(any(test, debug_assertions))]
+    pub fn close_rect_for_tests(&self, tab_id: u64) -> Option<Rect> {
+        self.bar.close_rect_for_tests(tab_id)
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
@@ -831,9 +850,15 @@ impl WindowGroup {
                 // chrome stops painting over a tile it no longer owns.
                 let active_id = self.bar.active_id();
                 self.bar.start_closing(active_id);
+                // This direct-input branch returns before
+                // `drain_bar_signals`, so consume and publish the close here.
+                let _ = self.bar.take_close();
                 self.closing_hosts
                     .entry(active_id)
                     .or_insert_with(Instant::now);
+                if !self.pending_close_commit.contains(&active_id) {
+                    self.pending_close_commit.push(active_id);
+                }
                 self.maximized = false;
                 self.pending_maximize_change = Some(false);
                 true
@@ -936,6 +961,9 @@ impl WindowGroup {
             self.closing_hosts
                 .entry(close_id)
                 .or_insert_with(Instant::now);
+            if !self.pending_close_commit.contains(&close_id) {
+                self.pending_close_commit.push(close_id);
+            }
             handled = true;
         }
 
@@ -3343,6 +3371,11 @@ mod tests {
         assert!(
             g.has_closing_host(1),
             "closing_hosts must carry the active id so the host fade runs",
+        );
+        assert_eq!(
+            g.take_pending_close_commits(),
+            vec![1],
+            "the maximized close must also reach the shell's durable lifecycle path",
         );
         assert!(
             !g.is_closing(),
