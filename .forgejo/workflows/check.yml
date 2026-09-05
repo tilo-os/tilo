@@ -141,6 +141,8 @@ jobs:
 
   affected:
     needs: select
+    # Force Forgejo to resolve planner outputs before expanding the matrix.
+    if: always() && needs.select.result == 'success'
     runs-on: runner
     timeout-minutes: 120
     strategy:

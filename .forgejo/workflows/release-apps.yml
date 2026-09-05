@@ -155,8 +155,9 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
-    if: needs.plan.outputs.count != '0'
     needs: plan
+    # Force Forgejo to resolve planner outputs before expanding the matrix.
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240

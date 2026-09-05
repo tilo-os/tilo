@@ -100,7 +100,8 @@ jobs:
 
   validate:
     needs: plan
-    if: needs.plan.outputs.affected == 'true'
+    # Force Forgejo to resolve planner outputs before scheduling dependants.
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.affected == 'true'
     runs-on: runner
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
@@ -167,7 +168,8 @@ jobs:
 
   package:
     needs: [plan, validate]
-    if: needs.plan.outputs.affected == 'true'
+    # Force Forgejo to resolve planner outputs before expanding the matrix.
+    if: always() && needs.plan.result == 'success' && needs.validate.result == 'success' && needs.plan.outputs.affected == 'true'
     name: package lane / ${{ matrix.arch }}
     # The amd64 matrix entry uses the measured optimized package class; native
     # ARM64 tags and explicit full-native runs retain their ARM runner.
