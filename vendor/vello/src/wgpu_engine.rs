@@ -63,6 +63,15 @@ pub(crate) struct WgpuEngine {
     cpu_draw_prefix: bool,
     cpu_draw_prefix_pool: CpuDrawPrefixPool,
     direct_path_dispatch: bool,
+    /// Reuses one explicitly-zeroed image when a scene has no gradient ramps.
+    ///
+    /// This is deliberately an engine-owned exception to the otherwise
+    /// transient image lifetime: its texture lives in `bind_map.image_map` so
+    /// fine-pass bind-group keys retain the same view across redraws.
+    zero_gradient_reuse: bool,
+    zero_gradient: Option<ImageProxy>,
+    #[cfg(test)]
+    zero_gradient_allocations: u64,
     sparse_fine_enabled: bool,
     sparse_fine_available: bool,
     sparse_coarse_enabled: bool,
@@ -501,6 +510,10 @@ struct BindMap {
     buf_map: HashMap<ResourceId, BindMapBuffer>,
     image_map: HashMap<ResourceId, (Texture, TextureView)>,
     pending_clears: HashSet<ResourceId>,
+    #[cfg(test)]
+    zero_gradient_id: Option<ResourceId>,
+    #[cfg(test)]
+    zero_gradient_bind_group_cache_hits: u64,
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -1092,6 +1105,7 @@ impl WgpuEngine {
         let cpu_metadata = !use_cpu && default_enabled_from_env("VELLO_CPU_METADATA");
         let cpu_draw_prefix = !use_cpu && default_enabled_from_env("VELLO_CPU_DRAW_PREFIX");
         let direct_path_dispatch = default_enabled_from_env("VELLO_DIRECT_PATH_DISPATCH");
+        let zero_gradient_reuse = default_enabled_from_env("VELLO_ZERO_GRADIENT_REUSE");
         Self {
             use_cpu,
             pipeline_cache,
@@ -1104,6 +1118,7 @@ impl WgpuEngine {
             cpu_metadata,
             cpu_draw_prefix,
             direct_path_dispatch,
+            zero_gradient_reuse,
             sparse_fine_enabled,
             sparse_fine_available: sparse_fine_enabled,
             sparse_coarse_enabled,
@@ -1197,6 +1212,127 @@ impl WgpuEngine {
     /// experiment was requested at construction time.
     pub fn direct_path_dispatch_enabled(&self) -> bool {
         self.direct_path_dispatch && !self.use_cpu
+    }
+
+    /// Whether no-ramp fine passes reuse the engine-owned zero gradient.
+    ///
+    /// This is enabled by default and can be disabled only with
+    /// `VELLO_ZERO_GRADIENT_REUSE=0` for an A/B comparison.
+    pub fn zero_gradient_reuse_enabled(&self) -> bool {
+        self.zero_gradient_reuse
+    }
+
+    /// Return the stable, explicitly-zeroed fallback gradient image.
+    ///
+    /// The texture is deliberately retained by `BindMap` for the engine's
+    /// lifetime. It must not be released by a frame recording.
+    pub(crate) fn ensure_zero_gradient(&mut self, device: &Device, queue: &Queue) -> ImageProxy {
+        if let Some(proxy) = self.zero_gradient {
+            return proxy;
+        }
+        let proxy = ImageProxy::new(1, 1, crate::recording::ImageFormat::Rgba8);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello.zero_gradient"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            format,
+            view_formats: &[],
+        });
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("vello.zero_gradient_view"),
+            dimension: Some(TextureViewDimension::D2),
+            usage: None,
+            aspect: TextureAspect::All,
+            mip_level_count: None,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            array_layer_count: None,
+            format: Some(format),
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &[0, 0, 0, 0],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.bind_map.insert_image(proxy.id, texture, texture_view);
+        self.zero_gradient = Some(proxy);
+        #[cfg(test)]
+        {
+            self.bind_map.zero_gradient_id = Some(proxy.id);
+            self.zero_gradient_allocations += 1;
+        }
+        proxy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn zero_gradient_test_stats(&self) -> (u64, u64) {
+        (
+            self.zero_gradient_allocations,
+            self.bind_map.zero_gradient_bind_group_cache_hits,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn zero_gradient_test_image_state(&self) -> (Option<ResourceId>, u64, usize, u64) {
+        let fallback_id = self.zero_gradient.map(|proxy| proxy.id);
+        let fallback_bytes = fallback_id
+            .and_then(|id| self.bind_map.image_map.get(&id))
+            .map(|(texture, _)| {
+                u64::from(texture.width())
+                    .saturating_mul(u64::from(texture.height()))
+                    .saturating_mul(u64::from(texture.depth_or_array_layers()))
+                    .saturating_mul(u64::from(
+                        texture.format().block_copy_size(None).unwrap_or(4),
+                    ))
+            })
+            .unwrap_or(0);
+        let other_bytes = self
+            .bind_map
+            .image_map
+            .iter()
+            .filter(|(id, _)| Some(**id) != fallback_id)
+            .map(|(_, (texture, _))| {
+                u64::from(texture.width())
+                    .saturating_mul(u64::from(texture.height()))
+                    .saturating_mul(u64::from(texture.depth_or_array_layers()))
+                    .saturating_mul(u64::from(
+                        texture.format().block_copy_size(None).unwrap_or(4),
+                    ))
+            })
+            .sum();
+        (
+            fallback_id,
+            fallback_bytes,
+            self.bind_map.image_map.len(),
+            other_bytes,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_zero_gradient_reuse_for_test(&mut self, enabled: bool) {
+        self.zero_gradient_reuse = enabled;
     }
 
     /// Toggle optional direct GPU path-dispatch variants for A/B comparison.
@@ -2317,7 +2453,14 @@ impl WgpuEngine {
                 }
             }
         }
+        let zero_gradient_id = self.zero_gradient.map(|proxy| proxy.id);
         for id in free_images {
+            // This is an engine-owned image, not a per-recording allocation.
+            // Render normally avoids recording this free; keep the guard so a
+            // future cleanup path cannot invalidate its stable bind-group key.
+            if Some(id) == zero_gradient_id {
+                continue;
+            }
             if let Some((_texture, _view)) = self.bind_map.image_map.remove(&id) {
                 // TODO: have a pool to avoid needless re-allocation
             }
@@ -2905,6 +3048,12 @@ impl<'a> TransientBindMap<'a> {
             .collect::<SmallVec<[_; 8]>>();
         let key = BindGroupKey { shader, resources };
         if let Some(cached) = bind_group_cache.get(&key) {
+            #[cfg(test)]
+            if bindings.iter().any(|resource| {
+                matches!(resource, ResourceProxy::Image(proxy) if Some(proxy.id) == bind_map.zero_gradient_id)
+            }) {
+                bind_map.zero_gradient_bind_group_cache_hits += 1;
+            }
             return cached.clone();
         }
         let entries = bindings
@@ -3191,6 +3340,13 @@ mod tests {
         assert_eq!(compute_batch_from_value(Some(OsStr::new("1"))), 1);
         assert_eq!(compute_batch_from_value(Some(OsStr::new("2"))), 2);
         assert_eq!(compute_batch_from_value(Some(OsStr::new("unexpected"))), 2);
+    }
+
+    #[test]
+    fn zero_gradient_reuse_uses_the_default_on_exact_zero_off_policy() {
+        assert!(default_enabled_from_value(None));
+        assert!(!default_enabled_from_value(Some(OsStr::new("0"))));
+        assert!(default_enabled_from_value(Some(OsStr::new("00"))));
     }
 
     #[test]

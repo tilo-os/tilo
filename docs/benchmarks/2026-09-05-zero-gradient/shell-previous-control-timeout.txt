@@ -1,0 +1,11 @@
+Previous committed shell control on current host, 2026-09-05
+Revision: e45b5bdd40d24befab04be82c0140104b2fa232c
+Binary SHA256: 1bd46487f1f46c33877d9f5b062841dd2461e697bcae83181a9522136774d8ea
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE /home/user/qos/target/ui-perf-comparison/shell-redraw-default-e45b5bdd4-20260905
+Exit code: 1
+Did not finish required1000 samples. Failed at sample972 on the same existing one-second fence timeout as the candidate. This demonstrates the symptom occurs without the follow-up changes, not its cause or absence of any regression. No aggregate accepted mean/p99 is reported; no builds/tests overlapped.
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+Error: "sample 972: wgpu buffer mapping failed: fence wait: Timeout"

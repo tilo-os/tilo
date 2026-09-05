@@ -104,6 +104,17 @@ establish this target. The UI harness also accepts
 `QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
 different workload, not a replacement for the shell measurement.
 
+For a separate shell diagnostic, run the same release binary with
+`QOS_REDRAW_BENCH_PROFILE=1`. It still performs all 1,000 native-4K action
+redraws, but reports input, registry, layout, scene encoding, submission,
+render-completion/readback mapping, settlement, and CPU copy/swizzle times.
+The completion/map phase is **not** a copy-only measurement. Copy counters
+report pixel payload bytes per submitted attempt (including recovery) and
+bytes actually written to the CPU destination, excluding row-padding holes.
+The bridge also prints the adapter it actually opened. Diagnostic runs
+deliberately return a nonzero exit status and cannot pass acceptance gates;
+unset the profiling variable for acceptance measurements.
+
 The earlier, stricter 4K/60 frame gate remains available:
 
 ```sh
@@ -1813,3 +1824,189 @@ Raw commands, exit codes, and full output from all 12 runs are preserved
 locally at `target/ui-perf-comparison/default-release-checkpoint-20260905.txt`
 (ignored build artifact). Physical KMS scanout and a 2010 laptop remain
 unqualified.
+
+## 2026-09-05 actual shell baseline and current adapter check
+
+The first ordinary default-release shell run completes all 1,000 native-4K
+action-triggered redraws. It **fails** the requested mean target:
+
+| Shell production render/readback metric | Observed |
+| --- | ---: |
+| Output size | 3840x2160, native |
+| Samples | 1,000 |
+| Mean | 281.109 ms |
+| P99 | 328.619 ms |
+| Minimum / maximum | 236.736 / 362.707 ms |
+| Full render submissions / recovery retries | 1,000 / 0 |
+| 8 ms mean / 30 ms p99 gates | FAIL / FAIL |
+
+The executable was built from clean, pushed revision
+`e45b5bdd40d24befab04be82c0140104b2fa232c`, with
+`cargo build -p shell --release --example redraw_bench --locked` and no
+optimization environment overrides. Build time was 15m50s; no builds or
+tests overlap the measured run. Artifact:
+`target/ui-perf-comparison/shell-redraw-default-e45b5bdd4-20260905`.
+SHA-256: `1bd46487f1f46c33877d9f5b062841dd2461e697bcae83181a9522136774d8ea`.
+Raw command and output:
+`target/ui-perf-comparison/shell-default-e45b5bdd4-baseline-20260905.txt`.
+The mapped destination is CPU memory; KMS mapping, page flip, and physical
+scanout are not measured. None of the 1,000 action samples is omitted.
+
+A native Vulkan enumeration after this run lists only
+`llvmpipe (LLVM 22.1.8, 128 bits)`, device type CPU, vendor 65541/device 0.
+`glxinfo -B` likewise reports llvmpipe and `Accelerated: no`. The virtio PCI
+device alone therefore does not establish hardware-accelerated rendering.
+The earlier UI reports did not record the renderer's selected adapter, so
+they must not be read as proof of hardware acceleration. Actual adapter
+identity is being added to the shell harness; no backend/driver override was
+used to manufacture a faster result.
+
+Three fresh runs of the unchanged `616140a4...` UI release artifact on this
+host still include all 1,000 native-4K redraws each:
+
+| UI redraw metric | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Mean, ms | 8.625 | 9.018 | 8.725 |
+| P99, ms | 28.147 | 39.048 | 30.516 |
+| Maximum, ms | 50.150 | 76.329 | 70.316 |
+| 30 ms p99 gate | PASS | FAIL | FAIL |
+
+Raw commands and output are preserved in
+`target/ui-perf-comparison/current-host-ui-rebaseline-20260905.txt`.
+This confirms the UI tail-latency goal is still open; the UI damage workload
+is not a substitute for the shell's full-render/readback workload. Neither
+these VM measurements nor the repository's current x86-64-v3 compiler target
+qualifies the original 2010-laptop requirement.
+
+## 2026-09-05 stable zero-gradient texture: allocation win, p99 still open
+
+No-ramp fine passes now reuse one explicitly zeroed, engine-owned 1x1 RGBA
+texture. Its stable view lets the existing fine-pass bind-group cache hit;
+ordinary frame cleanup does not release it. Real gradient ramps retain their
+upload/free lifetime, and engine destruction releases the fallback. The new
+default can be disabled with `VELLO_ZERO_GRADIENT_REUSE=0` for same-binary A/B
+measurements. This is bounded resource reuse, not a frame-result cache.
+
+Both examples were built together using the unchanged default release profile:
+`cargo build -p ui -p shell --release --example ui-perf --example redraw_bench --locked`
+(12m58s). Source base is `e45b5bdd4` plus this follow-up; exact source hashes and
+all commands/output are recorded in the local raw artifact below. The UI binary
+is `target/ui-perf-comparison/ui-perf-zero-gradient-default-release-20260905`,
+SHA-256 `11eecf86f82facc7c5002687f7398b4a4c1dc50b5e953554ad3762b243c3a1e0`.
+
+Three paired native-3840x2160 runs used off/on, on/off, off/on order. Every run
+contains 1,000 real redraws and zero skipped events. No builds or tests overlap
+timing, resource, or idle measurements. Wall-clock animation and normal host
+activity remain part of this workload.
+
+| UI latency metric | Reuse off | Default reuse on |
+| --- | ---: | ---: |
+| Mean samples, ms | 7.911 / 8.461 / 8.341 | 8.533 / 8.262 / 7.875 |
+| P99 samples, ms | 24.256 / 34.205 / 31.584 | 40.460 / 28.469 / 21.703 |
+| Median mean | 8.341 ms | 8.262 ms |
+| Median p99 | 31.584 ms | 28.469 ms |
+| Largest individual frame | 117.786 ms | 131.580 ms |
+| 30 ms p99 passes | 1 / 3 | 2 / 3 |
+
+Observed median mean improves 0.9% and median p99 9.9%, but the enabled
+40.460 ms p99 failure and 131.580 ms maximum rule out a reliable 30 ms pass or
+constant 60 fps. **The timing goal is not achieved.** Retaining this change is
+supported by its allocation reduction, not by claiming the tail is solved.
+
+A separate allocation/resource pair, also 1,000 native-4K redraws per mode:
+
+| Resource metric | Reuse off | Default reuse on | Change |
+| --- | ---: | ---: | ---: |
+| Allocation calls/redraw, excluding reallocations | 172.645 | 134.626 | -22.0% |
+| Reallocation calls/redraw | 21.391 | 16.080 | -24.8% |
+| Allocated + reallocated bytes/redraw | 35,680.110 | 22,817.690 | -36.0% |
+| Known logical GPU bytes | 62,282,120 | 62,282,124 | +4 bytes |
+| RSS | 329,320 KiB | 328,504 KiB | -0.25% (single pair) |
+| Resource budgets passed | 7 / 7 | 7 / 7 | unchanged |
+
+The four added logical GPU bytes are the retained zero pixel; these counters
+are not a measurement of the driver's physical allocation granularity. The
+small RSS difference is not evidence of a substantial resident-memory win.
+
+Both one-million-event frozen/idle runs pass at 2 us p99, with zero redraws,
+allocations, or reallocations. These are no-redraw events, not one million
+rendered frames. Native-4K pixel preflights pass 40/40 in each mode, with zero
+pixels beyond the allowed antialiasing tolerance. Those correctness-only runs
+overlap shell LTO and suppress timings; each compares retained output with its
+full-render reference, with zero-gradient reuse following that mode in both.
+
+Validation also passes Vello's 34 library tests (including real adapter-backed
+fallback identity/allocation/cache-hit and transient-ramp lifetime assertions),
+19 UI offscreen tests in each mode, seven UI benchmark helper tests, 16 DRM
+paint tests, five shell benchmark helpers, strict affected-library/example
+clippy, formatting, and diff checks. No full-workspace test success is claimed.
+
+Raw evidence (ignored local build artifact):
+`target/ui-perf-comparison/zero-gradient-default-release-20260905.txt`.
+
+### Actual shell adapter, phase costs, and an incomplete acceptance run
+
+The new bridge identifies its actual device as
+`llvmpipe (LLVM 22.1.8, 128 bits)`, backend `Vulkan`, type `Cpu`, driver
+`llvmpipe`. This confirms software rendering for these runs. The ordinary
+release artifact is
+`target/ui-perf-comparison/shell-redraw-phase-profile-20260905`, SHA-256
+`99f35976307b54a66bad9d8820fc2765a7cc0d39ca060766a5eff5bcdc4a42cb`.
+
+Two diagnostic runs each include all 1,000 native-4K action-triggered redraws,
+with one full render per action and no overflow retries. Both intentionally
+exit nonzero because profiling disables acceptance, not because the timing
+target passed. No builds or tests overlap them.
+
+| Diagnostic metric | Run 1 (large stall retained) | Run 2 |
+| --- | ---: | ---: |
+| Whole redraw mean, ms | 4,661.209 | 278.215 |
+| Whole redraw p99, ms | 380.953 | 359.660 |
+| Largest redraw, ms | 4,388,861.207 | 408.729 |
+| Input mean, ms | 0.031 | 0.028 |
+| Registry mean, ms | 0.087 | 0.077 |
+| Layout mean, ms | 0.039 | 0.044 |
+| Scene encoding mean, ms | 0.748 | 0.660 |
+| Submission mean, ms | 4,390.281 | 2.190 |
+| Render completion + readback/map mean, ms | 268.138 | 273.217 |
+| Settlement mean, ms | 0.081 | 0.103 |
+| CPU copy/swizzle mean, ms | 1.791 | 1.885 |
+| Texture-copy payload bytes/redraw | 33,177,600 | 33,177,600 |
+| CPU destination bytes written/redraw | 33,177,600 | 33,177,600 |
+
+Run 1 contains an unexplained approximately 73-minute stall in the submission
+phase. It is not discarded or removed from its mean; run 2 checks recurrence,
+not a replacement result. A late memory/pressure snapshot did not show active
+memory pressure, but cannot establish the cause or conditions at the stall.
+The second run's render-completion/readback-map phase accounts for about 98.2%
+of total time. This identifies the combined rendering/readback path as the
+priority, not proof that either GPU rendering or texture copying alone owns
+that time. CPU-only scene or swizzle optimizations cannot close this gap.
+
+The following **unprofiled** candidate run aborts at sample index 483 with
+`wgpu buffer mapping failed: fence wait: Timeout`. It does not finish the
+required 1,000 samples and cannot supply a completed acceptance mean/p99. The
+existing one-second fence deadline is unchanged. This failure is retained;
+neither shell latency success nor timeout-regression freedom is established.
+
+Raw local artifacts:
+`target/ui-perf-comparison/shell-phase-diagnostic-1-20260905.txt`,
+`target/ui-perf-comparison/shell-phase-diagnostic-2-20260905.txt`, and
+`target/ui-perf-comparison/shell-candidate-unprofiled-fence-timeout-20260905.txt`.
+
+The subsequent unprofiled control uses the preserved **previous committed**
+`e45b5bdd4` binary and also aborts, at sample index 972, with the same fence
+timeout. Thus the symptom is not unique to this follow-up; its cause remains
+undetermined, and neither incomplete run is promoted to an acceptance result.
+The one-second deadline is not relaxed. The earlier completed 281.109 ms
+baseline remains recorded, but does not erase these later failures.
+
+Portable raw logs for this follow-up are also committed under
+[`docs/benchmarks/2026-09-05-zero-gradient`](benchmarks/2026-09-05-zero-gradient/):
+the complete UI A/B/resource/idle/pixel outputs, both shell diagnostics, and
+both incomplete unprofiled shell runs. The UI allocation improvement is
+established; the 30 ms UI p99, 8 ms shell mean, physical scanout, and 2010
+hardware requirements remain open. The next priority is reducing full native
+render/readback work with correctness-checked retained damage, including old
+and new overlay bounds and real scanout buffer age—not merely reducing CPU
+scene-building time or weakening the benchmark.
