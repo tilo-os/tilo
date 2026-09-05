@@ -78,15 +78,6 @@ jobs:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Load the pinned marketplace owner trust input
-        shell: bash
-        run: |
-          set -euo pipefail
-          key='${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
-          [[ "$key" =~ ^[0-9a-fA-F]{64}$ ]]
-          [[ "$key" != 0000000000000000000000000000000000000000000000000000000000000000 ]]
-          echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
-
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -398,6 +389,26 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           echo "::notice::OS integration validation: $validate; publication: $publish"
+
+      - name: Load the pinned marketplace owner trust input
+        shell: bash
+        run: |
+          set -euo pipefail
+          key='${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
+          if [[ ! "$key" =~ ^[0-9a-fA-F]{64}$ \
+                || "$key" == 0000000000000000000000000000000000000000000000000000000000000000 ]]; then
+            if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+              echo '::error::publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY'
+              exit 1
+            fi
+            # RFC 8032 test-vector key: deliberately public/non-production and
+            # permitted only for an ephemeral build-validation image. It lets
+            # CI exercise the fail-closed trust-anchor plumbing before the
+            # independently held production owner key is provisioned.
+            key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+            echo '::notice::using the non-production owner key for build validation only'
+          fi
+          echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
 
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
