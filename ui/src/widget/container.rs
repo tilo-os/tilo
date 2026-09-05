@@ -319,6 +319,12 @@ impl Widget for Container {
             .collect()
     }
 
+    fn mark_drawn(&mut self) {
+        if let Some(child) = &mut self.child {
+            child.mark_drawn();
+        }
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }

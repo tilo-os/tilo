@@ -11,6 +11,17 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
+/// Keep the small savings from coalescing adjacent row children without
+/// turning sparse animation damage into a broad horizontal strip. A merged
+/// rectangle may cover at most 25% more pixels than its two inputs.
+const MAX_DAMAGE_MERGE_OVERDRAW: f64 = 1.25;
+
+fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
+    let covered_area = a.width() * a.height() + b.width() * b.height();
+    covered_area > 0.0
+        && a.union(b).width() * a.union(b).height() <= covered_area * MAX_DAMAGE_MERGE_OVERDRAW
+}
+
 /// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
 /// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
 /// `Mul` is pure floating-point matrix composition and cannot panic or
@@ -272,12 +283,22 @@ impl Widget for Row {
         for child in &self.children {
             child.collect_damage(regions);
         }
-        // A row's children are normally adjacent. One horizontal span avoids
-        // a GPU pass per label/icon while columns still keep distant rows as
-        // independent damage regions.
-        if let Some(union) = regions.drain(first..).reduce(|a, b| a.union(b)) {
-            regions.push(union);
+        // Adjacent row children can share a pass, but unconditionally
+        // unioning them turns the two narrow endpoints of an indeterminate
+        // ProgressBar's wrap into a full-width strip. Coalesce only when the
+        // added bounding-box area is tightly bounded; preserving sparse
+        // regions is materially cheaper than one broad redraw at 4K.
+        let mut merged = Vec::with_capacity(regions.len().saturating_sub(first));
+        for candidate in regions.drain(first..) {
+            if let Some(previous) = merged.last_mut()
+                && can_merge_damage(*previous, candidate)
+            {
+                *previous = previous.union(candidate);
+            } else {
+                merged.push(candidate);
+            }
         }
+        regions.extend(merged);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -302,6 +323,12 @@ impl Widget for Row {
             .iter_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
+    }
+
+    fn mark_drawn(&mut self) {
+        for child in &mut self.children {
+            child.mark_drawn();
+        }
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -429,5 +456,29 @@ impl Widget for Row {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn damage_merge_keeps_progress_wrap_endpoints_separate() {
+        // These are the clipped old/new segments at opposite ends of a
+        // 200px indeterminate progress bar. Their union would repaint the
+        // entire track even though each changed strip is only 60px wide.
+        let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
+        let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
+
+        assert!(!can_merge_damage(old_segment, new_segment));
+    }
+
+    #[test]
+    fn damage_merge_coalesces_nearby_row_children() {
+        let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
+        let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
+
+        assert!(can_merge_damage(left, right));
     }
 }
