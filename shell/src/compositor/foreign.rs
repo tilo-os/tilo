@@ -8,8 +8,8 @@
 //! ```text
 //!  client commit
 //!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
-//!      └─ dmabuf  ──► gpu_import / import_dmabuf_rgba ────┤
-//!                                                        ▼
+//!      └─ dmabuf  ──► commit Barrier ─► capture worker ───┤
+//!                                      │ GPU / CPU import  ▼
 //!                                            ForeignFrameStore (per surface)
 //!                                                        │  snapshot on seq change
 //!                                                        ▼
@@ -23,21 +23,28 @@
 //! other tile; [`ForeignSurfaceWidget::needs_animation_frame`] is `true`
 //! only when the store holds an undrawn frame, so an idle client costs one lock + lookup per tick and zero paints.
 //!
-//! dmabuf tries two routes via [`ForeignFrameStore::capture_dmabuf`]: GPU
+//! dmabuf capture is coalesced per surface and runs outside the compositor
+//! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
+//! the compositor until its worker read completes; the pixels are published
+//! only when that exact commit is subsequently applied. The worker tries GPU
 //! ([`crate::compositor::gpu_import`], the only route for a Vulkan
 //! client whose swapchain images refuse `mmap`), then CPU mmap
 //! ([`import_dmabuf_rgba`], for CPU-visible linear buffers or a box with
 //! no EGL device) — together covering the whole advertised set
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::{Client, backend::ClientId};
+use smithay::wayland::compositor::Barrier;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use ui::presence::PresenceCtx;
@@ -340,6 +347,13 @@ struct ForeignEntry {
     /// predicate asks whether the current frame fits its tab, which
     /// briefly stops being true on every resize — un-presenting would blink the window out mid-drag, worse than what this prevents.
     presented: bool,
+    /// Capture token attached to each not-yet-applied buffer commit. The
+    /// commit's Smithay barrier keeps the client from reusing that buffer
+    /// until its worker job either completes or is explicitly superseded.
+    capture_tokens: VecDeque<u64>,
+    /// Worker results wait here until the corresponding blocked surface commit
+    /// is applied. Publishing earlier would expose pending state as current.
+    ready_captures: HashMap<u64, ReadyCapture>,
 }
 
 impl ForeignEntry {
@@ -354,6 +368,8 @@ impl ForeignEntry {
             configured: None,
             first_seen: Instant::now(),
             presented: false,
+            capture_tokens: VecDeque::new(),
+            ready_captures: HashMap::new(),
         }
     }
 }
@@ -375,10 +391,11 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
-    /// Total buffer imports performed, of any route. A dmabuf import costs
-    /// a GPU readback (or full-frame CPU map), so it must happen **once
-    /// per client commit**, never once per paint. Asserted on by `painting_does_not_reimport_the_buffer`.
-    imports: std::sync::atomic::AtomicU64,
+    /// Total completed buffer imports, of any route. A dmabuf import costs a
+    /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
+    /// paint only reads the latest completed pixels.
+    imports: AtomicU64,
+    next_capture: AtomicU64,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -408,8 +425,241 @@ pub enum CaptureOutcome {
         height: u32,
         route: DmabufRoute,
     },
+    /// A dmabuf was handed to the latest-frame worker. The compositor thread
+    /// did not wait for its GPU fence or copy its pixels.
+    Queued,
     /// Neither path could produce pixels; the reason is recorded on the entry and drawn on the tile.
     Failed(String),
+}
+
+#[derive(Debug)]
+struct CaptureJob<T> {
+    surface: SurfaceId,
+    token: u64,
+    payload: T,
+    barrier: Barrier,
+    client: Client,
+}
+
+type DmabufJob = CaptureJob<Dmabuf>;
+
+#[derive(Debug)]
+struct ReadyCapture {
+    rgba: Vec<u8>,
+    result: Result<(u32, u32, DmabufRoute), String>,
+}
+
+/// One pending job per surface. A client may commit much faster than a GPU
+/// readback completes; retaining every intermediate buffer turns animation
+/// into unbounded input latency, while only the newest frame can ever become
+/// visible.
+#[derive(Debug)]
+struct LatestJobs<T> {
+    jobs: HashMap<SurfaceId, T>,
+}
+
+impl<T> Default for LatestJobs<T> {
+    fn default() -> Self {
+        Self {
+            jobs: HashMap::new(),
+        }
+    }
+}
+
+impl<T> LatestJobs<T> {
+    fn push(&mut self, surface: SurfaceId, job: T) -> Option<T> {
+        self.jobs.insert(surface, job)
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        let surface = *self.jobs.keys().next()?;
+        self.jobs.remove(&surface)
+    }
+
+    fn remove(&mut self, surface: SurfaceId) -> Option<T> {
+        self.jobs.remove(&surface)
+    }
+}
+
+struct AsyncDmabufCapture {
+    pending: Arc<Mutex<LatestJobs<DmabufJob>>>,
+    completed: Arc<Mutex<HashMap<ClientId, Client>>>,
+    /// Pixel allocations handed back after a newer frame becomes current.
+    /// Readback and painting never alias: the main thread returns the old
+    /// frame only after replacing it in the store.
+    recycled: Arc<Mutex<HashMap<SurfaceId, Vec<u8>>>>,
+    wake: SyncSender<()>,
+}
+
+fn signal_capture_barrier(barrier: &Barrier) {
+    barrier.signal();
+}
+
+fn mark_capture_complete(client: Client, completed: &Mutex<HashMap<ClientId, Client>>) {
+    completed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(client.id(), client);
+}
+
+fn release_superseded<T>(job: CaptureJob<T>, completed: &Mutex<HashMap<ClientId, Client>>) {
+    signal_capture_barrier(&job.barrier);
+    mark_capture_complete(job.client, completed);
+}
+
+impl AsyncDmabufCapture {
+    fn spawn() -> Result<Self, String> {
+        let pending: Arc<Mutex<LatestJobs<DmabufJob>>> =
+            Arc::new(Mutex::new(LatestJobs::default()));
+        let worker_pending = Arc::clone(&pending);
+        let completed = Arc::new(Mutex::new(HashMap::new()));
+        let worker_completed = Arc::clone(&completed);
+        let recycled = Arc::new(Mutex::new(HashMap::new()));
+        let worker_recycled = Arc::clone(&recycled);
+        // Capacity one is only a wake edge, never a job queue. The authoritative
+        // queue is the latest-only map above, so `try_send` cannot block the
+        // compositor even while the worker is stuck on a GPU fence.
+        let (wake, wakes) = sync_channel::<()>(1);
+        std::thread::Builder::new()
+            .name("qos-foreign-capture".into())
+            .spawn(move || {
+                let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
+                while wakes.recv().is_ok() {
+                    loop {
+                        let job = worker_pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop();
+                        let Some(job) = job else { break };
+                        let rgba = scratch.entry(job.surface).or_default();
+                        if rgba.is_empty()
+                            && let Some(previous) = worker_recycled
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&job.surface)
+                        {
+                            *rgba = previous;
+                        }
+                        let result = decode_dmabuf(&job.payload, rgba);
+                        let accepted =
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
+                        if !accepted {
+                            // The toplevel was destroyed while this import was
+                            // in flight. Do not retain a full framebuffer in
+                            // the worker's per-surface scratch map forever.
+                            scratch.remove(&job.surface);
+                        }
+                        signal_capture_barrier(&job.barrier);
+                        mark_capture_complete(job.client, &worker_completed);
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start foreign-window capture worker: {error}"))?;
+        Ok(Self {
+            pending,
+            completed,
+            recycled,
+            wake,
+        })
+    }
+
+    fn enqueue(&self, job: DmabufJob) {
+        let replaced = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(job.surface, job);
+        if let Some(replaced) = replaced {
+            // The newer commit is the only pending frame that can become
+            // visible. Release the superseded transaction deliberately; a
+            // barrier must never be abandoned in the queue.
+            release_superseded(replaced, &self.completed);
+        }
+        // Full means a wake is already waiting; disconnected means the worker
+        // failed after startup. Neither condition may stall Wayland dispatch.
+        let _ = self.wake.try_send(());
+    }
+
+    fn drain_completed(&self) -> Vec<Client> {
+        std::mem::take(
+            &mut *self
+                .completed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_values()
+        .collect()
+    }
+
+    fn recycle_pixels(&self, surface: SurfaceId, mut rgba: Vec<u8>) {
+        rgba.clear();
+        if rgba.capacity() == 0 {
+            return;
+        }
+        self.recycled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(surface, rgba);
+    }
+
+    fn forget_surface(&self, surface: SurfaceId) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(surface);
+        if let Some(pending) = pending {
+            release_superseded(pending, &self.completed);
+        }
+        self.recycled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&surface);
+    }
+}
+
+static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = OnceLock::new();
+
+/// Clients whose capture barriers changed to released since the last
+/// compositor tick. Keeping the client handle here (instead of looking it up
+/// through the surface later) also releases a fused transaction if that
+/// surface was destroyed while its readback was in flight. The caller
+/// re-evaluates Smithay's transaction queue on the main thread; the worker
+/// never dispatches Wayland itself.
+pub fn drain_completed_dmabuf_captures() -> Vec<Client> {
+    ASYNC_DMABUF_CAPTURE
+        .get()
+        .and_then(|worker| worker.as_ref().ok())
+        .map_or_else(Vec::new, AsyncDmabufCapture::drain_completed)
+}
+
+fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.recycle_pixels(surface, rgba);
+    }
+}
+
+/// Read one dmabuf outside Wayland dispatch and outside the frame-store lock.
+/// GPU import is required for device-local Vulkan buffers; CPU mmap remains
+/// the fallback for linear system-memory buffers and machines without EGL.
+fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, DmabufRoute), String> {
+    let gpu_error = match crate::compositor::render_node::advertised() {
+        Some(node) => match crate::compositor::gpu_import::with_importer(node, |importer| {
+            importer.import(dmabuf, rgba)
+        }) {
+            Ok(Ok((width, height))) => return Ok((width, height, DmabufRoute::Gpu)),
+            Ok(Err(error)) | Err(error) => Some(error.to_string()),
+        },
+        None => Some("no dmabuf main device was advertised".to_string()),
+    };
+
+    match import_dmabuf_rgba(dmabuf, rgba) {
+        Ok((width, height)) => Ok((width, height, DmabufRoute::CpuMmap)),
+        Err(cpu_error) => Err(match gpu_error {
+            Some(gpu_error) => format!("{cpu_error}; GPU import also failed: {gpu_error}"),
+            None => cpu_error.to_string(),
+        }),
+    }
 }
 
 impl ForeignFrameStore {
@@ -422,18 +672,29 @@ impl ForeignFrameStore {
     }
 
     fn note_import(&self) {
-        self.imports
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.imports.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Buffer imports since process start, across every surface/route — read by the repaint-cost test (see the field's doc for why it must not track paints).
     pub fn import_count(&self) -> u64 {
-        self.imports.load(std::sync::atomic::Ordering::Relaxed)
+        self.imports.load(Ordering::Relaxed)
     }
 
     /// Capture the buffer a client just committed. Tries `wl_shm` readback
     /// first; a not-shm buffer routes to the dmabuf importer. The `wl_buffer → Dmabuf` lookup is done by the caller-visible [`smithay::wayland::dmabuf::get_dmabuf`], keeping this a single entry point.
     pub fn capture_commit(&self, id: SurfaceId, buffer: &WlBuffer) -> CaptureOutcome {
+        self.capture_commit_associated(id, buffer, None)
+    }
+
+    /// Capture one buffer commit with the token assigned by its pre-commit
+    /// hook. Supplying the exact token prevents an unrelated damage-only
+    /// commit from consuming a later blocked dmabuf result.
+    pub fn capture_commit_associated(
+        &self,
+        id: SurfaceId,
+        buffer: &WlBuffer,
+        dmabuf_token: Option<u64>,
+    ) -> CaptureOutcome {
         let shm_result = self.with_entry(id, |e| {
             let r = buffer_to_rgba(buffer, &mut e.rgba);
             match r {
@@ -459,8 +720,10 @@ impl ForeignFrameStore {
                 }
             }
             Err(ReadbackError::DmaBufUnsupported) => {
-                if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) {
-                    self.capture_dmabuf(id, dmabuf)
+                if smithay::wayland::dmabuf::get_dmabuf(buffer).is_ok() {
+                    dmabuf_token
+                        .and_then(|token| self.activate_dmabuf_capture_token(id, token))
+                        .unwrap_or(CaptureOutcome::Queued)
                 } else {
                     let msg = "buffer is neither wl_shm nor dmabuf".to_string();
                     self.note_failure(id, msg.clone());
@@ -475,72 +738,134 @@ impl ForeignFrameStore {
         }
     }
 
-    /// Import an already-resolved [`Dmabuf`] into the store. Two routes, tried in order:
-    ///
-    /// 1. **GPU** ([`crate::compositor::gpu_import`]) — EGL wraps the
-    ///    buffer as a texture; the only route for a Vulkan client, since
-    ///    `wgpu`'s device-local swapchain images refuse `mmap` (`EPERM`) however linear.
-    /// 2. **CPU mmap** ([`import_dmabuf_rgba`]) — no GL context needed;
-    ///    correct for CPU-visible linear buffers, and the route with no usable EGL device.
-    ///
-    /// Both failing is reported on the tile with both routes' reasons.
-    pub fn capture_dmabuf(&self, id: SurfaceId, dmabuf: &Dmabuf) -> CaptureOutcome {
-        let gpu_err = match crate::compositor::render_node::advertised() {
-            Some(node) => {
-                let attempt = crate::compositor::gpu_import::with_importer(node, |imp| {
-                    self.with_entry(id, |e| {
-                        imp.import(dmabuf, &mut e.rgba).map(|(w, h)| {
-                            e.width = w;
-                            e.height = h;
-                            e.seq = e.seq.wrapping_add(1);
-                            e.last_error = None;
-                            (w, h)
-                        })
-                    })
-                });
-                match attempt {
-                    Ok(Ok((w, h))) => {
-                        self.note_import();
-                        return CaptureOutcome::Dmabuf {
-                            width: w,
-                            height: h,
-                            route: DmabufRoute::Gpu,
-                        };
-                    }
-                    // Either the import itself failed for this buffer, or there is no GPU import context at all.
-                    Ok(Err(e)) | Err(e) => Some(e.to_string()),
-                }
-            }
-            None => Some("no dmabuf main device was advertised".to_string()),
-        };
-
-        let result = self.with_entry(id, |e| {
-            import_dmabuf_rgba(dmabuf, &mut e.rgba).map(|(w, h)| {
-                e.width = w;
-                e.height = h;
-                e.seq = e.seq.wrapping_add(1);
-                e.last_error = None;
-                (w, h)
-            })
+    /// Queue the pending dmabuf from a surface pre-commit hook and return the
+    /// barrier that must be attached to that same commit. This is the lifetime
+    /// contract: Smithay cannot release/reuse the buffer until capture has
+    /// completed or the job has been explicitly superseded.
+    pub fn prepare_dmabuf_capture(
+        &self,
+        id: SurfaceId,
+        client: Client,
+        dmabuf: Dmabuf,
+    ) -> Option<(u64, Barrier)> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(token);
         });
-        match result {
-            Ok((w, h)) => {
-                self.note_import();
-                CaptureOutcome::Dmabuf {
-                    width: w,
-                    height: h,
-                    route: DmabufRoute::CpuMmap,
-                }
+        let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
+        match worker {
+            Ok(worker) => {
+                let barrier = Barrier::new(false);
+                worker.enqueue(DmabufJob {
+                    surface: id,
+                    token,
+                    payload: dmabuf,
+                    barrier: barrier.clone(),
+                    client,
+                });
+                Some((token, barrier))
             }
-            Err(cpu_err) => {
-                let msg = match gpu_err {
-                    Some(g) => format!("{cpu_err}; GPU import also failed: {g}"),
-                    None => cpu_err.to_string(),
-                };
-                self.note_failure(id, msg.clone());
-                CaptureOutcome::Failed(msg)
+            Err(reason) => {
+                // No worker owns this token, so it must not remain at the
+                // head of the per-commit queue and steal a later result.
+                self.with_entry(id, |entry| {
+                    if let Some(position) = entry.capture_tokens.iter().position(|v| *v == token) {
+                        entry.capture_tokens.remove(position);
+                    }
+                });
+                self.note_failure(id, reason.clone());
+                None
             }
         }
+    }
+
+    fn stage_dmabuf_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        result: Result<(u32, u32, DmabufRoute), String>,
+        rgba: &mut Vec<u8>,
+    ) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let mut captured = Vec::new();
+        std::mem::swap(&mut captured, rgba);
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: captured,
+                result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    fn activate_dmabuf_capture_token(
+        &self,
+        id: SurfaceId,
+        expected_token: u64,
+    ) -> Option<CaptureOutcome> {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = guard.get_mut(&id)?;
+        let token = entry.capture_tokens.front().copied()?;
+        if token != expected_token {
+            return None;
+        }
+        entry.capture_tokens.pop_front();
+        let ready = entry.ready_captures.remove(&token)?;
+        let (outcome, imported, recycled) = match ready.result {
+            Ok((width, height, route)) => {
+                let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
+                entry.width = width;
+                entry.height = height;
+                entry.seq = entry.seq.wrapping_add(1);
+                entry.last_error = None;
+                (
+                    CaptureOutcome::Dmabuf {
+                        width,
+                        height,
+                        route,
+                    },
+                    true,
+                    previous,
+                )
+            }
+            Err(reason) => {
+                entry.rgba.clear();
+                entry.width = 0;
+                entry.height = 0;
+                entry.seq = entry.seq.wrapping_add(1);
+                entry.last_error = Some(reason.clone());
+                (CaptureOutcome::Failed(reason), false, ready.rgba)
+            }
+        };
+        drop(guard);
+        recycle_dmabuf_pixels(id, recycled);
+        if imported {
+            self.note_import();
+        }
+        Some(outcome)
+    }
+
+    #[cfg(test)]
+    fn activate_dmabuf_capture(&self, id: SurfaceId) -> Option<CaptureOutcome> {
+        let token = self.with_entry(id, |entry| entry.capture_tokens.front().copied())?;
+        self.activate_dmabuf_capture_token(id, token)
     }
 
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
@@ -589,6 +914,10 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
+        drop(guard);
+        if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+            worker.forget_surface(id);
+        }
     }
 
     /// Current frame counter for `id`; `0` when nothing has landed.
@@ -1606,6 +1935,119 @@ mod tests {
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {
         900_000u64.saturating_add(n)
+    }
+
+    #[test]
+    fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
+        let mut pending = LatestJobs::default();
+        assert_eq!(pending.push(10, "old"), None);
+        assert_eq!(pending.push(20, "other surface"), None);
+        assert_eq!(pending.push(10, "new"), Some("old"));
+
+        assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
+        assert_eq!(pending.jobs.get(&10), Some(&"new"));
+        assert_eq!(pending.remove(10), Some("new"));
+        assert_eq!(pending.jobs.len(), 1);
+        let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
+        assert_eq!(drained.len(), 1);
+        assert!(drained.contains(&"other surface"));
+    }
+
+    #[test]
+    fn capture_barrier_release_is_visible_across_clones() {
+        let barrier = Barrier::new(false);
+        signal_capture_barrier(&barrier);
+        assert!(barrier.is_signaled());
+    }
+
+    #[test]
+    fn worker_result_is_published_only_when_its_blocked_commit_applies() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(100);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(2);
+        });
+
+        let mut stale = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(id, 1, Ok((1, 1, DmabufRoute::Gpu)), &mut stale);
+        assert!(frames.snapshot(id).is_none());
+
+        let mut latest = vec![5, 6, 7, 8];
+        frames.stage_dmabuf_capture(id, 2, Ok((1, 1, DmabufRoute::Gpu)), &mut latest);
+        assert!(
+            frames.snapshot(id).is_none(),
+            "pending pixels must not become current before commit application"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("latest frame").rgba,
+            vec![5, 6, 7, 8]
+        );
+        assert_eq!(
+            frames.import_count(),
+            1,
+            "only published work counts as an import"
+        );
+    }
+
+    #[test]
+    fn superseded_commit_applies_without_stealing_the_newer_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(102);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.extend([3, 4]);
+        });
+        let mut newest = vec![9, 8, 7, 6];
+        frames.stage_dmabuf_capture(id, 4, Ok((1, 1, DmabufRoute::Gpu)), &mut newest);
+
+        assert!(
+            frames.activate_dmabuf_capture(id).is_none(),
+            "the superseded earlier commit has no pixels"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("newest frame").rgba,
+            vec![9, 8, 7, 6]
+        );
+    }
+
+    #[test]
+    fn commit_token_mismatch_cannot_consume_a_later_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(103);
+        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+        let mut pixels = vec![7, 7, 7, 7];
+        assert!(frames.stage_dmabuf_capture(id, 42, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels,));
+
+        assert!(
+            frames.activate_dmabuf_capture_token(id, 41).is_none(),
+            "an unrelated commit must not pop the next buffer's token"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture_token(id, 42),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+    }
+
+    #[test]
+    fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(101);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(7);
+        });
+        frames.forget(id);
+
+        let mut pixels = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(id, 7, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels);
+        assert!(frames.snapshot(id).is_none());
+        assert_eq!(frames.frame_seq(id), 0);
     }
 
     #[test]
