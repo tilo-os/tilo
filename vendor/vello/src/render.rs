@@ -12,6 +12,27 @@ use crate::Scene;
 
 use vello_encoding::{Encoding, Resolver, WorkgroupSize, make_mask_lut, make_mask_lut_16};
 
+/// Sparse-coarse selector upload and the dispatch shape it represents.
+///
+/// Active lists retain native bin ids in the selector's unused trailing words;
+/// the shader reconstructs their native coordinates before touching tile data.
+#[derive(Clone, Copy)]
+pub(crate) enum SparseCoarseDispatch<'a> {
+    Legacy(&'a [u32]),
+    Active {
+        selector: &'a [u32],
+        workgroups: u32,
+    },
+}
+
+impl<'a> SparseCoarseDispatch<'a> {
+    fn selector(self) -> &'a [u32] {
+        match self {
+            Self::Legacy(selector) | Self::Active { selector, .. } => selector,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum AtlasProxyAction {
     Created,
@@ -152,7 +173,7 @@ pub(crate) fn render_encoding_full(
     zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
-    render.render_encoding_coarse(
+    render.render_encoding_coarse_with_dispatch(
         encoding,
         resolver,
         shaders,
@@ -190,12 +211,12 @@ pub(crate) fn render_encoding_sparse_fine(
     measure: bool,
     damage_tiles: &[u32],
     external_damage_tiles: Option<BufferProxy>,
-    coarse_tiles: Option<&[u32]>,
+    coarse_tiles: Option<SparseCoarseDispatch<'_>>,
     defer_bump_readback: bool,
     zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
-    render.render_encoding_coarse(
+    render.render_encoding_coarse_with_dispatch(
         encoding,
         resolver,
         shaders,
@@ -274,13 +295,46 @@ impl Render {
         defer_bump_readback: bool,
         zero_gradient: Option<ImageProxy>,
     ) {
+        self.render_encoding_coarse_with_dispatch(
+            encoding,
+            resolver,
+            shaders,
+            persistent_image_atlas,
+            recording,
+            packed,
+            params,
+            budget,
+            measure_bump,
+            capture_debug,
+            coarse_tiles.map(SparseCoarseDispatch::Legacy),
+            defer_bump_readback,
+            zero_gradient,
+        );
+    }
+
+    pub(crate) fn render_encoding_coarse_with_dispatch(
+        &mut self,
+        encoding: &Encoding,
+        resolver: &mut Resolver,
+        shaders: &FullShaders,
+        persistent_image_atlas: &mut Option<ImageProxy>,
+        recording: &mut Recording,
+        packed: &mut Vec<u8>,
+        params: &RenderParams,
+        budget: &vello_encoding::BumpBudget,
+        measure_bump: bool,
+        capture_debug: bool,
+        coarse_tiles: Option<SparseCoarseDispatch<'_>>,
+        defer_bump_readback: bool,
+        zero_gradient: Option<ImageProxy>,
+    ) {
         use vello_encoding::RenderConfig;
         recording.reset_reusing_scene_upload(packed);
         packed.clear();
-        let coarse_tile_bits = coarse_tiles.map(|bits| {
+        let coarse_tile_bits = coarse_tiles.map(|dispatch| {
             recording.upload_uniform(
                 "vello.coarse_sparse_tiles",
-                bytemuck::cast_slice(bits).to_vec(),
+                bytemuck::cast_slice(dispatch.selector()).to_vec(),
             )
         });
 
@@ -701,7 +755,26 @@ impl Render {
             wg_counts.backdrop,
             [config_buf, bump_buf, path_buf, tile_buf],
         );
-        if let (Some(shader), Some(bits)) = (shaders.coarse_sparse, coarse_tile_bits) {
+        if let (Some(SparseCoarseDispatch::Active { workgroups, .. }), Some(shader), Some(bits)) =
+            (coarse_tiles, shaders.coarse_sparse_active, coarse_tile_bits)
+        {
+            recording.dispatch(
+                shader,
+                (workgroups, 1, 1),
+                [
+                    config_buf,
+                    scene_buf,
+                    draw_monoid_buf,
+                    bin_header_buf,
+                    info_bin_data_buf,
+                    path_buf,
+                    tile_buf,
+                    bump_buf,
+                    ptcl_buf,
+                    bits.into(),
+                ],
+            );
+        } else if let (Some(shader), Some(bits)) = (shaders.coarse_sparse, coarse_tile_bits) {
             recording.dispatch(
                 shader,
                 wg_counts.coarse,
@@ -1009,7 +1082,8 @@ mod tests {
             path_count: shader,
             path_count_direct: ShaderId(1),
             coarse: shader,
-            coarse_sparse: None,
+            coarse_sparse: Some(ShaderId(3)),
+            coarse_sparse_active: Some(ShaderId(4)),
             path_tiling_setup: shader,
             path_tiling: shader,
             path_tiling_direct: ShaderId(2),
@@ -1032,7 +1106,7 @@ mod tests {
         let mut recording = Recording::default();
         let mut packed = Vec::new();
         let mut image_atlas = None;
-        render.render_encoding_coarse(
+        render.render_encoding_coarse_with_dispatch(
             &Encoding::default(),
             &mut resolver,
             &shaders,
@@ -1077,6 +1151,97 @@ mod tests {
                 "both stride-loop stages must retain the configured nonzero grid"
             );
         }
+    }
+
+    fn sparse_coarse_dispatches(
+        dispatch: SparseCoarseDispatch<'_>,
+        width: u32,
+        height: u32,
+        active_shader_available: bool,
+    ) -> Vec<(usize, WorkgroupSize)> {
+        let mut shaders = direct_shaders(128);
+        if !active_shader_available {
+            shaders.coarse_sparse_active = None;
+        }
+        let mut render = Render::new();
+        let mut resolver = Resolver::new();
+        let mut recording = Recording::default();
+        let mut packed = Vec::new();
+        let mut image_atlas = None;
+        render.render_encoding_coarse_with_dispatch(
+            &Encoding::default(),
+            &mut resolver,
+            &shaders,
+            &mut image_atlas,
+            &mut recording,
+            &mut packed,
+            &RenderParams {
+                base_color: peniko::Color::TRANSPARENT,
+                width,
+                height,
+                antialiasing_method: AaConfig::Area,
+            },
+            &vello_encoding::BumpBudget::INITIAL,
+            false,
+            false,
+            Some(dispatch),
+            false,
+            None,
+        );
+        recording
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::Dispatch(shader, grid, _)
+                    if *shader == ShaderId(3) || *shader == ShaderId(4) =>
+                {
+                    Some((shader.0, *grid))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sparse_coarse_active_records_native_bin_list_grid() {
+        let mut selector = vec![0; 2_048];
+        // The 257x257-pixel target uses ten selector words and four native
+        // bins. Its list names two disconnected native bins.
+        selector[0] = 1;
+        selector[10] = 0;
+        selector[11] = 3;
+        assert_eq!(
+            sparse_coarse_dispatches(
+                SparseCoarseDispatch::Active {
+                    selector: &selector,
+                    workgroups: 2,
+                },
+                257,
+                257,
+                true
+            ),
+            vec![(4, (2, 1, 1))]
+        );
+    }
+
+    #[test]
+    fn sparse_coarse_active_falls_back_to_legacy_full_native_bin_grid() {
+        let mut selector = vec![0; 2_048];
+        selector[0] = 1;
+        selector[10] = 0;
+        selector[11] = 3;
+        assert_eq!(
+            sparse_coarse_dispatches(
+                SparseCoarseDispatch::Active {
+                    selector: &selector,
+                    workgroups: 2,
+                },
+                257,
+                257,
+                false,
+            ),
+            vec![(3, (2, 2, 1))]
+        );
     }
 
     #[test]
