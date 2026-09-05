@@ -456,6 +456,32 @@ impl LaunchError {
             }
         }
     }
+
+    /// Concise recovery copy for fixed-height desktop notifications. Detailed
+    /// ids, paths, and backend errors belong in the session log and in the
+    /// fallible caller's error, not in top-right chrome.
+    pub(crate) fn notification_message(&self) -> &'static str {
+        match self {
+            Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
+                "This app is no longer installed. Refresh the app list and try again."
+            }
+            Self::NotAGuiApp { .. } => "This app does not provide a window.",
+            Self::NotAManagedService { .. } => "This service cannot be opened as an app.",
+            Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
+                "You do not have permission to start this workspace service."
+            }
+            Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
+                "The app launcher is unavailable. Try again."
+            }
+            Self::NoDisplay => "The desktop is still starting. Try again in a moment.",
+            Self::NoWorkspace => "Choose a workspace, then try again.",
+            Self::ShellOwnedIntent => "Open this destination from the desktop controls.",
+            Self::IdentityUnavailable { .. } => {
+                "The workspace identity could not be loaded. Try again."
+            }
+            Self::RegistryUnreadable { .. } => "The app list could not be read. Try again.",
+        }
+    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -493,6 +519,90 @@ pub enum LaunchEventKind {
     /// The app ran and exited cleanly. Not an error; reported so
     /// callers can retire per-app UI state.
     Exited,
+}
+
+/// Normal-user copy for an asynchronous launch failure. The launcher keeps
+/// the complete process output in the event; this deliberately does not.
+/// Fixed-height desktop banners must remain a summary, not become a log
+/// viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaunchFailureNotice {
+    pub title: String,
+    pub body: &'static str,
+}
+
+/// Long enough to read and act on, but not a persistent alarm for a
+/// recoverable failure.
+pub(crate) const LAUNCH_FAILURE_NOTICE_LIFETIME: std::time::Duration =
+    std::time::Duration::from_secs(8);
+
+impl LaunchEvent {
+    /// Build the short, actionable banner for a failed launch. Full process
+    /// diagnostics are emitted by [`Self::log_failure`] instead of being
+    /// copied into notification chrome.
+    pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
+        let body = match &self.kind {
+            LaunchEventKind::SpawnFailed { .. } => "The app launcher is unavailable. Try again.",
+            LaunchEventKind::Failed { .. } => "The app stopped before opening. Try again.",
+            LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
+        };
+        Some(LaunchFailureNotice {
+            title: launch_failure_title(&self.display_name),
+            body,
+        })
+    }
+
+    /// Preserve the complete failure in the compositor's session log. Field
+    /// values use tracing's structured formatting, so embedded newlines or
+    /// terminal escapes cannot alter the surrounding log record.
+    pub(crate) fn log_failure(&self) {
+        match &self.kind {
+            LaunchEventKind::SpawnFailed { detail } => {
+                tracing::error!(
+                    target: "qos::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    detail = ?detail,
+                    "application launcher could not be started"
+                );
+            }
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                tracing::error!(
+                    target: "qos::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    exit_code = ?code,
+                    stderr_tail = ?stderr_tail,
+                    "application stopped before presenting a window"
+                );
+            }
+            LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
+        }
+    }
+}
+
+/// Keep untrusted desktop-entry names on one notification line. Whitespace is
+/// normalised and the scalar-value cap avoids slicing UTF-8; the full name is
+/// still present in the structured failure log.
+fn compact_notice_name(name: &str) -> String {
+    const MAX_CHARS: usize = 32;
+    let normalised = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalised = if normalised.is_empty() {
+        "application"
+    } else {
+        &normalised
+    };
+    let mut chars = normalised.chars();
+    let compact: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{compact}…")
+    } else {
+        compact
+    }
+}
+
+pub(crate) fn launch_failure_title(display_name: &str) -> String {
+    format!("Couldn't open {}", compact_notice_name(display_name))
 }
 
 /// Who a running launch is, for the event stream — a package id for a
@@ -1963,6 +2073,92 @@ pub fn wayland_socket_display() -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
+        LaunchEvent {
+            package_id: "org.example.Broken".into(),
+            display_name: "Broken App".into(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind,
+        }
+    }
+
+    #[test]
+    fn failed_launch_banner_never_contains_raw_stderr() {
+        let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";
+        let event = launch_event(LaunchEventKind::Failed {
+            code: Some(1),
+            stderr_tail: raw.into(),
+        });
+        let notice = event.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Couldn't open Broken App");
+        assert_eq!(notice.body, "The app stopped before opening. Try again.");
+        assert!(!notice.body.contains(raw));
+        assert!(!notice.body.contains('\n'));
+        assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
+        let event = launch_event(LaunchEventKind::SpawnFailed {
+            detail: "No such file or directory (os error 2)".into(),
+        });
+        let notice = event.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Couldn't open Broken App");
+        assert_eq!(notice.body, "The app launcher is unavailable. Try again.");
+        assert!(
+            launch_event(LaunchEventKind::Started { pid: 42 })
+                .failure_notice()
+                .is_none()
+        );
+        assert!(
+            launch_event(LaunchEventKind::Exited)
+                .failure_notice()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn launch_failure_title_normalises_and_bounds_untrusted_app_names() {
+        let mut event = launch_event(LaunchEventKind::Failed {
+            code: None,
+            stderr_tail: String::new(),
+        });
+        event.display_name = "  An app\nwith a deliberately extremely long display name  ".into();
+        let notice = event.failure_notice().unwrap();
+        assert_eq!(
+            notice.title,
+            "Couldn't open An app with a deliberately extre…"
+        );
+        assert!(!notice.title.contains('\n'));
+        assert_eq!(compact_notice_name(" \t "), "application");
+    }
+
+    #[test]
+    fn preflight_notification_copy_excludes_paths_and_backend_detail() {
+        let missing = LaunchError::LauncherBinaryMissing {
+            searched: vec![
+                PathBuf::from("/a/private/developer/build/qos-launcher"),
+                PathBuf::from("/another/very/long/path/qos-launcher"),
+            ],
+        };
+        let registry = LaunchError::RegistryUnreadable {
+            detail: "permission denied while reading /var/lib/qos/apps.json".into(),
+        };
+        assert_eq!(
+            missing.notification_message(),
+            "The app launcher is unavailable. Try again."
+        );
+        assert_eq!(
+            registry.notification_message(),
+            "The app list could not be read. Try again."
+        );
+        assert!(!missing.notification_message().contains('/'));
+        assert!(!registry.notification_message().contains('/'));
+        assert!(missing.user_message().contains("/a/private"));
+        assert!(registry.user_message().contains("/var/lib"));
+    }
 
     #[test]
     fn restored_launch_keeps_the_source_crdt_record_identity() {

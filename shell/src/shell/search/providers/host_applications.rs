@@ -90,14 +90,24 @@ impl HostApplicationsProvider {
                     // No capability publication or workspace id: no
                     // sandbox for either to act on.
                     if let Err(err) = host_apps::launch(&desktop_id) {
+                        tracing::error!(
+                            target: "qos::app_launch",
+                            desktop_id = %desktop_id,
+                            display_name = %notify_name,
+                            detail = %err,
+                            "host application launch was refused before spawn"
+                        );
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open {notify_name}"),
-                                err.user_message(),
+                                crate::shell::launcher::launch_failure_title(&notify_name),
+                                err.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
-                            .with_app_name(HOST_APPLICATIONS_KIND),
+                            .with_app_name(HOST_APPLICATIONS_KIND)
+                            .with_dismiss_after(
+                                crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME,
+                            ),
                         );
                         st.bump();
                     }
