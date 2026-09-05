@@ -51,11 +51,12 @@ const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 const DAMAGE_TEXTURE_GRANULARITY: u32 = 32;
 const DAMAGE_TEXTURE_HEIGHT_GRANULARITY: u32 = 16;
 
+fn env_enabled_by_default(name: &str) -> bool {
+    !matches!(std::env::var(name).as_deref(), Ok("0"))
+}
+
 pub(crate) fn damage_geometric_capacity_enabled() -> bool {
-    matches!(
-        std::env::var("QUICK_UI_DAMAGE_GEOMETRIC").as_deref(),
-        Ok("1")
-    )
+    env_enabled_by_default("QUICK_UI_DAMAGE_GEOMETRIC")
 }
 
 pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
@@ -512,6 +513,18 @@ impl OffscreenRenderer {
     #[doc(hidden)]
     pub fn set_compute_pass_batching(&mut self, enabled: bool) {
         self.renderer.set_compute_pass_batching(enabled);
+    }
+
+    /// Whether shared GPU compute-pass batching is active.
+    #[doc(hidden)]
+    pub fn compute_pass_batching_enabled(&self) -> bool {
+        self.renderer.compute_pass_batching_enabled()
+    }
+
+    /// Whether geometric retained-damage texture capacity is enabled.
+    #[doc(hidden)]
+    pub fn damage_geometric_capacity_enabled(&self) -> bool {
+        self.damage_geometric_capacity
     }
 
     /// Whether direct GPU path count/tiling dispatch is active.
@@ -1563,7 +1576,8 @@ mod tests {
     use super::{
         OffscreenRenderer, damage_texture_extent, damage_texture_geometric_needs_replacement,
         damage_texture_geometric_width_extent, damage_texture_height_extent,
-        damage_texture_needs_replacement, shared_gpu, timestamp_last_and_other_pass_ns,
+        damage_texture_needs_replacement, env_enabled_by_default, shared_gpu,
+        timestamp_last_and_other_pass_ns,
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
@@ -1927,6 +1941,7 @@ mod tests {
         reference.set_direct_path_dispatch_enabled(false);
         reference.set_defer_bump_readback_enabled(false);
         reference.set_sparse_fine_enabled(false);
+        reference.set_cpu_metadata_enabled(false);
         for (frame, (next, dirty)) in [
             (
                 &second,
@@ -2000,10 +2015,10 @@ mod tests {
     fn sparse_damage_masks_same_tile_and_handles_a_tall_native_prefix() {
         let mut retained = OffscreenRenderer::new(64, 64);
         if !retained.sparse_fine_supported() {
-            let requested = matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+            let requested = env_enabled_by_default("VELLO_SPARSE_FINE");
             assert!(
                 !requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
-                "VELLO_SPARSE_FINE=1 must be available unless the explicit CPU fallback is selected",
+                "default sparse fine must be available unless the explicit CPU fallback is selected",
             );
             eprintln!("skipping sparse GPU mask test: sparse fine is unavailable");
             return;
@@ -2093,8 +2108,7 @@ mod tests {
         const H: u32 = 528;
         let mut retained = OffscreenRenderer::new(W, H);
         if !retained.sparse_coarse_supported() {
-            let sparse_fine_requested =
-                matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+            let sparse_fine_requested = env_enabled_by_default("VELLO_SPARSE_FINE");
             assert!(
                 !sparse_fine_requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
                 "coarse support is required only for the requested GPU sparse-fine path"
@@ -2230,12 +2244,10 @@ mod tests {
                 assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
                 assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
             }
-            let batched_reuse_profile =
-                matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
-                    && matches!(
-                        std::env::var("VELLO_SPARSE_UPLOAD_REUSE").as_deref(),
-                        Ok("1")
-                    );
+            let batched_reuse_profile = !matches!(
+                std::env::var("VELLO_COMPUTE_BATCH").as_deref(),
+                Ok("0") | Ok("1")
+            ) && env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE");
             if batched_reuse_profile && retained.gpu_timestamp_buffer_bytes() != 0 {
                 assert_eq!(timing.sparse_submissions, 1);
                 assert_eq!(timing.full_attempts, 0);
@@ -2255,7 +2267,7 @@ mod tests {
 
     #[test]
     fn cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled() {
-        if !matches!(std::env::var("VELLO_CPU_PATHTAG").as_deref(), Ok("1")) {
+        if !env_enabled_by_default("VELLO_CPU_PATHTAG") {
             eprintln!("skipping CPU path-tag test: selective path tags are not requested");
             return;
         }
@@ -2269,20 +2281,16 @@ mod tests {
         if !retained.cpu_pathtag_enabled() {
             assert!(
                 std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
-                "VELLO_CPU_PATHTAG=1 must activate selective CPU path tags on a GPU renderer"
+                "default selective CPU path tags must activate on a GPU renderer"
             );
             return;
         }
-        let draw_prefix_requested =
-            matches!(std::env::var("VELLO_CPU_DRAW_PREFIX").as_deref(), Ok("1"));
-        let direct_path_requested = matches!(
-            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
-            Ok("1")
-        );
+        let draw_prefix_requested = env_enabled_by_default("VELLO_CPU_DRAW_PREFIX");
+        let direct_path_requested = env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH");
         if direct_path_requested {
             assert!(
                 retained.direct_path_dispatch_enabled(),
-                "VELLO_DIRECT_PATH_DISPATCH=1 must activate direct GPU path dispatch"
+                "default direct GPU path dispatch must activate"
             );
         }
         if draw_prefix_requested {
@@ -2354,8 +2362,7 @@ mod tests {
         let initial = scene_for(0.0, false);
         retained.render_rgba_resilient(&initial);
         let bounded_damage = Rect::new(12.0, 12.0, 184.0, 150.0);
-        let reuse_requested =
-            matches!(std::env::var("VELLO_CPU_PATHTAG_REUSE").as_deref(), Ok("1"));
+        let reuse_requested = env_enabled_by_default("VELLO_CPU_PATHTAG_REUSE");
         let deferred_bump_profile = retained.defer_bump_readback_enabled()
             && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
             && !retained.sparse_fine_supported()
@@ -2392,8 +2399,7 @@ mod tests {
                 let reduce = 1_u32.checked_shl(0).unwrap_or(0);
                 let scan_small = 1_u32.checked_shl(3).unwrap_or(0);
                 let flatten = 1_u32.checked_shl(6).unwrap_or(0);
-                let sparse_fine_requested =
-                    matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+                let sparse_fine_requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 let fine = 1_u32
                     .checked_shl(if sparse_fine_requested { 22 } else { 19 })
                     .unwrap_or(0);
@@ -2557,7 +2563,7 @@ mod tests {
                 assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
             }
         }
-        if matches!(std::env::var("VELLO_CPU_METADATA").as_deref(), Ok("1")) {
+        if env_enabled_by_default("VELLO_CPU_METADATA") {
             assert!(retained.cpu_metadata_enabled());
             retained.set_cpu_metadata_enabled(false);
             let metadata_gpu_scene = scene_for(12.0, true);
@@ -2623,10 +2629,7 @@ mod tests {
 
     #[test]
     fn direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages() {
-        if !matches!(
-            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
-            Ok("1")
-        ) {
+        if !env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH") {
             eprintln!("skipping direct path-dispatch test: experiment is not requested");
             return;
         }
@@ -2640,7 +2643,7 @@ mod tests {
         if !retained.direct_path_dispatch_enabled() {
             assert!(
                 std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
-                "VELLO_DIRECT_PATH_DISPATCH=1 must activate direct GPU path dispatch"
+                "default direct GPU path dispatch must activate"
             );
             return;
         }
@@ -2772,10 +2775,7 @@ mod tests {
 
     #[test]
     fn sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle() {
-        if !matches!(
-            std::env::var("VELLO_SPARSE_UPLOAD_REUSE").as_deref(),
-            Ok("1")
-        ) {
+        if !env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE") {
             eprintln!("skipping sparse upload reuse test: reuse is not requested");
             return;
         }
@@ -2912,10 +2912,7 @@ mod tests {
             std::env::var("VELLO_DEFER_BUMP_READBACK").as_deref(),
             Ok("1")
         );
-        let direct_path_requested = matches!(
-            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
-            Ok("1")
-        );
+        let direct_path_requested = env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH");
         if !deferred_bump_requested && !direct_path_requested {
             eprintln!("skipping GPU path recovery test: no experiment is requested");
             return;

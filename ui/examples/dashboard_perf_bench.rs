@@ -31,10 +31,10 @@
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
 //! performance measurements or accept benchmark budget gates.
-//! Set `VELLO_SPARSE_FINE=1` to opt into direct native masked sparse fine
-//! shading when the renderer supports it. The raster-pixel metric remains the
-//! actual fine-shaded native pixels; profile output separately accounts for
-//! the coarse prefix work, so sparse mode is not described as eliminating it.
+//! Native masked sparse fine shading is enabled by default when supported;
+//! set `VELLO_SPARSE_FINE=0` to disable it. The raster-pixel metric remains
+//! the actual fine-shaded native pixels; profile output separately accounts
+//! for the coarse prefix work, so sparse mode is not described as eliminating it.
 //! Set `VELLO_GPU_DISPATCH_TIMESTAMPS=1` together with
 //! `VELLO_GPU_TIMESTAMPS=1` for an opt-in, profile-only per-dispatch GPU
 //! timing breakdown. It rejects acceptance budgets.
@@ -91,6 +91,11 @@ fn env_u32(name: &str, fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
+/// Production Vello performance paths are enabled unless explicitly opted out.
+fn env_enabled_by_default(name: &str) -> bool {
+    !matches!(std::env::var(name).as_deref(), Ok("0"))
+}
+
 #[allow(
     clippy::exit,
     reason = "an invalid verifier frame count is a command-line configuration error"
@@ -121,6 +126,7 @@ fn verification_frame_count() -> usize {
 fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
     const ACCEPTANCE_BUDGETS: &[&str] = &[
         "QUICK_UI_DASH_FRAME_BUDGET_US",
+        "QUICK_UI_DASH_MEAN_FRAME_BUDGET_US",
         "QUICK_UI_DASH_EVENT_BUDGET_US",
         "QUICK_UI_DASH_RASTER_PIXEL_BUDGET",
         "QUICK_UI_DASH_ALLOC_BUDGET_PER_1000",
@@ -360,14 +366,15 @@ fn native_pixel_coordinates(pixel: usize, width: usize) -> (u32, u32) {
 
 impl DamageVerifier {
     fn new(width: u32, height: u32, requested_frames: usize) -> Self {
-        // Keep the full-frame oracle independent from the retained path's
-        // optional compute-pass batching or sparse fine path, so either error
-        // cannot agree with itself in both targets.
+        // Keep the full-frame oracle independent from every retained optional
+        // batching, sparse, direct, and selective CPU path, so an error cannot
+        // agree with itself in both targets.
         let mut reference = OffscreenRenderer::new(width, height);
         reference.set_compute_pass_batching(false);
         reference.set_direct_path_dispatch_enabled(false);
         reference.set_defer_bump_readback_enabled(false);
         reference.set_sparse_fine_enabled(false);
+        reference.set_cpu_metadata_enabled(false);
         reference.set_cpu_pathtag_enabled(false);
         reference.set_cpu_draw_prefix_enabled(false);
         Self {
@@ -462,9 +469,9 @@ mod damage_verifier_tests {
         OffscreenRenderTiming, Phase, allocator_traffic_bytes, ceil_bytes_per_redraw,
         complete_dispatch_unknown_totals, dispatch_timestamp_configuration_is_valid,
         gpu_timestamp_sample_label, has_complete_gpu_dispatch_timestamp,
-        has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, native_pixel_coordinates,
-        p99_values, pixel_differs_beyond_aa, traffic_byte_redraw_budget_passes,
-        unaccounted_render_us,
+        has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, mean_frame_budget_passes,
+        native_pixel_coordinates, p99_values, parse_mean_frame_budget, pixel_differs_beyond_aa,
+        redraw_frame_totals, traffic_byte_redraw_budget_passes, unaccounted_render_us,
     };
 
     #[test]
@@ -618,6 +625,67 @@ mod damage_verifier_tests {
         assert!(traffic_byte_redraw_budget_passes(traffic, 2, 8));
         assert!(!traffic_byte_redraw_budget_passes(traffic, 2, 7));
         assert!(!traffic_byte_redraw_budget_passes(traffic, 0, u64::MAX));
+    }
+
+    #[test]
+    fn mean_frame_budget_uses_exact_redraw_totals_and_rejects_bad_configuration() {
+        assert_eq!(redraw_frame_totals(&[]), None);
+        assert_eq!(mean_frame_budget_passes(&[], 8_000), None);
+
+        let idle = Phase {
+            total_us: 99_999,
+            ..Phase::default()
+        };
+        assert_eq!(redraw_frame_totals(&[idle.clone()]), None);
+        assert_eq!(mean_frame_budget_passes(&[idle.clone()], 8_000), None);
+        let redraws = [
+            idle,
+            Phase {
+                draw_us: 1,
+                total_us: 8_000,
+                ..Phase::default()
+            },
+            Phase {
+                render_us: 1,
+                total_us: 8_000,
+                ..Phase::default()
+            },
+        ];
+        assert_eq!(redraw_frame_totals(&redraws), Some((16_000, 2)));
+        assert_eq!(mean_frame_budget_passes(&redraws, 8_000), Some(true));
+
+        let fractional_excess = [
+            Phase {
+                draw_us: 1,
+                total_us: 8_000,
+                ..Phase::default()
+            },
+            Phase {
+                render_us: 1,
+                total_us: 8_001,
+                ..Phase::default()
+            },
+        ];
+        assert_eq!(
+            mean_frame_budget_passes(&fractional_excess, 8_000),
+            Some(false),
+            "16,001us across two redraws must not pass an 8,000us mean budget"
+        );
+
+        let all_redraws = vec![
+            Phase {
+                draw_us: 1,
+                total_us: 8_000,
+                ..Phase::default()
+            };
+            1_000
+        ];
+        assert_eq!(redraw_frame_totals(&all_redraws), Some((8_000_000, 1_000)));
+        assert_eq!(mean_frame_budget_passes(&all_redraws, 8_000), Some(true));
+        assert_eq!(parse_mean_frame_budget(None), Ok(None));
+        assert_eq!(parse_mean_frame_budget(Some("8000")), Ok(Some(8_000)));
+        assert!(parse_mean_frame_budget(Some("0")).is_err());
+        assert!(parse_mean_frame_budget(Some("nope")).is_err());
     }
 }
 
@@ -1801,6 +1869,68 @@ fn enforce_frame_budget(histo: &[Phase], budget_us: u128) {
     }
 }
 
+/// Total and count for exactly the redraw population used by frame budgets.
+fn redraw_frame_totals(histo: &[Phase]) -> Option<(u128, usize)> {
+    let (total_us, redraws) = histo
+        .iter()
+        .filter(|phase| phase.draw_us > 0 || phase.render_us > 0)
+        .fold((0_u128, 0_usize), |(total, count), phase| {
+            (
+                total.saturating_add(phase.total_us),
+                count.saturating_add(1),
+            )
+        });
+    (redraws > 0).then_some((total_us, redraws))
+}
+
+/// Whether the exact redraw total is within the requested arithmetic mean.
+/// `None` deliberately represents an invalid zero-redraw acceptance sample.
+fn mean_frame_budget_passes(histo: &[Phase], budget_us: u128) -> Option<bool> {
+    let (total_us, redraws) = redraw_frame_totals(histo)?;
+    let redraws = u128::try_from(redraws).unwrap_or(u128::MAX);
+    Some(total_us <= budget_us.saturating_mul(redraws))
+}
+
+fn parse_mean_frame_budget(raw: Option<&str>) -> Result<Option<u128>, &'static str> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let budget = raw
+        .parse::<u128>()
+        .ok()
+        .filter(|budget| *budget > 0)
+        .ok_or("must be a positive integer microsecond budget")?;
+    Ok(Some(budget))
+}
+
+#[allow(
+    clippy::exit,
+    reason = "a benchmark budget is an executable acceptance gate for CI and target-hardware runs"
+)]
+fn enforce_mean_frame_budget(histo: &[Phase], budget_us: u128) {
+    let Some((total_us, redraws)) = redraw_frame_totals(histo) else {
+        eprintln!(
+            "mean-frame-budget: FAIL (no redrawing frames were measured; use animated or scroll mode)"
+        );
+        std::process::exit(2);
+    };
+    let sample_count = u128::try_from(redraws).unwrap_or(u128::MAX);
+    let mean_us = total_us.checked_div(sample_count).unwrap_or(0);
+    // Compare totals, rather than the truncated integer mean, so a fractional
+    // microsecond excess cannot pass the acceptance gate.
+    let passed = mean_frame_budget_passes(histo, budget_us).unwrap_or(false);
+    println!(
+        "mean-frame-budget: {} budget={}us mean={}us samples={}",
+        if passed { "PASS" } else { "FAIL" },
+        budget_us,
+        mean_us,
+        redraws,
+    );
+    if !passed {
+        std::process::exit(2);
+    }
+}
+
 #[allow(
     clippy::exit,
     reason = "benchmark budgets are executable acceptance gates for CI and target-hardware runs"
@@ -2062,20 +2192,16 @@ pub fn run(_args: &[String]) {
         std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
     let gpu_dispatch_timestamp_profile =
         std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").is_ok_and(|value| value == "1");
-    let sparse_fine_configured = std::env::var("VELLO_SPARSE_FINE").is_ok_and(|value| value == "1");
+    let sparse_fine_configured = env_enabled_by_default("VELLO_SPARSE_FINE");
+    let compute_batch_configured = env_enabled_by_default("VELLO_COMPUTE_BATCH");
     let sparse_coarse_configured =
         std::env::var("VELLO_SPARSE_COARSE").is_ok_and(|value| value == "1");
-    let cpu_pathtag_configured = std::env::var("VELLO_CPU_PATHTAG").is_ok_and(|value| value == "1");
-    let cpu_pathtag_reuse_configured =
-        std::env::var("VELLO_CPU_PATHTAG_REUSE").is_ok_and(|value| value == "1");
-    let cpu_metadata_configured =
-        std::env::var("VELLO_CPU_METADATA").is_ok_and(|value| value == "1");
-    let cpu_draw_prefix_configured =
-        std::env::var("VELLO_CPU_DRAW_PREFIX").is_ok_and(|value| value == "1");
-    let sparse_upload_reuse_configured =
-        std::env::var("VELLO_SPARSE_UPLOAD_REUSE").is_ok_and(|value| value == "1");
-    let direct_path_dispatch_configured =
-        std::env::var("VELLO_DIRECT_PATH_DISPATCH").is_ok_and(|value| value == "1");
+    let cpu_pathtag_configured = env_enabled_by_default("VELLO_CPU_PATHTAG");
+    let cpu_pathtag_reuse_configured = env_enabled_by_default("VELLO_CPU_PATHTAG_REUSE");
+    let cpu_metadata_configured = env_enabled_by_default("VELLO_CPU_METADATA");
+    let cpu_draw_prefix_configured = env_enabled_by_default("VELLO_CPU_DRAW_PREFIX");
+    let sparse_upload_reuse_configured = env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE");
+    let direct_path_dispatch_configured = env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH");
     let defer_bump_readback_configured =
         std::env::var("VELLO_DEFER_BUMP_READBACK").is_ok_and(|value| value == "1");
     if !dispatch_timestamp_configuration_is_valid(
@@ -2119,7 +2245,7 @@ pub fn run(_args: &[String]) {
     if verify_damage {
         println!(
             "damage-verify mode: retained/full pixel parity preflight only; \
-             reference is unbatched, sparse-disabled, and GPU-only for path tags; timing/budget reports are suppressed"
+             reference explicitly disables batching, sparse, direct, and selective CPU paths; timing/budget reports are suppressed"
         );
     } else if gpu_timestamp_profile {
         println!(
@@ -2134,6 +2260,10 @@ pub fn run(_args: &[String]) {
         "sparse fine: configured={} supported={} (raster metric is actual fine-shaded native pixels; profile retains coarse-prefix accounting)",
         sparse_fine_configured,
         renderer.sparse_fine_supported(),
+    );
+    println!(
+        "compute-pass batching: configured={compute_batch_configured} active={} (default shared GPU batching; VELLO_COMPUTE_BATCH=0 disables it)",
+        renderer.compute_pass_batching_enabled(),
     );
     println!(
         "sparse coarse: configured={sparse_coarse_configured} supported={} (only coarse selection changes; path-count, backdrop, and earlier prefix stages remain dense; coarse-prefix coverage remains accounted)",
@@ -2171,6 +2301,11 @@ pub fn run(_args: &[String]) {
     println!(
         "direct path dispatch: configured={direct_path_dispatch_configured} active={} (replaces GPU indirect path-count/path-tiling setup; it does not remove CPU readback)",
         renderer.direct_path_dispatch_enabled(),
+    );
+    println!(
+        "geometric damage capacity: configured={} active={} (default on; QUICK_UI_DAMAGE_GEOMETRIC=0 restores fixed-width capacity)",
+        env_enabled_by_default("QUICK_UI_DAMAGE_GEOMETRIC"),
+        renderer.damage_geometric_capacity_enabled(),
     );
     println!(
         "gpu dispatch timestamps: requested={gpu_dispatch_timestamp_profile} status={gpu_dispatch_timestamp_status:?} (requires VELLO_GPU_TIMESTAMPS=1; diagnostic-only)",
@@ -2305,6 +2440,21 @@ pub fn run(_args: &[String]) {
         && budget_us > 0
     {
         enforce_frame_budget(&run.histo, budget_us);
+    }
+    let mean_frame_budget = match std::env::var_os("QUICK_UI_DASH_MEAN_FRAME_BUDGET_US") {
+        None => Ok(None),
+        Some(raw) => match raw.to_str() {
+            Some(raw) => parse_mean_frame_budget(Some(raw)),
+            None => Err("must be valid Unicode"),
+        },
+    };
+    match mean_frame_budget {
+        Ok(Some(budget_us)) => enforce_mean_frame_budget(&run.histo, budget_us),
+        Ok(None) => {}
+        Err(reason) => {
+            eprintln!("QUICK_UI_DASH_MEAN_FRAME_BUDGET_US: {reason}");
+            std::process::exit(2);
+        }
     }
     if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_EVENT_BUDGET_US")
         && let Ok(budget_us) = raw_budget.parse::<u128>()

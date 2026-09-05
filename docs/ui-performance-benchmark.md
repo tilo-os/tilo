@@ -75,15 +75,34 @@ same scene, allowing at most one channel value of antialiasing variation. All
 readbacks, suppresses performance reports, and rejects benchmark budget flags;
 its runtime and memory are not performance samples.
 
-Current requested 4K/30 gate (1,000 redraws, p99 at most 33,333 microseconds):
+Current requested native-4K gate (1,000 redraws, p99 at most 30,000 microseconds,
+with default renderer options and no optimization environment overrides):
 
 ```sh
 QUICK_UI_DASH_ITERS=1000 \
 QUICK_UI_DASH_WIDTH=3840 \
 QUICK_UI_DASH_HEIGHT=2160 \
-QUICK_UI_DASH_FRAME_BUDGET_US=33333 \
+QUICK_UI_DASH_FRAME_BUDGET_US=30000 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
+
+The separate shell redraw target is mean at most 8,000 microseconds. Its
+production render/readback harness is:
+
+```sh
+cargo build -p shell --release --example redraw_bench --locked
+target/release/examples/redraw_bench
+```
+
+It drives 1,000 clicks through `FrameBuilder` at native 3840x2160, including
+input, layout, scene paint, DRM-bridge GPU completion, full texture readback,
+and XRGB conversion. The destination is a reused CPU allocation, not a real
+KMS dumb-buffer mapping; physical page flip and display scanout are not timed.
+It enforces both the 8,000 us mean and 30,000 us p99 gates. The older
+`shell/examples/draw_bench.rs` measures CPU scene painting only and cannot
+establish this target. The UI harness also accepts
+`QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
+different workload, not a replacement for the shell measurement.
 
 The earlier, stricter 4K/60 frame gate remains available:
 
@@ -1724,3 +1743,73 @@ Raw commands, exit codes, and complete output from all 19 runs are preserved
 locally at `target/ui-perf-comparison/6724f6222e6795e29-benchmarks.txt`
 (ignored build artifact). This ARM VM / Virtio-GPU offscreen result does not
 qualify physical display scanout or a 2010 laptop.
+
+## 2026-09-05 default-release checkpoint (30 ms p99 goal still open)
+
+The selected optimizations are now constructor defaults: mode-2 compute
+batching, sparse fine/upload reuse, selective CPU path tags with bounded host
+reuse, CPU metadata/draw prefix, direct path dispatch, and geometric damage
+capacity. Each can still be disabled by its existing environment switch set
+to `0`. Sparse coarse, deferred bump readback, and GPU timing diagnostics
+remain off. Full-CPU, unsupported-AA, and profiler fallbacks remain available.
+The independent image oracle explicitly disables the promoted paths.
+
+The ordinary locked release build has no compiler/profile overrides or
+optimization environment opt-ins. Executable:
+`target/ui-perf-comparison/ui-perf-default-release-20260905`.
+SHA-256: `616140a40bd5f361fb32fa1ae205e31a8b619bba49dbaba16078841541d2ffd2`.
+Source base: `502df23680bc6916a30bbf97ef6c8cc89b2e1f84` plus this checkpoint's
+UI/Vello default-promotion changes. No builds or tests overlap measurements.
+
+All timing runs include 1,000 native-3840x2160 animated redraws, zero skipped
+events, and no CPU screenshot readback. The preserved preceding executable
+is the `6724f622...` artifact documented above; its old defaults are off.
+
+| Metric | Previous executable, defaults off | Previous executable, opt-ins on | New executable, defaults on |
+| --- | ---: | ---: | ---: |
+| Mean, ms (three runs) | 26.545 / 29.943 / 30.126 | 10.662 / 10.230 / 9.965 | 8.557 / 8.094 / 8.203 |
+| P99, ms (three runs) | 104.029 / 112.361 / 109.365 | 70.490 / 67.777 / 68.302 | 39.881 / 32.623 / 25.374 |
+| Maximum, ms (three runs) | 148.114 / 150.098 / 172.856 | 135.389 / 102.728 / 104.517 | 120.825 / 43.362 / 120.296 |
+| 30,000 us p99 gate | FAIL / FAIL / FAIL | FAIL / FAIL / FAIL | FAIL / FAIL / PASS |
+
+These are observed results, not a controlled claim that default promotion
+itself sped up the already-enabled implementation. The previous executable's
+default/opt-in runs were interleaved; the new executable ran afterward with
+less agent/UI activity. All share the host's Virtio GPU with GNOME and Codex.
+The new default p99 passes only one of three runs, so **the 30 ms target is
+not achieved reproducibly**, and constant 60 fps is not established.
+
+The separate default resource run passes all seven existing budgets:
+62,282,120 tracked GPU bytes, 328,988 KiB RSS, 172.646 allocation calls and
+35,555.914 allocated/reallocated bytes per redraw. All 1,000 submissions are
+sparse, with no full/recovery samples, scratch creations, dirty-copy encoding,
+or positive warm-to-final GPU/RSS growth. Mean submission time is 697 us and
+mean GPU-completion settlement is 7,883 us; this profiled run is not a timing
+acceptance sample. Separate GPU diagnostics confirm 10 dispatches in two
+compute passes with 1,000/1,000 complete samples; diagnostic timings are also
+excluded from acceptance.
+
+Correctness validation passes 40/40 native-4K reference images, 30 Vello unit
+tests, two shader tests, seven UI benchmark helper tests, 17 damage tests,
+19 default offscreen tests, and strict UI/Vello clippy. Explicit all-off and
+full-CPU fallback checks also pass. The previously documented unrelated
+presence-suite failure remains; this is not a full-workspace-green claim.
+The million-event idle workload has not been remeasured for this checkpoint.
+
+The new shell harness measures the actual production DRM render/readback
+path rather than the old CPU-only cache-hit draw loop. The bridge appends its
+texture copy to Vello's submission, retains its RGBA buffer, cleans up failed
+mapping requests, and checks bounded overflow recovery before publishing
+pixels. Its new tests cover cold XRGB/RGBA overflow recovery against a known
+pixel oracle and buffer reuse after a zero-pitch destination. All 14 focused
+DRM paint tests and three shell benchmark helper tests pass, as does strict
+shell library/example clippy. The cold XRGB and independent RGBA tests each
+exercise real tile overflow (`failed=0x2`) before matching the pixel oracle.
+The 8 ms shell
+mean is not yet measured or claimed at this checkpoint; this commit is
+progress toward the goal, not its completion.
+
+Raw commands, exit codes, and full output from all 12 runs are preserved
+locally at `target/ui-perf-comparison/default-release-checkpoint-20260905.txt`
+(ignored build artifact). Physical KMS scanout and a 2010 laptop remain
+unqualified.
