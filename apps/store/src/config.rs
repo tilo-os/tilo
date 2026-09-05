@@ -82,6 +82,7 @@ mod tests {
     struct Guard<'a> {
         _lock: MutexGuard<'a, ()>,
         prev: Option<std::ffi::OsString>,
+        prev_official: Option<std::ffi::OsString>,
     }
     impl Drop for Guard<'_> {
         fn drop(&mut self) {
@@ -89,14 +90,30 @@ mod tests {
                 Some(v) => unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", v) },
                 None => unsafe { std::env::remove_var("QOS_STORE_CONFIG_DIR") },
             }
+            match &self.prev_official {
+                Some(v) => unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
+                None => unsafe { std::env::remove_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
+            }
         }
     }
 
     fn scoped_dir(td: &TempDir) -> Guard<'static> {
         let lock = env_lock();
         let prev = std::env::var_os("QOS_STORE_CONFIG_DIR");
+        let prev_official = std::env::var_os("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
+        let trust = td.path().join("registry-owner.pub");
+        std::fs::write(
+            &trust,
+            "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
+        )
+        .unwrap();
         unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", td.path()) };
-        Guard { _lock: lock, prev }
+        unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
+        Guard {
+            _lock: lock,
+            prev,
+            prev_official,
+        }
     }
 
     /// The store and the desktop have to resolve `registries.toml` to

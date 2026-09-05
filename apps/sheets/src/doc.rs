@@ -150,6 +150,20 @@ impl SheetsDoc {
         }
     }
 
+    /// Resolve a durable sheet identity to its current list position. This is
+    /// deliberately linear: sheet counts are small and correctness across
+    /// concurrent reorder matters more than caching a positional alias.
+    pub fn sheet_index_by_resource_id(doc: &AutoCommit, wanted: &str) -> Option<usize> {
+        let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::List), sheets) = doc.get(&wb, "sheets").ok()?? else {
+            return None;
+        };
+        (0..doc.length(&sheets))
+            .find(|&idx| Self::sheet_resource_id(doc, idx).as_deref() == Some(wanted))
+    }
+
     /// The `cells` Map for sheet `idx`, creating it if missing.
     fn cells_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheet = Self::sheet_map(doc, idx)?;

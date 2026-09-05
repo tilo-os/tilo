@@ -26,6 +26,7 @@ use crate::role::OpClass;
 const DOCUMENT_MUTATION_PREFIX: &[u8] = b"qos-document-mutation-v1\0";
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"qos-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"qos-document-attestation-v1\0";
+const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"qos-document-channel-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -42,6 +43,10 @@ pub enum DocumentMutation {
 /// Failure to decode a typed document mutation from a signed payload.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DocumentMutationError {
+    /// The clear, signed artifact/attestation/encryption metadata does not
+    /// bind the envelope to the collaboration route that carried it.
+    #[error("signed document payload does not match its collaboration route")]
+    RouteMismatch,
     /// Payload predates the typed document-mutation envelope.
     #[error("signed payload is not a typed document mutation")]
     MissingPrefix,
@@ -113,6 +118,70 @@ pub fn document_attestation_id(app_id: &str, workspace_id: &str, record_id: &str
         workspace_id,
         record_id,
     ))
+}
+
+/// Deterministically derive the MLS channel for one collaboration route.
+///
+/// This is deliberately independent from the artifact id even though both
+/// currently have one-to-one cardinality.  Keeping a separate domain means a
+/// broker can bind clear, signed [`EncryptionMetadata`] to the joined route
+/// without learning or attempting to decode the ciphertext payload.
+#[must_use]
+pub fn document_channel_id(app_id: &str, workspace_id: &str, record_id: &str) -> ChannelId {
+    ChannelId(derived_document_uuid(
+        DOCUMENT_CHANNEL_DOMAIN,
+        app_id,
+        workspace_id,
+        record_id,
+    ))
+}
+
+/// Result of validating the clear routing layer of a document envelope.
+/// Brokers use this to distinguish a typed cleartext mutation from opaque MLS
+/// ciphertext while applying identical route binding in both cases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoutedDocumentPayload {
+    Cleartext(DocumentMutation),
+    Encrypted { channel: ChannelId, epoch: u64 },
+}
+
+/// Validate the fields a broker is allowed to inspect for a document route.
+///
+/// Encrypted payloads are intentionally not decoded.  Their signed channel id
+/// must equal the deterministic channel for the route and their ciphertext
+/// must be non-empty; authenticity of the inner MLS frame remains an endpoint
+/// responsibility.  Cleartext payloads retain the versioned typed-mutation
+/// check.
+///
+/// # Errors
+///
+/// Returns [`DocumentMutationError::RouteMismatch`] when the signed routing
+/// fields or MLS channel do not match, and forwards the typed mutation decode
+/// error for malformed cleartext payloads.
+pub fn validate_document_payload_route(
+    app_id: &str,
+    workspace_id: &str,
+    record_id: &str,
+    op: &SignedOp,
+) -> Result<RoutedDocumentPayload, DocumentMutationError> {
+    if op.artifact != document_artifact_id(app_id, workspace_id, record_id)
+        || op.attestation_id != document_attestation_id(app_id, workspace_id, record_id)
+    {
+        return Err(DocumentMutationError::RouteMismatch);
+    }
+    match op.encryption {
+        None => DocumentMutation::decode(&op.payload).map(RoutedDocumentPayload::Cleartext),
+        Some(meta)
+            if meta.channel == document_channel_id(app_id, workspace_id, record_id)
+                && !op.payload.is_empty() =>
+        {
+            Ok(RoutedDocumentPayload::Encrypted {
+                channel: meta.channel,
+                epoch: meta.epoch,
+            })
+        }
+        Some(_) => Err(DocumentMutationError::RouteMismatch),
+    }
 }
 
 fn derived_document_uuid(
@@ -428,6 +497,67 @@ mod tests {
             document_attestation_id("dev.qos.notes", "room-a", "record-b").0,
             "artifact and attestation domains must not alias"
         );
+        assert_ne!(
+            first.0,
+            document_channel_id("dev.qos.notes", "room-a", "record-b").0,
+            "artifact and MLS channel domains must not alias"
+        );
         assert_eq!(first.0.get_version_num(), 8);
+    }
+
+    #[test]
+    fn encrypted_document_route_is_bound_without_decoding_ciphertext() {
+        let (app, workspace, record) = ("notes", "workspace", "meeting");
+        let op = SignedOp::new_unsigned_with_encryption(
+            vec![0xde, 0xad, 0xbe, 0xef],
+            document_artifact_id(app, workspace, record),
+            Ed25519PublicKey::from_bytes([7; 32]),
+            document_attestation_id(app, workspace, record),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            1,
+            EncryptionMetadata {
+                epoch: 4,
+                channel: document_channel_id(app, workspace, record),
+            },
+        );
+        assert_eq!(
+            validate_document_payload_route(app, workspace, record, &op),
+            Ok(RoutedDocumentPayload::Encrypted {
+                channel: document_channel_id(app, workspace, record),
+                epoch: 4,
+            })
+        );
+        assert_eq!(
+            validate_document_payload_route(app, workspace, "other", &op),
+            Err(DocumentMutationError::RouteMismatch)
+        );
+    }
+
+    #[test]
+    fn encrypted_document_route_rejects_wrong_channel_and_empty_ciphertext() {
+        let (app, workspace, record) = ("notes", "workspace", "record");
+        let build = |payload, channel| {
+            SignedOp::new_unsigned_with_encryption(
+                payload,
+                document_artifact_id(app, workspace, record),
+                Ed25519PublicKey::from_bytes([8; 32]),
+                document_attestation_id(app, workspace, record),
+                OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                1,
+                EncryptionMetadata { epoch: 0, channel },
+            )
+        };
+        let wrong = build(vec![1], ChannelId::new());
+        let empty = build(Vec::new(), document_channel_id(app, workspace, record));
+        assert_eq!(
+            validate_document_payload_route(app, workspace, record, &wrong),
+            Err(DocumentMutationError::RouteMismatch)
+        );
+        assert_eq!(
+            validate_document_payload_route(app, workspace, record, &empty),
+            Err(DocumentMutationError::RouteMismatch)
+        );
     }
 }

@@ -108,7 +108,7 @@ Mostly **promotion**, not new invention:
   presence renders a peer's broadcast View; attach/follow moves the local viewport
   to the peer's.
 - **Serialization:** round-trip freeze→thaw of a populated app equals the original
-  (state + view); a custom-serialization app (browser stub) round-trips via its
+  (state + view); a custom-serialization app (browser) round-trips via its
   override.
 - Assert on the real path — no `#[ignore]`, no weakened assertions (the covenant).
 

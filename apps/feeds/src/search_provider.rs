@@ -4,8 +4,8 @@
 //! searchable types by implementing [`SearchProvider`] over a snapshot of the
 //! store, so both an **article** (by title / author / summary) and a
 //! **subscription** (by title / URL) are findable from the unified Ctrl+K
-//! palette. Activating a row hands back an opaque `action_id` the app resolves
-//! to the article or feed and navigates to.
+//! palette. Every row names the corresponding resource's exported `open` View
+//! action, so search, agents and accessibility use the same brokered route.
 //!
 //! The provider is deliberately **library-scoped and synchronous**: it matches
 //! the already-fetched articles the store holds in memory, never triggering a
@@ -13,7 +13,9 @@
 //! their own worker.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+};
 
 use crate::model::{Article, Feed, Id, Store};
 
@@ -21,31 +23,6 @@ use crate::model::{Article, Feed, Id, Store};
 pub const ARTICLE_KIND: &str = "Articles";
 /// The group header for feed (subscription) results.
 pub const FEED_KIND: &str = "Feeds";
-
-const ARTICLE_PREFIX: &str = "feeds.article:";
-const FEED_PREFIX: &str = "feeds.feed:";
-
-/// What an activated row points at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Activation {
-    /// Open an article by id.
-    Article(Id),
-    /// Focus a feed (subscription) by id.
-    Feed(Id),
-}
-
-impl Activation {
-    /// Resolve an `action_id` this provider emitted back into a target.
-    pub fn parse(action_id: &str) -> Option<Self> {
-        if let Some(rest) = action_id.strip_prefix(ARTICLE_PREFIX) {
-            rest.parse::<Id>().ok().map(Activation::Article)
-        } else if let Some(rest) = action_id.strip_prefix(FEED_PREFIX) {
-            rest.parse::<Id>().ok().map(Activation::Feed)
-        } else {
-            None
-        }
-    }
-}
 
 /// A [`SearchProvider`] over a snapshot of the store's feeds and articles.
 pub struct FeedsSearchProvider {
@@ -56,20 +33,17 @@ pub struct FeedsSearchProvider {
 impl FeedsSearchProvider {
     /// Snapshot the current store into a provider.
     pub fn new(store: &Store) -> Self {
+        let feeds = store
+            .feeds
+            .iter()
+            .take(DEFAULT_SEARCH_INDEX_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        let remaining = DEFAULT_SEARCH_INDEX_LIMIT.saturating_sub(feeds.len());
         Self {
-            feeds: store.feeds.clone(),
-            articles: store.articles.clone(),
+            feeds,
+            articles: store.articles.iter().take(remaining).cloned().collect(),
         }
-    }
-
-    /// The `action_id` for an article row.
-    pub fn article_action_id(id: Id) -> String {
-        format!("{ARTICLE_PREFIX}{id}")
-    }
-
-    /// The `action_id` for a feed row.
-    pub fn feed_action_id(id: Id) -> String {
-        format!("{FEED_PREFIX}{id}")
     }
 
     /// The title of the feed an article belongs to, for its subtitle.
@@ -89,8 +63,16 @@ impl SearchProvider for FeedsSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let q = query.to_lowercase();
-        let mut out = Vec::new();
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(limit.min(32));
 
         for a in &self.articles {
             let matches = q.is_empty()
@@ -106,17 +88,23 @@ impl SearchProvider for FeedsSearchProvider {
                 (None, false) => a.author.clone(),
                 (None, true) => String::new(),
             };
-            let mut r =
-                SearchResult::new(ARTICLE_KIND, a.title.clone(), Self::article_action_id(a.id))
-                    .with_icon(if a.starred {
-                        Icon::Star
-                    } else {
-                        Icon::FileText
-                    });
+            let mut r = SearchResult::for_action(
+                ARTICLE_KIND,
+                a.title.clone(),
+                crate::actions::open_article_address(a.id),
+            )
+            .with_icon(if a.starred {
+                Icon::Star
+            } else {
+                Icon::FileText
+            });
             if !subtitle.is_empty() {
                 r = r.with_subtitle(subtitle);
             }
             out.push(r);
+            if out.len() == limit {
+                return out;
+            }
         }
 
         for f in &self.feeds {
@@ -127,8 +115,12 @@ impl SearchProvider for FeedsSearchProvider {
             if !matches {
                 continue;
             }
-            let mut r = SearchResult::new(FEED_KIND, f.title.clone(), Self::feed_action_id(f.id))
-                .with_icon(Icon::List);
+            let mut r = SearchResult::for_action(
+                FEED_KIND,
+                f.title.clone(),
+                crate::actions::open_feed_address(f.id),
+            )
+            .with_icon(Icon::List);
             let site = if f.site_url.is_empty() {
                 &f.url
             } else {
@@ -138,6 +130,9 @@ impl SearchProvider for FeedsSearchProvider {
                 r = r.with_subtitle(site.clone());
             }
             out.push(r);
+            if out.len() == limit {
+                break;
+            }
         }
 
         out
@@ -184,42 +179,33 @@ mod tests {
     }
 
     #[test]
-    fn action_ids_round_trip_to_the_right_targets() {
-        let store = seeded();
+    fn every_hit_addresses_an_exported_view_action() {
+        use automerge::{AutoCommit, ROOT};
+        use ui::widget::Widget;
+
+        let mut app = crate::app::FeedsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let resources = app.resources(&doc);
         let mut registry = SearchRegistry::new();
-        registry.register(Box::new(FeedsSearchProvider::new(&store)));
-
-        let a = store.articles.first().unwrap().clone();
-        let hit = registry
-            .query("")
-            .into_iter()
-            .find(|r| r.action_id == FeedsSearchProvider::article_action_id(a.id))
-            .expect("the article is browsable through the registry");
+        for provider in app.search_providers() {
+            registry.register(provider);
+        }
+        let hits = registry.query("");
         assert_eq!(
-            Activation::parse(&hit.action_id),
-            Some(Activation::Article(a.id))
+            hits.len(),
+            app.store_article_ids().len() + app.store_feed_ids().len()
         );
-        assert!(
-            store.article(a.id).is_some(),
-            "the id resolves to a real stored article"
-        );
-
-        let f = store.feeds.first().unwrap().clone();
-        assert_eq!(
-            Activation::parse(&FeedsSearchProvider::feed_action_id(f.id)),
-            Some(Activation::Feed(f.id))
-        );
+        assert!(hits.iter().all(|hit| {
+            hit.action_address().is_some_and(|address| {
+                qos_actions::door::resolve(&resources, &address)
+                    .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+            })
+        }));
     }
 
     #[test]
-    fn parse_rejects_foreign_ids() {
-        assert!(Activation::parse("file:/etc/passwd").is_none());
-        assert!(Activation::parse("feeds.article:not-a-uuid").is_none());
-        assert!(Activation::parse("feeds.feed:not-a-uuid").is_none());
-    }
-
-    #[test]
-    fn widget_hooks_find_then_open_the_article() {
+    fn brokered_search_opens_article_without_legacy_navigation_or_doc_write() {
         use automerge::{AutoCommit, ROOT};
         use ui::widget::Widget;
 
@@ -227,30 +213,56 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
 
-        // Browse the app's OWN provider (its real ids) and take an article hit.
-        let (action_id, id) = {
-            let providers = app.search_providers();
-            assert!(!providers.is_empty(), "feeds publishes a search provider");
-            let hit = providers[0]
-                .search("")
-                .into_iter()
-                .find(|r| r.kind == ARTICLE_KIND)
-                .expect("an article is browsable through the real hook");
-            let Some(Activation::Article(id)) = Activation::parse(&hit.action_id) else {
-                panic!("article row carries an article action_id");
-            };
-            (hit.action_id, id)
-        };
-
-        app.activate_search_result(&action_id, &mut doc, &ROOT);
+        let target = app.store_article_ids()[0];
+        let providers = app.search_providers();
+        let target_title = providers[0]
+            .search("")
+            .into_iter()
+            .find(|hit| hit.action_address() == Some(crate::actions::open_article_address(target)))
+            .expect("the target article is searchable")
+            .title;
+        let resources = app.resources(&doc);
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(providers);
+        palette.open();
+        palette.set_query(&target_title);
+        let hit_index = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &target_title)
+            .expect("the article is browsable through the real hook");
+        palette.set_cursor(hit_index);
+        let before = doc.get_heads();
+        palette.activate_selected();
+        let operation = palette
+            .take_operation()
+            .expect("canonical result queued a broker operation");
+        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert!(palette.take_navigation().is_none());
+        assert!(
+            app.invoke_resource_operation(
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("Feeds handles its exported view operation")
+        );
         assert_eq!(
             app.selected_article(),
-            Some(id),
+            Some(target),
             "activation opened the chosen article"
         );
         assert!(
             matches!(app.active_filter(), crate::model::Filter::Feed(_)),
             "activation focused the article's feed so the row is visible"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "View activation stays presentation-only"
         );
     }
 }

@@ -54,8 +54,8 @@ use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 #[cfg(test)]
-use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
-use crate::zoom_control::{STEP as ZOOM_STEP, ZoomControl};
+use crate::zoom_control::MAX as ZOOM_MAX;
+use crate::zoom_control::{MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -1635,6 +1635,9 @@ pub struct WordProcessorWidget {
     scrub: Option<ScrubState>,
     /// Local page scale plus its toolbar drawing and hit-testing.
     zoom: ZoomControl,
+    /// Follow the available canvas width until the user explicitly operates a
+    /// zoom control. This makes a narrow/tiled editor readable on first open.
+    auto_fit_page: bool,
     /// Floating document statistics, file status, and fade lifecycle.
     document_status: DocumentStatus,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
@@ -1760,15 +1763,17 @@ impl WordProcessorWidget {
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
-            // Default the panel open: it is the primary surface for the
-            // component-instance style model. Dismissable via the toolbar toggle.
-            styles_panel_open: true,
+            // Keep the writing surface primary on first launch. The complete
+            // style inspector is one click away and becomes an overlay on a
+            // narrow tile rather than permanently consuming half the canvas.
+            styles_panel_open: false,
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
             zoom: ZoomControl::new(),
+            auto_fit_page: true,
             document_status: DocumentStatus::default(),
             toolbar_rows: 1,
             notes: Vec::new(),
@@ -2100,6 +2105,20 @@ impl WordProcessorWidget {
         self.history.entries()
     }
 
+    /// Put the responsive style inspector in a deterministic state for
+    /// examples, visual regression shots and embedders.
+    pub fn set_styles_panel_open(&mut self, open: bool) {
+        self.styles_panel_open = open;
+        self.dirty = true;
+    }
+
+    /// Stage a representative non-destructive error toast for visual/a11y
+    /// regression shots. Runtime failures use the same toast surface.
+    pub fn stage_error_for_shot(&mut self) {
+        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+        self.dirty = true;
+    }
+
     pub fn model_mut(&mut self) -> &mut WordProcessor {
         &mut self.inner
     }
@@ -2420,6 +2439,7 @@ impl WordProcessorWidget {
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
+        self.auto_fit_page = false;
         if self.zoom.set(z) {
             self.dirty = true;
             true
@@ -2429,6 +2449,7 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
+        self.auto_fit_page = false;
         let changed = self.zoom.step(delta);
         self.dirty |= changed;
         changed
@@ -3396,13 +3417,16 @@ impl WordProcessorWidget {
         );
     }
 
-    /// Whether the styles panel is reserved and drawn this frame: it yields when
-    /// the window is too narrow to stay the minority (below twice its own width
-    /// it would take half the window or more). `styles_panel_open` is the user's
-    /// preference reflected by the toolbar toggle; this is whether the layout can
-    /// honour it — widening the window brings the panel straight back.
+    /// Whether the styles panel is drawn this frame.
     fn styles_panel_visible(&self) -> bool {
-        self.styles_panel_open && self.rect.width() > 2.0 * STYLES_PANEL_W
+        self.styles_panel_open
+    }
+
+    /// Narrow tiles present the inspector as a temporary rail over the page;
+    /// wide windows reserve space for it. This keeps the document useful at
+    /// phone/three-column widths without making advanced formatting unreachable.
+    fn styles_panel_overlay(&self) -> bool {
+        self.styles_panel_open && self.rect.width() < STYLES_PANEL_W + MAX_PAGE_W + 48.0
     }
 
     /// The contextual paragraph panel, in two clearly-labelled sections: **This
@@ -4291,6 +4315,55 @@ impl A11yTreeNode {
             children: Vec::new(),
         }
     }
+
+    /// Convert this test-friendly carrier into the synthetic subtree the
+    /// shared AccessKit/AT-SPI bridge actually exports. Without this explicit
+    /// conversion, tests can inspect a rich private tree while the host sees
+    /// only the document root.
+    fn into_access_node(self) -> ui::a11y::AccessNode {
+        self.node.with_children(
+            self.children
+                .into_iter()
+                .map(Self::into_access_node)
+                .collect(),
+        )
+    }
+}
+
+/// Stable, locale-independent identity for an immediate-mode toolbar control.
+fn tool_action_id(action: ToolAction) -> String {
+    match action {
+        ToolAction::Bold => "bold".into(),
+        ToolAction::Italic => "italic".into(),
+        ToolAction::Underline => "underline".into(),
+        ToolAction::Strike => "strike".into(),
+        ToolAction::Super => "superscript".into(),
+        ToolAction::Sub => "subscript".into(),
+        ToolAction::FontCycle => "font-family".into(),
+        ToolAction::FontSizeDec => "font-size-decrease".into(),
+        ToolAction::FontSizeInc => "font-size-increase".into(),
+        ToolAction::InsertImage => "insert-image".into(),
+        ToolAction::InsertTable => "insert-table".into(),
+        ToolAction::TableRowAdd => "table-row-add".into(),
+        ToolAction::TableRowDel => "table-row-delete".into(),
+        ToolAction::TableColAdd => "table-column-add".into(),
+        ToolAction::TableColDel => "table-column-delete".into(),
+        ToolAction::TableDelete => "table-delete".into(),
+        ToolAction::ToggleStyles => "toggle-styles".into(),
+        ToolAction::ToggleRuler => "toggle-ruler".into(),
+        ToolAction::ToggleOutline => "toggle-outline".into(),
+        ToolAction::ToggleHistory => "toggle-history".into(),
+        ToolAction::InsertToc => "insert-table-of-contents".into(),
+        ToolAction::NewMenu => "new-from-template".into(),
+        ToolAction::TextColor(None) => "text-color-default".into(),
+        ToolAction::TextColor(Some(rgb)) => {
+            format!("text-color-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+        }
+        ToolAction::Highlight(None) => "highlight-clear".into(),
+        ToolAction::Highlight(Some(rgb)) => {
+            format!("highlight-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+        }
+    }
 }
 
 /// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
@@ -4340,6 +4413,36 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         }
     };
     t(key)
+}
+
+fn review_action_target(action: &ReviewAction) -> String {
+    match action {
+        ReviewAction::AcceptChange(id) => format!("word-processor.review:accept:{id}"),
+        ReviewAction::RejectChange(id) => format!("word-processor.review:reject:{id}"),
+        ReviewAction::AcceptAllChanges => "word-processor.review:accept-all".into(),
+        ReviewAction::RejectAllChanges => "word-processor.review:reject-all".into(),
+        ReviewAction::ResolveComment(id) => format!("word-processor.review:resolve:{id}"),
+    }
+}
+
+fn review_action_a11y_label(
+    action: &ReviewAction,
+    changes: &[qdoc::snapshot::ChangeView],
+) -> String {
+    use qdoc::snapshot::ChangeKind;
+    match action {
+        ReviewAction::AcceptChange(id) => match changes.iter().find(|change| change.id == *id) {
+            Some(change) if change.kind == ChangeKind::Del => t("review-accept-deletion"),
+            _ => t("review-accept-insertion"),
+        },
+        ReviewAction::RejectChange(id) => match changes.iter().find(|change| change.id == *id) {
+            Some(change) if change.kind == ChangeKind::Del => t("review-reject-deletion"),
+            _ => t("review-reject-insertion"),
+        },
+        ReviewAction::AcceptAllChanges => t("review-accept-all"),
+        ReviewAction::RejectAllChanges => t("review-reject-all"),
+        ReviewAction::ResolveComment(_) => t("review-resolve-comment"),
+    }
 }
 
 impl WordProcessorWidget {
@@ -4404,13 +4507,46 @@ impl WordProcessorWidget {
         let buttons: Vec<A11yTreeNode> = self
             .toolbar
             .iter()
-            .map(|(action, _rect)| {
-                let _ = action;
-                let role = Role::Button;
+            .map(|(action, rect)| {
+                let role = if matches!(
+                    action,
+                    ToolAction::Bold
+                        | ToolAction::Italic
+                        | ToolAction::Underline
+                        | ToolAction::Strike
+                        | ToolAction::Super
+                        | ToolAction::Sub
+                        | ToolAction::ToggleStyles
+                        | ToolAction::ToggleRuler
+                        | ToolAction::ToggleOutline
+                        | ToolAction::ToggleHistory
+                ) {
+                    Role::ToggleButton
+                } else {
+                    Role::Button
+                };
                 let node = AccessNode::new(role)
                     .with_name(tool_action_a11y_label(*action))
+                    .with_bounds(*rect)
+                    .with_action_target(format!(
+                        "word-processor.toolbar:{}",
+                        tool_action_id(*action)
+                    ))
                     .with_state(AccessState {
-                        focusable: matches!(role, Role::Button),
+                        focusable: true,
+                        checked: (role == Role::ToggleButton).then(|| match action {
+                            ToolAction::Bold => self.mark_active_in_selection("strong"),
+                            ToolAction::Italic => self.mark_active_in_selection("em"),
+                            ToolAction::Underline => self.mark_active_in_selection("underline"),
+                            ToolAction::Strike => self.mark_active_in_selection("strike"),
+                            ToolAction::Super => self.mark_active_in_selection("super"),
+                            ToolAction::Sub => self.mark_active_in_selection("sub"),
+                            ToolAction::ToggleStyles => self.styles_panel_open,
+                            ToolAction::ToggleRuler => self.ruler_on,
+                            ToolAction::ToggleOutline => self.outline.is_open(),
+                            ToolAction::ToggleHistory => self.history.is_open(),
+                            _ => false,
+                        }),
                         ..Default::default()
                     });
                 A11yTreeNode::leaf(node)
@@ -4418,6 +4554,37 @@ impl WordProcessorWidget {
             .collect();
         Some(A11yTreeNode {
             node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-formatting")),
+            children: buttons,
+        })
+    }
+
+    /// Expose the currently painted margin-card controls as real semantic
+    /// buttons. Their bounds and targets are sourced from the same hit list as
+    /// pointer input, so assistive technology never gets a parallel, stale UI.
+    fn review_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if !self.review.is_visible() || self.review.hits().is_empty() {
+            return None;
+        }
+        let buttons = self
+            .review
+            .hits()
+            .iter()
+            .map(|(rect, action)| {
+                A11yTreeNode::leaf(
+                    AccessNode::new(Role::Button)
+                        .with_name(review_action_a11y_label(action, self.review.changes()))
+                        .with_bounds(*rect)
+                        .with_action_target(review_action_target(action))
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        Some(A11yTreeNode {
+            node: AccessNode::new(Role::Group).with_name(t("a11y-group-review")),
             children: buttons,
         })
     }
@@ -4461,6 +4628,9 @@ impl WordProcessorWidget {
 
         if let Some(toolbar) = self.toolbar_access_node() {
             children.push(toolbar);
+        }
+        if let Some(review) = self.review_access_node() {
+            children.push(review);
         }
 
         A11yTreeNode {
@@ -4598,6 +4768,17 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
+        if self.auto_fit_page {
+            let mut available = full.width();
+            if self.styles_panel_visible() && !self.styles_panel_overlay() {
+                available -= STYLES_PANEL_W;
+            }
+            if self.outline.is_open() {
+                available -= OUTLINE_PANEL_W;
+            }
+            let fit = ((available - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0);
+            self.zoom.set(fit);
+        }
         // The toolbar may wrap to several rows on a narrow window; reserve its
         // actual (possibly multi-row) height so the canvas top sits below it and
         // no control is clipped. `draw_toolbar` re-derives the same packing, so
@@ -4617,7 +4798,7 @@ impl WordProcessorWidget {
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() {
+        let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
             (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
         } else {
             full.x1
@@ -4668,7 +4849,11 @@ impl WordProcessorWidget {
         // window just shows more or less of it and centers it.
         let m = self.margins;
         let page_w = MAX_PAGE_W;
-        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
+        // Centre in *content* space even when the page is wider than the
+        // unscaled canvas. Scaling about the canvas centre then keeps both page
+        // edges visible in auto-fit mode instead of pinning the left edge and
+        // clipping the right.
+        let page_x = f64::midpoint(canvas.x0, canvas.x1) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
@@ -6845,6 +7030,14 @@ impl WordProcessorWidget {
         if self.editing_field.is_some() {
             self.commit_num_edit(state);
         }
+        // A narrow-window inspector is a modal-ish rail: clicking the dimmed
+        // document dismisses it instead of placing a caret through the overlay.
+        if self.styles_panel_overlay() && !self.panel_rect.contains(self.pointer) {
+            self.styles_panel_open = false;
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
         // Styles panel (right side): dispatch a click on its controls.
         if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
             if let Some(hit) = self
@@ -6908,6 +7101,7 @@ impl WordProcessorWidget {
         if self.pointer.y < self.rect.y0 + tb_h {
             // The right-aligned zoom component owns its hit targets and scale.
             if self.zoom.click(self.pointer) {
+                self.auto_fit_page = false;
                 self.dirty = true;
                 *handled = true;
                 return true;
@@ -7768,6 +7962,10 @@ impl Widget for WordProcessorWidget {
         self.document_status.needs_frame(std::time::Instant::now())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame compositor keeps its ordered page/chrome layers together"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -7854,8 +8052,22 @@ impl Widget for WordProcessorWidget {
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_visible() {
+            let overlay = self.styles_panel_overlay();
+            if overlay {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    Color::from_rgba8(0, 0, 0, 90),
+                    None,
+                    &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
+                );
+            }
             let panel = Rect::new(
-                fg.canvas_right,
+                if overlay {
+                    (full.x1 - STYLES_PANEL_W).max(full.x0)
+                } else {
+                    fg.canvas_right
+                },
                 full.y0 + fg.tb_h,
                 full.x1,
                 fg.layout_bar_top,
@@ -8110,9 +8322,70 @@ impl Widget for WordProcessorWidget {
     /// The word processor's local accessibility semantics: the editable
     /// [`Role::Document`] root. Blocks render directly, not as child widgets, so
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
-    /// rather than `children()`; this returns that tree's root.
+    /// rather than `children()`; convert the carrier into real synthetic
+    /// children so AccessKit, AT-SPI and the built-in reader all receive it.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(self.accessibility_tree().node.with_name("Document editor"))
+        let mut tree = self.accessibility_tree();
+        tree.node = tree.node.with_name(t("a11y-document-editor"));
+        Some(tree.into_access_node())
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.set_focus(true);
+            return true;
+        }
+        if !matches!(
+            action,
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        let Some(target) = key_path.last().copied() else {
+            return false;
+        };
+        if let Some(review_action) = self.review.hits().iter().find_map(|(_, review_action)| {
+            (ui::a11y::hash_key(&review_action_target(review_action)) == target)
+                .then(|| review_action.clone())
+        }) {
+            self.dispatch_review_action(review_action, state);
+            self.modified = true;
+            self.note_edit_for_autosave(state);
+            return true;
+        }
+        let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
+            let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));
+            (ui::a11y::hash_key(&id) == target).then_some(*tool)
+        }) else {
+            return false;
+        };
+
+        // The AT route joins the exact same typed document-action/view path as
+        // pointer activation. It must also establish the same history/autosave
+        // boundary for mutations; otherwise screen-reader edits would silently
+        // be second-class collaboration events.
+        self.apply_tool(state, tool);
+        self.refresh_blocks(state);
+        self.dirty = true;
+        if !matches!(
+            tool,
+            ToolAction::ToggleStyles
+                | ToolAction::ToggleRuler
+                | ToolAction::ToggleOutline
+                | ToolAction::ToggleHistory
+                | ToolAction::NewMenu
+        ) {
+            self.needs_commit = true;
+            self.modified = true;
+            self.note_edit_for_autosave(state);
+        }
+        true
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -9245,13 +9518,24 @@ impl WordProcessorWidget {
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
     /// comments/changes so the acted-on item disappears, and flags an undo point.
     fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut AutoCommit) {
-        match action {
-            ReviewAction::AcceptChange(id) => self.inner.accept_change(state, &id),
-            ReviewAction::RejectChange(id) => self.inner.reject_change(state, &id),
-            ReviewAction::AcceptAllChanges => self.inner.accept_all_changes(state),
-            ReviewAction::RejectAllChanges => self.inner.reject_all_changes(state),
-            ReviewAction::ResolveComment(id) => self.inner.delete_comment(state, &id),
-        }
+        let typed = match action {
+            ReviewAction::AcceptChange(id) => {
+                crate::actions::WordProcessorAction::AcceptChanges { id: Some(id) }
+            }
+            ReviewAction::RejectChange(id) => {
+                crate::actions::WordProcessorAction::RejectChanges { id: Some(id) }
+            }
+            ReviewAction::AcceptAllChanges => {
+                crate::actions::WordProcessorAction::AcceptChanges { id: None }
+            }
+            ReviewAction::RejectAllChanges => {
+                crate::actions::WordProcessorAction::RejectChanges { id: None }
+            }
+            ReviewAction::ResolveComment(id) => {
+                crate::actions::WordProcessorAction::ResolveComment { id }
+            }
+        };
+        self.perform_action(state, &typed);
         self.refresh_blocks(state);
         // Accepting/rejecting can change body text (an accepted deletion removes
         // glyphs, a rejected insertion removes them); the spell cache is keyed by
@@ -9283,6 +9567,12 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // The history strip owns the bottom workspace while open. Suppressing
+        // this floating pill avoids covering its Preview/Compare/Start controls;
+        // document status returns as soon as history closes.
+        if self.history.is_open() {
+            return;
+        }
         let words: usize = self
             .blocks
             .iter()
@@ -9601,6 +9891,7 @@ impl WordProcessorWidget {
         w.push(64.0); // Styles
         w.push(60.0); // Ruler
         w.push(72.0); // Outline
+        w.push(68.0); // History
         w.push(48.0); // TOC
         // right-aligned colour + highlight swatches, plus the zoom stepper cluster
         // (mirrors the reservation in `draw_toolbar`).
@@ -9628,6 +9919,7 @@ impl WordProcessorWidget {
         g.push(true); // Styles starts a group
         g.push(false); // Ruler (same group as Styles)
         g.push(true); // Outline starts a group (navigation)
+        g.push(false); // History (same navigation group)
         g.push(false); // TOC
         g.push(true); // swatch reservation starts a group (see `swatch_reserve_width`)
         g
@@ -10333,9 +10625,10 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "A paragraph");
+        wp.styles_panel_open = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        // The panel is open by default and renders clickable targets.
+        // An explicitly-open panel renders clickable targets.
         assert!(wp.styles_panel_open);
         assert!(
             !wp.panel_hits.is_empty(),
@@ -10411,6 +10704,7 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
+        wp.set_styles_panel_open(true);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         let n_before = wp.sheet.order().len();
@@ -10433,7 +10727,12 @@ mod tests {
     fn styles_panel_toggles_off() {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
-        assert!(wp.styles_panel_open, "panel defaults open");
+        assert!(
+            !wp.styles_panel_open,
+            "the first-launch writing surface is uncluttered"
+        );
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
+        assert!(wp.styles_panel_open, "toolbar toggle reveals the panel");
         wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         assert!(!wp.styles_panel_open, "toolbar toggle dismisses the panel");
     }
@@ -10585,6 +10884,7 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
+        wp.set_styles_panel_open(true);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
@@ -11959,6 +12259,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn narrow_first_open_fits_the_page_until_the_user_zooms() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut state.doc, "Readable narrow document");
+        pipeline_draw(&mut wp, &mut state, 640, 800);
+        assert!(
+            wp.zoom.factor() < 1.0,
+            "narrow canvas automatically fits paper"
+        );
+
+        let ctf = wp.content_transform(Affine::IDENTITY);
+        let left = ctf * Point::new(wp.page_rect.x0, wp.page_rect.y0);
+        let right = ctf * Point::new(wp.page_rect.x1, wp.page_rect.y0);
+        assert!(
+            left.x >= wp.rect.x0 - 1.0,
+            "left paper edge remains visible"
+        );
+        assert!(
+            right.x <= wp.rect.x1 + 1.0,
+            "right paper edge remains visible"
+        );
+
+        wp.set_zoom(1.0);
+        pipeline_draw(&mut wp, &mut state, 640, 800);
+        assert_eq!(wp.zoom.factor(), 1.0, "explicit zoom disables auto-fit");
+    }
+
     /// The swatch strips are right-aligned on the last toolbar row, painted
     /// outside the chrome button packer, which reserves their width as a
     /// phantom item. At a width where buttons alone would fill one row, the
@@ -12910,6 +13240,40 @@ mod tests {
             has(&|a| matches!(a, ReviewAction::RejectChange(id) if id == &ins_id)),
             "a Reject ✗ affordance for the change"
         );
+
+        let tree = wp.accessibility_tree();
+        let review = tree
+            .children
+            .iter()
+            .find(|child| {
+                child.node.role == ui::a11y::Role::Group
+                    && child.node.name.as_deref() == Some(t("a11y-group-review").as_str())
+            })
+            .expect("painted review controls are exported as one semantic group");
+        assert_eq!(review.children.len(), 3);
+        assert!(review.children.iter().all(|child| {
+            child.node.role == ui::a11y::Role::Button
+                && child.node.bounds.is_some()
+                && child.node.action_target.is_some()
+                && child.node.state.focusable
+        }));
+
+        let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
+        let root = state.root.clone();
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&resolve_target)],
+            &mut state.doc,
+            &root,
+        ));
+        assert!(
+            snapshot(&state, &c)
+                .comments
+                .iter()
+                .all(|comment| comment.id != cid),
+            "screen-reader activation resolves through the typed document action"
+        );
     }
 
     #[test]
@@ -13336,8 +13700,8 @@ mod tests {
     /// width the shell can hand this app, the canvas left for the
     /// document must be wider than the panel.
     ///
-    /// Regression guard for a frame in which the panel — which opens by
-    /// default — took roughly half of a tiled word-processor window, so
+    /// Regression guard for a frame in which the panel took roughly half of a
+    /// tiled word-processor window, so
     /// the thing the app exists to show was the smaller half of it.
     ///
     /// Measured on the *canvas*, not on `page_rect`: the page sheet is a
@@ -13353,10 +13717,11 @@ mod tests {
         // narrow end, and is where the panel currently wins.
         for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
             let (mut state, mut wp) = bound();
+            wp.styles_panel_open = true;
             pipeline_draw(&mut wp, &mut state, w, h);
             assert!(
                 wp.styles_panel_open,
-                "precondition: the default-open panel is the one under test",
+                "precondition: the explicitly-open panel is the one under test",
             );
             assert!(
                 !wp.outline.is_open(),
@@ -13364,7 +13729,11 @@ mod tests {
                  canvas is bounded only by the panel under test",
             );
             let panel = wp.panel_rect.width();
-            let canvas = wp.rect.width() - panel;
+            let canvas = if wp.styles_panel_overlay() {
+                wp.rect.width()
+            } else {
+                wp.rect.width() - panel
+            };
             assert!(
                 canvas > panel,
                 "at {w}x{h} the canvas left for the document ({canvas:.0}px) \
@@ -13888,12 +14257,15 @@ mod tests {
             "focused editor → focused"
         );
 
-        // The trait method returns the same root, so the host path agrees.
+        // The trait method returns the root *and* its synthetic subtree; this is
+        // the exact host path consumed by AccessKit/AT-SPI.
         let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
+        assert_eq!(trait_root.role, Role::Document);
+        assert_eq!(trait_root.name.as_deref(), Some("Document editor"));
         assert_eq!(
-            trait_root,
-            wp.accessibility_tree().node.with_name("Document editor"),
-            "Widget::accessibility() returns the tree root"
+            trait_root.children.len(),
+            tree.children.len(),
+            "Widget::accessibility() exports every private tree child"
         );
     }
 
@@ -14065,8 +14437,40 @@ mod tests {
             "the Bold button is named for a screen reader"
         );
         assert!(
-            toolbar.children.iter().any(|c| c.node.role == Role::Button),
-            "the toolbar contains button nodes",
+            toolbar
+                .children
+                .iter()
+                .any(|c| matches!(c.node.role, Role::Button | Role::ToggleButton)),
+            "the toolbar contains actionable button nodes",
+        );
+
+        let exported = Widget::accessibility(&wp).expect("exported semantics");
+        let exported_toolbar = exported
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("toolbar reaches the host tree");
+        assert!(exported_toolbar.children.iter().all(|node| {
+            node.bounds.is_some() && node.action_target.is_some() && node.state.focusable
+        }));
+    }
+
+    #[test]
+    fn accessibility_activation_uses_the_real_toolbar_path() {
+        let (mut state, mut wp) = populated();
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        assert!(!wp.styles_panel_open);
+        let target = "word-processor.toolbar:toggle-styles".to_string();
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&target)],
+            &mut state.doc,
+            &state.root,
+        ));
+        assert!(
+            wp.styles_panel_open,
+            "AT activation reaches the same view toggle as a pointer click"
         );
     }
 
@@ -14761,6 +15165,7 @@ mod tests {
             block: img_id.clone(),
             offset: 0,
         });
+        wp.set_styles_panel_open(true);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         (wp, state, img_id)
     }

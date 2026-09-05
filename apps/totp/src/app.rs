@@ -31,9 +31,7 @@ use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
-    ActionContract, ActionSpec, OperationKind, PermissionRequirement, RetryPolicy, RiskLevel,
-};
+use ui::qos_actions::OperationKind;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -119,6 +117,9 @@ pub struct AuthenticatorApp {
     /// The visible (filtered/ordered) list must be recomputed — set when the
     /// vault or the search query changes.
     list_dirty: bool,
+    /// Effective host motion preference. Normal mode uses a smooth countdown;
+    /// reduced motion sleeps between whole-second updates.
+    reduce_motion: bool,
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`TotpAction`](crate::actions::TotpAction) through this: the host brackets
     /// the undo boundary, applies the action through the executor (so it replays
@@ -173,6 +174,7 @@ impl AuthenticatorApp {
             seed_mode,
             doc_dirty: false,
             list_dirty: false,
+            reduce_motion: false,
             actions: ui::ActionHost::new(),
         }
     }
@@ -748,7 +750,7 @@ impl AuthenticatorApp {
 
 impl Widget for AuthenticatorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["totp.open-account", "totp.copy-code"]
+        &[crate::actions::TOTP_OPERATION_TYPE]
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -997,49 +999,7 @@ impl Widget for AuthenticatorApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            for account in self.vault.ordered() {
-                if let Some(resource) = root
-                    .children
-                    .iter_mut()
-                    .find(|resource| resource.id.0 == format!("totp.account:{}", account.id))
-                {
-                    resource.actions.insert(
-                        0,
-                        ActionSpec::operation(
-                            "copy-code",
-                            "Copy current code",
-                            OperationKind::Effect,
-                            "totp.copy-code",
-                            &account.id.to_string(),
-                        )
-                        .expect("TOTP account id is serializable")
-                        .with_contract(ActionContract {
-                            permission: PermissionRequirement::Read,
-                            risk: RiskLevel::Privileged,
-                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
-                            retry: RetryPolicy::AtMostOnce,
-                            tags: vec!["security".into(), "clipboard".into()],
-                            ..ActionContract::default()
-                        }),
-                    );
-                    resource.actions.insert(
-                        0,
-                        ActionSpec::operation(
-                            "open",
-                            "Open account",
-                            OperationKind::View,
-                            "totp.open-account",
-                            &account.id.to_string(),
-                        )
-                        .expect("TOTP account id is serializable")
-                        .with_contract(ActionContract::view()),
-                    );
-                }
-            }
-        }
-        resources
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn invoke_resource_operation(
@@ -1050,13 +1010,22 @@ impl Widget for AuthenticatorApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if !matches!(
-            (kind, type_id),
-            (OperationKind::View, "totp.open-account") | (OperationKind::Effect, "totp.copy-code")
-        ) {
+        if kind == OperationKind::Document {
             return Ok(false);
         }
-        let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let (raw, expected_kind) = match operation {
+            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
+            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
+        };
+        if kind != expected_kind {
+            return Err(format!(
+                "Authenticator operation requires a {} broker route",
+                expected_kind.as_str()
+            ));
+        }
         let id = raw
             .parse()
             .map_err(|_| "Invalid authenticator account id".to_string())?;
@@ -1066,7 +1035,7 @@ impl Widget for AuthenticatorApp {
         self.selected = Some(id);
         self.search.set_text("");
         self.list_dirty = true;
-        if kind == OperationKind::Effect {
+        if expected_kind == OperationKind::Effect {
             self.copy_account(id);
         }
         Ok(true)
@@ -1087,19 +1056,6 @@ impl Widget for AuthenticatorApp {
         vec![Box::new(crate::search_provider::TotpSearchProvider::new(
             &self.vault,
         ))]
-    }
-
-    /// Select the account a chosen palette row identifies. Clears the in-app
-    /// filter so the account is revealed in the list even if a search term was
-    /// active. Selection is app-local presentation, so the doc args are unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::TotpSearchProvider::parse_action_id(action_id)
-            && self.vault.get(id).is_some()
-        {
-            self.selected = Some(id);
-            self.search.set_text("");
-            self.list_dirty = true;
-        }
     }
 
     fn name(&self) -> &'static str {
@@ -1224,9 +1180,27 @@ impl Widget for AuthenticatorApp {
         self.perform_a11y_target(target, action, state)
     }
 
-    /// Codes + countdown rings tick every frame; keep the host redrawing.
+    /// Smooth countdown rings tick every frame. Reduced motion is driven by a
+    /// one-second deadline instead, so the app remains current without a vsync
+    /// loop.
     fn needs_animation_frame(&self) -> bool {
-        true
+        !self.reduce_motion
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if !self.reduce_motion {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let until_next_second =
+            Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
+        Some(Instant::now() + until_next_second)
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
     }
 }
 
@@ -1244,14 +1218,33 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_replaces_vsync_with_a_second_boundary_wake() {
+        let mut app = AuthenticatorApp::demo();
+        assert!(app.needs_animation_frame());
+        assert!(app.next_wake_deadline().is_none());
+
+        Widget::set_motion_reduced(&mut app, true);
+
+        assert!(!app.needs_animation_frame());
+        let deadline = app
+            .next_wake_deadline()
+            .expect("the discrete countdown schedules its next second");
+        let delay = deadline.saturating_duration_since(Instant::now());
+        assert!(delay > Duration::ZERO);
+        assert!(delay <= Duration::from_secs(1));
+    }
+
+    #[test]
     fn resource_copy_invokes_the_same_clipboard_semantics_as_the_row() {
         let (mut app, state) = app_with_state();
         let id = app.vault.ordered()[0].id;
-        let payload = serde_json::to_vec(&id.to_string()).unwrap();
+        let payload =
+            serde_json::to_vec(&crate::actions::TotpOperation::CopyCode { id: id.to_string() })
+                .unwrap();
         assert!(
             app.invoke_resource_operation(
                 OperationKind::Effect,
-                "totp.copy-code",
+                crate::actions::TOTP_OPERATION_TYPE,
                 &payload,
                 &state.doc,
                 &state.root,

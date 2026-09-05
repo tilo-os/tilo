@@ -3,11 +3,13 @@ Description=qOS app host (content-addressed package store)
 After=default.target
 
 [Service]
-ExecStart=/usr/libexec/qos-app-host --socket %t/qos/services/app-host.sock --store %h/.local/share/qos-apps
+ExecStart=/usr/libexec/qos-app-host --socket %t/qos/services/app-host.sock --store %S/qos-app-host
 Type=notify
 Restart=on-failure
 RuntimeDirectory=qos/services
 RuntimeDirectoryPreserve=yes
+StateDirectory=qos-app-host
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=default.target

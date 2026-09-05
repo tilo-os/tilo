@@ -37,14 +37,52 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ParamType, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
+use crate::categories::Category;
 use crate::prefs::{AppearancePrefs, SystemPrefs};
 
 /// Registry `type_id` for every settings action.
 pub const SETTINGS_ACTION_TYPE: &str = "settings.action";
+
+/// Operation protocol used by every Settings pane's exported presentation
+/// action. The payload is the category's stable slug.
+pub const OPEN_PANE_OPERATION_TYPE: &str = "settings.open-pane";
+
+/// Stable action id shared by every pane resource.
+pub const OPEN_PANE_ACTION: &str = "open";
+pub const ACCOUNT_OPERATION_TYPE: &str = "settings.account-operation";
+
+/// Device-local account-management commands. Payloads contain only stable ids
+/// and provider kinds; credentials are collected by the Settings form and
+/// never cross the resource/action boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountOperation {
+    Add { kind: String },
+    Open { id: String },
+    Edit { id: String },
+    Reauthenticate { id: String },
+    SubmitForm,
+    CancelForm,
+    SubmitReauthentication,
+    CancelReauthentication,
+    Test { id: String },
+    Remove { id: String },
+}
+
+/// Stable resource identity for a Settings pane.
+pub fn pane_resource_id(category: Category) -> String {
+    format!("settings.section:{}", category.slug())
+}
+
+/// Canonical address used by search, agents, accessibility, and resource-tree
+/// navigation to reveal exactly one Settings pane.
+pub fn open_pane_address(category: Category) -> ActionAddress {
+    ActionAddress::new(pane_resource_id(category), OPEN_PANE_ACTION)
+}
 
 /// A typed setting value carried whole in the action payload. The variant fixes
 /// the Automerge scalar written, so a bool setting can never be replayed as a
@@ -293,19 +331,168 @@ fn choice_prompt_spec(
 /// back to the shipped defaults for a section whose pane hasn't seeded its keys
 /// yet), so a bool's flip target and an enum's fallback reflect what is set.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    provide_resources_with_accounts(doc, &[])
+}
+
+pub fn provide_resources_with_accounts(
+    doc: &AutoCommit,
+    account_inventory: &[accounts::Account],
+) -> Vec<Resource> {
     let d = SystemPrefs::default();
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
-    root = root.with_child(notifications_section(doc, &d));
-    root = root.with_child(appearance_section(doc, &d));
-    root = root.with_child(sound_section(doc));
-    root = root.with_child(displays_section(doc, &d));
-    root = root.with_child(input_section(doc, &d));
-    root = root.with_child(power_section(doc, &d));
-    root = root.with_child(accessibility_section(doc, &d));
-    root = root.with_child(updates_section(doc, &d));
-    root = root.with_child(network_section(doc));
-    root = root.with_child(bluetooth_section(doc));
+    for category in Category::ALL.iter().copied() {
+        let mut pane = match category {
+            Category::Network => network_section(doc),
+            Category::Bluetooth => bluetooth_section(doc),
+            Category::Sound => sound_section(doc),
+            Category::Displays => displays_section(doc, &d),
+            Category::MouseKeyboard => input_section(doc, &d),
+            Category::Power => power_section(doc, &d),
+            Category::Appearance => appearance_section(doc, &d),
+            Category::Accessibility => accessibility_section(doc, &d),
+            Category::Notifications => notifications_section(doc, &d),
+            Category::Updates => updates_section(doc, &d),
+            Category::ExternalAccounts => accounts_section(account_inventory),
+            _ => Resource::new(
+                pane_resource_id(category),
+                "settings.section",
+                category.label(),
+            ),
+        };
+        if let Ok(open) = ActionSpec::operation(
+            OPEN_PANE_ACTION,
+            format!("Open {}", category.label()),
+            OperationKind::View,
+            OPEN_PANE_OPERATION_TYPE,
+            &category.slug(),
+        ) {
+            // `&str` serialization is infallible in serde_json. Keep the
+            // fallible API boundary explicit; the resource-coverage test
+            // ensures a framework regression cannot silently drop this door.
+            pane.actions.insert(0, open);
+        }
+        root = root.with_child(pane);
+    }
     vec![root]
+}
+
+fn account_operation_spec(
+    id: &str,
+    label: impl Into<String>,
+    kind: OperationKind,
+    operation: &AccountOperation,
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()
+}
+
+/// Build the exact nullary door used by both account-row controls and the
+/// exported hierarchy. Returns `None` only if the framework rejects a payload
+/// that consists solely of bounded strings.
+pub fn account_operation_binding(
+    resource_id: String,
+    resource_label: String,
+    action_id: &str,
+    action_label: &str,
+    kind: OperationKind,
+    operation: &AccountOperation,
+    destructive: bool,
+) -> Option<qos_actions::ActionBinding<()>> {
+    let mut spec = account_operation_spec(action_id, action_label, kind, operation)?;
+    if destructive {
+        spec = spec.destructive();
+    }
+    let resource =
+        Resource::new(resource_id, "settings.external-account", resource_label).with_action(spec);
+    qos_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
+    let mut section = Resource::new(
+        pane_resource_id(Category::ExternalAccounts),
+        "settings.accounts",
+        "External Accounts",
+    );
+    for (kind, label) in [
+        ("mail", "Add email account"),
+        ("caldav", "Add calendar account"),
+        ("webdav", "Add WebDAV account"),
+        ("nextcloud", "Add Nextcloud account"),
+    ] {
+        if let Some(action) = account_operation_spec(
+            &format!("add-{kind}"),
+            label,
+            OperationKind::View,
+            &AccountOperation::Add { kind: kind.into() },
+        ) {
+            section = section.with_action(action);
+        }
+    }
+    for account in account_inventory {
+        let mut resource = Resource::new(
+            format!("settings.account:{}", account.id),
+            "settings.external-account",
+            if account.display_name.is_empty() {
+                account.id.to_string()
+            } else {
+                account.display_name.clone()
+            },
+        );
+        for (id, label, kind, operation) in [
+            (
+                "open",
+                "Open account",
+                OperationKind::View,
+                AccountOperation::Open {
+                    id: account.id.to_string(),
+                },
+            ),
+            (
+                "edit",
+                "Edit account details",
+                OperationKind::View,
+                AccountOperation::Edit {
+                    id: account.id.to_string(),
+                },
+            ),
+            (
+                "reauthenticate",
+                "Sign in again",
+                OperationKind::View,
+                AccountOperation::Reauthenticate {
+                    id: account.id.to_string(),
+                },
+            ),
+            (
+                "test",
+                if account.type_id.as_str() == "email" {
+                    "Check server reachability"
+                } else {
+                    "Verify sign-in"
+                },
+                OperationKind::Effect,
+                AccountOperation::Test {
+                    id: account.id.to_string(),
+                },
+            ),
+            (
+                "remove",
+                "Remove from this device",
+                OperationKind::Effect,
+                AccountOperation::Remove {
+                    id: account.id.to_string(),
+                },
+            ),
+        ] {
+            if let Some(mut action) = account_operation_spec(id, label, kind, &operation) {
+                if id == "remove" {
+                    action = action.destructive();
+                }
+                resource = resource.with_action(action);
+            }
+        }
+        section = section.with_child(resource);
+    }
+    section
 }
 
 fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
@@ -443,7 +630,11 @@ fn sound_section(doc: &AutoCommit) -> Resource {
 fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
-    let mut sec = Resource::new("settings.section:display", "settings.section", "Displays");
+    let mut sec = Resource::new(
+        pane_resource_id(Category::Displays),
+        "settings.section",
+        "Displays",
+    );
     sec = sec.with_action(bool_flip_spec(
         "auto_brightness",
         panes::display::AUTO_BRIGHTNESS_KEY,
@@ -482,7 +673,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
     let mut sec = Resource::new(
-        "settings.section:input",
+        pane_resource_id(Category::MouseKeyboard),
         "settings.section",
         "Mouse & Keyboard",
     );
@@ -705,9 +896,7 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
 
 impl ResourceProvider for crate::SettingsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Level-triggered: recomputed each frame from the shared document, which
-        // every pane keeps reconciled with the on-disk settings store.
-        provide_resources(doc)
+        provide_resources_with_accounts(doc, self.account_resource_inventory())
     }
 }
 
@@ -747,9 +936,10 @@ mod tests {
             .unwrap_or_else(|| panic!("section {id} present"))
     }
 
-    /// Ctrl+K on Settings yields the tree: one `settings.root` with a
-    /// `settings.section` child per category, each exporting the settings it
-    /// owns. Drives the real resource hook on the app.
+    /// Ctrl+K on Settings yields the tree: one `settings.root` with exactly one
+    /// stable `settings.section` child per category. Every pane exports its
+    /// View operation; panes with mutable settings additionally export the
+    /// collaborative document actions they own. Drives the app's real hook.
     #[test]
     fn ctrl_k_publishes_the_settings_tree() {
         let app = SettingsApp::new();
@@ -758,17 +948,33 @@ mod tests {
         assert_eq!(resources.len(), 1, "one configuration root");
         let root = &resources[0];
         assert_eq!(root.kind, "settings.root");
-        assert!(
-            root.children.len() >= 8,
-            "a child per section: {}",
-            root.children.len()
-        );
+        assert_eq!(root.children.len(), Category::ALL.len());
+        for category in Category::ALL.iter().copied() {
+            let address = open_pane_address(category);
+            let pane = root
+                .children
+                .iter()
+                .find(|pane| pane.id.as_str() == address.resource)
+                .unwrap_or_else(|| panic!("{} owns a resource", category.label()));
+            assert_eq!(pane.label, category.label());
+            let open = qos_actions::door::resolve(&resources, &address)
+                .unwrap_or_else(|| panic!("{} exports open", category.label()));
+            assert_eq!(open.kind, OperationKind::View);
+            assert_eq!(open.contract, ActionContract::view());
+        }
 
         let notif = find(&resources, "settings.section:notifications");
         let ids: Vec<&str> = notif.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"dnd"), "{ids:?}");
         assert!(ids.contains(&"banners"), "{ids:?}");
         assert!(ids.contains(&"lock_screen"), "{ids:?}");
+        let dnd = notif
+            .actions
+            .iter()
+            .find(|action| action.id == "dnd")
+            .unwrap();
+        assert_eq!(dnd.kind, OperationKind::Document);
+        assert!(dnd.contract.tags.iter().any(|tag| tag == "system-setting"));
 
         let appearance = find(&resources, "settings.section:appearance");
         let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
@@ -781,10 +987,49 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(
-            labels.iter().any(|l| l.contains("Do Not Disturb")
-                || l.contains("theme")
-                || l.contains("Settings")),
+            labels.iter().any(|label| label == "Network — Open Network"),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn pane_addresses_are_stable_and_unique() {
+        let mut addresses = std::collections::HashSet::new();
+        for category in Category::ALL.iter().copied() {
+            let address = open_pane_address(category);
+            assert_eq!(
+                address.resource,
+                format!("settings.section:{}", category.slug())
+            );
+            assert_eq!(address.action, OPEN_PANE_ACTION);
+            assert!(
+                addresses.insert(address),
+                "duplicate address for {category:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_removal_resource_requires_host_confirmation() {
+        let mut account = accounts::Account::new("stable-account", "nextcloud");
+        account.display_name = "Work cloud".into();
+        let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
+        let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
+        let account = accounts
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "settings.account:stable-account")
+            .expect("account nested beneath External Accounts");
+        let remove = account
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("remove resource action");
+        assert_eq!(remove.kind, OperationKind::Effect);
+        assert_eq!(remove.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            remove.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
         );
     }
 

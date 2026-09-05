@@ -28,9 +28,11 @@
 //!   row, the in-progress add/edit draft, scale / fullscreen, the nav rail — is
 //!   per-peer view state. None of it is an action.
 //!
-//! The resource tree mirrors that: every saved connection is a presented
-//! resource, and rename / favourite / delete are the [`ActionSpec`]s Ctrl+K
-//! offers for it. With no saved connections the app publishes nothing.
+//! The resource tree mirrors that: a stable connection-list root exposes the
+//! open/new views and owns one child per saved connection. Each child exposes
+//! open/edit, connect, rename, favourite, and delete. This hierarchy remains
+//! discoverable even for an empty first-run list, so search and agents can open
+//! the creation UI instead of needing a mouse-only bootstrap.
 
 use automerge::AutoCommit;
 
@@ -49,6 +51,11 @@ pub const REMOTE_OPERATION_TYPE: &str = "remote.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RemoteOperation {
+    ShowConnections,
+    NewConnectionForm,
+    EditConnection {
+        connection_id: ConnectionId,
+    },
     Connect {
         connection_id: ConnectionId,
     },
@@ -61,6 +68,17 @@ pub enum RemoteOperation {
     },
 }
 
+pub fn operation_kind(operation: &RemoteOperation) -> OperationKind {
+    match operation {
+        RemoteOperation::ShowConnections
+        | RemoteOperation::NewConnectionForm
+        | RemoteOperation::EditConnection { .. } => OperationKind::View,
+        RemoteOperation::Connect { .. }
+        | RemoteOperation::Disconnect { .. }
+        | RemoteOperation::SendText { .. } => OperationKind::Effect,
+    }
+}
+
 fn encode_operation(operation: &RemoteOperation) -> EncodedAction {
     EncodedAction::encode_operation(REMOTE_OPERATION_TYPE, operation).unwrap_or_else(|_| {
         EncodedAction {
@@ -70,6 +88,12 @@ fn encode_operation(operation: &RemoteOperation) -> EncodedAction {
     })
 }
 
+/// Decode an operation published by this app.
+///
+/// # Errors
+///
+/// Returns the JSON decoding error when `type_id` identifies Remote but the
+/// payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<RemoteOperation>, String> {
     if type_id != REMOTE_OPERATION_TYPE {
         return Ok(None);
@@ -79,17 +103,35 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<RemoteOp
         .map_err(|e| e.to_string())
 }
 
+fn operation_spec(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: RemoteOperation,
+) -> ActionSpec {
+    let fallback = operation.clone();
+    ActionSpec::operation(id, label, kind, REMOTE_OPERATION_TYPE, &operation).unwrap_or_else(|_| {
+        ActionSpec::typed_operation(
+            id,
+            label,
+            "",
+            kind,
+            REMOTE_OPERATION_TYPE,
+            Vec::new(),
+            move |_| encode_operation(&fallback),
+        )
+    })
+}
+
 fn connect_spec(connection: &Connection) -> ActionSpec {
-    let spec = ActionSpec::operation(
+    let spec = operation_spec(
         "connect",
         "Connect",
         OperationKind::Effect,
-        REMOTE_OPERATION_TYPE,
-        &RemoteOperation::Connect {
+        RemoteOperation::Connect {
             connection_id: connection.id,
         },
     )
-    .expect("RemoteOperation is always serializable")
     .with_description("Open a live session to this saved connection")
     .with_contract(ActionContract {
         retry: RetryPolicy::AtMostOnce,
@@ -340,13 +382,13 @@ fn immediate_spec(id: &str, label: &str, action: &RemoteAction) -> ActionSpec {
     ActionSpec::immediate(id, label, REMOTE_ACTION_TYPE, action).expect("encode remote action")
 }
 
-/// Every saved connection, exported as a Ctrl+K resource with its rename /
-/// favourite / delete actions. Level-triggered: recomputed from `doc` each
+/// The connection-list root and every saved child, exported to Ctrl+K with
+/// view, network-effect, and document actions. Level-triggered: recomputed from `doc` each
 /// frame, so the labels and the favourite target always track the live state
 /// (favourite flips to the opposite of the stored value, exactly as the
 /// on-screen star does).
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    RemoteDoc::list(doc)
+    let connections = RemoteDoc::list(doc)
         .into_iter()
         .map(|c| {
             let id = c.id;
@@ -360,6 +402,12 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 "remote.connection",
                 label,
             )
+            .with_action(operation_spec(
+                "open",
+                "Open connection settings",
+                OperationKind::View,
+                RemoteOperation::EditConnection { connection_id: id },
+            ))
             .with_action(connect_spec(&c))
             .with_action(
                 ActionSpec::prompted(
@@ -390,7 +438,26 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     .reversible(),
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let workspace = Resource::new(
+        "remote.connections",
+        "remote.connection-list",
+        "Remote connections",
+    )
+    .with_action(operation_spec(
+        "open",
+        "Show connections",
+        OperationKind::View,
+        RemoteOperation::ShowConnections,
+    ))
+    .with_action(operation_spec(
+        "new",
+        "New connection",
+        OperationKind::View,
+        RemoteOperation::NewConnectionForm,
+    ))
+    .with_children(connections);
+    vec![workspace]
 }
 
 impl ResourceProvider for crate::app::RemoteApp {
@@ -562,13 +629,23 @@ mod tests {
         RemoteDoc::upsert(&mut doc, &sample(id, "Build Box"));
 
         let resources = provide_resources(&doc);
-        assert_eq!(resources.len(), 1, "one resource per saved connection");
-        let r = &resources[0];
+        assert_eq!(resources.len(), 1, "one connection-list root");
+        assert_eq!(resources[0].id.as_str(), "remote.connections");
+        assert_eq!(
+            resources[0]
+                .actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.kind))
+                .collect::<Vec<_>>(),
+            vec![("open", OperationKind::View), ("new", OperationKind::View)],
+        );
+        assert_eq!(resources[0].children.len(), 1, "one saved connection child");
+        let r = &resources[0].children[0];
         assert_eq!(r.kind, "remote.connection");
         assert_eq!(r.label, "Build Box");
         assert_eq!(r.id.as_str(), &format!("remote.connection:{id}"));
         let ids: Vec<&str> = r.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["connect", "rename", "favorite", "delete"]);
+        assert_eq!(ids, vec!["open", "connect", "rename", "favorite", "delete"]);
         let connect = r
             .actions
             .iter()
@@ -601,7 +678,16 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Rename")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Connect")), "{labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("Open connection settings")),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l.ends_with(" — Connect")),
+            "a gated transport must not appear invokable: {labels:?}"
+        );
         assert!(
             labels.iter().any(|l| l.contains("favourites")),
             "{labels:?}"
@@ -654,7 +740,7 @@ mod tests {
         RemoteDoc::upsert(&mut doc, &c);
 
         let resources = provide_resources(&doc);
-        let spec = resources[0]
+        let spec = resources[0].children[0]
             .actions
             .iter()
             .find(|a| a.id == "favorite")
@@ -740,7 +826,7 @@ mod tests {
         let id = Uuid::new_v4();
         RemoteDoc::upsert(&mut doc, &sample(id, "Box")); // not favourited
         let resources = provide_resources(&doc);
-        let actions = &resources[0].actions;
+        let actions = &resources[0].children[0].actions;
 
         let fav = actions.iter().find(|a| a.id == "favorite").unwrap();
         assert_eq!(

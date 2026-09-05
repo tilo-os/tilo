@@ -10,14 +10,17 @@
 //! offline and deterministic.
 //!
 //! ## The two backends
-//! * **Default (this build): a stub backend.** It parses the bundled sample
-//!   corpus and acknowledges sends by building the real MIME with `mail-builder`
-//!   (see `transport::build_mime`). No sockets, no TLS, no async runtime — so
-//!   the headless build stays small and green and reproducible.
-//! * **`live` feature: real IMAP/SMTP.** Behind `--features live`, the worker
+//! * **Normal application build: real IMAP/SMTP.** The default feature set
+//!   enables the `live` backend. The worker uses [`async_imap`] for
+//!   fetch/flag/move and [`lettre`] for submission over rustls.
+//! * **Hermetic/offline build: sample backend.** With default features disabled,
+//!   and in the explicit screenshot/test constructors, the worker parses the
+//!   bundled sample corpus and validates sends by building real MIME with
+//!   `mail-builder` (see `transport::build_mime`) without opening a socket.
+//! * **`live` feature implementation.** Behind `--features live`, the worker
 //!   uses [`async-imap`] for fetch/flag/move and [`lettre`] for submission,
-//!   over rustls. Those crates pull a TLS + async stack we deliberately keep
-//!   out of the default build (and out of `--shots`); the data types
+//!   over rustls. Screenshot/test construction remains network-free at runtime;
+//!   the data types
 //!   ([`AccountConfig`], [`Draft`], [`Message`]) are already the exact shapes
 //!   those libraries consume and produce, so enabling the feature is a drop-in.
 //!

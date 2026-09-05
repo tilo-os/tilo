@@ -211,7 +211,7 @@ impl Settings {
 /// reflects the current toggle position (or `None` before the pane has
 /// seeded the document), so the chrome idempotently mirrors them into
 /// its [`Settings`] and the engine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettingsIntents {
     /// The "Clear history now" button was pressed this frame.
     pub clear_history: bool,
@@ -221,6 +221,10 @@ pub struct SettingsIntents {
     pub adblock_enabled: Option<bool>,
     /// Current clear-on-exit toggle state, or `None` before bootstrap.
     pub clear_on_exit: Option<bool>,
+    /// Current search-engine query template.
+    pub search_engine: Option<String>,
+    /// Current homepage URL.
+    pub homepage: Option<String>,
     /// The "Done" button was pressed this frame — close the pane.
     pub close: bool,
 }
@@ -235,6 +239,13 @@ fn read_bool(state: &AutoCommit, root: &ObjId, path: &str) -> Option<bool> {
         },
         _ => None,
     }
+}
+
+fn read_text(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
+    let (value, object) = state.get(root, path).ok()??;
+    matches!(value, Value::Object(automerge::ObjType::Text))
+        .then(|| state.text(&object).ok())
+        .flatten()
 }
 
 /// Read a click-flag and reset it to `false` if it was raised, returning
@@ -296,6 +307,8 @@ impl SettingsPane {
             clear_cookies: take_flag(state, root, CLEAR_COOKIES_FLAG),
             adblock_enabled: read_bool(state, root, ADBLOCK_PATH),
             clear_on_exit: read_bool(state, root, CLEAR_ON_EXIT_PATH),
+            search_engine: read_text(state, root, SEARCH_ENGINE_PATH),
+            homepage: read_text(state, root, HOMEPAGE_PATH),
             close: take_flag(state, root, CLOSE_FLAG),
         }
     }
@@ -434,10 +447,6 @@ const ROW_GAP: f32 = 12.0;
 
 /// The dim foreground colour, read from the OS dark theme (the builders
 /// run before `draw`, where the live `Theme` would otherwise supply it).
-fn dim() -> vello::peniko::Color {
-    Theme::dark().text_dim
-}
-
 /// A fixed-height empty box, to inject deliberate vertical space.
 fn vgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
@@ -483,9 +492,7 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_size(14.0)))
         .push(vgap(2.0))
-        .push(Box::new(
-            Text::new(description).with_size(12.0).with_color(dim()),
-        ));
+        .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
     Box::new(
         Row::new()
             .push(Box::new(text_block))
@@ -739,6 +746,13 @@ mod tests {
         assert_eq!(doc.text(&obj).unwrap(), "https://s.example/?q=");
         let (_, home_obj) = doc.get(&root, HOMEPAGE_PATH).unwrap().unwrap();
         assert_eq!(doc.text(&home_obj).unwrap(), "https://home.example");
+
+        let intents = SettingsPane::take_pending(&mut doc, &root);
+        assert_eq!(
+            intents.search_engine.as_deref(),
+            Some("https://s.example/?q=")
+        );
+        assert_eq!(intents.homepage.as_deref(), Some("https://home.example"));
     }
 
     #[test]

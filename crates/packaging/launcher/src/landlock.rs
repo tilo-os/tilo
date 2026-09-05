@@ -8,22 +8,16 @@
 //! but before the entrypoint takes over — bwrap itself needs broad FS
 //! access to `mount/bind/pivot_root`, so it can't be Landlocked.
 //!
-//! Today [`apply_plan`] is the in-process restriction point. Real
-//! wiring through bwrap-via-shim is the compositor's pattern (see
-//! `shell/src/sandbox/landlock_shim.rs`): bwrap execs a small shim, the
-//! shim restricts itself, then execs the real binary. The launcher
-//! doesn't yet ship a separate shim — it installs Landlock on the
-//! parent via `pre_exec` right before bwrap takes over, and since
-//! Landlock is inherited by every descendant, the bwrap-spawned app
-//! inherits the policy.
+//! Production launches use the in-namespace `__sandbox-exec` path in
+//! [`crate::landlock_shim`]: bwrap creates the mount namespace, execs the
+//! launcher at its private read-only bind, and that shim installs Landlock
+//! before replacing itself with the application. [`apply_plan`] remains the
+//! small in-process primitive used by focused probes and tests.
 //!
-//! ### Open design question — bwrap's mount namespace
-//!
-//! Landlock policies are path-based, evaluated against the *kernel
-//! inode*, so the path at `PathFd` time must exist on the host. Bwrap's
-//! new mount namespace means the *destination* paths inside it might
-//! not match the policy. The compositor solves this with an
-//! in-namespace shim exec; TODO to wire the same here.
+//! Landlock policies are path-based and evaluated against the kernel inode.
+//! This is why the production rule plan is resolved after bwrap: policy paths
+//! name the sandbox-side mounts the application will actually see, rather than
+//! similarly spelled host paths.
 
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::PathBuf;

@@ -3,9 +3,9 @@
 //! Two endpoints, both blocking — every caller runs these on a worker
 //! thread, never on a frame thread:
 //!
-//!   * `GET {base_url}/registry` — the handshake, used to lazily pin
-//!     the owner pubkey on first contact.
-//!   * `GET {base_url}/entries`  — the full catalogue.
+//!   * `GET {base_url}/registry` — informational metadata, accepted only
+//!     when it names the already-pinned owner key.
+//!   * `GET {base_url}/entries`  — an owner-signed catalogue snapshot.
 //!
 //! Every fetched entry is signature-checked against its own declared
 //! publisher pubkey via [`registry_types::verify_entry_signature`]. A
@@ -19,17 +19,19 @@
 //! software in front of a user are expected to drop those rather than
 //! rank them — see [`crate::available`].
 
-use std::time::Duration;
+use std::io::Read as _;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use registry_types::{RegistryEntry, RegistryHandshake};
-use serde::Deserialize;
+use registry_types::{RegistryEntry, RegistryHandshake, SignedRegistrySnapshot};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{RegistryConfig, placeholder_owner_pubkey};
+use crate::config::{RegistryConfig, config_dir, placeholder_owner_pubkey};
 
 /// Reasonable default request timeout — a fresh registry contacted
 /// over WAN should still fit. Overridable via `QOS_STORE_HTTP_TIMEOUT`.
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
+const MAX_INDEX_RESPONSE_BYTES: u64 = registry_types::MAX_SNAPSHOT_ENCODED_BYTES as u64;
 
 fn http_timeout() -> Duration {
     std::env::var("QOS_STORE_HTTP_TIMEOUT")
@@ -49,17 +51,24 @@ pub enum RegistryError {
     Decode(String),
     #[error("empty response")]
     Empty,
+    #[error("registry snapshot proof failed: {0}")]
+    Proof(#[from] registry_types::SnapshotError),
+    #[error("registry snapshot was rolled back or replayed")]
+    Rollback,
+    #[error("registry snapshot checkpoint could not be persisted: {0}")]
+    Checkpoint(String),
+    #[error("registry handshake owner does not match the pinned key")]
+    OwnerMismatch,
+    #[error("registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
+    UnsafeEndpoint,
 }
 
 /// Trust classification for a fetched entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustLevel {
-    /// Publisher signature verified AND the registry declares a
-    /// bootstrapped (non-placeholder) owner key.
-    Verified,
-    /// Publisher signature verified, but no owner key was available to
-    /// compare against — trust-on-first-use.
-    UnverifiedOwner,
+    /// The publisher signature and the pinned registry owner's exact snapshot
+    /// signature and authorization policy all verified.
+    PublisherSigned,
     /// The publisher signature failed to verify.
     Untrusted,
 }
@@ -74,7 +83,7 @@ impl TrustLevel {
     /// name it liked on any download, so it is dropped before it
     /// reaches a list.
     pub fn is_offerable(self) -> bool {
-        matches!(self, TrustLevel::Verified | TrustLevel::UnverifiedOwner)
+        matches!(self, TrustLevel::PublisherSigned)
     }
 }
 
@@ -85,44 +94,35 @@ pub struct VerifiedEntry {
     pub trust: TrustLevel,
 }
 
-/// Response of `GET /entries` — a server can return either a bare
-/// array of entries or a `{ "entries": [...] }` wrapper.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum EntriesResponse {
-    Bare(Vec<RegistryEntry>),
-    Wrapped { entries: Vec<RegistryEntry> },
-}
-
-impl EntriesResponse {
-    fn into_vec(self) -> Vec<RegistryEntry> {
-        match self {
-            EntriesResponse::Bare(v) => v,
-            EntriesResponse::Wrapped { entries } => entries,
-        }
-    }
+/// Last accepted proof for one pinned registry identity.
+#[derive(Debug, Deserialize, Serialize)]
+struct SnapshotCheckpoint {
+    sequence: u64,
+    snapshot_hash_hex: String,
 }
 
 fn client() -> Result<reqwest::blocking::Client, RegistryError> {
     reqwest::blocking::Client::builder()
         .user_agent("qos-catalogue/0.1")
         .timeout(http_timeout())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| RegistryError::Http(e.to_string()))
 }
 
-/// Fetch and parse the handshake — used to discover the owner pubkey
-/// on first contact (or to detect an owner-key rotation).
+/// Fetch and parse informational registry metadata, rejecting an owner identity
+/// that differs from the preconfigured pin. This endpoint never establishes
+/// trust on first contact.
 ///
 /// # Errors
 ///
 /// Returns an error if the request fails, the response is empty, or
 /// the body doesn't decode as a [`RegistryHandshake`].
 pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, RegistryError> {
-    let url = format!("{}/registry", reg.base_url.trim_end_matches('/'));
+    let url = registry_url(reg, "registry")?;
     let c = client()?;
     let text = c
-        .get(&url)
+        .get(url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::text)
@@ -130,55 +130,202 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
     if text.trim().is_empty() {
         return Err(RegistryError::Empty);
     }
-    serde_json::from_str(&text).map_err(|e| RegistryError::Decode(e.to_string()))
+    let handshake: RegistryHandshake =
+        serde_json::from_str(&text).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    if !handshake
+        .owner_pubkey_hex
+        .eq_ignore_ascii_case(&reg.owner_pubkey_hex)
+    {
+        return Err(RegistryError::OwnerMismatch);
+    }
+    Ok(handshake)
 }
 
 /// Fetch `/entries` and classify each result.
 ///
 /// # Errors
 ///
-/// Returns an error if the request fails or the body doesn't decode
-/// as the expected entries shape. An empty response is not an error —
-/// it yields an empty list.
+/// Returns an error if the request fails, is oversized, is not a signed
+/// snapshot, fails any signature/authorization/freshness check, or rolls back
+/// the durable checkpoint.
 pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
-    let url = format!("{}/entries", reg.base_url.trim_end_matches('/'));
-    let c = client()?;
-    let text = c
-        .get(&url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| RegistryError::Http(e.to_string()))?;
-    if text.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let raw: EntriesResponse =
-        serde_json::from_str(&text).map_err(|e| RegistryError::Decode(e.to_string()))?;
-    Ok(classify_entries(raw.into_vec(), &reg.owner_pubkey_hex))
+    let snapshot = fetch_snapshot(reg)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)
 }
 
-/// The pure part of [`fetch_entries`]: given a decoded list and the
-/// owner pubkey the registry advertises, produce a [`VerifiedEntry`]
-/// per input. No I/O — so tests can feed fixtures directly.
-pub fn classify_entries(entries: Vec<RegistryEntry>, owner_pubkey_hex: &str) -> Vec<VerifiedEntry> {
-    // At this level "owner-allowlisted" collapses to "the registry's
-    // declared owner pubkey is non-placeholder and the entry was
-    // signed by an ed25519 key we can verify". The full
-    // publisher-cert chain is a follow-up.
-    let owner_bootstrapped =
-        !owner_pubkey_hex.is_empty() && owner_pubkey_hex != placeholder_owner_pubkey();
-    entries
-        .into_iter()
-        .map(|e| {
-            let sig_ok = registry_types::verify_entry_signature(&e);
-            let trust = match (sig_ok, owner_bootstrapped) {
-                (false, _) => TrustLevel::Untrusted,
-                (true, false) => TrustLevel::UnverifiedOwner,
-                (true, true) => TrustLevel::Verified,
-            };
-            VerifiedEntry { entry: e, trust }
+/// Fetch and verify the complete owner-signed snapshot while advancing the
+/// durable anti-rollback checkpoint.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint is unsafe, the response fails or exceeds
+/// the size limit, any proof check fails, or the snapshot would roll back or
+/// fork the durable checkpoint.
+pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<SignedRegistrySnapshot, RegistryError> {
+    let url = registry_url(reg, "entries")?;
+    let c = client()?;
+    let response = c
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_INDEX_RESPONSE_BYTES)
+    {
+        return Err(RegistryError::Decode(
+            "snapshot response is too large".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_INDEX_RESPONSE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if bytes.is_empty() {
+        return Err(RegistryError::Empty);
+    }
+    if bytes.len() as u64 > MAX_INDEX_RESPONSE_BYTES {
+        return Err(RegistryError::Decode(
+            "snapshot response is too large".into(),
+        ));
+    }
+    let snapshot: SignedRegistrySnapshot =
+        serde_json::from_slice(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
+    persist_checkpoint(reg, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, RegistryError> {
+    let mut url = reqwest::Url::parse(&reg.base_url).map_err(|_| RegistryError::UnsafeEndpoint)?;
+    let loopback_http =
+        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if (url.scheme() != "https" && !loopback_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(RegistryError::UnsafeEndpoint);
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    let path = format!("{}/{}", url.path().trim_end_matches('/'), suffix);
+    url.set_path(&path);
+    Ok(url)
+}
+
+/// Pure proof verification used by HTTP and fixture tests.
+///
+/// # Errors
+///
+/// Returns an error if the pinned owner key is absent or a placeholder, or if
+/// the snapshot fails its owner signature, publisher authorization,
+/// freshness, bounds, or publisher-signature checks.
+pub fn classify_snapshot(
+    snapshot: &SignedRegistrySnapshot,
+    owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    if owner_pubkey_hex.is_empty() || owner_pubkey_hex == placeholder_owner_pubkey() {
+        return Err(registry_types::SnapshotError::OwnerKey.into());
+    }
+    registry_types::verify_snapshot(snapshot, owner_pubkey_hex, now_unix)?;
+    Ok(snapshot
+        .entries
+        .iter()
+        .cloned()
+        .map(|entry| VerifiedEntry {
+            entry,
+            trust: TrustLevel::PublisherSigned,
         })
-        .collect()
+        .collect())
+}
+
+fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(reg.base_url.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(reg.owner_pubkey_hex.as_bytes());
+    Some(
+        config_dir()?
+            .join("registry-checkpoints")
+            .join(format!("{}.json", hasher.finalize().to_hex())),
+    )
+}
+
+fn persist_checkpoint(
+    reg: &RegistryConfig,
+    snapshot: &SignedRegistrySnapshot,
+) -> Result<(), RegistryError> {
+    let Some(path) = checkpoint_path(reg) else {
+        return Ok(());
+    };
+    let hash = registry_types::snapshot_hash(snapshot)?;
+    #[cfg(unix)]
+    let _lock = checkpoint_lock(&path)?;
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let old: SnapshotCheckpoint = serde_json::from_slice(&bytes)
+                .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+            validate_checkpoint(&old, snapshot.sequence, &hash)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RegistryError::Checkpoint(error.to_string())),
+    }
+    let checkpoint = SnapshotCheckpoint {
+        sequence: snapshot.sequence,
+        snapshot_hash_hex: hash,
+    };
+    let bytes = serde_json::to_vec(&checkpoint)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    atomic_file::write_creating_parent(&path, &bytes)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))
+}
+
+#[cfg(unix)]
+fn checkpoint_lock(path: &std::path::Path) -> Result<std::fs::File, RegistryError> {
+    use std::os::fd::AsRawFd as _;
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    // SAFETY: `file` owns a live descriptor for the duration of the returned
+    // guard. `flock` neither takes ownership nor dereferences user memory.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(RegistryError::Checkpoint(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+fn validate_checkpoint(
+    old: &SnapshotCheckpoint,
+    sequence: u64,
+    hash: &str,
+) -> Result<(), RegistryError> {
+    if sequence < old.sequence || (sequence == old.sequence && hash != old.snapshot_hash_hex) {
+        Err(RegistryError::Rollback)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -215,33 +362,104 @@ mod tests {
         entry
     }
 
-    #[test]
-    fn signed_entry_with_bootstrapped_owner_reads_verified() {
-        let out = classify_entries(vec![signed_entry()], &"01".repeat(32));
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].trust, TrustLevel::Verified);
-        assert!(out[0].trust.is_offerable());
+    fn snapshot(owner: &SigningKey) -> SignedRegistrySnapshot {
+        let entry = signed_entry();
+        let mut snapshot = SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 100,
+            expires_at_unix: 200,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: vec![registry_types::PublisherAuthorization {
+                pubkey_hex: entry.publisher_pubkey_hex.clone(),
+                can_add_new: true,
+            }],
+            entries: vec![entry],
+            owner_signature_hex: String::new(),
+        };
+        registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
+        snapshot
     }
 
     #[test]
-    fn signed_entry_with_placeholder_owner_reads_tofu() {
-        let out = classify_entries(vec![signed_entry()], &placeholder_owner_pubkey());
-        assert_eq!(out[0].trust, TrustLevel::UnverifiedOwner);
+    fn only_owner_authorized_snapshot_is_offerable() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let snapshot = snapshot(&owner);
+        let out = classify_snapshot(
+            &snapshot,
+            &hex::encode(owner.verifying_key().to_bytes()),
+            150,
+        )
+        .unwrap();
+        assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
+        assert!(out[0].trust.is_offerable());
+
+        assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
+        let mut tampered = snapshot;
+        tampered.entries[0].name = "hijacked".into();
         assert!(
-            out[0].trust.is_offerable(),
-            "an unpinned registry still describes real, signed software"
+            classify_snapshot(
+                &tampered,
+                &hex::encode(owner.verifying_key().to_bytes()),
+                150
+            )
+            .is_err()
         );
     }
 
     #[test]
-    fn tampered_entry_is_untrusted_and_not_offerable() {
-        let mut entry = signed_entry();
-        entry.name = "hijacked".into();
-        let out = classify_entries(vec![entry], &"01".repeat(32));
-        assert_eq!(out[0].trust, TrustLevel::Untrusted);
-        assert!(
-            !out[0].trust.is_offerable(),
-            "unsigned metadata must never become a row a user can activate"
+    fn durable_checkpoint_rejects_rollback_and_same_sequence_fork() {
+        let old = SnapshotCheckpoint {
+            sequence: 8,
+            snapshot_hash_hex: "aa".repeat(32),
+        };
+        assert!(matches!(
+            validate_checkpoint(&old, 7, &"bb".repeat(32)),
+            Err(RegistryError::Rollback)
+        ));
+        assert!(matches!(
+            validate_checkpoint(&old, 8, &"bb".repeat(32)),
+            Err(RegistryError::Rollback)
+        ));
+        validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
+        validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
+    }
+
+    #[test]
+    fn registry_endpoint_rejects_credentials_remote_plaintext_and_redirectable_query() {
+        for base_url in [
+            "http://registry.test",
+            "https://placeholder:placeholder@registry.test",
+            "https://registry.test/base?next=https://evil.test",
+        ] {
+            let registry = RegistryConfig {
+                name: "test".into(),
+                base_url: base_url.into(),
+                owner_pubkey_hex: "11".repeat(32),
+                enabled: true,
+            };
+            if base_url.contains('?') {
+                assert_eq!(
+                    registry_url(&registry, "entries").unwrap().as_str(),
+                    "https://registry.test/base/entries"
+                );
+            } else {
+                assert!(matches!(
+                    registry_url(&registry, "entries"),
+                    Err(RegistryError::UnsafeEndpoint)
+                ));
+            }
+        }
+        let loopback = RegistryConfig {
+            name: "dev".into(),
+            base_url: "http://127.0.0.1:8080".into(),
+            owner_pubkey_hex: "11".repeat(32),
+            enabled: true,
+        };
+        assert_eq!(
+            registry_url(&loopback, "entries").unwrap().as_str(),
+            "http://127.0.0.1:8080/entries"
         );
     }
 }

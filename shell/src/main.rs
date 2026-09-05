@@ -325,6 +325,19 @@ fn main() -> std::process::ExitCode {
         return exit_code;
     }
 
+    // The handle deliberately lives until the compositor exits. Start it only
+    // for the actual desktop path: portal-only, first-boot-only, verification,
+    // and repair commands must not bind the user's collaboration endpoint.
+    // Startup is fail-closed when the administrator supplied a broken
+    // bind/advertise configuration, so the UI never mints unreachable URLs.
+    let _invite_broker = match identity_provisioning::start_configured_invite_broker() {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("error: cannot start configured invite broker: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
     let enable_portals = compositor::parse_portals_from_args();
     match compositor::parse_mode_from_args() {

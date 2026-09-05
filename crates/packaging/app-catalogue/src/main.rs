@@ -94,7 +94,7 @@ enum RepoCmd {
         /// Base HTTP(S) URL serving `/entries`.
         url: String,
         /// Pinned Ed25519 registry-owner key (64 hex characters).
-        #[arg(long, default_value = "")]
+        #[arg(long)]
         owner_key: String,
     },
     /// Remove a repository from the configuration.
@@ -135,12 +135,10 @@ fn repo(cmd: RepoCmd) -> ExitCode {
                 } else {
                     "disabled"
                 };
-                let key = if registry.owner_pubkey_hex.is_empty() {
-                    "un-pinned"
-                } else {
-                    "key pinned"
-                };
-                println!("{}  {}  ({state}, {key})", registry.name, registry.base_url);
+                println!(
+                    "{}  {}  ({state}, key pinned)",
+                    registry.name, registry.base_url
+                );
             }
             return ExitCode::SUCCESS;
         }
@@ -153,11 +151,7 @@ fn repo(cmd: RepoCmd) -> ExitCode {
                 eprintln!("could not add repository: {e}");
                 return ExitCode::FAILURE;
             }
-            if owner_key.is_empty() {
-                format!("added repository '{name}' (owner key is not pinned)")
-            } else {
-                format!("added repository '{name}'")
-            }
+            format!("added repository '{name}' with a pinned owner key")
         }
         RepoCmd::Remove { name } => {
             if let Err(e) = config::remove_registry(&mut registries, &name) {

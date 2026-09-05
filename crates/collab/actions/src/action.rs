@@ -18,20 +18,19 @@ use uuid::Uuid;
 /// "mutate the Doc"; exactly [`automerge::AutoCommit`].
 pub type Doc = automerge::AutoCommit;
 
-/// Where an action *prefers* to execute, declared on the action type and
-/// carried on every envelope. Only [`ClientLocal`](Self::ClientLocal) is
-/// fully realized; [`ServerPreferred`](Self::ServerPreferred) is a real,
-/// transport-honored preference (see [`crate::executor::dispatch`]) that
-/// falls back to local execution when no host is reachable.
+/// Where an action executes, declared on the action type and carried on every
+/// envelope. [`ServerPreferred`](Self::ServerPreferred) retains its historical
+/// wire spelling, but is an authoritative-host requirement: absence of a host
+/// is a refusal, never permission for the client to perform the operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExecutionLocus {
     /// This client applies the action locally and replicates the envelope;
     /// peers replay it (verifying it was a valid mutation). The default.
     #[default]
     ClientLocal,
-    /// Prefers authoritative execution on a host (e.g. a shared queue or
-    /// moderated reply). The dispatcher submits to the host; with no host
-    /// reachable it falls back to `ClientLocal` so the user is never blocked.
+    /// Requires authoritative execution on a host (e.g. a shared queue or
+    /// moderated reply). The dispatcher submits to the host and fails closed
+    /// when none is reachable.
     ServerPreferred,
 }
 

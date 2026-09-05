@@ -78,6 +78,15 @@ jobs:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Load the pinned marketplace owner trust input
+        shell: bash
+        run: |
+          set -euo pipefail
+          key='${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
+          [[ "$key" =~ ^[0-9a-fA-F]{64}$ ]]
+          [[ "$key" != 0000000000000000000000000000000000000000000000000000000000000000 ]]
+          echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
+
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -453,6 +462,7 @@ jobs:
             QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
             QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
             QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
+            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
@@ -504,6 +514,7 @@ jobs:
             QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
             QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
             QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
+            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
@@ -637,6 +648,11 @@ jobs:
             sleep 1
           done
           sleep 2
+          # Unit/native audits prove the AccessKit shape in-process. This is
+          # the release gate that proves the compositor-owned first-use UI is
+          # actually visible to an external AT-SPI consumer on the installed
+          # graphical session.
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe
           # The intro exposes two actions in focus order: connect an existing
           # identity, then create a new one. Select the latter explicitly.
           ./os/dev/vm.sh keys tab tab ret
@@ -662,6 +678,15 @@ jobs:
 
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
           ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh desktop
+
+          # Lock is compositor-owned too, and historically fell outside the
+          # app-window AT-SPI path. Exercise the real Super+L route and require
+          # its protected password field and instructions on the session bus.
+          ./os/dev/vm.sh keys meta_l-l
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh lock
+          ./os/dev/vm.sh type "$QOS_PASS"
+          ./os/dev/vm.sh keys ret
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
             # Upload through a non-channel candidate tag. latest, semver and

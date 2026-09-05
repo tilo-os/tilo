@@ -1354,8 +1354,47 @@ impl RoomActivityPane {
         }
 
         let mut entries = self.source.entries(&mut tree.doc);
-        let tags = describe_room_changes(&mut tree.doc, &mut entries);
+        let mut tags = describe_room_changes(&mut tree.doc, &mut entries);
+        let represented_receipts = entries
+            .iter()
+            .filter_map(|entry| entry.context.as_ref())
+            .flat_map(|context| context.facets.iter())
+            .filter(|facet| facet.key == "qos.invocation")
+            .map(|facet| facet.value.clone())
+            .collect::<HashSet<_>>();
+        for workspace in &tree.workspaces {
+            for receipt in &workspace.effect_receipts {
+                if represented_receipts.contains(&receipt.invocation.0.to_string()) {
+                    continue;
+                }
+                let actor = receipt.actor.clone();
+                entries.push(HistoryEntry {
+                    id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
+                    author: ui::widget::HistoryAuthor::new(
+                        participant_display_label(&actor),
+                        ui::history_source::stable_hue(&actor),
+                        ui::history_source::short_id(&actor),
+                    ),
+                    op_class: OpClass::EditMeta,
+                    artifact_kind: ArtifactKind::Cluster,
+                    timestamp: SystemTime::UNIX_EPOCH
+                        + Duration::from_secs(
+                            u64::try_from(receipt.completed_at).unwrap_or_default(),
+                        ),
+                    summary: receipt
+                        .context
+                        .summary()
+                        .unwrap_or_else(|| receipt.status.label().to_string()),
+                    text_delta: None,
+                    diff_payload: None,
+                    redaction: None,
+                    context: Some(receipt.context.clone()),
+                });
+                tags.push(Some(workspace.id.raw()));
+            }
+        }
         self.derived = entries.into_iter().zip(tags).collect();
+        self.derived.sort_by_key(|(entry, _)| entry.timestamp);
         // Names come out of the same document as the changes, so a peer's name
         // arrives with their edits.
         self.named = ui::history_groups::read_named_ranges(&tree.doc, self.source.authors());
@@ -6582,6 +6621,41 @@ mod tests {
         }
         tree.seed_doc_from_cache();
         (tree, ws_id, user)
+    }
+
+    #[test]
+    fn persisted_effect_receipt_reappears_in_workspace_activity_without_revert() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let invocation = qos_actions::InvocationId::new();
+        assert!(
+            tree.append_workspace_effect_receipt(
+                tree.active,
+                invocation,
+                "ada",
+                qos_actions::ActionContext::for_resource(
+                    "Export",
+                    "document:brief",
+                    "document",
+                    "Release brief",
+                )
+                .with_app("org.qos.Writer", "Writer"),
+                qos_actions::EffectReceiptStatus::Succeeded,
+            )
+        );
+        let persisted = serde_json::to_vec(&tree).expect("persist workspace tree");
+        let mut restored: WorkspaceTree =
+            serde_json::from_slice(&persisted).expect("restore workspace tree");
+        restored.seed_doc_from_cache();
+
+        let mut pane = RoomActivityPane::new();
+        pane.refresh(&mut restored);
+        let entry = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
+            .expect("receipt is visible after restart");
+        assert_eq!(entry.summary, "Completed · Export · Release brief");
+        assert!(!entry.is_revertible());
     }
 
     fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {

@@ -5794,6 +5794,7 @@ impl Widget for FileExplorerWidget {
             "files.paste",
             "files.navigate",
             "files.open",
+            "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
             "files.share-link",
@@ -5923,6 +5924,57 @@ impl Widget for FileExplorerWidget {
                     ..ActionContract::default()
                 });
         folder.actions.push(paste);
+        // Search, the sidebar, assistive technology and headless agents all
+        // address the same View operation for a place. These children are not
+        // limited to the currently visible directory.
+        for favorite in &self.favs.borrow().favorites {
+            let path = favorite.path.to_string_lossy().into_owned();
+            let resource = Resource::new(
+                crate::search_provider::place_resource_id(&favorite.path),
+                "files.place",
+                favorite.label.clone(),
+            )
+            .with_action(
+                ActionSpec::operation(
+                    crate::search_provider::OPEN_ACTION,
+                    "Open",
+                    OperationKind::View,
+                    "files.open",
+                    &path,
+                )
+                .expect("place path is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            folder.children.push(resource);
+        }
+        // Collaborative identity is the immutable record UUID. The operation
+        // resolves its mutable path only when invoked, so rename/move races do
+        // not turn stale search provenance into navigation authority.
+        let mut exported_records = std::collections::BTreeSet::new();
+        for record in crate::model::read_workspace_record_index(&self.workspace_roots)
+            .records
+            .into_iter()
+            .filter(|record| exported_records.insert(record.record_id))
+            .take(crate::search_provider::MAX_COLLABORATIVE_SEARCH_RECORDS)
+        {
+            let resource = Resource::new(
+                crate::search_provider::record_resource_id(record.record_id),
+                "files.record",
+                record.name,
+            )
+            .with_action(
+                ActionSpec::operation(
+                    crate::search_provider::REVEAL_ACTION,
+                    "Reveal in Files",
+                    OperationKind::View,
+                    "files.reveal-record",
+                    &record.record_id.to_string(),
+                )
+                .expect("record id is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            folder.children.push(resource);
+        }
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
             let mut resource =
@@ -6026,6 +6078,26 @@ impl Widget for FileExplorerWidget {
             (OperationKind::View, "files.navigate" | "files.open") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
+            }
+            (OperationKind::View, "files.reveal-record") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let record_id = uuid::Uuid::parse_str(&value)
+                    .map_err(|_| "invalid collaborative record id".to_string())?;
+                let record = crate::model::read_workspace_record_index(&self.workspace_roots)
+                    .records
+                    .into_iter()
+                    .find(|record| record.record_id == record_id)
+                    .ok_or_else(|| "collaborative record is no longer available".to_string())?;
+                if record.path.parent() != Some(self.current_path.as_path())
+                    && let Some(parent) = record.path.parent().map(Path::to_path_buf)
+                {
+                    self.navigate(parent);
+                }
+                if let Some(index) = self.entries.iter().position(|entry| {
+                    entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
+                }) {
+                    self.selection.select_only(index);
+                }
             }
             (_, "files.folder-command") => {
                 let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -6646,41 +6718,6 @@ impl Widget for FileExplorerWidget {
                 ),
             ),
         ]
-    }
-
-    /// Navigate to the place a chosen palette row identifies (its destination
-    /// path is the opaque id). Navigation is app-local presentation.
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        _doc: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) {
-        if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id)
-        {
-            self.navigate(dest);
-        } else if let Some(record_id) =
-            crate::search_provider::CollaborativeRecordSearchProvider::parse_action_id(action_id)
-            // Resolve mutable provenance again at activation time. A remote
-            // rename or move may have landed since the palette was opened.
-            && let Some(path) = crate::model::read_workspace_record_index(&self.workspace_roots)
-                .records
-                .into_iter()
-                .find(|record| record.record_id == record_id)
-                .map(|record| record.path)
-        {
-            if path.parent() != Some(self.current_path.as_path())
-                && let Some(parent) = path.parent().map(Path::to_path_buf)
-            {
-                self.navigate(parent);
-            }
-            if let Some(index) = self.entries.iter().position(|entry| {
-                entry.record_id == Some(*record_id.as_bytes()) || entry.path == path
-            }) {
-                self.selection.select_only(index);
-                self.structure_dirty = true;
-            }
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -8785,8 +8822,26 @@ mod command_path_tests {
             .search("renamed")
             .pop()
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        widget.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        let address = hit.action_address().expect("canonical reveal action");
+        let resources = Widget::resources(&widget, &doc);
+        let spec = ui::qos_actions::door::resolve(&resources, &address)
+            .expect("search reveal action is exported");
+        let kind = spec.kind;
+        let encoded =
+            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+                .expect("reveal action encodes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);

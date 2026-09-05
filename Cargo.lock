@@ -524,11 +524,13 @@ version = "0.1.0"
 dependencies = [
  "app-registry",
  "atomic-file",
+ "blake3",
  "clap",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
  "launcher",
+ "libc",
  "pkg",
  "registry-types",
  "reqwest 0.12.28",
@@ -572,8 +574,10 @@ dependencies = [
  "parking_lot",
  "pkg",
  "rand 0.8.8",
+ "runtime-portal",
  "sd-notify",
  "serde",
+ "serde_json",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -1592,6 +1596,7 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "dirs 6.0.0",
  "png 0.18.1",
  "pollster",
@@ -1738,6 +1743,7 @@ dependencies = [
  "qos-actions",
  "qos-app",
  "reqwest 0.12.28",
+ "roxmltree",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2079,13 +2085,19 @@ dependencies = [
 name = "channel-crypto"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
  "collab-types",
  "ed25519-dalek 2.2.0",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
+ "postcard",
+ "rand 0.8.8",
+ "serde",
+ "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -12235,6 +12247,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -12591,6 +12604,7 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
+ "rand_core 0.6.4",
  "runtime-portal",
  "serde",
  "serde_bytes",
@@ -12598,6 +12612,7 @@ dependencies = [
  "serial_test",
  "sha2 0.10.9",
  "tempfile",
+ "threshold-identity",
  "zeroize",
 ]
 
@@ -13426,10 +13441,13 @@ dependencies = [
  "qos-relay",
  "qos-user-identity",
  "quick-xml 0.41.0",
+ "rcgen 0.14.7",
+ "reqwest 0.12.28",
  "runtime-dylib",
  "runtime-fs",
  "runtime-identity",
  "runtime-portal-xdg",
+ "rustls",
  "serde",
  "serde_json",
  "settings-store",
@@ -13438,6 +13456,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vello",
+ "webpki-roots 0.26.11",
  "winit",
  "zeroize",
 ]
@@ -13585,6 +13604,7 @@ dependencies = [
  "automerge",
  "base64 0.22.1",
  "blake3",
+ "browser",
  "bs58",
  "bytes",
  "capnp",
@@ -13638,14 +13658,17 @@ dependencies = [
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "rcgen 0.14.7",
  "reis",
  "runtime-collab",
  "runtime-identity",
+ "rustls",
  "seccompiler",
  "serde",
  "serde_json",
  "serial_test",
  "settings-store",
+ "sha2 0.10.9",
  "smithay",
  "smithay-client-toolkit 0.20.0",
  "sysinfo",
@@ -14233,15 +14256,19 @@ name = "store"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
+ "app-host",
  "automerge",
+ "blake3",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
+ "getrandom 0.2.17",
  "hex",
  "qos-actions",
  "qos-app",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
+ "runtime-identity",
  "rustls",
  "serde",
  "serde_json",
@@ -14875,6 +14902,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -15481,6 +15509,7 @@ dependencies = [
  "anyhow",
  "automerge",
  "base64 0.22.1",
+ "dirs 6.0.0",
  "flate2",
  "media",
  "png 0.18.1",
@@ -15488,11 +15517,14 @@ dependencies = [
  "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
+ "runtime-portal-xdg",
  "rustypipe",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "snow",
  "taffy",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -15500,6 +15532,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -15936,6 +15969,8 @@ dependencies = [
  "bip39",
  "capnp",
  "capnp-rpc",
+ "chacha20poly1305",
+ "channel-crypto",
  "chrono",
  "collab-types",
  "cosmic-text",
@@ -15968,6 +16003,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustls",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -16444,6 +16480,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "zeroize",
 ]
 
 [[package]]

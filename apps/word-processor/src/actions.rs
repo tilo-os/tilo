@@ -240,6 +240,12 @@ pub enum WordProcessorAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Accept one tracked change, or every change when `id` is absent.
+    AcceptChanges { id: Option<String> },
+    /// Reject one tracked change, or every change when `id` is absent.
+    RejectChanges { id: Option<String> },
+    /// Resolve a comment by removing both its anchor mark and record.
+    ResolveComment { id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +528,56 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     let _ = qdoc::MarkdownCodec.import(markdown.as_bytes(), dm);
 }
 
+fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    let order = qdoc::model::blocks_in_order(doc, c);
+    let mut ids = qdoc::model::change_ids(doc, c);
+    ids.sort_by_key(|id| {
+        qdoc::model::change_range(doc, c, id).map_or_else(
+            || (usize::MAX, usize::MAX, id.clone()),
+            |(block, start, _)| {
+                (
+                    order
+                        .iter()
+                        .position(|candidate| candidate == &block)
+                        .unwrap_or(usize::MAX),
+                    start,
+                    id.clone(),
+                )
+            },
+        )
+    });
+    ids
+}
+
+fn apply_review_changes(dm: &mut DocMut, id: Option<&str>, accept: bool) {
+    let mut ids = id.map_or_else(
+        || ordered_change_ids(dm.doc, dm.c),
+        |one| vec![one.to_string()],
+    );
+    // Work from the end of the document so removing text cannot shift an
+    // earlier change's anchored range before it is processed.
+    ids.reverse();
+    for id in &ids {
+        if accept {
+            dm.accept_change(id);
+        } else {
+            dm.reject_change(id);
+        }
+    }
+}
+
+fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
+    let range = qdoc::model::comment_range(dm.doc, dm.c, id);
+    if let Some((block, start, end)) = range
+        && start < end
+    {
+        dm.remove_mark(&block, start, end, qdoc::schema::MARK_COMMENT);
+    }
+    if let Some(comments) = dm.c.comments.as_ref() {
+        let _ = dm.doc.delete(comments, id);
+    }
+}
+
 impl Action for WordProcessorAction {
     /// Apply this action's mutation to `doc`.
     ///
@@ -620,6 +676,18 @@ impl Action for WordProcessorAction {
 
             WordProcessorAction::ReplaceBody { markdown } => {
                 apply_replace_body(&mut dm, markdown);
+            }
+
+            WordProcessorAction::AcceptChanges { id } => {
+                apply_review_changes(&mut dm, id.as_deref(), true);
+            }
+
+            WordProcessorAction::RejectChanges { id } => {
+                apply_review_changes(&mut dm, id.as_deref(), false);
+            }
+
+            WordProcessorAction::ResolveComment { id } => {
+                apply_resolve_comment(&mut dm, id);
             }
         }
         Ok(())
@@ -1026,6 +1094,131 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         return vec![root];
     };
     let snap = qdoc::model::materialize(doc, &c);
+
+    // Review is document state, not an overlay-only island: comments and
+    // tracked changes are navigable resources, and every resolution decision
+    // is the same typed, replayable action used by the margin cards.
+    if !snap.comments.is_empty() || !snap.changes.is_empty() {
+        let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
+        if !snap.changes.is_empty() {
+            review = review
+                .with_action(immediate_spec(
+                    "accept-all",
+                    "Accept all changes",
+                    &WordProcessorAction::AcceptChanges { id: None },
+                ))
+                .with_action(immediate_spec(
+                    "reject-all",
+                    "Reject all changes",
+                    &WordProcessorAction::RejectChanges { id: None },
+                ));
+        }
+        for comment in &snap.comments {
+            let text = comment
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let label = format!(
+                "Comment by {}: {}",
+                short(&comment.author, "Unknown author"),
+                short(&text, "Empty comment")
+            );
+            review = review.with_child(
+                Resource::new(
+                    format!("word-processor.comment:{}", comment.id),
+                    "word_processor.comment",
+                    label,
+                )
+                .with_action(immediate_spec(
+                    "resolve",
+                    "Resolve comment",
+                    &WordProcessorAction::ResolveComment {
+                        id: comment.id.clone(),
+                    },
+                )),
+            );
+        }
+        for change in &snap.changes {
+            let kind = match change.kind {
+                qdoc::snapshot::ChangeKind::Ins => "Insertion",
+                qdoc::snapshot::ChangeKind::Del => "Deletion",
+            };
+            review = review.with_child(
+                Resource::new(
+                    format!("word-processor.change:{}", change.id),
+                    "word_processor.change",
+                    format!("{kind} by {}", short(&change.author, "Unknown author")),
+                )
+                .with_action(immediate_spec(
+                    "accept",
+                    "Accept change",
+                    &WordProcessorAction::AcceptChanges {
+                        id: Some(change.id.clone()),
+                    },
+                ))
+                .with_action(immediate_spec(
+                    "reject",
+                    "Reject change",
+                    &WordProcessorAction::RejectChanges {
+                        id: Some(change.id.clone()),
+                    },
+                )),
+            );
+        }
+        root = root.with_child(review);
+    }
+
+    if !snap.notes.is_empty() {
+        let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
+        for note in &snap.notes {
+            let text = note
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            notes = notes.with_child(Resource::new(
+                format!("word-processor.note:{}", note.id),
+                "word_processor.note",
+                format!("{}: {}", note.kind, short(&text, "Empty note")),
+            ));
+        }
+        root = root.with_child(notes);
+    }
+
+    if !snap.bookmarks.is_empty() {
+        let mut bookmarks = Resource::new(
+            "word-processor.bookmarks",
+            "word_processor.bookmarks",
+            "Bookmarks",
+        );
+        for bookmark in &snap.bookmarks {
+            bookmarks = bookmarks.with_child(Resource::new(
+                format!("word-processor.bookmark:{}", bookmark.name),
+                "word_processor.bookmark",
+                bookmark.name.clone(),
+            ));
+        }
+        root = root.with_child(bookmarks);
+    }
+
+    if !snap.styles.is_empty() {
+        let mut styles = Resource::new(
+            "word-processor.styles",
+            "word_processor.styles",
+            "Paragraph styles",
+        );
+        for style in snap.styles.keys() {
+            styles = styles.with_child(Resource::new(
+                format!("word-processor.style:{style}"),
+                "word_processor.style",
+                style.clone(),
+            ));
+        }
+        root = root.with_child(styles);
+    }
 
     // Images → a resource each, with a delete action.
     for b in snap.blocks.iter().filter(|b| b.kind == "image") {
@@ -1567,5 +1760,74 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn review_entities_are_resources_and_decisions_replay_identically() {
+        let (mut a, ids) = seeded("Review this sentence\n");
+        let block = ids[0].clone();
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
+        let (comment, change) = {
+            let mut dm = qdoc::DocMut {
+                doc: &mut a.doc,
+                c: &c,
+                ids: &mut id_gen,
+            };
+            (
+                dm.add_comment(&block, 0, 6, "Maya", "Please clarify this."),
+                dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05"),
+            )
+        };
+        a.doc.commit();
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+
+        let ctx = WpResourceCtx {
+            caret_block: block,
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+        };
+        let resources = provide_resources(&ctx, &a.doc);
+        let review = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "word-processor.review")
+            .expect("review group is navigable");
+        let comment_resource_id = format!("word-processor.comment:{comment}");
+        let comment_resource = review
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == comment_resource_id.as_str())
+            .expect("comment is a resource");
+        assert!(
+            comment_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "resolve")
+        );
+        let change_resource_id = format!("word-processor.change:{change}");
+        let change_resource = review
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == change_resource_id.as_str())
+            .expect("tracked change is a resource");
+        let accept = immediate_encode(
+            change_resource
+                .actions
+                .iter()
+                .find(|action| action.id == "accept")
+                .unwrap(),
+        );
+        let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
+        let envelope = qos_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        assert_eq!(a.doc.get_heads(), b.doc.get_heads());
+        let snap = qdoc::model::materialize(
+            &a.doc,
+            &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
+        );
+        assert!(snap.changes.is_empty(), "accepted change left review state");
+        assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
     }
 }

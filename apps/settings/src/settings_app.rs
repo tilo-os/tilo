@@ -64,6 +64,19 @@ pub struct SettingsApp {
     /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
     /// a filtered results list instead of the sectioned category list.
     search_query: String,
+    /// Secret-free snapshot for resource enumeration. Refreshes at account
+    /// mutation boundaries, never during the per-frame resource query.
+    account_resources: Vec<accounts::Account>,
+    account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
+    account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
+    /// Deterministic, secret-free inventory used only by visual acceptance
+    /// captures. Live construction always leaves this `None`.
+    account_directory_override: Option<crate::accounts::AccountDirectory>,
+    account_form_override: Option<crate::accounts::AccountKind>,
+    account_probe: Option<(
+        qos_actions::InvocationId,
+        std::sync::mpsc::Receiver<Result<String, String>>,
+    )>,
     rect: vello::kurbo::Rect,
     /// The reusable app-shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its collapse/overlay state survives a
@@ -79,12 +92,23 @@ impl Default for SettingsApp {
 
 impl SettingsApp {
     pub fn new() -> Self {
+        if accounts::config_root().is_some()
+            && let Err(error) = crate::accounts::recover_account_mutation()
+        {
+            tracing::warn!(target: "qos::settings", %error, "could not recover interrupted account mutation");
+        }
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
+            account_resources: accounts::AccountStore::load().all().to_vec(),
+            account_commands: ui::LocalState::new(None),
+            account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
+            account_directory_override: None,
+            account_form_override: None,
+            account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
         }
@@ -104,6 +128,21 @@ impl SettingsApp {
     #[must_use]
     pub fn with_width_hint(mut self, width: f32) -> Self {
         self.width_hint = Some(width);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_account_directory_for_shot(
+        mut self,
+        directory: crate::accounts::AccountDirectory,
+    ) -> Self {
+        self.account_directory_override = Some(directory);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_account_form_for_shot(mut self, kind: crate::accounts::AccountKind) -> Self {
+        self.account_form_override = Some(kind);
         self
     }
 
@@ -129,6 +168,22 @@ impl SettingsApp {
 
     pub fn selected(&self) -> Category {
         self.selected
+    }
+
+    pub(crate) fn account_resource_inventory(&self) -> &[accounts::Account] {
+        &self.account_resources
+    }
+
+    fn refresh_account_resources(&mut self) {
+        self.account_resources = accounts::AccountStore::load().all().to_vec();
+    }
+
+    #[doc(hidden)]
+    pub fn set_account_tester_for_test(
+        &mut self,
+        tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
+    ) {
+        self.account_tester = tester;
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -243,7 +298,21 @@ impl SettingsApp {
             Category::Notifications => panes::notifications::build(),
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => panes::storage::build(),
-            Category::ExternalAccounts => panes::accounts::build(),
+            Category::ExternalAccounts => {
+                let mut pane = self
+                    .account_directory_override
+                    .as_ref()
+                    .map_or_else(panes::accounts::AccountsPane::new, |directory| {
+                        panes::accounts::AccountsPane::from_dir(directory.clone(), false)
+                    });
+                if let Some(kind) = self.account_form_override {
+                    pane = pane.with_open_form_for_shot(kind);
+                }
+                Box::new(
+                    pane.with_command_state(&self.account_commands)
+                        .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
+                )
+            }
             Category::AgentModels => panes::agent_models::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
@@ -288,7 +357,10 @@ impl SettingsApp {
 
 impl Widget for SettingsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["settings.open-pane"]
+        &[
+            crate::actions::OPEN_PANE_OPERATION_TYPE,
+            crate::actions::ACCOUNT_OPERATION_TYPE,
+        ]
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
@@ -496,6 +568,9 @@ impl Widget for SettingsApp {
             .shell
             .as_mut()
             .is_some_and(ui::Widget::take_structure_dirty);
+        if child && self.selected == Category::ExternalAccounts {
+            self.refresh_account_resources();
+        }
         own || child
     }
 
@@ -520,26 +595,7 @@ impl Widget for SettingsApp {
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
     /// shared document.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            for category in Category::ALL {
-                if let Some(section) = root
-                    .children
-                    .iter_mut()
-                    .find(|section| section.id.0 == format!("settings.section:{}", category.slug()))
-                    && let Ok(action) = qos_actions::ActionSpec::operation(
-                        "open",
-                        format!("Open {}", category.label()),
-                        qos_actions::OperationKind::View,
-                        "settings.open-pane",
-                        &category.slug(),
-                    )
-                {
-                    section.actions.insert(0, action);
-                }
-            }
-        }
-        resources
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn invoke_resource_operation(
@@ -550,7 +606,87 @@ impl Widget for SettingsApp {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::View || type_id != "settings.open-pane" {
+        if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
+            let operation: crate::actions::AccountOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            self.select(Category::ExternalAccounts);
+            return match (kind, operation) {
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Add { kind },
+                ) => {
+                    let kind = match kind.as_str() {
+                        "mail" => crate::accounts::AccountKind::Mail,
+                        "caldav" => crate::accounts::AccountKind::CalDav,
+                        "webdav" => crate::accounts::AccountKind::WebDav,
+                        "nextcloud" => crate::accounts::AccountKind::Nextcloud,
+                        _ => return Err("unknown account kind".into()),
+                    };
+                    self.account_commands
+                        .set(Some(crate::panes::accounts::AccountViewCommand::Add(kind)));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Edit { id },
+                ) => {
+                    self.account_commands
+                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Reauthenticate { id },
+                ) => {
+                    self.account_commands.set(Some(
+                        crate::panes::accounts::AccountViewCommand::Reauthenticate(id),
+                    ));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::SubmitForm,
+                ) => {
+                    self.account_commands
+                        .set(Some(crate::panes::accounts::AccountViewCommand::Submit));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::CancelForm,
+                ) => {
+                    self.account_commands
+                        .set(Some(crate::panes::accounts::AccountViewCommand::Cancel));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::SubmitReauthentication,
+                ) => {
+                    self.account_commands.set(Some(
+                        crate::panes::accounts::AccountViewCommand::SubmitReauthentication,
+                    ));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::CancelReauthentication,
+                ) => {
+                    self.account_commands.set(Some(
+                        crate::panes::accounts::AccountViewCommand::CancelReauthentication,
+                    ));
+                    Ok(true)
+                }
+                (
+                    qos_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Open { .. },
+                ) => Ok(true),
+                _ => Err("operation kind does not match account operation".into()),
+            };
+        }
+        if kind != qos_actions::OperationKind::View
+            || type_id != crate::actions::OPEN_PANE_OPERATION_TYPE
+        {
             return Ok(false);
         }
         let slug: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -563,28 +699,156 @@ impl Widget for SettingsApp {
         Ok(true)
     }
 
-    /// Fold the settings panes into the unified Ctrl+K palette: a stateless
-    /// [`SettingsSearchProvider`](crate::search_provider::SettingsSearchProvider)
-    /// makes every pane findable there by title, summary, or keyword synonym,
-    /// alongside the individual-toggle actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SettingsSearchProvider)]
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
+            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        }
+        let operation: crate::actions::AccountOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        self.select(Category::ExternalAccounts);
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::View,
+                operation @ (crate::actions::AccountOperation::Add { .. }
+                | crate::actions::AccountOperation::Edit { .. }
+                | crate::actions::AccountOperation::Reauthenticate { .. }
+                | crate::actions::AccountOperation::CancelForm
+                | crate::actions::AccountOperation::CancelReauthentication),
+            ) => {
+                self.invoke_resource_operation(
+                    kind,
+                    type_id,
+                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
+                    doc,
+                    path,
+                )?;
+            }
+            (qos_actions::OperationKind::View, crate::actions::AccountOperation::Open { .. }) => {}
+            (
+                qos_actions::OperationKind::Effect,
+                operation @ (crate::actions::AccountOperation::SubmitForm
+                | crate::actions::AccountOperation::SubmitReauthentication),
+            ) => {
+                self.invoke_resource_operation(
+                    kind,
+                    type_id,
+                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
+                    doc,
+                    path,
+                )?;
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::AccountOperation::Remove { id },
+            ) => {
+                let stored = accounts::AccountStore::load()
+                    .get(&accounts::AccountId::from(id.clone()))
+                    .cloned()
+                    .ok_or_else(|| "account no longer exists".to_string())?;
+                let account_kind = match stored.type_id.as_str() {
+                    "email" => crate::accounts::AccountKind::Mail,
+                    "caldav" => crate::accounts::AccountKind::CalDav,
+                    "webdav" => crate::accounts::AccountKind::WebDav,
+                    "nextcloud" => crate::accounts::AccountKind::Nextcloud,
+                    _ => return Err("unsupported account type".into()),
+                };
+                crate::panes::accounts::AccountsPane::remove_account(account_kind, &id)?;
+                self.refresh_account_resources();
+                self.refresh_shell_children();
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::AccountOperation::Test { id }) => {
+                if self.account_probe.is_some() {
+                    return Err("an account connection check is already running".into());
+                }
+                let account_id = accounts::AccountId::from(id);
+                let account = accounts::AccountStore::load()
+                    .get(&account_id)
+                    .cloned()
+                    .ok_or_else(|| "account no longer exists".to_string())?;
+                let secret = accounts::SecretVault::open()
+                    .get(&account_id)
+                    .ok_or_else(|| {
+                        "this account has no saved credential; sign in again first".to_string()
+                    })?;
+                let tester = std::sync::Arc::clone(&self.account_tester);
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    let _ = sender.send(tester.test(&account, &secret));
+                });
+                self.account_probe = Some((invocation, receiver));
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            _ => return Err("operation kind does not match account operation".into()),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            qos_actions::ActionOutput::default(),
+        )))
     }
 
-    /// Navigate to the pane a chosen palette row identifies. Pane selection is
-    /// app-local presentation (per-peer, never in the shared doc), so the doc
-    /// args are unused.
-    fn activate_search_result(
+    fn poll_resource_operation(
         &mut self,
-        action_id: &str,
-        _doc: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) {
-        if let Some(category) =
-            crate::search_provider::SettingsSearchProvider::parse_action_id(action_id)
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .account_probe
+            .as_ref()
+            .is_some_and(|(id, _)| *id == invocation)
         {
-            self.select(category);
+            if cancellation_requested {
+                self.account_probe = None;
+                return Some(qos_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("connection check cancelled".into()),
+                });
+            }
+            let result = self
+                .account_probe
+                .as_ref()
+                .and_then(|(_, receiver)| receiver.try_recv().ok());
+            if let Some(result) = result {
+                self.account_probe = None;
+                return Some(match result {
+                    Ok(message) => qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    },
+                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "account_connection_failed".into(),
+                            message,
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                });
+            }
+            return None;
         }
+        self.shell.as_mut().and_then(|shell| {
+            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
+        })
+    }
+
+    /// Fold the settings panes into the unified Ctrl+K palette. Every result
+    /// addresses the pane resource's exported `open` View operation, alongside
+    /// the collaborative setting-change actions those resources own.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::SettingsSearchProvider)]
     }
 
     /// Bubble an on-screen control's dispatched-action undo bracket up from
@@ -876,7 +1140,7 @@ mod tests {
         layout_at(&mut wide, 1200.0, 720.0);
         assert!(wide.get_rect().width() > 0.0);
 
-        let mut narrow = SettingsApp::with_selected(Category::RegionFormats)
+        let mut narrow = SettingsApp::with_selected(Category::ExternalAccounts)
             .with_width_hint(440.0)
             .with_narrow_content_shot();
         layout_at(&mut narrow, 440.0, 820.0);

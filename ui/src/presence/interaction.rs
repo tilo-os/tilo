@@ -596,7 +596,7 @@ mod tests {
             &update.resource.id,
             &update.resource.kind,
         );
-        let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update.clone()));
+        let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
 
         let mut files = PresenceCtx::empty();
         files.set_surface_id("org.qos.Files");

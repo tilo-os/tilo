@@ -30,15 +30,9 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
 /// frame field — the bin is a glance, not a scrub.
 pub fn clock(seconds: f64) -> String {
     let seconds = seconds.max(0.0);
-    let total = seconds.round() as i64;
-    let s = total % 60;
-    let m = (total / 60) % 60;
-    let h = total / 3600;
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
-    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let total = seconds.round() as u64;
+    ui::format::timecode(total)
 }
 
 /// One frame's duration in seconds at `fps`. Guards against a zero fps.

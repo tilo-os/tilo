@@ -2039,9 +2039,10 @@ impl TerminalWidget {
             *handled = true;
             return;
         }
-        // Mouse reporting (ESC[?1000h family) is parsed into `modes`
-        // but click forwarding is intentionally a stub — the left
-        // button always drives text selection.
+        // Application mouse reporting was already handled by
+        // `handle_mouse_button_event` above. Reaching this helper therefore
+        // means reporting is off or Shift requested the conventional local
+        // selection override.
         match element_state {
             ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
                 let shift = modifiers.state().shift_key();

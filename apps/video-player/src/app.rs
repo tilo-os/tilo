@@ -18,6 +18,7 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
@@ -25,7 +26,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, VideoPlayer, Widget};
+use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
 
@@ -90,6 +91,8 @@ pub struct PlayerApp {
     portal_rx: Option<PortalChannel>,
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
+    open_action: Option<ActionEmitter<()>>,
+    open_focused: bool,
     /// Collaborative playback state (host/follower). `None` for a local-only
     /// session or the headless `--shots` path.
     collab: Option<CollabPlayback>,
@@ -101,9 +104,15 @@ pub struct PlayerApp {
 impl PlayerApp {
     /// A player with a fresh engine and no media loaded.
     pub fn new() -> Self {
-        let player = VideoPlayer::new()
+        let mut player = VideoPlayer::new()
             .with_engine(media::MediaEngine::new())
             .with_test_id("video_surface");
+        player.enable_mpris("qos_video_player", "Video Player");
+        let action_surface = crate::actions::resources("No media", false, true, &AutoCommit::new());
+        let open_action = action_surface
+            .first()
+            .and_then(|resource| qos_actions::ActionBinding::unit_for(resource, "open").ok())
+            .map(ActionEmitter::new);
         Self {
             player,
             title: "No media".to_string(),
@@ -113,6 +122,8 @@ impl PlayerApp {
             portal_rx: None,
             resource_invocation: None,
             resource_result: None,
+            open_action,
+            open_focused: false,
             collab: None,
             manager: None,
             dirty: true,
@@ -133,6 +144,7 @@ impl PlayerApp {
     /// socket, so no thread/portal is created.
     ///
     /// `scenario` selects an optional demo overlay for the capture:
+    ///   * `"empty"` — the first-run state before a source is chosen.
     ///   * `"settings"` — register app player-settings (priority icons + a
     ///     couple under the gear) and open the settings-gear menu.
     ///   * `"fullscreen"` — register the same settings and toggle fullscreen so
@@ -140,26 +152,28 @@ impl PlayerApp {
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
-        if let Some(path) = open {
-            app.open_path(&path);
-        } else {
-            // The demo shot must stay hermetic: pin the deterministic
-            // synthesized-frame engine so no real GStreamer pipeline is
-            // built and the placeholder `demo.local` host is never
-            // contacted — even though `decode` compiles the real backend in
-            // by default. `--shots --open <file>` is the real-decode path.
-            app.player.set_engine(media::MediaEngine::new_synthesized());
-            app.player.open(media::Source::Remote {
-                url: "https://demo.local/clip.mp4".into(),
-            });
-            app.title = "Demo clip".to_string();
-            // Park at a fixed position and pause so the synthesized frame and
-            // the transport read-out are byte-deterministic across runs: a
-            // *playing* demo would capture a different synth frame each time
-            // depending on warm-up timing. `open` already seeded a frame, so
-            // the `--shots` warm-up still breaks immediately.
-            app.player.seek_to_ms(8_000);
-            app.player.pause();
+        if !matches!(scenario, Some("empty")) {
+            if let Some(path) = open {
+                app.open_path(&path);
+            } else {
+                // The demo shot must stay hermetic: pin the deterministic
+                // synthesized-frame engine so no real GStreamer pipeline is
+                // built and the placeholder `demo.local` host is never
+                // contacted — even though `decode` compiles the real backend in
+                // by default. `--shots --open <file>` is the real-decode path.
+                app.player.set_engine(media::MediaEngine::new_synthesized());
+                app.player.open(media::Source::Remote {
+                    url: "https://demo.local/clip.mp4".into(),
+                });
+                app.title = "Demo clip".to_string();
+                // Park at a fixed position and pause so the synthesized frame and
+                // the transport read-out are byte-deterministic across runs: a
+                // *playing* demo would capture a different synth frame each time
+                // depending on warm-up timing. `open` already seeded a frame, so
+                // the `--shots` warm-up still breaks immediately.
+                app.player.seek_to_ms(8_000);
+                app.player.pause();
+            }
         }
         if matches!(scenario, Some("settings" | "fullscreen")) {
             app.register_demo_settings();
@@ -169,7 +183,9 @@ impl PlayerApp {
             Some("fullscreen") => app.player.toggle_fullscreen(),
             _ => {}
         }
-        app.player.reveal_controls();
+        if !matches!(scenario, Some("empty")) {
+            app.player.reveal_controls();
+        }
         app
     }
 
@@ -219,7 +235,9 @@ impl PlayerApp {
     /// `--shots` and tests stay local so no thread/socket is created.
     #[must_use]
     pub fn with_collab(mut self) -> Self {
-        self.collab = Some(CollabPlayback::new(Role::from_env()));
+        let role = Role::from_env();
+        self.player.set_transport_enabled(role == Role::Host);
+        self.collab = Some(CollabPlayback::new(role));
         self.manager = Some(CollaborationManager::new());
         self
     }
@@ -245,7 +263,36 @@ impl PlayerApp {
         );
         self.player.open(source);
         self.player.play();
+        self.player.reveal_controls();
+        self.player
+            .set_now_playing(ui::widget::video_player::NowPlaying {
+                track_id: path.to_string_lossy().into_owned(),
+                title: self.title.clone(),
+                artist: String::new(),
+                art_url: String::new(),
+            });
         self.dirty = true;
+    }
+
+    fn close_media(&mut self) {
+        let mut player = VideoPlayer::new()
+            .with_engine(media::MediaEngine::new())
+            .with_test_id("video_surface");
+        player.set_transport_enabled(
+            self.collab
+                .as_ref()
+                .is_none_or(|collab| collab.role() == Role::Host),
+        );
+        player.enable_mpris("qos_video_player", "Video Player");
+        self.player = player;
+        self.title = "No media".into();
+        self.dirty = true;
+    }
+
+    fn request_open_action(&mut self) {
+        if let Some(action) = &mut self.open_action {
+            let _ = action.emit(());
+        }
     }
 
     /// Kick off a portal file-open (or the immediate "no portal" outcome in the
@@ -261,11 +308,14 @@ impl PlayerApp {
             PlayerOperation::Open { path: Some(path) } => {
                 self.open_path(Path::new(&path));
             }
+            PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
             PlayerOperation::ToggleMute => self.player.toggle_mute(),
             PlayerOperation::SeekSeconds(seconds) => {
                 self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
             }
+            PlayerOperation::SetVolume(volume) => self.player.set_volume(volume as f32),
+            PlayerOperation::ToggleFullscreen => self.player.toggle_fullscreen(),
         }
         self.dirty = true;
     }
@@ -338,17 +388,18 @@ impl PlayerApp {
             return;
         };
         for ev in mgr.poll() {
-            if let CollabEvent::Document { envelope, .. } = ev {
-                match collab_types::DocumentMutation::decode(&envelope.payload) {
-                    Ok(collab_types::DocumentMutation::Incremental(data)) => {
+            if let CollabEvent::Document { .. } = &ev {
+                match ev.document_mutation() {
+                    Some(Ok(collab_types::DocumentMutation::Incremental(data))) => {
                         collab.ingest(&data);
                     }
-                    Ok(collab_types::DocumentMutation::Snapshot(data)) => {
+                    Some(Ok(collab_types::DocumentMutation::Snapshot(data))) => {
                         collab.ingest_snapshot(&data);
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         tracing::warn!(%error, "video collab: invalid document mutation");
                     }
+                    None => {}
                 }
             }
         }
@@ -388,6 +439,21 @@ impl PlayerApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        let opacity = if self.player.has_media() {
+            self.player.controls_opacity()
+        } else {
+            1.0
+        };
+        if opacity <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            opacity,
+            transform,
+            &self.rect,
+        );
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
         let scrim_h = 44.0;
@@ -410,12 +476,22 @@ impl PlayerApp {
         // against the dark scrim.
         let title_size = 15.0f32;
         let ty = self.rect.y0 + (scrim_h - f64::from(title_size)) * 0.5;
+        let display_title = if self.player.has_media() {
+            self.title.as_str()
+        } else {
+            "Video Player"
+        };
+        let title_x = self.rect.x0 + OVERLAY_MARGIN;
+        let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
+            .max(0.0)
+            .min(f64::from(f32::MAX)) as f32;
+        let display_title = text_renderer.elide_to_width(display_title, title_size, title_budget);
         text_renderer.draw_text(
             scene,
-            &self.title,
+            &display_title,
             title_size,
             vello::peniko::Color::from_rgb8(245, 246, 250),
-            transform * Affine::translate((self.rect.x0 + OVERLAY_MARGIN, ty)),
+            transform * Affine::translate((title_x, ty)),
             None,
         );
         // Open pill (right), a floating rounded accent button — the shared
@@ -434,6 +510,44 @@ impl PlayerApp {
                     .hovered(self.open_button_rect.contains(self.last_cursor)),
             );
         }
+        scene.pop_layer();
+    }
+
+    fn paint_media_status_copy(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.player.latest_frame().is_some() || self.rect.height() < 180.0 {
+            return;
+        }
+        let center = self.rect.center();
+        let (title, subtitle) = if self.player.has_media() {
+            ("Loading video…", "Preparing the first frame")
+        } else {
+            ("Open a video to start", "MP4, WebM, MKV, MOV and AVI")
+        };
+        let (title_w, _) = text_renderer.measure(title, 20.0, None);
+        let (subtitle_w, _) = text_renderer.measure(subtitle, 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            title,
+            20.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((center.x - f64::from(title_w) * 0.5, center.y + 55.0)),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            subtitle,
+            13.0,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((center.x - f64::from(subtitle_w) * 0.5, center.y + 85.0)),
+            None,
+        );
     }
 }
 
@@ -449,7 +563,14 @@ impl Widget for PlayerApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        crate::actions::resources(&self.title, self.player.latest_frame().is_some(), doc)
+        crate::actions::resources(
+            &self.title,
+            self.player.has_media(),
+            self.collab
+                .as_ref()
+                .is_none_or(|collab| collab.role() == Role::Host),
+            doc,
+        )
     }
 
     fn invoke_resource_operation(
@@ -466,6 +587,18 @@ impl Widget for PlayerApp {
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
             return Ok(false);
         };
+        if self
+            .collab
+            .as_ref()
+            .is_some_and(|collab| collab.role() == Role::Follower)
+            && matches!(
+                &operation,
+                crate::actions::PlayerOperation::TogglePlayback
+                    | crate::actions::PlayerOperation::SeekSeconds(_)
+            )
+        {
+            return Err("this player is following the collaborative host".into());
+        }
         if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
             if !Path::new(path).is_file() {
                 return Err(format!("video does not exist: {path}"));
@@ -495,6 +628,15 @@ impl Widget for PlayerApp {
             Some(crate::actions::PlayerOperation::Open { path: None })
         ) {
             self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: Some(_) })
+        ) {
+            self.resource_result = Some(qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            });
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
@@ -591,6 +733,7 @@ impl Widget for PlayerApp {
     ) {
         self.player
             .draw(scene, transform, text_renderer, theme, presence);
+        self.paint_media_status_copy(scene, transform, text_renderer, theme);
         if self.overlay_visible() {
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
@@ -620,12 +763,19 @@ impl Widget for PlayerApp {
             // Only intercept the Open pill while the overlay is actually shown;
             // during immersive playback that corner is just video.
             if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-                self.perform_resource_operation(crate::actions::PlayerOperation::Open {
-                    path: None,
-                });
+                self.request_open_action();
                 *handled = true;
                 return;
             }
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && modifiers.state().control_key()
+            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("o"))
+        {
+            self.request_open_action();
+            *handled = true;
+            return;
         }
         // Forward everything else to the player (its controls + shortcuts).
         let Ok(children) = taffy.children(node_id) else {
@@ -652,6 +802,88 @@ impl Widget for PlayerApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.player as &mut (dyn Widget + '_)]
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.open_action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.open_action {
+            action.refresh_availability(allowed);
+        }
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.open_action.as_ref().map_or_else(Vec::new, |action| {
+            vec![action.metadata("video-player.open")]
+        })
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(if self.player.has_media() {
+                    self.title.clone()
+                } else {
+                    "Video Player".into()
+                })
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name("Open video")
+                        .with_description("Ctrl+O")
+                        .with_action_target("video-player.open")
+                        .with_bounds(self.open_button_rect)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.open_focused,
+                            disabled: self
+                                .open_action
+                                .as_ref()
+                                .is_none_or(|action| !action.is_available()),
+                            ..Default::default()
+                        }),
+                ]),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        matches!(path, [0]).then_some(self.open_button_rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if matches!(path, [0]) {
+            self.open_focused = true;
+            self.player.reveal_controls();
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
+            self.request_open_action();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
+            .then_some("Open video (Ctrl+O)")
     }
 
     fn name(&self) -> &'static str {
@@ -737,6 +969,55 @@ mod tests {
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
         assert!(app.portal_rx.is_none(), "channel cleared after the outcome");
+    }
+
+    #[test]
+    fn open_affordance_emits_the_advertised_host_routable_effect() {
+        let mut app = PlayerApp::new();
+        app.request_open_action();
+        let invocation = Widget::take_control_invocation(&mut app).expect("open intent");
+        assert_eq!(invocation.address.resource, "video-player.application");
+        assert_eq!(invocation.address.action, "open");
+        assert!(
+            app.portal_rx.is_none(),
+            "the control did not bypass the host"
+        );
+    }
+
+    #[test]
+    fn resources_nest_media_transport_audio_and_presentation() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"));
+        let resources = Widget::resources(&app, &AutoCommit::new());
+        let app_resource = &resources[0];
+        assert_eq!(app_resource.kind, "video-player.application");
+        let media = &app_resource.children[0];
+        assert_eq!(media.kind, "media.video");
+        assert_eq!(media.children[0].kind, "media.transport");
+        assert_eq!(media.children[1].kind, "media.audio");
+        assert_eq!(media.children[2].kind, "media.presentation");
+    }
+
+    #[test]
+    fn follower_rejects_transport_operations_even_if_invoked_out_of_band() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.collab = Some(CollabPlayback::new(Role::Follower));
+        app.player.set_transport_enabled(false);
+        let encoded = qos_actions::EncodedAction::encode_operation(
+            crate::actions::OPERATION_TYPE,
+            &crate::actions::PlayerOperation::TogglePlayback,
+        )
+        .unwrap();
+        let result = Widget::invoke_resource_operation(
+            &mut app,
+            qos_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        );
+        assert!(result.is_err());
     }
 
     fn root() -> ObjId {

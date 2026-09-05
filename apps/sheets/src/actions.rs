@@ -41,9 +41,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec,
 };
 
 use crate::doc::SheetsDoc;
@@ -58,15 +58,69 @@ pub const SHEETS_OPERATION_TYPE: &str = "sheets.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SheetsOperation {
-    ImportCsv { path: Option<String> },
-    ImportXlsx { path: Option<String> },
-    ImportOds { path: Option<String> },
-    ExportCsv { path: Option<String> },
-    ExportXlsx { path: Option<String> },
-    ExportOds { path: Option<String> },
+    ImportCsv {
+        path: Option<String>,
+    },
+    ImportXlsx {
+        path: Option<String>,
+    },
+    ImportOds {
+        path: Option<String>,
+    },
+    ExportCsv {
+        path: Option<String>,
+    },
+    ExportXlsx {
+        path: Option<String>,
+    },
+    ExportOds {
+        path: Option<String>,
+    },
     OpenCommandPalette,
-    GoToCell { reference: String },
+    GoToCell {
+        reference: String,
+    },
     ToggleFormulaView,
+    RevealSheet {
+        sheet_id: String,
+    },
+    RevealCell {
+        sheet_id: String,
+        col: u32,
+        row: u32,
+    },
+}
+
+pub fn operation_kind(operation: &SheetsOperation) -> OperationKind {
+    match operation {
+        SheetsOperation::ImportCsv { .. }
+        | SheetsOperation::ImportXlsx { .. }
+        | SheetsOperation::ImportOds { .. }
+        | SheetsOperation::ExportCsv { .. }
+        | SheetsOperation::ExportXlsx { .. }
+        | SheetsOperation::ExportOds { .. } => OperationKind::Effect,
+        SheetsOperation::OpenCommandPalette
+        | SheetsOperation::GoToCell { .. }
+        | SheetsOperation::ToggleFormulaView
+        | SheetsOperation::RevealSheet { .. }
+        | SheetsOperation::RevealCell { .. } => OperationKind::View,
+    }
+}
+
+pub fn sheet_resource_id(sheet_id: &str) -> String {
+    format!("sheets.sheet:{sheet_id}")
+}
+
+pub fn cell_resource_id(sheet_id: &str, col: u32, row: u32) -> String {
+    format!("sheets.cell:{sheet_id}:{col}:{row}")
+}
+
+pub fn open_sheet_address(sheet_id: &str) -> ActionAddress {
+    ActionAddress::new(sheet_resource_id(sheet_id), "open")
+}
+
+pub fn open_cell_address(sheet_id: &str, col: u32, row: u32) -> ActionAddress {
+    ActionAddress::new(cell_resource_id(sheet_id, col, row), "open")
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
@@ -700,10 +754,27 @@ pub fn set_doc_settings_action(settings: &DocSettings) -> SheetsAction {
 #[derive(Clone)]
 pub struct SheetsResourceCtx {
     pub sheet_names: Vec<String>,
+    pub searchable_sheets: Vec<SearchableSheet>,
     /// Selection-dependent actions authored by the live grid. Keeping these
     /// as real `ActionSpec`s means Ctrl+K, agents and scripts consume the same
     /// encoded operation instead of a parallel command-id switch.
     pub palette_actions: Vec<ActionSpec>,
+}
+
+/// Immutable search/resource projection rebuilt when workbook heads change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchableSheet {
+    pub id: String,
+    pub name: String,
+    pub cells: Vec<SearchableCell>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchableCell {
+    pub col: u32,
+    pub row: u32,
+    pub raw: String,
+    pub display: String,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
@@ -731,7 +802,7 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 /// present, exporting "New sheet") and one `sheets.sheet:<idx>` per sheet, each
 /// exporting rename / delete / insert-row / insert-column. Every operation is
 /// the same action the on-screen affordance dispatches.
-pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
     workbook.actions.extend(ctx.palette_actions.clone());
 
@@ -827,7 +898,8 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
         },
     ));
 
-    for (idx, name) in ctx.sheet_names.iter().enumerate() {
+    for (idx, searchable) in ctx.searchable_sheets.iter().enumerate() {
+        let name = &searchable.name;
         let label = if name.trim().is_empty() {
             format!("Sheet{}", idx + 1)
         } else {
@@ -837,10 +909,16 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
         // could make an old address operate on a different sheet. Legacy or
         // malformed rows without a durable identity remain usable on-screen,
         // but are deliberately absent from the headless action surface.
-        let Some(stable) = SheetsDoc::sheet_resource_id(doc, idx) else {
-            continue;
-        };
-        let mut sheet = Resource::new(format!("sheets.sheet:{stable}"), "sheets.sheet", label);
+        let stable = &searchable.id;
+        let mut sheet = Resource::new(sheet_resource_id(stable), "sheets.sheet", label)
+            .with_action(operation(
+                "open",
+                "Open sheet",
+                OperationKind::View,
+                SheetsOperation::RevealSheet {
+                    sheet_id: stable.clone(),
+                },
+            ));
 
         // Rename — a prompted action carrying the new name.
         sheet = sheet.with_action(ActionSpec::prompted(
@@ -895,9 +973,41 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
     vec![workbook]
 }
 
+pub(crate) fn searchable_cell_resource(sheet_id: &str, cell: &SearchableCell) -> Resource {
+    let reference = column_label(cell.col) + &(cell.row + 1).to_string();
+    Resource::new(
+        cell_resource_id(sheet_id, cell.col, cell.row),
+        "sheets.cell",
+        reference,
+    )
+    .with_action(operation(
+        "open",
+        "Open cell",
+        OperationKind::View,
+        SheetsOperation::RevealCell {
+            sheet_id: sheet_id.to_string(),
+            col: cell.col,
+            row: cell.row,
+        },
+    ))
+}
+
 impl ResourceProvider for crate::app::SheetsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.sheets_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.sheets_resource_ctx()
+            .searchable_sheets
+            .iter()
+            .find_map(|sheet| {
+                sheet
+                    .cells
+                    .iter()
+                    .find(|cell| cell_resource_id(&sheet.id, cell.col, cell.row) == id)
+                    .map(|cell| searchable_cell_resource(&sheet.id, cell))
+            })
     }
 }
 
@@ -961,6 +1071,15 @@ mod tests {
     fn ctx_from(doc: &mut AutoCommit) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: SheetsDoc::sheet_names(doc),
+            searchable_sheets: (0..SheetsDoc::sheet_count(doc))
+                .filter_map(|idx| {
+                    Some(SearchableSheet {
+                        id: SheetsDoc::sheet_resource_id(doc, idx)?,
+                        name: SheetsDoc::sheet_names(doc).get(idx)?.clone(),
+                        cells: Vec::new(),
+                    })
+                })
+                .collect(),
             palette_actions: Vec::new(),
         }
     }
@@ -1007,6 +1126,34 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Delete sheet")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn ten_thousand_cells_stay_out_of_the_open_snapshot() {
+        let ctx = SheetsResourceCtx {
+            sheet_names: vec!["Scale".into()],
+            searchable_sheets: vec![SearchableSheet {
+                id: "scale-id".into(),
+                name: "Scale".into(),
+                cells: (0..10_000)
+                    .map(|row| SearchableCell {
+                        col: 0,
+                        row,
+                        raw: row.to_string(),
+                        display: row.to_string(),
+                    })
+                    .collect(),
+            }],
+            palette_actions: Vec::new(),
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        assert!(resources[0].children[0].children.is_empty());
+        assert_eq!(
+            searchable_cell_resource("scale-id", &ctx.searchable_sheets[0].cells[9_999])
+                .id
+                .0,
+            "sheets.cell:scale-id:0:9999"
         );
     }
 
