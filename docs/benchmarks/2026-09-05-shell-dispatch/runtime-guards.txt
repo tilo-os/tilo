@@ -1,0 +1,17 @@
+Check: timestamps require diagnostic mode
+Expected: exit 1 with diagnostic-only configuration rejection before any benchmark action.
+Command: timeout --signal=TERM --kill-after=5s 30s env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u QOS_REDRAW_BENCH_PROFILE VELLO_GPU_TIMESTAMPS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-dispatch-profile-default-release-20260905
+Exit: 1
+
+Error: "QOS_REDRAW_BENCH_PROFILE=1 is required when VELLO_GPU_TIMESTAMPS=1 or VELLO_GPU_DISPATCH_TIMESTAMPS=1; timestamp-instrumented runs are diagnostic-only"
+
+Check: experimental workgroups require diagnostic mode
+Expected: exit 1 with diagnostic-only configuration rejection before any benchmark action.
+Command: timeout --signal=TERM --kill-after=5s 30s env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u QOS_REDRAW_BENCH_PROFILE VELLO_DIRECT_PATH_WORKGROUPS=8 /home/user/qos/target/ui-perf-comparison/shell-redraw-dispatch-profile-default-release-20260905
+Exit: 1
+
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+Error: "QOS_REDRAW_BENCH_PROFILE=1 is required when VELLO_DIRECT_PATH_WORKGROUPS selects effective workgroups=8; non-default dispatch grids are diagnostic-only"

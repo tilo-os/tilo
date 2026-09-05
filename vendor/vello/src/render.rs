@@ -671,7 +671,7 @@ impl Render {
         if shaders.direct_path_dispatch_enabled {
             recording.dispatch(
                 shaders.path_count_direct,
-                (128, 1, 1),
+                (shaders.direct_path_workgroups, 1, 1),
                 [
                     config_buf,
                     bump_buf,
@@ -741,7 +741,7 @@ impl Render {
         if shaders.direct_path_dispatch_enabled {
             recording.dispatch(
                 shaders.path_tiling_direct,
-                (128, 1, 1),
+                (shaders.direct_path_workgroups, 1, 1),
                 [
                     bump_buf,
                     seg_counts_buf,
@@ -981,7 +981,103 @@ impl Render {
 #[cfg(all(test, feature = "wgpu"))]
 mod tests {
     use super::*;
-    use crate::recording::Command;
+    use crate::{
+        AaConfig, RenderParams,
+        recording::{Command, ShaderId},
+    };
+
+    fn direct_shaders(workgroups: u32) -> FullShaders {
+        let shader = ShaderId(0);
+        FullShaders {
+            pathtag_reduce: shader,
+            pathtag_reduce2: shader,
+            pathtag_scan1: shader,
+            pathtag_scan: shader,
+            pathtag_scan_large: shader,
+            bbox_clear: shader,
+            flatten: shader,
+            draw_reduce: shader,
+            draw_leaf: shader,
+            draw_prefix: shader,
+            draw_leaf_prefix: shader,
+            clip_reduce: shader,
+            clip_leaf: shader,
+            binning: shader,
+            tile_alloc: shader,
+            backdrop: shader,
+            path_count_setup: shader,
+            path_count: shader,
+            path_count_direct: ShaderId(1),
+            coarse: shader,
+            coarse_sparse: None,
+            path_tiling_setup: shader,
+            path_tiling: shader,
+            path_tiling_direct: ShaderId(2),
+            fine_area: None,
+            fine_msaa8: None,
+            fine_msaa16: None,
+            fine_sparse_area: None,
+            pathtag_is_cpu: false,
+            cpu_metadata_enabled: false,
+            cpu_draw_prefix_enabled: false,
+            direct_path_dispatch_enabled: true,
+            direct_path_workgroups: workgroups,
+        }
+    }
+
+    fn direct_dispatch_grids(workgroups: u32) -> Vec<(usize, WorkgroupSize)> {
+        let shaders = direct_shaders(workgroups);
+        let mut render = Render::new();
+        let mut resolver = Resolver::new();
+        let mut recording = Recording::default();
+        let mut packed = Vec::new();
+        let mut image_atlas = None;
+        render.render_encoding_coarse(
+            &Encoding::default(),
+            &mut resolver,
+            &shaders,
+            &mut image_atlas,
+            &mut recording,
+            &mut packed,
+            &RenderParams {
+                base_color: peniko::Color::TRANSPARENT,
+                width: 16,
+                height: 16,
+                antialiasing_method: AaConfig::Area,
+            },
+            &vello_encoding::BumpBudget::INITIAL,
+            false,
+            false,
+            None,
+            false,
+            None,
+        );
+        recording
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::Dispatch(shader, grid, _)
+                    if *shader == shaders.path_count_direct
+                        || *shader == shaders.path_tiling_direct =>
+                {
+                    Some((shader.0, *grid))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn direct_path_dispatch_records_the_same_nonzero_grid_for_both_stages() {
+        for workgroups in [1, 8, 128] {
+            let grids = direct_dispatch_grids(workgroups);
+            assert_eq!(
+                grids,
+                vec![(1, (workgroups, 1, 1)), (2, (workgroups, 1, 1)),],
+                "both stride-loop stages must retain the configured nonzero grid"
+            );
+        }
+    }
 
     #[test]
     fn finish_bump_readback_appends_download_then_free() {
