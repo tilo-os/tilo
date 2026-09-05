@@ -214,7 +214,9 @@ impl PairDeviceScreen {
         // The pairer also needs the host's round-1 contribution, sent as the
         // host's own round-2 message; bounded-poll the broker mailbox for it.
         let mut host_reply: Option<EnrolmentRound2> = None;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(15))
+            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
         loop {
             if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
                 let expected =

@@ -157,6 +157,12 @@ impl SecretVault {
     /// Seal and atomically persist the vault, returning failures to callers
     /// that must not publish account metadata unless credential custody
     /// succeeded first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error when the vault directory or key cannot be
+    /// prepared, serialization or encryption fails, or the sealed file cannot
+    /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create vault directory: {error}"))?;

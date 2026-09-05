@@ -228,12 +228,6 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
 serde_bytes.workspace = true
 thiserror.workspace = true
-# `widget::identity_flow::recovery_share` generates a deterministic
-# placeholder mnemonic on first-run (single-device mode has no real
-# recovery share — see the module-level note). Already a transitive
-# via `qos-threshold-identity`; the direct pin keeps Cargo collapsing
-# to a single copy.
-bip39.workspace = true
 # The identity-flow screens need a `CryptoRng + RngCore` compatible with
 # `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
 # directly (rather than reaching through `rand`) keeps the requirement

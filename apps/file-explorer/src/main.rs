@@ -162,6 +162,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // places the revealed drawer — snapping post-layout would leave
             // the panes at their pre-reveal rects.
             Some("places") => widget.debug_open_places_drawer(),
+            // An intentionally non-connected account detail state. This
+            // exercises the privacy-preserving remote account surface without
+            // reading a developer's real account store or vault in screenshots.
+            Some("remote-account") => {
+                let account = file_explorer::remote_accounts::RemoteAccount {
+                    id: accounts::AccountId::from("shot-remote-account"),
+                    kind: file_explorer::remote_accounts::RemoteAccountKind::Nextcloud,
+                    label: "Personal cloud".into(),
+                    host: "cloud.example".into(),
+                    health:
+                        file_explorer::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                };
+                widget.debug_show_remote_account(&account, true);
+            }
             _ => {}
         }
         render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;

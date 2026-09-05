@@ -104,15 +104,14 @@ fn validate_device_info(info: &SyncDeviceInfo) -> SyncResult<()> {
 fn now_epoch_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
-fn snow_err(e: snow::Error) -> SyncError {
+fn snow_err(e: &snow::Error) -> SyncError {
     SyncError::Transport(format!("noise: {e}"))
 }
 
-fn io_err(e: std::io::Error) -> SyncError {
+fn io_err(e: &std::io::Error) -> SyncError {
     SyncError::Transport(format!("io: {e}"))
 }
 
@@ -130,9 +129,18 @@ pub struct DeviceKey {
 
 impl DeviceKey {
     /// Generate a fresh device identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Noise implementation cannot generate Curve25519
+    /// key material.
     pub fn generate() -> SyncResult<Self> {
-        let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
-        let kp = Builder::new(params).generate_keypair().map_err(snow_err)?;
+        let params = NOISE_PATTERN_MAIN
+            .parse()
+            .map_err(|error| snow_err(&error))?;
+        let kp = Builder::new(params)
+            .generate_keypair()
+            .map_err(|error| snow_err(&error))?;
         Ok(DeviceKey {
             private: Zeroizing::new(kp.private),
             public: kp.public,
@@ -142,6 +150,11 @@ impl DeviceKey {
     /// Rebuild a Noise identity from key material held by the host secret
     /// broker. The public key is derived locally and is the only half Tube may
     /// expose in pairing UI or durable peer metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the key is not exactly one Curve25519 private key
+    /// or the selected Noise resolver does not support that curve.
     pub fn from_private(private: &[u8]) -> SyncResult<Self> {
         if private.len() != 32 {
             return Err(SyncError::KeyUnavailable(
@@ -159,6 +172,10 @@ impl DeviceKey {
     }
 
     /// Restore from a stored base64 keypair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either stored value is not valid base64.
     pub fn from_base64(private_b64: &str, public_b64: &str) -> SyncResult<Self> {
         Ok(DeviceKey {
             private: Zeroizing::new(b64_decode(private_b64)?),
@@ -237,7 +254,7 @@ impl GrayjaySession {
     fn version_check(stream: &mut TcpStream) -> SyncResult<i32> {
         stream
             .write_all(&PROTOCOL_VERSION.to_le_bytes())
-            .map_err(io_err)?;
+            .map_err(|error| io_err(&error))?;
         let mut buf = [0u8; 4];
         read_exact(stream, &mut buf)?;
         let remote = i32::from_le_bytes(buf);
@@ -252,6 +269,11 @@ impl GrayjaySession {
     /// Connect as the Noise **initiator** to a peer whose static public key we
     /// already hold (from pairing). If `pairing_code` is set, its bytes travel
     /// encrypted inside a `Noise_N` sub-handshake in the first frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid peer metadata, a failed Noise handshake, or
+    /// a socket read/write failure.
     pub fn connect_initiator(
         mut stream: TcpStream,
         device: &DeviceKey,
@@ -263,24 +285,28 @@ impl GrayjaySession {
 
         let remote_version = Self::version_check(&mut stream)?;
 
-        let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
+        let params = NOISE_PATTERN_MAIN
+            .parse()
+            .map_err(|error| snow_err(&error))?;
         let mut hs: HandshakeState = Builder::new(params)
             .local_private_key(&device.private)
             .remote_public_key(&remote_pub)
             .build_initiator()
-            .map_err(snow_err)?;
+            .map_err(|error| snow_err(&error))?;
 
         // Optional pairing sub-handshake (Noise_N) carrying the pairing code.
         let pairing_msg: Vec<u8> = if let Some(code) = pairing_code {
-            let pparams = NOISE_PATTERN_PAIRING.parse().map_err(snow_err)?;
-            let mut ph: HandshakeState = Builder::new(pparams)
+            let pairing_params = NOISE_PATTERN_PAIRING
+                .parse()
+                .map_err(|error| snow_err(&error))?;
+            let mut ph: HandshakeState = Builder::new(pairing_params)
                 .remote_public_key(&remote_pub)
                 .build_initiator()
-                .map_err(snow_err)?;
+                .map_err(|error| snow_err(&error))?;
             let mut buf = vec![0u8; 512];
             let n = ph
                 .write_message(code.as_bytes(), &mut buf)
-                .map_err(snow_err)?;
+                .map_err(|error| snow_err(&error))?;
             buf.truncate(n);
             buf
         } else {
@@ -289,7 +315,9 @@ impl GrayjaySession {
 
         // Main IK message 1 (empty payload).
         let mut main_buf = vec![0u8; 512];
-        let main_len = hs.write_message(&[], &mut main_buf).map_err(snow_err)?;
+        let main_len = hs
+            .write_message(&[], &mut main_buf)
+            .map_err(|error| snow_err(&error))?;
 
         // Frame: [messageSize u32][appId u32][pairingLen u32][pairing][main].
         let app_id: u32 = 0;
@@ -299,8 +327,11 @@ impl GrayjaySession {
         out.extend_from_slice(&app_id.to_le_bytes());
         out.extend_from_slice(&(pairing_msg.len() as u32).to_le_bytes());
         out.extend_from_slice(&pairing_msg);
-        out.extend_from_slice(&main_buf[..main_len]);
-        stream.write_all(&out).map_err(io_err)?;
+        let main_message = main_buf.get(..main_len).ok_or_else(|| {
+            SyncError::Transport("Noise produced an invalid handshake length".into())
+        })?;
+        out.extend_from_slice(main_message);
+        stream.write_all(&out).map_err(|error| io_err(&error))?;
 
         // Response: [len u32][mainMsg2].
         let mut lenb = [0u8; 4];
@@ -314,12 +345,13 @@ impl GrayjaySession {
         let mut resp = vec![0u8; resp_len];
         read_exact(&mut stream, &mut resp)?;
         let mut scratch = vec![0u8; 512];
-        hs.read_message(&resp, &mut scratch).map_err(snow_err)?;
+        hs.read_message(&resp, &mut scratch)
+            .map_err(|error| snow_err(&error))?;
 
         // Capture + verify the peer's static key before consuming the handshake.
         let remote_static = hs
             .get_remote_static()
-            .map(|s| s.to_vec())
+            .map(<[u8]>::to_vec)
             .ok_or_else(|| SyncError::Transport("peer did not present a static key".into()))?;
         let remote_static_b64 = b64_encode(&remote_static);
         if remote_static_b64 != b64_encode(&remote_pub) {
@@ -328,7 +360,7 @@ impl GrayjaySession {
             )));
         }
 
-        let transport = hs.into_transport_mode().map_err(snow_err)?;
+        let transport = hs.into_transport_mode().map_err(|error| snow_err(&error))?;
 
         Ok(GrayjaySession {
             stream,
@@ -347,6 +379,11 @@ impl GrayjaySession {
     /// gate: it receives the peer's static-key base64 and the decoded pairing
     /// code (if any) and returns whether to proceed. Mirrors Grayjay's
     /// `handshakeAsResponder` + `isHandshakeAllowed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed frames, rejected peers, a failed Noise
+    /// handshake, or a socket read/write failure.
     pub fn accept_responder(
         mut stream: TcpStream,
         device: &DeviceKey,
@@ -355,11 +392,13 @@ impl GrayjaySession {
     ) -> SyncResult<Self> {
         let remote_version = Self::version_check(&mut stream)?;
 
-        let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
+        let params = NOISE_PATTERN_MAIN
+            .parse()
+            .map_err(|error| snow_err(&error))?;
         let mut hs: HandshakeState = Builder::new(params)
             .local_private_key(&device.private)
             .build_responder()
-            .map_err(snow_err)?;
+            .map_err(|error| snow_err(&error))?;
 
         // Read the first frame: [messageSize][appId][pairingLen][pairing][main].
         let mut lenb = [0u8; 4];
@@ -375,9 +414,21 @@ impl GrayjaySession {
         if msg.len() < 8 {
             return Err(SyncError::Transport("handshake frame too short".into()));
         }
-        let _app_id = u32::from_le_bytes([msg[0], msg[1], msg[2], msg[3]]);
-        let pairing_len = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
-        let rest = &msg[8..];
+        let header: [u8; 8] = msg
+            .get(..8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| SyncError::Transport("handshake frame too short".into()))?;
+        let app_id_bytes: [u8; 4] = header[..4]
+            .try_into()
+            .map_err(|_| SyncError::Transport("handshake frame too short".into()))?;
+        let pairing_len_bytes: [u8; 4] = header[4..]
+            .try_into()
+            .map_err(|_| SyncError::Transport("handshake frame too short".into()))?;
+        let _app_id = u32::from_le_bytes(app_id_bytes);
+        let pairing_len = u32::from_le_bytes(pairing_len_bytes) as usize;
+        let rest = msg
+            .get(8..)
+            .ok_or_else(|| SyncError::Transport("handshake frame too short".into()))?;
         if pairing_len > rest.len() {
             return Err(SyncError::Transport(
                 "pairing length overflows frame".into(),
@@ -387,24 +438,32 @@ impl GrayjaySession {
 
         // Decode the pairing code, if present (Noise_N responder).
         let pairing_code: Option<String> = if pairing_len > 0 {
-            let pparams = NOISE_PATTERN_PAIRING.parse().map_err(snow_err)?;
-            let mut ph: HandshakeState = Builder::new(pparams)
+            let pairing_params = NOISE_PATTERN_PAIRING
+                .parse()
+                .map_err(|error| snow_err(&error))?;
+            let mut ph: HandshakeState = Builder::new(pairing_params)
                 .local_private_key(&device.private)
                 .build_responder()
-                .map_err(snow_err)?;
-            let mut pt = vec![0u8; 512];
-            let n = ph.read_message(pairing_msg, &mut pt).map_err(snow_err)?;
-            Some(String::from_utf8_lossy(&pt[..n]).into_owned())
+                .map_err(|error| snow_err(&error))?;
+            let mut pairing_plaintext = vec![0u8; 512];
+            let n = ph
+                .read_message(pairing_msg, &mut pairing_plaintext)
+                .map_err(|error| snow_err(&error))?;
+            let decoded = pairing_plaintext.get(..n).ok_or_else(|| {
+                SyncError::Transport("Noise produced an invalid pairing length".into())
+            })?;
+            Some(String::from_utf8_lossy(decoded).into_owned())
         } else {
             None
         };
 
         let mut scratch = vec![0u8; 512];
-        hs.read_message(main_msg, &mut scratch).map_err(snow_err)?;
+        hs.read_message(main_msg, &mut scratch)
+            .map_err(|error| snow_err(&error))?;
 
         let remote_static = hs
             .get_remote_static()
-            .map(|s| s.to_vec())
+            .map(<[u8]>::to_vec)
             .ok_or_else(|| SyncError::Transport("initiator did not present a static key".into()))?;
         let remote_static_b64 = b64_encode(&remote_static);
 
@@ -415,14 +474,19 @@ impl GrayjaySession {
         }
 
         // Response: [len u32][mainMsg2].
-        let mut resp = vec![0u8; 512];
-        let rn = hs.write_message(&[], &mut resp).map_err(snow_err)?;
+        let mut response_buffer = vec![0u8; 512];
+        let rn = hs
+            .write_message(&[], &mut response_buffer)
+            .map_err(|error| snow_err(&error))?;
         let mut out = Vec::with_capacity(4 + rn);
         out.extend_from_slice(&(rn as u32).to_le_bytes());
-        out.extend_from_slice(&resp[..rn]);
-        stream.write_all(&out).map_err(io_err)?;
+        let response = response_buffer.get(..rn).ok_or_else(|| {
+            SyncError::Transport("Noise produced an invalid handshake length".into())
+        })?;
+        out.extend_from_slice(response);
+        stream.write_all(&out).map_err(|error| io_err(&error))?;
 
-        let transport = hs.into_transport_mode().map_err(snow_err)?;
+        let transport = hs.into_transport_mode().map_err(|error| snow_err(&error))?;
 
         Ok(GrayjaySession {
             stream,
@@ -445,11 +509,16 @@ impl GrayjaySession {
         let len = self
             .transport
             .write_message(plaintext, &mut cipher)
-            .map_err(snow_err)?;
+            .map_err(|error| snow_err(&error))?;
         let mut out = Vec::with_capacity(4 + len);
         out.extend_from_slice(&(len as u32).to_le_bytes());
-        out.extend_from_slice(&cipher[..len]);
-        self.stream.write_all(&out).map_err(io_err)?;
+        let encrypted = cipher.get(..len).ok_or_else(|| {
+            SyncError::Transport("Noise produced an invalid ciphertext length".into())
+        })?;
+        out.extend_from_slice(encrypted);
+        self.stream
+            .write_all(&out)
+            .map_err(|error| io_err(&error))?;
         Ok(())
     }
 
@@ -467,7 +536,7 @@ impl GrayjaySession {
         let plen = self
             .transport
             .read_message(&cipher, &mut plain)
-            .map_err(snow_err)?;
+            .map_err(|error| snow_err(&error))?;
         plain.truncate(plen);
         Ok(plain)
     }
@@ -524,7 +593,10 @@ impl GrayjaySession {
                 seg.extend_from_slice(&(offset as u32).to_le_bytes());
                 (op, bts)
             };
-            seg.extend_from_slice(&processed[offset..offset + bytes_to_send]);
+            let segment = processed
+                .get(offset..offset + bytes_to_send)
+                .ok_or_else(|| SyncError::Transport("stream segment bounds are invalid".into()))?;
+            seg.extend_from_slice(segment);
             // Each segment is itself a normal (un-gzip'd) STREAM frame.
             let plaintext =
                 protocol::encode_frame(opcode::STREAM, stream_op, content_encoding::RAW, &seg);
@@ -535,11 +607,20 @@ impl GrayjaySession {
     }
 
     /// Send a DATA frame (gzip'd) carrying a JSON sync package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the package exceeds the transport bounds or cannot
+    /// be encoded and written to the authenticated peer.
     pub fn send_data(&mut self, sub_opcode: u8, json: &str) -> SyncResult<()> {
         self.send(opcode::DATA, sub_opcode, json.as_bytes(), true)
     }
 
     /// Send our `NOTIFY/AUTHORIZED` (`[idLen u8][uuid][nameLen u8][name]`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authorization frame cannot be written.
     pub fn send_authorized(&mut self) -> SyncResult<()> {
         let id = uuid::Uuid::new_v4().to_string();
         let name = self.device_name.clone();
@@ -570,12 +651,11 @@ impl GrayjaySession {
                 opcode::PING => {
                     self.send_pong()?;
                 }
-                opcode::PONG => { /* keep-alive ack; ignore */ }
                 opcode::STREAM => {
-                    if let Some(resolved) = self.handle_stream(&frame)? {
-                        if let Some(inc) = self.resolve(resolved)? {
-                            return Ok(inc);
-                        }
+                    if let Some(resolved) = self.handle_stream(&frame)?
+                        && let Some(inc) = Self::resolve(resolved)?
+                    {
+                        return Ok(inc);
                     }
                 }
                 opcode::NOTIFY => match frame.sub_opcode {
@@ -591,7 +671,7 @@ impl GrayjaySession {
                     _ => {}
                 },
                 opcode::DATA => {
-                    if let Some(inc) = self.resolve(frame)? {
+                    if let Some(inc) = Self::resolve(frame)? {
                         return Ok(inc);
                     }
                 }
@@ -604,7 +684,7 @@ impl GrayjaySession {
 
     /// Turn a fully-reassembled/plain DATA frame into an [`Incoming`], inflating
     /// gzip. Returns `None` for opcodes we don't surface.
-    fn resolve(&self, frame: Frame) -> SyncResult<Option<Incoming>> {
+    fn resolve(frame: Frame) -> SyncResult<Option<Incoming>> {
         if frame.opcode != opcode::DATA {
             return Ok(None);
         }
@@ -621,17 +701,22 @@ impl GrayjaySession {
 
     /// Feed a STREAM segment into reassembly; on END return the completed frame.
     fn handle_stream(&mut self, frame: &Frame) -> SyncResult<Option<Frame>> {
-        let d = &frame.payload;
+        let payload = frame.payload.as_slice();
         let short = || SyncError::Transport("stream segment too short".into());
         match frame.sub_opcode {
             stream::START => {
-                if d.len() < 11 {
+                let (id, expected, rest) = stream_header(payload)?;
+                let [
+                    stream_opcode,
+                    stream_sub_opcode,
+                    content_encoding,
+                    initial @ ..,
+                ] = rest
+                else {
                     return Err(short());
-                }
-                let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-                let expected = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
+                };
                 if expected > MAX_SYNC_PAYLOAD_BYTES
-                    || d.len() - 11 > expected
+                    || initial.len() > expected
                     || self.streams.len() >= MAX_CONCURRENT_STREAMS
                     || self.streams.contains_key(&id)
                 {
@@ -639,17 +724,14 @@ impl GrayjaySession {
                         "stream declaration exceeds resource bounds".into(),
                     ));
                 }
-                let op = d[8];
-                let sub = d[9];
-                let ce = d[10];
                 let mut buf = Vec::with_capacity(expected);
-                buf.extend_from_slice(&d[11..]);
+                buf.extend_from_slice(initial);
                 self.streams.insert(
                     id,
                     Reasm {
-                        opcode: op,
-                        sub_opcode: sub,
-                        content_encoding: ce,
+                        opcode: *stream_opcode,
+                        sub_opcode: *stream_sub_opcode,
+                        content_encoding: *content_encoding,
                         expected_size: expected,
                         buf,
                     },
@@ -657,11 +739,7 @@ impl GrayjaySession {
                 Ok(None)
             }
             stream::DATA => {
-                if d.len() < 8 {
-                    return Err(short());
-                }
-                let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-                let expected_off = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
+                let (id, expected_off, chunk) = stream_header(payload)?;
                 let r = self
                     .streams
                     .get_mut(&id)
@@ -669,20 +747,16 @@ impl GrayjaySession {
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch".into()));
                 }
-                if d.len() - 8 > r.expected_size.saturating_sub(r.buf.len()) {
+                if chunk.len() > r.expected_size.saturating_sub(r.buf.len()) {
                     return Err(SyncError::Transport(
                         "stream data exceeds declared size".into(),
                     ));
                 }
-                r.buf.extend_from_slice(&d[8..]);
+                r.buf.extend_from_slice(chunk);
                 Ok(None)
             }
             stream::END => {
-                if d.len() < 8 {
-                    return Err(short());
-                }
-                let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-                let expected_off = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
+                let (id, expected_off, chunk) = stream_header(payload)?;
                 let mut r = self
                     .streams
                     .remove(&id)
@@ -690,12 +764,12 @@ impl GrayjaySession {
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch at end".into()));
                 }
-                if d.len() - 8 > r.expected_size.saturating_sub(r.buf.len()) {
+                if chunk.len() > r.expected_size.saturating_sub(r.buf.len()) {
                     return Err(SyncError::Transport(
                         "stream end exceeds declared size".into(),
                     ));
                 }
-                r.buf.extend_from_slice(&d[8..]);
+                r.buf.extend_from_slice(chunk);
                 if r.buf.len() != r.expected_size {
                     return Err(SyncError::Transport(
                         "reassembled stream size mismatch".into(),
@@ -738,29 +812,48 @@ impl GrayjaySession {
 // helpers
 // ---------------------------------------------------------------------------
 
+fn stream_header(payload: &[u8]) -> SyncResult<(i32, usize, &[u8])> {
+    let header: [u8; 8] = payload
+        .get(..8)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| SyncError::Transport("stream segment too short".into()))?;
+    let id_bytes: [u8; 4] = header[..4]
+        .try_into()
+        .map_err(|_| SyncError::Transport("stream segment too short".into()))?;
+    let offset_bytes: [u8; 4] = header[4..]
+        .try_into()
+        .map_err(|_| SyncError::Transport("stream segment too short".into()))?;
+    let body = payload
+        .get(8..)
+        .ok_or_else(|| SyncError::Transport("stream segment too short".into()))?;
+    Ok((
+        i32::from_le_bytes(id_bytes),
+        u32::from_le_bytes(offset_bytes) as usize,
+        body,
+    ))
+}
+
 fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> SyncResult<()> {
-    stream.read_exact(buf).map_err(io_err)
+    stream.read_exact(buf).map_err(|error| io_err(&error))
 }
 
 fn parse_authorized_name(payload: &[u8]) -> String {
     // [idLen u8][id][nameLen u8][name]
-    if payload.is_empty() {
+    let Some((&id_len, rest)) = payload.split_first() else {
         return String::new();
-    }
-    let id_len = payload[0] as usize;
-    let name_start = 1 + id_len + 1;
-    if payload.len() < name_start {
+    };
+    let id_len = usize::from(id_len);
+    let Some((&name_len, name)) = rest.get(id_len..).and_then(|tail| tail.split_first()) else {
         return String::new();
-    }
-    let name_len = payload[1 + id_len] as usize;
-    let end = (name_start + name_len).min(payload.len());
-    String::from_utf8_lossy(&payload[name_start..end]).into_owned()
+    };
+    let end = usize::from(name_len).min(name.len());
+    String::from_utf8_lossy(name.get(..end).unwrap_or_default()).into_owned()
 }
 
 fn gzip_compress(data: &[u8]) -> SyncResult<Vec<u8>> {
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
-    enc.write_all(data).map_err(io_err)?;
-    enc.finish().map_err(io_err)
+    enc.write_all(data).map_err(|error| io_err(&error))?;
+    enc.finish().map_err(|error| io_err(&error))
 }
 
 fn gzip_decompress(data: &[u8]) -> SyncResult<Vec<u8>> {
@@ -769,7 +862,7 @@ fn gzip_decompress(data: &[u8]) -> SyncResult<Vec<u8>> {
     dec.by_ref()
         .take((MAX_SYNC_PAYLOAD_BYTES + 1) as u64)
         .read_to_end(&mut out)
-        .map_err(io_err)?;
+        .map_err(|error| io_err(&error))?;
     if out.len() > MAX_SYNC_PAYLOAD_BYTES {
         return Err(SyncError::Transport(
             "decompressed sync payload exceeds resource bound".into(),
@@ -799,6 +892,11 @@ pub struct GrayjaySyncTransport {
 
 impl GrayjaySyncTransport {
     /// Create a transport with a freshly generated device identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Noise implementation cannot generate the
+    /// device identity.
     pub fn new(device_name: impl Into<String>) -> SyncResult<Self> {
         Ok(Self::with_device(DeviceKey::generate()?, device_name))
     }
@@ -873,7 +971,7 @@ impl GrayjaySyncTransport {
             let stream = match TcpStream::connect_timeout(&sock_addr, self.connect_timeout) {
                 Ok(s) => s,
                 Err(e) => {
-                    last_err = io_err(e);
+                    last_err = io_err(&e);
                     continue;
                 }
             };
@@ -915,7 +1013,7 @@ impl GrayjaySyncTransport {
 }
 
 impl SyncTransport for GrayjaySyncTransport {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "grayjay-sync (Noise IK over TCP 12315)"
     }
 
@@ -934,7 +1032,7 @@ impl SyncTransport for GrayjaySyncTransport {
         )?;
         let peer_key = session.remote_public_key().to_string();
         let mut remembered = info.clone();
-        remembered.public_key = peer_key.clone();
+        remembered.public_key.clone_from(&peer_key);
         // Drop the one-shot pairing code; reconnects authenticate via the key.
         remembered.pairing_code = None;
         self.peers.insert(peer_key.clone(), remembered);
@@ -1063,6 +1161,14 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    fn request_all_subscriptions(session: &mut GrayjaySession, device: &DeviceKey) {
+        let request = SyncSessionData::request_all(device.public_base64());
+        let json = serde_json::to_string(&request).unwrap();
+        session
+            .send_data(sync_opcode::SYNC_STATE_EXCHANGE, &json)
+            .unwrap();
+    }
+
     /// Full in-process round-trip: an initiator and a responder speaking the
     /// SAME pattern/opcodes/framing complete the IK handshake, authorize, and
     /// round-trip a real `SyncSubscriptionsPackage` DATA frame (gzip'd JSON).
@@ -1079,8 +1185,8 @@ mod tests {
 
         // Responder thread: accept, handshake, authorize, then reply to the
         // state-exchange with a known subscriptions package.
-        let rkey = responder_key.clone();
-        let expect_initiator = initiator_pub.clone();
+        let rkey = responder_key;
+        let expect_initiator = initiator_pub;
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -1102,12 +1208,11 @@ mod tests {
                     sub_opcode,
                     payload,
                 } = session.recv().unwrap()
+                    && sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE
                 {
-                    if sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE {
-                        let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
-                        asked = true;
-                        break;
-                    }
+                    let _req: SyncSessionData = serde_json::from_slice(&payload).unwrap();
+                    asked = true;
+                    break;
                 }
             }
             assert!(asked, "responder never received the state-exchange request");
@@ -1154,13 +1259,7 @@ mod tests {
         assert_eq!(name, "responder");
 
         // Ask for state, then read the subscriptions package back.
-        let req = SyncSessionData::request_all(initiator_key.public_base64());
-        session
-            .send_data(
-                sync_opcode::SYNC_STATE_EXCHANGE,
-                &serde_json::to_string(&req).unwrap(),
-            )
-            .unwrap();
+        request_all_subscriptions(&mut session, &initiator_key);
 
         let mut urls = Vec::new();
         for _ in 0..8 {
@@ -1168,16 +1267,15 @@ mod tests {
                 sub_opcode,
                 payload,
             } = session.recv().unwrap()
+                && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
             {
-                if sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS {
-                    let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
-                    urls = pkg
-                        .subscriptions
-                        .into_iter()
-                        .map(|s| s.channel.url)
-                        .collect();
-                    break;
-                }
+                let pkg: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
+                urls = pkg
+                    .subscriptions
+                    .into_iter()
+                    .map(|s| s.channel.url)
+                    .collect();
+                break;
             }
         }
         handle.join().unwrap();
@@ -1190,7 +1288,7 @@ mod tests {
         );
     }
 
-    /// The pairing sub-handshake (Noise_N) must carry the pairing code to the
+    /// The pairing sub-handshake (`Noise_N`) must carry the pairing code to the
     /// responder, and a wrong key must be rejected.
     #[test]
     fn pairing_code_travels_and_key_is_authenticated() {
@@ -1201,7 +1299,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let rkey = responder_key.clone();
+        let rkey = responder_key;
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -1251,7 +1349,7 @@ mod tests {
                 channel: SerializedChannel::from_url(format!(
                     "https://youtube.com/channel/UC{i:08}xxxxxxxx"
                 )),
-                creation_time: i as i64,
+                creation_time: i64::from(i),
             });
         }
         let pkg = SyncSubscriptionsPackage {
@@ -1268,9 +1366,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let rkey = responder_key.clone();
-        let expect_initiator = initiator_pub.clone();
-        let json_for_thread = json.clone();
+        let rkey = responder_key;
+        let expect_initiator = initiator_pub;
+        let json_for_thread = json;
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -1310,13 +1408,11 @@ mod tests {
                 sub_opcode,
                 payload,
             } = session.recv().unwrap()
+                && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
             {
-                if sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS {
-                    let received: SyncSubscriptionsPackage =
-                        serde_json::from_slice(&payload).unwrap();
-                    got = received.subscriptions.len();
-                    break;
-                }
+                let received: SyncSubscriptionsPackage = serde_json::from_slice(&payload).unwrap();
+                got = received.subscriptions.len();
+                break;
             }
         }
         handle.join().unwrap();

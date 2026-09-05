@@ -1426,10 +1426,12 @@ dependencies = [
  "hex",
  "libc",
  "postcard",
+ "rand_core 0.6.4",
  "runtime-portal",
  "serde",
  "serde_bytes",
  "serde_json",
+ "threshold-identity",
  "zeroize",
 ]
 
@@ -1755,6 +1757,7 @@ dependencies = [
  "serde_bytes",
  "sha2 0.10.9",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
