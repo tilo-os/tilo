@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use vello::Scene;
 
 use super::backend::OutputId;
+use super::frame::FramePaint;
 
 /// Frames accepted beyond the one currently being presented.
 pub const QUEUE_DEPTH: usize = 1;
@@ -34,6 +35,12 @@ pub trait Presenter: Send {
     /// Render and present one frame.
     fn present(&mut self, scene: &Scene, output: OutputId);
 
+    /// Versioned retained damage when the producer has an authoritative relation to its prior
+    /// scene. Default presenters remain dense and therefore compatible with plain scenes.
+    fn present_frame(&mut self, frame: &FramePaint, output: OutputId) {
+        self.present(&frame.scene, output);
+    }
+
     /// The output was resized; default no-op for presenters with a fixed surface.
     fn resize(&mut self, _size: (u32, u32)) {}
 
@@ -45,7 +52,10 @@ enum PresentMsg {
     // Boxed so the message is no bigger than its next-largest variant — a `Scene` inline here
     // would size every `Resize`/`Dpms`/`Stop` message (and the channel's internal buffer slot)
     // to match it.
-    Frame { scene: Box<Scene>, output: OutputId },
+    Frame {
+        frame: Box<FramePaint>,
+        output: OutputId,
+    },
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
@@ -94,8 +104,8 @@ impl PresentPipe {
                 let _done = FinishedOnDrop(thread_finished);
                 for msg in rx {
                     match msg {
-                        PresentMsg::Frame { scene, output } => {
-                            presenter.present(&scene, output);
+                        PresentMsg::Frame { frame, output } => {
+                            presenter.present_frame(&frame, output);
                             thread_presented.fetch_add(1, Ordering::Release);
                             // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
                             thread_inflight.fetch_sub(1, Ordering::Release);
@@ -159,14 +169,19 @@ impl PresentPipe {
         self.inflight.load(Ordering::Acquire)
     }
 
-    /// Hand a finished scene to the render thread. Never blocks. Returns `false` if the render
+    /// Hand a dense scene to the render thread. Never blocks. Returns `false` if the render
     /// thread has gone away — fatal for presentation but not the compositor: the caller logs it and keeps serving clients.
     pub fn submit(&mut self, scene: Scene, output: OutputId) -> bool {
+        self.submit_frame(FramePaint::full(scene), output)
+    }
+
+    /// Hand a finished scene with retained-damage authority to the render thread.
+    pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> bool {
         self.inflight.fetch_add(1, Ordering::AcqRel);
         if self
             .tx
             .send(PresentMsg::Frame {
-                scene: Box::new(scene),
+                frame: Box::new(frame),
                 output,
             })
             .is_err()

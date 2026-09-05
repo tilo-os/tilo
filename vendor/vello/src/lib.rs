@@ -1167,6 +1167,36 @@ impl Renderer {
         params: &RenderParams,
         damage: &[FineDamageRect],
     ) -> Result<Option<SparseRenderStats>> {
+        self.render_to_texture_with_damage_and_post_render(
+            device,
+            queue,
+            scene,
+            texture,
+            params,
+            damage,
+            |_| {},
+        )
+    }
+
+    /// Render exact native-pixel damage and append work to the same sparse
+    /// submission after Vello has encoded its passes.
+    ///
+    /// The callback is not invoked when sparse rendering is unavailable or
+    /// `damage` is empty, because those cases submit no command buffer.
+    #[doc(hidden)]
+    pub fn render_to_texture_with_damage_and_post_render<F>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        damage: &[FineDamageRect],
+        post_render: F,
+    ) -> Result<Option<SparseRenderStats>>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder),
+    {
         if !self.sparse_fine_supported() || params.antialiasing_method != AaConfig::Area {
             return Ok(None);
         }
@@ -1231,12 +1261,13 @@ impl Renderer {
                 ExternalResource::Image(*target.as_image().unwrap(), texture),
                 ExternalResource::Buffer(proxy, &upload.buffer),
             ];
-            self.engine.run_recording(
+            self.engine.run_recording_with_post_render(
                 device,
                 queue,
                 &self.recording,
                 &external_resources,
                 "render_to_texture_sparse",
+                post_render,
                 #[cfg(feature = "wgpu-profiler")]
                 &mut self.profiler,
             )?;
@@ -1245,12 +1276,13 @@ impl Renderer {
                 *target.as_image().unwrap(),
                 texture,
             )];
-            self.engine.run_recording(
+            self.engine.run_recording_with_post_render(
                 device,
                 queue,
                 &self.recording,
                 &external_resources,
                 "render_to_texture_sparse",
+                post_render,
                 #[cfg(feature = "wgpu-profiler")]
                 &mut self.profiler,
             )?;
@@ -1688,6 +1720,46 @@ mod tests {
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
+    fn damage_target(device: &Device, queue: &Queue) -> (wgpu::Texture, TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vello.sparse_post_render_test_target"),
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0; 16 * 16 * 4],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16 * 4),
+                rows_per_image: Some(16),
+            },
+            wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
     fn solid_scene() -> Scene {
         let mut scene = Scene::new();
         scene.fill(
@@ -1732,6 +1804,229 @@ mod tests {
             height: 16,
             antialiasing_method: AaConfig::Area,
         }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sparse_damage_post_render_shares_submission_and_preserves_exact_pixels() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let (_target_texture, target) = damage_target(&device, &queue);
+        let mut renderer = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        renderer.sparse_upload_reuse = true;
+        if !renderer.sparse_fine_supported() {
+            return;
+        }
+        let scene = solid_scene();
+        let params = render_params();
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vello.sparse_post_render_test_readback"),
+            size: 256 * 16,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut callback_count = 0;
+        let stats = renderer
+            .render_to_texture_with_damage_and_post_render(
+                &device,
+                &queue,
+                &scene,
+                &target,
+                &params,
+                &[FineDamageRect {
+                    x: 4,
+                    y: 4,
+                    width: 8,
+                    height: 8,
+                }],
+                |encoder| {
+                    callback_count += 1;
+                    encoder.copy_texture_to_buffer(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &_target_texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &readback,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(256),
+                                rows_per_image: Some(16),
+                            },
+                        },
+                        wgpu::Extent3d {
+                            width: 16,
+                            height: 16,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                },
+            )
+            .unwrap();
+        assert!(stats.is_some());
+        assert_eq!(callback_count, 1);
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range();
+        let pixel = |x: usize, y: usize| &pixels[y * 256 + x * 4..y * 256 + x * 4 + 4];
+        assert_eq!(pixel(7, 7), &[255, 255, 255, 255]);
+        assert_eq!(pixel(3, 3), &[0, 0, 0, 0]);
+        assert_eq!(pixel(12, 12), &[0, 0, 0, 0]);
+        drop(pixels);
+        readback.unmap();
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &_target_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0; 16 * 16 * 4],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16 * 4),
+                rows_per_image: Some(16),
+            },
+            wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+        );
+        renderer.sparse_upload_reuse = false;
+        callback_count = 0;
+        assert!(
+            renderer
+                .render_to_texture_with_damage_and_post_render(
+                    &device,
+                    &queue,
+                    &scene,
+                    &target,
+                    &params,
+                    &[FineDamageRect {
+                        x: 4,
+                        y: 4,
+                        width: 8,
+                        height: 8,
+                    }],
+                    |encoder| {
+                        callback_count += 1;
+                        encoder.copy_texture_to_buffer(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &_target_texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyBufferInfo {
+                                buffer: &readback,
+                                layout: wgpu::TexelCopyBufferLayout {
+                                    offset: 0,
+                                    bytes_per_row: Some(256),
+                                    rows_per_image: Some(16),
+                                },
+                            },
+                            wgpu::Extent3d {
+                                width: 16,
+                                height: 16,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    },
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(callback_count, 1);
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range();
+        let pixel = |x: usize, y: usize| &pixels[y * 256 + x * 4..y * 256 + x * 4 + 4];
+        assert_eq!(pixel(7, 7), &[255, 255, 255, 255]);
+        assert_eq!(pixel(3, 3), &[0, 0, 0, 0]);
+        drop(pixels);
+        readback.unmap();
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sparse_damage_post_render_skips_unsupported_and_empty_submissions() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let (_target_texture, target) = damage_target(&device, &queue);
+        let mut renderer = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let scene = solid_scene();
+        let mut callback_count = 0;
+        let unsupported = RenderParams {
+            antialiasing_method: AaConfig::Msaa8,
+            ..render_params()
+        };
+        assert!(
+            renderer
+                .render_to_texture_with_damage_and_post_render(
+                    &device,
+                    &queue,
+                    &scene,
+                    &target,
+                    &unsupported,
+                    &[FineDamageRect {
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1,
+                    }],
+                    |_| callback_count += 1,
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(callback_count, 0);
+
+        assert!(
+            renderer
+                .render_to_texture_with_damage_and_post_render(
+                    &device,
+                    &queue,
+                    &scene,
+                    &target,
+                    &render_params(),
+                    &[],
+                    |_| callback_count += 1,
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(callback_count, 0);
     }
 
     #[test]
