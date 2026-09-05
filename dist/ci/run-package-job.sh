@@ -47,6 +47,11 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     fi
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    # Capture provenance in the checked-out runner workspace. Packaging
+    # userspaces intentionally contain only each target's build/runtime
+    # dependencies, so Git is not part of their contract (notably Fedora's).
+    source_date_epoch=$(git -C "$repo_root" log -1 --format=%ct)
+    source_revision=${GITHUB_SHA:-$(git -C "$repo_root" rev-parse HEAD)}
     output=$repo_root/dist/ci-output/$distro-$arch
     [[ ! -e $output ]] || { echo "output path already exists: $output" >&2; exit 1; }
     mkdir -p "$output"
@@ -86,6 +91,8 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env QOS_EXECUTION_ARCH="$execution_arch" \
             --env QOS_EMULATED=0 \
             --env QOS_DEB_REVISION="$revision" \
+            --env SOURCE_DATE_EPOCH="$source_date_epoch" \
+            --env GITHUB_SHA="$source_revision" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_TERM_COLOR=never \
@@ -198,6 +205,8 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_EXECUTION_ARCH="$execution_arch"
         export QOS_EMULATED=1
         export QOS_DEB_REVISION="$revision"
+        export SOURCE_DATE_EPOCH="$source_date_epoch"
+        export GITHUB_SHA="$source_revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
         proot_package_binds=()
@@ -336,8 +345,7 @@ fedora-44)
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
     stage=collect-os-desktop-payload
     case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
-    SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
-        dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
+    dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
     ;;
 arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
