@@ -316,9 +316,9 @@ fn main() -> std::process::ExitCode {
             tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
         }
         if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
-            && let Err(e) = firstboot::import_host_keyboard_settings()
+            && let Err(e) = firstboot::import_host_input_settings()
         {
-            tracing::warn!("firstboot: host keyboard import failed ({e}); using qOS defaults");
+            tracing::warn!("firstboot: host input import failed ({e}); using qOS defaults");
         }
     }
     // `--firstboot` is the host-session wrapper hook: it performs setup then
