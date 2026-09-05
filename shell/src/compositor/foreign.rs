@@ -2068,6 +2068,48 @@ mod tests {
         assert!(foreign_tabs(&rendered).is_empty());
     }
 
+    /// Consuming a user close removes the exact surface from the protocol
+    /// tree before reconciliation. The Wayland toplevel itself can still be
+    /// alive while processing `xdg_toplevel.close`; it must not be mirrored
+    /// back, and another window from the same application must be untouched.
+    #[test]
+    fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        for surface in [51, 52] {
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("com.openai.chatgpt".into()),
+            );
+        }
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, 51), 1);
+        assert_eq!(tabs_for_surface(&rendered, 52), 1);
+
+        // This is the frame-loop ordering for a queued close: remove from
+        // both tree authorities, send close to the still-live toplevel, then
+        // reconcile. The application's process and app-id are irrelevant.
+        assert!(
+            crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut rendered, 51,)
+        );
+        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut source, 51,));
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "the consumed close leaves nothing for reconciliation to undo"
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, 51),
+            0,
+            "the still-live closing surface must not be adopted back"
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, 52),
+            1,
+            "surface identity keeps the same-app sibling exactly once"
+        );
+    }
+
     /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
     #[test]
     fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
