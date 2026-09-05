@@ -493,23 +493,14 @@ fn probe_topbar(
 /// full-root plumbing; tab 1 (Files) is the drag source, tab 3 (Browser)
 /// the drop target, and tab 2 is active so the reorder can't also change
 /// the active id.
-fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRenderer, Theme) {
-    let tabs: Vec<(TabDescriptor, TileContent)> = vec![
-        tab_stub(1, "Notes", AppKind::Editor, "notes"),
-        tab_stub(2, "Files", AppKind::Files, "files"),
-        tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
-        tab_stub(4, "Browser", AppKind::Browser, "browser"),
-    ];
-    let mut standalone = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
-    // A width is a fraction of its strip; with no `GroupRow`, tell the group the
-    // 960 px capture surface *is* its strip, or it uses the toolkit fallback.
-    standalone.set_strip_usable_px(960.0);
-    let mut group: Box<dyn Widget> = Box::new(standalone);
-
-    let theme = Theme::dark();
+fn layout_drag_reorder_group(
+    group: &mut WindowGroup,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+) -> (TaffyTree<()>, NodeId) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = group.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = group.build_layout(&mut taffy, theme, &mut node_map);
     let vp = taffy
         .new_with_children(
             Style {
@@ -522,8 +513,6 @@ fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRe
             &[child],
         )
         .unwrap();
-    let mut tr = TextRenderer::new();
-    // Clone node_map into the closure to side-step a double borrow with `&mut tr`.
     let map_for_measure = node_map.clone();
     taffy
         .compute_layout_with_measure(
@@ -534,7 +523,7 @@ fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRe
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                    unsafe { (*ptr).measure(known, available, tr) }
                 } else {
                     taffy::Size::ZERO
                 }
@@ -542,6 +531,25 @@ fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRe
         )
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
+    (taffy, child)
+}
+
+fn setup_drag_reorder_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
+    let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+        tab_stub(1, "Notes", AppKind::Editor, "notes"),
+        tab_stub(2, "Files", AppKind::Files, "files"),
+        tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
+        tab_stub(4, "Browser", AppKind::Browser, "browser"),
+    ];
+    let mut standalone = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
+    // A width is a fraction of its strip; with no `GroupRow`, tell the group the
+    // 960 px capture surface *is* its strip, or it uses the toolkit fallback.
+    standalone.set_strip_usable_px(960.0);
+    let mut group = standalone;
+
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let (taffy, child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
     (group, taffy, child, tr, theme)
 }
 
@@ -549,7 +557,7 @@ fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRe
 /// [`e2e_tab_drag_reorder`]'s drag-gesture helpers don't each need eight
 /// parameters of their own.
 struct DragCtx<'a> {
-    group: &'a mut Box<dyn Widget>,
+    group: &'a mut WindowGroup,
     taffy: &'a TaffyTree<()>,
     child: NodeId,
     doc: &'a mut AutoCommit,
@@ -560,15 +568,17 @@ struct DragCtx<'a> {
 
 impl DragCtx<'_> {
     fn pump_event(&mut self, event: &WindowEvent) {
-        pump(
-            self.group,
-            self.taffy,
-            self.child,
+        let mut handled = false;
+        self.group.handle_event(
+            event,
+            1.0,
+            self.modifiers,
             self.doc,
             self.doc_root,
-            *self.modifiers,
+            &mut handled,
             self.focus,
-            event,
+            self.child,
+            self.taffy,
         );
     }
 
@@ -626,6 +636,15 @@ fn e2e_tab_drag_reorder() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut group, taffy, child, mut tr, theme) = setup_drag_reorder_group();
+    let group_rect = group.get_rect();
+    let content_rect = group
+        .active_host_rect_for_tests()
+        .expect("the active tab must have laid-out content");
+    assert_eq!(group_rect, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 540.0));
+    assert!(
+        content_rect.width() >= 639.0 && content_rect.height() >= 490.0,
+        "the drag harness must render a real window body, got {content_rect:?}",
+    );
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
     group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -633,7 +652,7 @@ fn e2e_tab_drag_reorder() {
     let mut renderer_opt = try_new_renderer(960, 540);
     let out_dir = screenshots_dir();
     render_frame_to(
-        &mut *group,
+        &mut group,
         &mut tr,
         &theme,
         &presence,
@@ -669,8 +688,14 @@ fn e2e_tab_drag_reorder() {
         to,
     );
 
+    // Pressing the dragged pill also activates it. Production rebuilds the
+    // group for that new active host before the next frame; retaining the old
+    // Notes-only taffy child made both the midway and settled golden paint no
+    // app body at all.
+    let (taffy, child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+
     render_frame_to(
-        &mut *group,
+        &mut group,
         &mut tr,
         &theme,
         &presence,
@@ -690,18 +715,31 @@ fn e2e_tab_drag_reorder() {
         focus: &mut focus,
     }
     .button(ElementState::Released);
+    // Keep the settled golden independent of hover-reveal wall time. The
+    // pointer has completed the drag and production would ordinarily move on
+    // to the app body; parking it there also proves the app body is present.
+    DragCtx {
+        group: &mut group,
+        taffy: &taffy,
+        child,
+        doc: &mut doc,
+        doc_root: &doc_root,
+        modifiers: &modifiers,
+        focus: &mut focus,
+    }
+    .move_to(Point::new(900.0, 500.0));
 
-    // WindowGroup drains `bar.take_reorder()` and permutes its hosts, but
-    // `WindowGroup::tabs()` still returns descriptor order (visible labels stay
-    // stable during drag; content order follows the drop target). So this
-    // asserts the reorder request via a sibling TabBar's `reorder`, not
-    // `group.tabs()` — switch if that ever changes.
-    let post = expected_post_drop_descriptor_order();
     assert_eq!(
-        post,
-        vec!["Notes", "Terminal", "Browser", "Files"],
-        "dropping Files (idx 1) onto Browser (idx 3) should shift it to the end"
+        group.take_pending_tab_reorder(),
+        Some((1, 3)),
+        "the gesture itself must publish Files -> after Browser; a parallel probe cannot prove it",
     );
+    assert_eq!(
+        group.tile_kind_labels_for_tests(),
+        vec!["Editor", "Terminal", "Browser", "Files"],
+        "the actual content hosts must follow the reordered tab strip",
+    );
+    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
 
     // TabBar's layout-spring: `LAYOUT_ANIM_MS = 180` (ui/src/widget/tabs.rs).
     // 250 ms gives margin for every pill to converge from its pre-drop
@@ -715,7 +753,7 @@ fn e2e_tab_drag_reorder() {
     }
 
     render_frame_to(
-        &mut *group,
+        &mut group,
         &mut tr,
         &theme,
         &presence,
@@ -871,16 +909,6 @@ fn center(r: vello::kurbo::Rect) -> Point {
     Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
 }
 
-/// Expected post-drop order for `(from, to) = (1, 3)`, kept separate from the
-/// live widget so it documents intent even if the descriptor list is unchanged.
-fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
-    let mut order = vec!["Notes", "Files", "Terminal", "Browser"];
-    // Matches `TabBar::reorder(1, 3)`: pull `Files`, re-insert at idx 3.
-    let item = order.remove(1);
-    order.insert(3, item);
-    order
-}
-
 // Test 3: open quick settings via the tray pill
 
 #[test]
@@ -947,6 +975,47 @@ fn e2e_open_quick_settings() {
 /// The `WindowGroup` + layout tree for
 /// [`e2e_maximized_tile_floating_controls`], split out to keep that test
 /// short.
+fn layout_maximize_test_group(
+    group: &mut WindowGroup,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+) -> (TaffyTree<()>, NodeId) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = group.build_layout(&mut taffy, theme, &mut node_map);
+    let vp = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(960.0),
+                    height: Dimension::length(540.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let map_for_measure = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            vp,
+            Size {
+                width: AvailableSpace::Definite(960.0),
+                height: AvailableSpace::Definite(540.0),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = map_for_measure.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    group.apply_layout(&taffy, child, Point::ORIGIN);
+    (taffy, child)
+}
+
 fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
@@ -960,40 +1029,8 @@ fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRende
     assert!(!group.maximized, "group starts un-maximized");
 
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = group.build_layout(&mut taffy, &theme, &mut node_map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(540.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
     let mut tr = TextRenderer::new();
-    let map_for_measure = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(540.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    group.apply_layout(&taffy, child, Point::ORIGIN);
+    let (taffy, child) = layout_maximize_test_group(&mut group, &theme, &mut tr);
     (group, taffy, child, tr, theme)
 }
 
@@ -1144,6 +1181,20 @@ fn e2e_maximized_tile_floating_controls() {
 
     hover_and_click_maximize_chip(&mut group, &taffy, child);
 
+    // Maximizing changes layout structure (the tab bar disappears and the
+    // group switches from its tiled fraction to the full viewport). The old
+    // snapshot never rebuilt the layout, so it blessed a 640px-wide
+    // "maximized" window on a 960px output. Exercise the same rebuild the
+    // shell schedules after the maximize state change.
+    let (_maximized_taffy, _maximized_child) =
+        layout_maximize_test_group(&mut group, &theme, &mut tr);
+    let maximized_rect = group.get_rect();
+    assert_eq!(
+        maximized_rect,
+        vello::kurbo::Rect::new(0.0, 0.0, 960.0, 540.0),
+        "maximized content must cover the complete output",
+    );
+
     // Defensive: settle any spawn-fade timers still pumping.
     std::thread::sleep(Duration::from_millis(50));
     {
@@ -1231,37 +1282,6 @@ fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
     let presence = PresenceCtx::default();
     concrete.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     concrete.tab_rects().to_vec()
-}
-
-// Helpers
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors Widget::handle_event's own parameter list, forwarded verbatim from the \
-              test harness"
-)]
-fn pump(
-    widget: &mut Box<dyn Widget>,
-    taffy: &TaffyTree<()>,
-    root_node: NodeId,
-    doc: &mut AutoCommit,
-    doc_root: &ObjId,
-    modifiers: Modifiers,
-    focus: &mut Option<NodeId>,
-    event: &WindowEvent,
-) {
-    let mut handled = false;
-    widget.handle_event(
-        event,
-        1.0,
-        &modifiers,
-        doc,
-        doc_root,
-        &mut handled,
-        focus,
-        root_node,
-        taffy,
-    );
 }
 
 fn assert_png_nonempty(path: &Path) {
