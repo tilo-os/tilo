@@ -27,11 +27,17 @@ sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
-| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
-| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`; `arm64` when enabled |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`; `arm64` when enabled |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`; `aarch64` when enabled |
+| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
+| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`; `aarch64-linux` when enabled |
+
+The complete ARM64 package definitions and release verifier remain in tree,
+but ARM64 publication is temporarily disabled by
+`QOS_DESKTOP_ARM64_RELEASES` until a native `runner-arm64` host is available.
+Current tags therefore publish the x86-64 set. Changing that single workflow
+switch to `"1"` restores the complete native ARM64 release lane.
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
@@ -158,8 +164,9 @@ Nix can build or substitute the package declaratively.
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
 that touch packaging or the packaged binaries execute the current x86-64 matrix.
-`desktop-v*` tags execute it regardless of changed paths, wait for every x86-64 and ARM64 install
-test, download the artifacts, require the complete current output set, and only then
+`desktop-v*` tags execute it regardless of changed paths, wait for every enabled
+native-architecture install test, download the artifacts, require the complete
+current output set, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. The five target userspaces run sequentially in one
 capacity-bounded lane.
