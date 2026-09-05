@@ -804,7 +804,7 @@ impl WindowsApp {
     }
     fn refresh(&mut self) {
         if let Some(notice) = self.appliance_owner.drain() {
-            self.notice = Some(notice.clone());
+            self.notice = Some(notice);
         }
         if self.resource_invocation.is_some()
             && self.resource_waits_for_appliance
@@ -815,7 +815,7 @@ impl WindowsApp {
         self.deactivate_selection_controls();
         self.catalogue = self.provider.catalogue();
         if let Some(notice) = self.provider.take_notice() {
-            self.notice = Some(notice.clone());
+            self.notice = Some(notice);
         }
         if self.resource_invocation.is_some()
             && !self.resource_waits_for_appliance
@@ -1199,6 +1199,167 @@ impl WindowsApp {
         );
         cursor.x = rect.x1 + 10.0;
         rect
+    }
+
+    fn invoke_portal_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
+        match type_id {
+            "windows.install" => {
+                let path: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if path.trim().is_empty() {
+                    if self.portal_rx.is_some() {
+                        return Err("an installer picker is already open".into());
+                    }
+                    self.portal_rx = Some(installer_pick_request().send_open_file());
+                } else {
+                    let path = std::path::PathBuf::from(path);
+                    let source_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| "installer path has no valid file name".to_string())?;
+                    let source = File::open(&path)
+                        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+                    self.provider.install(source, source_name)?;
+                }
+            }
+            "windows.import-iso" => {
+                let path: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if path.trim().is_empty() {
+                    if self.iso_portal_rx.is_some() {
+                        return Err("a Windows ISO picker is already open".into());
+                    }
+                    self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
+                } else {
+                    let source = File::open(&path)
+                        .map_err(|error| format!("could not open {path}: {error}"))?;
+                    self.appliance_owner.import_iso(source)?;
+                }
+            }
+            "windows.confirm-capsule-install" => self.provider.confirm_capsule_install()?,
+            "windows.confirm-vm-install" => self.provider.confirm_vm_install()?,
+            "windows.open-file" => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let app_id = args
+                    .first()
+                    .ok_or_else(|| "missing Windows app id".to_string())?;
+                let file_path = args.get(1).map_or("", String::as_str);
+                if file_path.trim().is_empty() {
+                    if self.document_portal_rx.is_some() {
+                        return Err("a document picker is already open".into());
+                    }
+                    self.document_target = Some(app_id.clone());
+                    self.document_portal_rx =
+                        Some(windows_document_pick_request().send_open_file());
+                } else {
+                    let source = File::open(file_path)
+                        .map_err(|error| format!("could not open {file_path}: {error}"))?;
+                    self.provider.launch_vm_with_file(app_id, source)?;
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn invoke_appliance_operation(&mut self, type_id: &str) -> Result<bool, String> {
+        match type_id {
+            "windows.recovery" => self.appliance_owner.open_recovery()?,
+            "windows.start" => self.appliance_owner.lifecycle(LifecycleAction::Start)?,
+            "windows.restart" => self.appliance_owner.lifecycle(LifecycleAction::Restart)?,
+            "windows.suspend" => self.appliance_owner.lifecycle(LifecycleAction::Suspend)?,
+            "windows.resume" => self.appliance_owner.lifecycle(LifecycleAction::Resume)?,
+            "windows.shutdown" => self.appliance_owner.lifecycle(LifecycleAction::Shutdown)?,
+            "windows.temporary-network" => self
+                .appliance_owner
+                .open_temporary_egress(EgressPurpose::Activation)?,
+            "windows.update-network" => self
+                .appliance_owner
+                .open_temporary_egress(EgressPurpose::WindowsUpdate)?,
+            "windows.revoke-network" => self.appliance_owner.revoke_temporary_egress()?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn invoke_application_operation(
+        &mut self,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if !matches!(
+            type_id,
+            "windows.launch"
+                | "windows.launch-vm-fallback"
+                | "windows.publish"
+                | "windows.retry-install"
+                | "windows.escalate-install"
+                | "windows.remove-launcher"
+                | "windows.uninstall"
+                | "windows.delete-data"
+        ) {
+            return Ok(false);
+        }
+        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let app = self
+            .catalogue
+            .app(&id)
+            .cloned()
+            .or_else(|| {
+                self.catalogue
+                    .apps
+                    .iter()
+                    .find(|app| app.capsule == id)
+                    .cloned()
+            })
+            .ok_or_else(|| "Windows application is no longer available".to_string())?;
+        match type_id {
+            "windows.launch" if app.launch_available => {
+                if app.route == Route::Vm {
+                    self.provider.launch_vm_fallback(&app.id)?;
+                } else {
+                    self.provider.launch(&app.id)?;
+                }
+            }
+            "windows.launch-vm-fallback" if app.vm_fallback_available => {
+                self.provider.launch_vm_fallback(&app.id)?;
+            }
+            "windows.publish" if app.can_publish_vm_candidate => {
+                self.provider.publish_vm_candidate(&app.id)?;
+            }
+            "windows.retry-install" if app.can_retry_install => {
+                self.provider.retry_install(&app.capsule)?;
+            }
+            "windows.escalate-install" if app.can_escalate_install_to_vm => {
+                self.provider.escalate_install_to_vm(&app.capsule)?;
+            }
+            "windows.remove-launcher" if app.can_remove_launcher => {
+                self.provider.remove_launcher(&app.id)?;
+            }
+            "windows.uninstall" if app.can_vendor_uninstall => {
+                if app.route == Route::Vm {
+                    self.provider.vendor_uninstall_vm(&app.id)?;
+                } else {
+                    self.provider.vendor_uninstall(&app.capsule)?;
+                }
+            }
+            "windows.delete-data" if app.can_delete_data => {
+                self.provider.delete_data(&app.capsule)?;
+            }
+            _ => return Err("Windows operation is no longer available".into()),
+        }
+        self.notice = Some("Operation requested".into());
+        Ok(true)
+    }
+
+    fn invoke_effect_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
+        if self.invoke_portal_operation(type_id, payload)?
+            || self.invoke_appliance_operation(type_id)?
+        {
+            return Ok(true);
+        }
+        self.invoke_application_operation(type_id, payload)
     }
 }
 
@@ -1850,7 +2011,15 @@ impl Widget for WindowsApp {
         );
         self.launch_button.apply_layout_external(launch);
         self.launch_button.set_enabled(app.launch_available);
-        self.launch_button.set_style(ButtonStyle::Primary);
+        // An unavailable primary action must not retain the accent fill: on
+        // high-contrast themes that made the disabled label look actionable
+        // and reduced its legibility. The shared neutral disabled treatment
+        // keeps the semantic disabled state and makes the distinction clear.
+        self.launch_button.set_style(if app.launch_available {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Neutral
+        });
         self.launch_button.draw(scene, t, tr, theme, presence);
         let launch_error_offset = if app.launch_available {
             0.0
@@ -2254,55 +2423,37 @@ impl Widget for WindowsApp {
         node: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        for button in &mut self.route_buttons {
-            button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        macro_rules! forward_button_event {
+            ($button:expr) => {
+                $button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy)
+            };
         }
-        self.reset_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.launch_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.open_file_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.vm_fallback_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.install_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.confirm_capsule_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.confirm_vm_install_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.publish_vm_candidate_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.retry_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.escalate_to_vm_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.remove_launcher_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.vendor_uninstall_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.delete_data_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.choose_windows_iso_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.recovery_desktop_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.start_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.restart_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.suspend_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.resume_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.shutdown_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.connect_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.update_windows_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
-        self.revoke_windows_connection_button
-            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        for button in &mut self.route_buttons {
+            forward_button_event!(button);
+        }
+        forward_button_event!(self.reset_button);
+        forward_button_event!(self.launch_button);
+        forward_button_event!(self.open_file_button);
+        forward_button_event!(self.vm_fallback_button);
+        forward_button_event!(self.install_button);
+        forward_button_event!(self.confirm_capsule_button);
+        forward_button_event!(self.confirm_vm_install_button);
+        forward_button_event!(self.publish_vm_candidate_button);
+        forward_button_event!(self.retry_button);
+        forward_button_event!(self.escalate_to_vm_button);
+        forward_button_event!(self.remove_launcher_button);
+        forward_button_event!(self.vendor_uninstall_button);
+        forward_button_event!(self.delete_data_button);
+        forward_button_event!(self.choose_windows_iso_button);
+        forward_button_event!(self.recovery_desktop_button);
+        forward_button_event!(self.start_windows_button);
+        forward_button_event!(self.restart_windows_button);
+        forward_button_event!(self.suspend_windows_button);
+        forward_button_event!(self.resume_windows_button);
+        forward_button_event!(self.shutdown_windows_button);
+        forward_button_event!(self.connect_windows_button);
+        forward_button_event!(self.update_windows_button);
+        forward_button_event!(self.revoke_windows_connection_button);
         self.apply_control_signals();
         match event {
             WindowEvent::KeyboardInput {
@@ -2398,7 +2549,7 @@ impl Widget for WindowsApp {
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_name(&app.name)
-                        .with_description(&format!(
+                        .with_description(format!(
                             "{}; {}; {}; {}",
                             app.publisher,
                             app.route.label(),
@@ -2440,9 +2591,13 @@ impl Widget for WindowsApp {
             children.push(
                 AccessNode::new(Role::Group)
                     .with_name(format!("{} details", app.name))
-                    .with_description(&format!(
-                        "{}; selected route {}; {}",
+                    .with_description(format!(
+                        "{}; status {}; {}; selected route {}; {}",
                         app.reason,
+                        app.status.label(),
+                        app.installation_detail
+                            .as_deref()
+                            .unwrap_or("No installation details"),
                         app.route.label(),
                         app.route.security_summary()
                     )),
@@ -2527,160 +2682,7 @@ impl Widget for WindowsApp {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
-        match type_id {
-            "windows.install" => {
-                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                if path.trim().is_empty() {
-                    if self.portal_rx.is_some() {
-                        return Err("an installer picker is already open".into());
-                    }
-                    self.portal_rx = Some(installer_pick_request().send_open_file());
-                } else {
-                    let path = std::path::PathBuf::from(path);
-                    let source_name = path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .ok_or_else(|| "installer path has no valid file name".to_string())?;
-                    let source = File::open(&path)
-                        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-                    self.provider.install(source, source_name)?;
-                }
-                return Ok(true);
-            }
-            "windows.import-iso" => {
-                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                if path.trim().is_empty() {
-                    if self.iso_portal_rx.is_some() {
-                        return Err("a Windows ISO picker is already open".into());
-                    }
-                    self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
-                } else {
-                    let path = std::path::PathBuf::from(path);
-                    let source = File::open(&path)
-                        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
-                    self.appliance_owner.import_iso(source)?;
-                }
-                return Ok(true);
-            }
-            "windows.confirm-capsule-install" => {
-                self.provider.confirm_capsule_install()?;
-                return Ok(true);
-            }
-            "windows.confirm-vm-install" => {
-                self.provider.confirm_vm_install()?;
-                return Ok(true);
-            }
-            "windows.open-file" => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let app_id = args
-                    .first()
-                    .ok_or_else(|| "missing Windows app id".to_string())?;
-                let file_path = args.get(1).map(String::as_str).unwrap_or("");
-                if file_path.trim().is_empty() {
-                    if self.document_portal_rx.is_some() {
-                        return Err("a document picker is already open".into());
-                    }
-                    self.document_target = Some(app_id.clone());
-                    self.document_portal_rx =
-                        Some(windows_document_pick_request().send_open_file());
-                } else {
-                    let source = File::open(file_path)
-                        .map_err(|e| format!("could not open {file_path}: {e}"))?;
-                    self.provider.launch_vm_with_file(app_id, source)?;
-                }
-                return Ok(true);
-            }
-            "windows.recovery" => self.appliance_owner.open_recovery()?,
-            "windows.start" => self.appliance_owner.lifecycle(LifecycleAction::Start)?,
-            "windows.restart" => self.appliance_owner.lifecycle(LifecycleAction::Restart)?,
-            "windows.suspend" => self.appliance_owner.lifecycle(LifecycleAction::Suspend)?,
-            "windows.resume" => self.appliance_owner.lifecycle(LifecycleAction::Resume)?,
-            "windows.shutdown" => self.appliance_owner.lifecycle(LifecycleAction::Shutdown)?,
-            "windows.temporary-network" => {
-                self.appliance_owner
-                    .open_temporary_egress(EgressPurpose::Activation)?;
-            }
-            "windows.update-network" => self
-                .appliance_owner
-                .open_temporary_egress(EgressPurpose::WindowsUpdate)?,
-            "windows.revoke-network" => self.appliance_owner.revoke_temporary_egress()?,
-            _ => {}
-        }
-        if matches!(
-            type_id,
-            "windows.recovery"
-                | "windows.start"
-                | "windows.restart"
-                | "windows.suspend"
-                | "windows.resume"
-                | "windows.shutdown"
-                | "windows.temporary-network"
-                | "windows.update-network"
-                | "windows.revoke-network"
-        ) {
-            return Ok(true);
-        }
-        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let app = self
-            .catalogue
-            .app(&id)
-            .cloned()
-            .or_else(|| {
-                self.catalogue
-                    .apps
-                    .iter()
-                    .find(|app| app.capsule == id)
-                    .cloned()
-            })
-            .ok_or_else(|| "Windows application is no longer available".to_string())?;
-        match type_id {
-            "windows.launch" if app.launch_available => {
-                if app.route == Route::Vm {
-                    self.provider.launch_vm_fallback(&app.id)?
-                } else {
-                    self.provider.launch(&app.id)?
-                }
-            }
-            "windows.launch-vm-fallback" if app.vm_fallback_available => {
-                self.provider.launch_vm_fallback(&app.id)?
-            }
-            "windows.publish" if app.can_publish_vm_candidate => {
-                self.provider.publish_vm_candidate(&app.id)?
-            }
-            "windows.retry-install" if app.can_retry_install => {
-                self.provider.retry_install(&app.capsule)?
-            }
-            "windows.escalate-install" if app.can_escalate_install_to_vm => {
-                self.provider.escalate_install_to_vm(&app.capsule)?
-            }
-            "windows.remove-launcher" if app.can_remove_launcher => {
-                self.provider.remove_launcher(&app.id)?
-            }
-            "windows.uninstall" if app.can_vendor_uninstall => {
-                if app.route == Route::Vm {
-                    self.provider.vendor_uninstall_vm(&app.id)?
-                } else {
-                    self.provider.vendor_uninstall(&app.capsule)?
-                }
-            }
-            "windows.delete-data" if app.can_delete_data => {
-                self.provider.delete_data(&app.capsule)?
-            }
-            "windows.launch"
-            | "windows.launch-vm-fallback"
-            | "windows.publish"
-            | "windows.retry-install"
-            | "windows.escalate-install"
-            | "windows.remove-launcher"
-            | "windows.uninstall"
-            | "windows.delete-data" => {
-                return Err("Windows operation is no longer available".into());
-            }
-            _ => return Ok(false),
-        }
-        self.notice = Some("Operation requested".into());
-        Ok(true)
+        self.invoke_effect_operation(type_id, payload)
     }
 
     fn start_resource_operation(
@@ -3357,6 +3359,57 @@ mod tests {
         app.hit(Hit::Back);
         assert!(!app.compact_detail);
         assert_eq!(app.selected, 1, "back preserves the user's selection");
+    }
+
+    #[test]
+    fn failed_setup_exposes_disabled_launch_and_recovery_to_assistive_technology() {
+        let mut provider = SampleProvider::new();
+        provider.seed_setup_failure();
+        let mut app = WindowsApp::with_provider(Box::new(provider));
+        let failed = app.selected_app().expect("failed sample application");
+        assert_eq!(failed.status, crate::model::AppStatus::Failed);
+        assert!(!failed.launch_available);
+        assert!(failed.can_retry_install);
+        assert!(failed.can_escalate_install_to_vm);
+
+        app.launch_button.set_enabled(false);
+        app.retry_button.set_enabled(true);
+        app.escalate_to_vm_button.set_enabled(true);
+        assert!(
+            Widget::accessibility(&app.launch_button)
+                .expect("launch semantics")
+                .state
+                .disabled
+        );
+        for button in [&app.retry_button, &app.escalate_to_vm_button] {
+            let semantics = Widget::accessibility(button).expect("recovery semantics");
+            assert!(semantics.state.focusable);
+            assert!(!semantics.state.disabled);
+        }
+
+        let semantics = app.accessibility().expect("app semantics");
+        let detail = semantics
+            .children
+            .iter()
+            .find(|node| matches!(node.role, Role::Group))
+            .expect("detail semantics");
+        assert!(
+            detail
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("Setup failed"))
+        );
+    }
+
+    #[test]
+    fn compact_recovery_actions_wrap_inside_a_480px_detail_pane() {
+        let detail = Rect::new(20.0, 0.0, 460.0, 800.0);
+        let mut cursor = Point::new(detail.x0, 710.0);
+        for width in [118.0, 220.0, 142.0, 142.0, 132.0] {
+            let rect = WindowsApp::flow_button_rect(&mut cursor, width, detail);
+            assert!(rect.x0 >= detail.x0 && rect.x1 <= detail.x1, "{rect:?}");
+            assert!(rect.y1 <= detail.y1, "{rect:?}");
+        }
     }
 
     #[test]
