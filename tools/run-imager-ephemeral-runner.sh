@@ -82,9 +82,27 @@ private_metadata_file() {
 }
 
 process_group_has_live_members() {
+  local proc_stat stat_line stat_tail state parent process_group
+  # A container without an init process can leave an orphaned descendant as a
+  # zombie indefinitely.  `kill -0` still reports that process, even though it
+  # cannot execute and has already released its resources.  On Linux, inspect
+  # procfs with Bash built-ins so cleanup verifies live members without taking
+  # a dependency on the host-specific `ps` utility or its output format.
+  if [ -r /proc/self/stat ]; then
+    for proc_stat in /proc/[0-9]*/stat; do
+      IFS= read -r stat_line 2>/dev/null < "$proc_stat" || continue
+      stat_tail="${stat_line##*) }"
+      [ "$stat_tail" != "$stat_line" ] || continue
+      read -r state parent process_group _ <<< "$stat_tail"
+      if [ "$process_group" = "$1" ] && [ "$state" != Z ]; then
+        return 0
+      fi
+    done
+    return 1
+  fi
   # Bash's job-control mode below starts each background job in a process
   # group whose ID is its leader PID.  Probe that group with the shell builtin
-  # instead of depending on the host-specific `ps` command and output format.
+  # on platforms without procfs.
   kill -0 -- "-$1" 2>/dev/null
 }
 
