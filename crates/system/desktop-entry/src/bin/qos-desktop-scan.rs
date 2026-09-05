@@ -158,10 +158,11 @@ fn print_listing(scan: &Scan, show_exec: bool, filter: Option<&str>) {
     }
     let s = &scan.stats;
     println!(
-        "declined: {} shadowed, {} tombstoned, {} not-an-application, {} no-exec, \
+        "declined: {} shadowed, {} duplicate aliases, {} tombstoned, {} not-an-application, {} no-exec, \
          {} no-display, {} other-desktop, {} try-exec-missing, {} unparseable \
          (out of {} files seen)",
         s.shadowed,
+        s.duplicate_aliases,
         s.tombstoned,
         s.not_an_application,
         s.no_exec,
