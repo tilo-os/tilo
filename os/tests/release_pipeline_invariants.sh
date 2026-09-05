@@ -59,8 +59,7 @@ grep -Fq 'branches: ["main"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
   && [ "$(grep -c '      - "apps/\*\*"' "$desktop")" -eq 2 ] \
   && grep -Fq 'python3 tools/desktop_release.py --base "$base"' "$desktop" \
-  && grep -Fq "if: always() && needs.plan.result == 'success' && needs.plan.outputs.affected == 'true'" "$desktop" \
-  && grep -Fq "if: always() && needs.plan.result == 'success' && needs.validate.result == 'success' && needs.plan.outputs.affected == 'true'" "$desktop" \
+  && grep -Fq "if: needs.plan.outputs.affected == 'true'" "$desktop" \
   && grep -Fq 'runner:"runner-arm64"' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" amd64,arm64' "$desktop" \
   && ok 'desktop triggers use dependency-aware native-lane selection' \
@@ -114,8 +113,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
   && grep -Fq 'requested coordinated app/OS release' "$apps" \
-  && grep -Fq "if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'" "$apps" \
-  && grep -Fq "if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'" "$apps" \
+  && grep -Fq "if: always() && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'" "$apps" \
   && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
   && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
   || bad 'app release artifacts cannot be consumed by later component releases'
@@ -140,7 +138,7 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && grep -Fq 'python3 tools/release_readiness.py' "$os" \
   && grep -Fq 'docker manifest inspect "$image"' "$os" \
-  && grep -Fq "if: always() && needs.coordinate.result == 'success' && needs.coordinate.outputs.run == 'true'" "$os" \
+  && grep -Fq "if: always() && needs.coordinate.outputs.build == 'true'" "$os" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 

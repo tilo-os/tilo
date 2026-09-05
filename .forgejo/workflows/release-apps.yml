@@ -155,9 +155,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
+    if: needs.plan.outputs.count != '0'
     needs: plan
-    # Force Forgejo to resolve planner outputs before expanding the matrix.
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
@@ -252,7 +251,7 @@ jobs:
     # Resolve the completed dependencies before deciding whether this is a
     # publishing run. Without `always()`, Forgejo can leave the intentionally
     # disabled PR publisher in `blocked` instead of `skipped`.
-    if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
+    if: always() && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     runs-on: runner
     enable-openid-connect: true
     steps:

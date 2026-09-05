@@ -81,7 +81,7 @@ jobs:
   coordinate:
     runs-on: runner
     outputs:
-      run: ${{ steps.decide.outputs.run }}
+      build: ${{ steps.decide.outputs.run }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Wait for immutable component channels and deduplicate releases
@@ -175,10 +175,9 @@ jobs:
 
   build-and-push:
     needs: coordinate
-    # Forgejo can leave a needs-output-only conditional job in `blocked`
-    # after the prerequisite succeeds. `always()` makes the scheduler resolve
-    # the completed dependency before evaluating its output.
-    if: always() && needs.coordinate.result == 'success' && needs.coordinate.outputs.run == 'true'
+    # `always()` makes a deliberately deferred coordinated run resolve as a
+    # clean skip instead of leaving its final job in Forgejo's blocked state.
+    if: always() && needs.coordinate.outputs.build == 'true'
     runs-on: runner
     # A wedged linker or BuildKit daemon must eventually release the serialized
     # OS generation lock. Cold browser-enabled builds fit comfortably inside
