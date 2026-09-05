@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::num::NonZeroU64;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -79,6 +80,29 @@ const CPU_METADATA_PATH_BBOX_LABEL: &str = "vello.path_bbox_buf";
 const CPU_METADATA_DRAW_REDUCED_LABEL: &str = "vello.draw_reduced_buf";
 const CPU_DRAW_PREFIX_SLOT_BYTES: usize = 1 << 20;
 const CPU_DRAW_PREFIX_LABEL: &str = "vello.draw_monoid_buf";
+
+/// Production performance features are on unless explicitly disabled.
+///
+/// Keeping this policy pure lets tests cover the release defaults without
+/// mutating process-global environment state.
+fn default_enabled_from_value(value: Option<&OsStr>) -> bool {
+    !matches!(value, Some(value) if value == "0")
+}
+
+pub(crate) fn default_enabled_from_env(name: &str) -> bool {
+    default_enabled_from_value(std::env::var_os(name).as_deref())
+}
+
+fn compute_batch_from_value(value: Option<&OsStr>) -> u8 {
+    match value {
+        Some(value) if value == "0" => 0,
+        // Retain the former conservative mode for an explicit A/B override.
+        Some(value) if value == "1" => 1,
+        Some(value) if value == "2" => 2,
+        // The production default is the mode that also folds deferred frees.
+        _ => 2,
+    }
+}
 
 #[derive(Default)]
 struct CpuPathtagPool {
@@ -1023,11 +1047,8 @@ impl WgpuEngine {
         reason = "an explicitly requested A/B diagnostic must work without application logging"
     )]
     pub fn new(use_cpu: bool, pipeline_cache: Option<PipelineCache>) -> Self {
-        let compute_batch = match std::env::var_os("VELLO_COMPUTE_BATCH").as_deref() {
-            Some(value) if value == "1" => 1,
-            Some(value) if value == "2" => 2,
-            _ => 0,
-        };
+        let compute_batch =
+            compute_batch_from_value(std::env::var_os("VELLO_COMPUTE_BATCH").as_deref());
         let compute_batch_log =
             std::env::var_os("VELLO_COMPUTE_BATCH_LOG").is_some_and(|value| value == "1");
         let gpu_timestamps = std::env::var_os("VELLO_GPU_TIMESTAMPS")
@@ -1047,8 +1068,7 @@ impl WgpuEngine {
         } else {
             GpuDispatchTimestampTracker::Disabled
         };
-        let sparse_fine_enabled =
-            std::env::var_os("VELLO_SPARSE_FINE").is_some_and(|value| value == "1");
+        let sparse_fine_enabled = default_enabled_from_env("VELLO_SPARSE_FINE");
         let sparse_coarse_enabled =
             std::env::var_os("VELLO_SPARSE_COARSE").is_some_and(|value| value == "1");
         if compute_batch_log {
@@ -1067,15 +1087,11 @@ impl WgpuEngine {
                 "vello: compute dispatch batching {state} (max {COMPUTE_BATCH_LIMIT} per pass)"
             );
         }
-        let cpu_pathtag = std::env::var_os("VELLO_CPU_PATHTAG").is_some_and(|value| value == "1");
-        let cpu_pathtag_reuse = !use_cpu
-            && std::env::var_os("VELLO_CPU_PATHTAG_REUSE").is_some_and(|value| value == "1");
-        let cpu_metadata =
-            !use_cpu && std::env::var_os("VELLO_CPU_METADATA").is_some_and(|value| value == "1");
-        let cpu_draw_prefix =
-            !use_cpu && std::env::var_os("VELLO_CPU_DRAW_PREFIX").is_some_and(|value| value == "1");
-        let direct_path_dispatch =
-            std::env::var_os("VELLO_DIRECT_PATH_DISPATCH").is_some_and(|value| value == "1");
+        let cpu_pathtag = default_enabled_from_env("VELLO_CPU_PATHTAG");
+        let cpu_pathtag_reuse = !use_cpu && default_enabled_from_env("VELLO_CPU_PATHTAG_REUSE");
+        let cpu_metadata = !use_cpu && default_enabled_from_env("VELLO_CPU_METADATA");
+        let cpu_draw_prefix = !use_cpu && default_enabled_from_env("VELLO_CPU_DRAW_PREFIX");
+        let direct_path_dispatch = default_enabled_from_env("VELLO_DIRECT_PATH_DISPATCH");
         Self {
             use_cpu,
             pipeline_cache,
@@ -1118,6 +1134,14 @@ impl WgpuEngine {
 
     pub fn set_compute_pass_batching(&mut self, enabled: bool) {
         self.compute_batch = u8::from(enabled);
+    }
+
+    /// Whether shared compute-pass encoding is effective for new recordings.
+    ///
+    /// The release default is mode 2; full CPU and profiler builds retain
+    /// their existing unbatched execution paths.
+    pub fn compute_pass_batching_enabled(&self) -> bool {
+        self.compute_batch != 0 && !self.use_cpu && !cfg!(feature = "wgpu-profiler")
     }
 
     pub fn cpu_pathtag_enabled(&self) -> bool {
@@ -3156,7 +3180,42 @@ mod tests {
     }
 
     #[test]
-    fn direct_path_dispatch_is_default_off_and_excludes_full_cpu() {
+    fn production_defaults_require_an_explicit_zero_to_disable() {
+        assert!(default_enabled_from_value(None));
+        assert!(!default_enabled_from_value(Some(OsStr::new("0"))));
+        assert!(default_enabled_from_value(Some(OsStr::new("1"))));
+        assert!(default_enabled_from_value(Some(OsStr::new("unexpected"))));
+
+        assert_eq!(compute_batch_from_value(None), 2);
+        assert_eq!(compute_batch_from_value(Some(OsStr::new("0"))), 0);
+        assert_eq!(compute_batch_from_value(Some(OsStr::new("1"))), 1);
+        assert_eq!(compute_batch_from_value(Some(OsStr::new("2"))), 2);
+        assert_eq!(compute_batch_from_value(Some(OsStr::new("unexpected"))), 2);
+    }
+
+    #[test]
+    fn promoted_gpu_paths_retain_full_cpu_and_profiler_fallbacks() {
+        let cpu_engine = WgpuEngine {
+            compute_batch: 2,
+            direct_path_dispatch: true,
+            use_cpu: true,
+            ..Default::default()
+        };
+        assert!(!cpu_engine.compute_pass_batching_enabled());
+        assert!(!cpu_engine.direct_path_dispatch_enabled());
+
+        let gpu_engine = WgpuEngine {
+            compute_batch: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            gpu_engine.compute_pass_batching_enabled(),
+            !cfg!(feature = "wgpu-profiler")
+        );
+    }
+
+    #[test]
+    fn direct_path_dispatch_toggle_excludes_full_cpu() {
         let mut engine = WgpuEngine::default();
         assert!(!engine.direct_path_dispatch_enabled());
 
