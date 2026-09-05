@@ -807,6 +807,12 @@ impl Renderer {
         !self.options.use_cpu && self.engine.direct_path_dispatch_enabled()
     }
 
+    /// Whether no-ramp fine passes reuse one engine-owned zero gradient.
+    #[doc(hidden)]
+    pub fn zero_gradient_reuse_enabled(&self) -> bool {
+        self.engine.zero_gradient_reuse_enabled()
+    }
+
     /// Toggle direct GPU path-count/tiling dispatch for A/B comparison.
     #[doc(hidden)]
     pub fn set_direct_path_dispatch_enabled(&mut self, enabled: bool) {
@@ -1098,6 +1104,11 @@ impl Renderer {
         // measurement.
         let measure = !self.options.use_cpu && self.budget.wants_readback();
         let defer_bump_readback = self.defer_bump_readback_enabled();
+        let zero_gradient = if self.engine.zero_gradient_reuse_enabled() {
+            Some(self.engine.ensure_zero_gradient(device, queue))
+        } else {
+            None
+        };
         let (target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
@@ -1109,6 +1120,7 @@ impl Renderer {
             self.budget.budget(),
             measure,
             defer_bump_readback,
+            zero_gradient,
         );
         let external_resources = [ExternalResource::Image(
             *target.as_image().unwrap(),
@@ -1176,6 +1188,11 @@ impl Renderer {
         }
         let measure = self.budget.wants_readback();
         let defer_bump_readback = self.defer_bump_readback_enabled();
+        let zero_gradient = if self.engine.zero_gradient_reuse_enabled() {
+            Some(self.engine.ensure_zero_gradient(device, queue))
+        } else {
+            None
+        };
         let external_damage_tiles = self.prepare_sparse_upload(device, queue);
         let coarse_tiles = self
             .sparse_coarse_supported()
@@ -1203,6 +1220,7 @@ impl Renderer {
             external_damage_tiles,
             coarse_tiles,
             defer_bump_readback,
+            zero_gradient,
         );
         if let Some(proxy) = external_damage_tiles {
             let upload = self
@@ -1498,6 +1516,11 @@ impl Renderer {
         // rendering do not need it for sizing.
         let measure_bump =
             capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
+        let zero_gradient = if self.engine.zero_gradient_reuse_enabled() {
+            Some(self.engine.ensure_zero_gradient(device, queue))
+        } else {
+            None
+        };
         render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
@@ -1511,6 +1534,7 @@ impl Renderer {
             capture_debug,
             None,
             false,
+            zero_gradient,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
@@ -1601,7 +1625,202 @@ impl<'a> DebugDownloads<'a> {
 
 #[cfg(all(test, feature = "wgpu"))]
 mod tests {
-    use super::{FineDamageRect, OverflowLatch, sparse_coarse_tile_bits, sparse_tile_records};
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+        thread,
+    };
+
+    use super::*;
+    use crate::{
+        kurbo::{Affine, Point, Rect},
+        peniko::{Color, ColorStop, Fill, Gradient},
+    };
+
+    struct TestThreadWaker(thread::Thread);
+
+    impl Wake for TestThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(TestThreadWaker(thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => thread::park(),
+            }
+        }
+    }
+
+    fn headless_device() -> Option<(Device, Queue)> {
+        let mut context = util::RenderContext::new();
+        let device_id = block_on(context.device(None))?;
+        let device = context.devices.swap_remove(device_id);
+        Some((device.device, device.queue))
+    }
+
+    fn target(device: &Device) -> TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("vello.zero_gradient_test_target"),
+                size: wgpu::Extent3d {
+                    width: 16,
+                    height: 16,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn solid_scene() -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, 16.0, 16.0),
+        );
+        scene
+    }
+
+    fn gradient_scene() -> Scene {
+        let mut scene = Scene::new();
+        let gradient = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(16.0, 16.0))
+            .with_stops(
+                &[
+                    ColorStop {
+                        offset: 0.0,
+                        color: Color::BLACK.into(),
+                    },
+                    ColorStop {
+                        offset: 1.0,
+                        color: Color::WHITE.into(),
+                    },
+                ][..],
+            );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &gradient,
+            None,
+            &Rect::new(0.0, 0.0, 16.0, 16.0),
+        );
+        scene
+    }
+
+    fn render_params() -> RenderParams {
+        RenderParams {
+            base_color: Color::TRANSPARENT,
+            width: 16,
+            height: 16,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn zero_gradient_reuse_preserves_one_image_and_fine_cache_binding() {
+        let Some((device, queue)) = headless_device() else {
+            return;
+        };
+        let target = target(&device);
+        let mut renderer = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        renderer.engine.set_zero_gradient_reuse_for_test(true);
+        let solid = solid_scene();
+        let params = render_params();
+
+        assert!(renderer.zero_gradient_reuse_enabled());
+        renderer
+            .render_to_texture(&device, &queue, &solid, &target, &params)
+            .unwrap();
+        let first_images = renderer.memory_stats().image_bytes;
+        assert_eq!(first_images, 8, "one-pixel atlas plus zero gradient");
+        assert_eq!(renderer.engine.zero_gradient_test_stats().0, 1);
+        let (fallback_id, fallback_bytes, image_count, atlas_bytes) =
+            renderer.engine.zero_gradient_test_image_state();
+        assert!(fallback_id.is_some());
+        assert_eq!(fallback_bytes, 4);
+        assert_eq!(image_count, 2);
+        assert_eq!(first_images, atlas_bytes + fallback_bytes);
+
+        renderer
+            .render_to_texture(&device, &queue, &solid, &target, &params)
+            .unwrap();
+        let (allocations, cache_hits) = renderer.engine.zero_gradient_test_stats();
+        assert_eq!(allocations, 1);
+        assert!(cache_hits > 0, "second fine pass must reuse its binding");
+        assert_eq!(renderer.memory_stats().image_bytes, first_images);
+
+        renderer.trim_pooled_buffers();
+        assert_eq!(renderer.memory_stats().image_bytes, first_images);
+        renderer
+            .render_to_texture(&device, &queue, &solid, &target, &params)
+            .unwrap();
+        assert_eq!(renderer.engine.zero_gradient_test_stats().0, 1);
+        assert_eq!(renderer.memory_stats().image_bytes, first_images);
+
+        let gradient = gradient_scene();
+        renderer
+            .render_to_texture(&device, &queue, &gradient, &target, &params)
+            .unwrap();
+        assert_eq!(renderer.engine.zero_gradient_test_stats().0, 1);
+        let (gradient_fallback_id, gradient_fallback_bytes, gradient_image_count, gradient_atlas) =
+            renderer.engine.zero_gradient_test_image_state();
+        assert!(gradient_fallback_id == fallback_id);
+        assert_eq!(gradient_fallback_bytes, fallback_bytes);
+        assert_eq!(gradient_image_count, image_count);
+        assert_eq!(
+            renderer.memory_stats().image_bytes,
+            gradient_atlas + gradient_fallback_bytes,
+            "the uploaded gradient ramp must be released after fine"
+        );
+
+        let mut disabled = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        disabled.engine.set_zero_gradient_reuse_for_test(false);
+        assert!(!disabled.zero_gradient_reuse_enabled());
+        disabled
+            .render_to_texture(&device, &queue, &solid, &target, &params)
+            .unwrap();
+        assert_eq!(disabled.engine.zero_gradient_test_stats(), (0, 0));
+        let (disabled_fallback, disabled_bytes, disabled_image_count, disabled_atlas) =
+            disabled.engine.zero_gradient_test_image_state();
+        assert!(disabled_fallback.is_none());
+        assert_eq!(disabled_bytes, 0);
+        assert_eq!(disabled_image_count, 1);
+        assert_eq!(disabled.memory_stats().image_bytes, disabled_atlas);
+        assert_eq!(disabled_atlas, 4);
+    }
 
     #[test]
     fn overflow_latch_survives_a_later_non_overflow_and_is_consumed_once() {
