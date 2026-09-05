@@ -724,6 +724,112 @@ pub struct DesktopControlsConfig {
     pub vim_mode: bool,
 }
 
+/// A stable, per-user identifier for a control that may appear in Quick
+/// Settings.  The compositor deliberately persists identifiers rather than
+/// a rendered grid: availability is a property of the current machine while
+/// the person's ordering is durable intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickSettingsControl {
+    Wifi,
+    Bluetooth,
+    Vpn,
+    NightLight,
+    AirplaneMode,
+    MobileData,
+}
+
+impl QuickSettingsControl {
+    /// A small, useful surface for a typical laptop.  Airplane mode is an
+    /// available extra, not an always-visible destination.
+    pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
+
+    /// Wi-Fi remains reachable even after customisation: it is the recovery
+    /// path for connecting a newly installed desktop to a network.
+    pub fn required(self) -> bool {
+        matches!(self, Self::Wifi)
+    }
+}
+
+/// Quick Settings arrangement stored in the shared settings document.
+///
+/// Missing, unknown and duplicate values are normalised on load.  This both
+/// migrates the old fixed dashboard (which had no saved arrangement) and
+/// lets later releases add controls without corrupting an older layout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuickSettingsConfig {
+    pub controls: Vec<QuickSettingsControl>,
+}
+
+impl Default for QuickSettingsConfig {
+    fn default() -> Self {
+        Self {
+            controls: QuickSettingsControl::DEFAULT.to_vec(),
+        }
+    }
+}
+
+impl QuickSettingsConfig {
+    pub fn normalised(mut self) -> Self {
+        let mut seen = BTreeSet::new();
+        self.controls.retain(|control| seen.insert(*control));
+        if !self.controls.contains(&QuickSettingsControl::Wifi) {
+            self.controls.insert(0, QuickSettingsControl::Wifi);
+        }
+        self
+    }
+
+    pub fn load() -> Self {
+        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
+            "quick_settings",
+        )))
+        .unwrap_or_default()
+        .normalised()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be serialized or persisted.
+    pub fn save(&self) -> std::io::Result<()> {
+        let value =
+            serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
+        super::update_section(
+            "quick_settings",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod quick_settings_tests {
+    use super::{QuickSettingsConfig, QuickSettingsControl};
+
+    #[test]
+    fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
+        let config = QuickSettingsConfig {
+            controls: vec![
+                QuickSettingsControl::NightLight,
+                QuickSettingsControl::NightLight,
+            ],
+        }
+        .normalised();
+        assert_eq!(
+            config.controls,
+            vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
+        );
+    }
+
+    #[test]
+    fn airplane_is_available_but_not_a_default_control() {
+        assert!(
+            !QuickSettingsConfig::default()
+                .controls
+                .contains(&QuickSettingsControl::AirplaneMode)
+        );
+    }
+}
+
 impl DesktopControlsConfig {
     pub fn load() -> Self {
         serde_json::from_value(serde_json::Value::Object(super::load_section(

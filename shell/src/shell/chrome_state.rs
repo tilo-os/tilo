@@ -203,6 +203,10 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
+    /// `true` only when BlueZ reported a physical adapter. Keeping this
+    /// separate from `bluetooth` prevents an unavailable controller from
+    /// looking like a permanently-off switch.
+    pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
     /// Read-only kernel battery snapshot for the quick status row.
@@ -236,6 +240,7 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             wifi: true,
             bluetooth: false,
+            bluetooth_available: false,
             wired: None,
             battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
                 "/nonexistent/qos-power-supply",
