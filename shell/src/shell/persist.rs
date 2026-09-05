@@ -213,9 +213,9 @@ fn strip_foreign_surfaces(tree: &mut WorkspaceTree) {
             }
             strip.window_groups.retain(|group| !group.tabs.is_empty());
         }
-        workspace
-            .shared_surfaces
-            .retain(|surface, _| !removed_surfaces.contains(surface));
+        for surface in &removed_surfaces {
+            workspace.shared_surfaces.unshare(*surface);
+        }
         for collaborator in &mut workspace.collaborators {
             if collaborator
                 .active_tab
@@ -325,13 +325,30 @@ mod tests {
 
     #[test]
     fn live_foreign_surfaces_never_survive_a_state_round_trip() {
-        use crate::shell::state::{Tab, TileContent};
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
+        let survivor = 90_000;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 89_999,
+                tabs: vec![Tab {
+                    id: survivor,
+                    title: "Notes".into(),
+                    tile: TileContent::PeerWindow {
+                        app_id: "qos.notes".into(),
+                        label: "Notes".into(),
+                        note: String::new(),
+                    },
+                }],
+                active_tab: survivor,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
         let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-        let survivor = group.tabs[0].id;
         group.tabs.push(Tab {
             id: 90_001,
             title: "External editor".into(),
@@ -343,6 +360,13 @@ mod tests {
         group.active_tab = 90_001;
 
         save_tree_to(&tree, &path).expect("save");
+        let on_disk: WorkspaceTree =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read durable state"))
+                .expect("decode durable state");
+        assert!(
+            foreign_tabs(&on_disk).is_empty(),
+            "the writer itself must sanitize live ids; load repair is only migration defence"
+        );
         let loaded = load_tree_from(&path).expect("load");
 
         assert!(foreign_tabs(&loaded).is_empty());
@@ -358,12 +382,64 @@ mod tests {
     }
 
     #[test]
+    fn sanitizer_repairs_every_reference_when_the_last_live_group_disappears() {
+        use crate::shell::state::{Collaborator, Tab, TileContent, WindowGroup, WindowWidth};
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let tab_id = 91_001;
+        let surface_id = 91_002;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 91_003,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Ephemeral".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.example.Ephemeral".into(),
+                        surface_id,
+                    },
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        tree.active_group.insert(strip_id, 91_003);
+        tree.workspaces[0].shared_surfaces.share(surface_id, 44);
+        tree.workspaces[0]
+            .collaborators
+            .push(Collaborator::with_active_tab("peer", "Peer", tab_id));
+        tree.continuation_tabs.insert(tab_id);
+        tree.continuation_owned_tabs
+            .insert(tab_id, tree.workspaces[0].room);
+
+        strip_foreign_surfaces(&mut tree);
+
+        assert!(tree.workspaces[0].strips[0].window_groups.is_empty());
+        assert!(!tree.active_group.contains_key(&strip_id));
+        assert!(tree.workspaces[0].shared_surfaces.is_empty());
+        assert_eq!(tree.workspaces[0].collaborators[0].active_tab, None);
+        assert!(!tree.continuation_tabs.contains(&tab_id));
+        assert!(!tree.continuation_owned_tabs.contains_key(&tab_id));
+    }
+
+    #[test]
     fn load_repairs_legacy_foreign_tabs_but_keeps_explicit_placeholders() {
-        use crate::shell::state::{Tab, TileContent};
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("legacy-state.json");
         let mut legacy = WorkspaceTree::bootstrap_default();
+        legacy.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 90_004,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
         let group = &mut legacy.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 90_002,
