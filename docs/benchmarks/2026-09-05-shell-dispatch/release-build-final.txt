@@ -1,0 +1,5 @@
+Command: cargo build -p ui -p shell --release --example ui-perf --example redraw_bench --locked
+Exit: 0
+
+   Compiling shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `release` profile [optimized + debuginfo] target(s) in 4m 54s

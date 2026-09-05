@@ -807,6 +807,12 @@ impl Renderer {
         !self.options.use_cpu && self.engine.direct_path_dispatch_enabled()
     }
 
+    /// Effective initialization-time grid for direct path-count and path-tiling dispatches.
+    #[doc(hidden)]
+    pub fn direct_path_workgroups(&self) -> u32 {
+        self.engine.direct_path_workgroups()
+    }
+
     /// Whether no-ramp fine passes reuse one engine-owned zero gradient.
     #[doc(hidden)]
     pub fn zero_gradient_reuse_enabled(&self) -> bool {

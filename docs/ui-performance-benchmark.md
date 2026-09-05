@@ -2202,3 +2202,38 @@ avoid competing with parallel suites; assertions, fence deadlines, and retry
 policy are unchanged. Nextest is not installed on this host, so CI scheduling
 itself has not been executed locally. No full-workspace or CI-green claim is
 made by these focused checks.
+
+## Native shell dispatch follow-up: evidence, no new optimization promoted
+
+The [dispatch follow-up evidence](benchmarks/2026-09-05-shell-dispatch/README.md)
+adds opt-in, submission-matched GPU stage reporting to the real native-4K
+1,000-action shell harness. Missing/stale/failed samples stay visible, retries
+remain in whole-action latency, and instrumented or non-default direct-grid
+runs cannot pass acceptance. Ordinary rendering defaults remain unchanged.
+
+All three timestamp diagnostics (128, 8, then 1 direct workgroups) capture
+1,000/1,000 matching submissions without recovery. Sparse fine is about
+12 ms mean and coarse about 11 ms; shrinking the direct grids does not remove
+these dominant costs. One group increases path-tiling time to 5.13 ms from
+2.57 ms. Both smaller grids also fail exact native-4K pixel comparisons
+(three bytes differing by one), so neither is qualified for adoption. Passing
+repeats do not erase failures, and no pixel tolerance is relaxed.
+
+The final source-frozen candidate passes 13 shell benchmark tests, including
+the default exact 4K oracle, strict affected-library/example lint, and the
+test-inclusive changed-line/compiler diagnostic check. Both ordinary release
+builds, the reporting-race correction, and all raw failures are recorded.
+
+| Unprofiled native-4K, 1,000 redraws | Mean | p99 | Peak process RSS |
+| --- | ---: | ---: | ---: |
+| Previous `24ff389f5` control | 39.100 ms | 101.620 ms | 538,012 KiB |
+| Current diagnostic-instrumentation candidate | 37.252 ms | 97.533 ms | 537,484 KiB |
+
+Both complete with 999 sparse / one full attempt and no recovery; both
+**fail** the unchanged 8 ms mean / 30 ms p99 gates. This single pair does not
+establish a new speedup, and no RAM/GPU-memory reduction is claimed. The
+earlier retained-damage improvements remain valid separate observations,
+not percentages to compound with this diagnostic checkpoint. Active native
+coarse bins and the remaining sparse-fine cost are the next measured priorities;
+neither this checkpoint nor the software adapter qualifies constant 60 FPS on
+physical 2010 hardware or KMS scanout.

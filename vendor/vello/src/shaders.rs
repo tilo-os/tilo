@@ -54,6 +54,8 @@ pub struct FullShaders {
     pub cpu_draw_prefix_enabled: bool,
     /// Fixed-grid GPU path-count/tiling replaces indirect setup when enabled.
     pub direct_path_dispatch_enabled: bool,
+    /// Initialization-time fixed grid shared by both direct path stages.
+    pub direct_path_workgroups: u32,
 }
 
 #[cfg(feature = "wgpu")]
@@ -358,5 +360,6 @@ pub(crate) fn full_shaders(
         cpu_metadata_enabled: !options.use_cpu && engine.cpu_metadata_enabled(),
         cpu_draw_prefix_enabled: !options.use_cpu && engine.cpu_draw_prefix_enabled(),
         direct_path_dispatch_enabled: !options.use_cpu && engine.direct_path_dispatch_enabled(),
+        direct_path_workgroups: engine.direct_path_workgroups(),
     })
 }
