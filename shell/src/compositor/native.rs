@@ -77,7 +77,7 @@ use crate::compositor::client_input;
 use crate::compositor::drag_feedback;
 use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceService};
 use crate::compositor::foreign;
-use crate::compositor::frame::FrameBuilder;
+use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
@@ -4958,7 +4958,8 @@ pub fn run() -> ! {
             metrics.mark_layout(layout_took);
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
-            let mut scene = if session.is_locked() {
+            let retained_damage_supported = backend.supports_retained_scene_damage();
+            let mut frame_paint = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output, centred on each (single on
                 // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
@@ -5003,15 +5004,19 @@ pub fn run() -> ! {
                         )
                     })
                 };
-                lock_screen::draw_lock_scene_with_wallpaper(
+                FramePaint::full(lock_screen::draw_lock_scene_with_wallpaper(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
                     wallpaper.as_ref(),
-                )
+                ))
             } else {
-                let mut scene = frame_builder.paint();
+                let mut frame_paint = if retained_damage_supported {
+                    frame_builder.paint_with_damage()
+                } else {
+                    FramePaint::full(frame_builder.paint())
+                };
                 // On top of everything, since a drag is over whatever it's over — drawn
                 // here (not by either app) because once the pointer leaves the source window, neither end can paint the carried item.
                 if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
@@ -5019,14 +5024,16 @@ pub fn run() -> ! {
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
                     drag_feedback::draw(
-                        &mut scene,
+                        &mut frame_paint.scene,
                         vello::kurbo::Point::new(cx, cy),
                         label.as_deref(),
                         &theme,
                         frame_builder.text_renderer_mut(),
                     );
+                    // The feedback was appended outside the retained sections.
+                    frame_paint.force_full();
                 }
-                scene
+                frame_paint
             };
             metrics.mark_scene(t_scene_start.elapsed());
             // The selector queued semantic work and closed before this clean
@@ -5039,11 +5046,17 @@ pub fn run() -> ! {
                     portal.drain_capture_requests(
                         &mut capture_executor,
                         &mut frame_builder,
-                        &scene,
+                        &frame_paint.scene,
                         &portal.documents,
                     );
                 }
-                let outcomes = capture_executor.execute_ready(&mut frame_builder, &mut scene);
+                let (outcomes, capture_overlays_appended) =
+                    capture_executor.execute_ready(&mut frame_builder, &mut frame_paint.scene);
+                if capture_overlays_appended {
+                    // Capture chrome is appended after retained sections, including on an
+                    // ordinary live-mirror refresh that has no semantic outcome.
+                    frame_paint.force_full();
+                }
                 for outcome in outcomes {
                     if portal_backend
                         .as_ref()
@@ -5169,7 +5182,7 @@ pub fn run() -> ! {
                     )
                 {
                     match capture_executor
-                        .render_portal_screencast_frame(&mut frame_builder, &scene)
+                        .render_portal_screencast_frame(&mut frame_builder, &frame_paint.scene)
                     {
                         Ok((width, height, rgba)) => {
                             portal.screencast.publish_frame(width, height, rgba);
@@ -5195,15 +5208,15 @@ pub fn run() -> ! {
                     viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                     viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
-                let _ = projection_capture.submit_scene(&scene, clamped_viewport);
+                let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                render_thread_lost = !pipe.submit(scene, OutputId(0));
+                render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
                 true
             } else {
-                backend.submit_frame(&scene, OutputId(0));
+                backend.submit_frame_with_damage(&frame_paint, OutputId(0));
                 false
             };
             if render_thread_lost {
