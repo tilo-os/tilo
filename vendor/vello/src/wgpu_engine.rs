@@ -63,6 +63,8 @@ pub(crate) struct WgpuEngine {
     cpu_draw_prefix: bool,
     cpu_draw_prefix_pool: CpuDrawPrefixPool,
     direct_path_dispatch: bool,
+    /// Fixed direct-dispatch grid selected once at renderer initialization.
+    direct_path_workgroups: u32,
     /// Reuses one explicitly-zeroed image when a scene has no gradient ramps.
     ///
     /// This is deliberately an engine-owned exception to the otherwise
@@ -89,6 +91,7 @@ const CPU_METADATA_PATH_BBOX_LABEL: &str = "vello.path_bbox_buf";
 const CPU_METADATA_DRAW_REDUCED_LABEL: &str = "vello.draw_reduced_buf";
 const CPU_DRAW_PREFIX_SLOT_BYTES: usize = 1 << 20;
 const CPU_DRAW_PREFIX_LABEL: &str = "vello.draw_monoid_buf";
+const DIRECT_PATH_WORKGROUPS_DEFAULT: u32 = 128;
 
 /// Production performance features are on unless explicitly disabled.
 ///
@@ -111,6 +114,18 @@ fn compute_batch_from_value(value: Option<&OsStr>) -> u8 {
         // The production default is the mode that also folds deferred frees.
         _ => 2,
     }
+}
+
+/// Parse the bounded, initialization-only direct path-dispatch diagnostic.
+///
+/// Invalid values deliberately retain the production grid rather than making
+/// an environment typo change rendering work or select an empty dispatch.
+fn direct_path_workgroups_from_value(value: Option<&OsStr>) -> u32 {
+    value
+        .and_then(OsStr::to_str)
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|&workgroups| (1..=DIRECT_PATH_WORKGROUPS_DEFAULT).contains(&workgroups))
+        .unwrap_or(DIRECT_PATH_WORKGROUPS_DEFAULT)
 }
 
 #[derive(Default)]
@@ -1105,6 +1120,9 @@ impl WgpuEngine {
         let cpu_metadata = !use_cpu && default_enabled_from_env("VELLO_CPU_METADATA");
         let cpu_draw_prefix = !use_cpu && default_enabled_from_env("VELLO_CPU_DRAW_PREFIX");
         let direct_path_dispatch = default_enabled_from_env("VELLO_DIRECT_PATH_DISPATCH");
+        let direct_path_workgroups = direct_path_workgroups_from_value(
+            std::env::var_os("VELLO_DIRECT_PATH_WORKGROUPS").as_deref(),
+        );
         let zero_gradient_reuse = default_enabled_from_env("VELLO_ZERO_GRADIENT_REUSE");
         Self {
             use_cpu,
@@ -1118,6 +1136,7 @@ impl WgpuEngine {
             cpu_metadata,
             cpu_draw_prefix,
             direct_path_dispatch,
+            direct_path_workgroups,
             zero_gradient_reuse,
             sparse_fine_enabled,
             sparse_fine_available: sparse_fine_enabled,
@@ -1212,6 +1231,11 @@ impl WgpuEngine {
     /// experiment was requested at construction time.
     pub fn direct_path_dispatch_enabled(&self) -> bool {
         self.direct_path_dispatch && !self.use_cpu
+    }
+
+    /// Effective nonzero workgroup count for both direct path stages.
+    pub fn direct_path_workgroups(&self) -> u32 {
+        self.direct_path_workgroups
     }
 
     /// Whether no-ramp fine passes reuse the engine-owned zero gradient.
@@ -3347,6 +3371,27 @@ mod tests {
         assert!(default_enabled_from_value(None));
         assert!(!default_enabled_from_value(Some(OsStr::new("0"))));
         assert!(default_enabled_from_value(Some(OsStr::new("00"))));
+    }
+
+    #[test]
+    fn direct_path_workgroups_accepts_only_the_bounded_integer_override() {
+        assert_eq!(
+            direct_path_workgroups_from_value(None),
+            DIRECT_PATH_WORKGROUPS_DEFAULT
+        );
+        assert_eq!(direct_path_workgroups_from_value(Some(OsStr::new("1"))), 1);
+        assert_eq!(direct_path_workgroups_from_value(Some(OsStr::new("8"))), 8);
+        assert_eq!(
+            direct_path_workgroups_from_value(Some(OsStr::new("128"))),
+            128
+        );
+        for invalid in ["0", "129", "-1", "1.5", "unexpected"] {
+            assert_eq!(
+                direct_path_workgroups_from_value(Some(OsStr::new(invalid))),
+                DIRECT_PATH_WORKGROUPS_DEFAULT,
+                "invalid diagnostic override {invalid:?} must retain the production grid"
+            );
+        }
     }
 
     #[test]
