@@ -20,12 +20,12 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
-pub mod browser_stub;
 pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
+pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
 mod collaboration_launchpad;
@@ -111,9 +111,9 @@ use ui::widget::{
     context_menu::ContextMenu,
 };
 
-use crate::shell::browser_stub::BrowserStubWidget;
 use crate::shell::editor_app::EditorApp;
 use crate::shell::global_search::GlobalSearch;
+use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
 use crate::shell::sidebar_wheel::SidebarWheel;
@@ -178,7 +178,8 @@ pub struct Shell {
 impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (real PTY, falls back to a `Stub`), Files, Notes, Editor, and a
-    /// Browser stub (Servo not ported).
+    /// Browser chrome. Production launches the packaged WPE-backed browser;
+    /// this in-process workspace mirror uses the same BrowserWidget contract.
     pub fn new_with_default_demo_workspace() -> Self {
         let DemoTabs {
             tabs,
@@ -797,7 +798,7 @@ fn default_demo_tabs() -> DemoTabs {
 
     tabs.push(RuntimeTab::new(
         "Browser",
-        RuntimeTile::App(Box::new(BrowserStubWidget::new())),
+        RuntimeTile::App(Box::new(BrowserWidget::new())),
     ));
 
     DemoTabs {
@@ -907,6 +908,7 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => UiTile::App(Box::new(FileExplorerWidget::new())),
+            ShellKind::Browser => UiTile::App(Box::new(BrowserWidget::new())),
             // Each opens on an empty document — prose the shell wrote would
             // be indistinguishable from prose the user wrote.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {

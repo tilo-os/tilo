@@ -12,7 +12,7 @@
 )]
 
 use crate::common;
-use app_host::install::install_qpkg;
+use app_host::install::{InstallExpectation, install_qpkg, install_verified_qpkg};
 use app_host::registry::Pinning;
 use app_host::store::Store;
 
@@ -48,4 +48,39 @@ fn list_includes_installed_package() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
     assert_eq!(listed[0].pinning, Pinning::Pinned);
+}
+
+fn expectation(bytes: &[u8], id: app_host::PackageId) -> InstallExpectation {
+    let meta = app_registry::qpkg::load(bytes).unwrap();
+    InstallExpectation {
+        package_root: id,
+        publisher: meta.manifest.publisher.identity_bytes().unwrap(),
+        app_id: meta.manifest.package.id,
+        version: meta.manifest.package.version,
+        size_bytes: bytes.len() as u64,
+    }
+}
+
+#[test]
+fn verified_install_binds_every_registry_identity_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let (bytes, id) = common::build_qpkg(1);
+    let mut expected = expectation(&bytes, id);
+    expected.app_id = "dev.qos.impostor".into();
+    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    assert!(
+        store.list().is_empty(),
+        "a rejected identity must not touch the registry"
+    );
+
+    let mut expected = expectation(&bytes, id);
+    expected.publisher[0] ^= 0x80;
+    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    assert!(store.list().is_empty());
+
+    let mut expected = expectation(&bytes, id);
+    expected.size_bytes += 1;
+    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    assert!(store.list().is_empty());
 }

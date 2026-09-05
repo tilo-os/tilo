@@ -71,6 +71,10 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 snow = { version = "0.9", optional = true }
 flate2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
+runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optional = true }
+sha2 = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Encoding-level assertions in the video-surface test: prove a decoded frame
@@ -81,6 +85,7 @@ vello_encoding.workspace = true
 # decodable thumbnail (no network) and prove a search-result row paints the real
 # still. Same crate ui uses for the equivalent image-store test.
 png.workspace = true
+tempfile.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -89,8 +94,9 @@ thin = ["dep:runtime-dylib"]
 # streams real video out of the box. `--shots` and tests stay hermetic at
 # runtime (the live worker is never spawned on the shots path and the watch
 # surface synthesizes frames), so the features only compile the live code in.
-# `grayjay-sync` stays an opt-in extra.
-default = ["live", "media"]
+# Grayjay sync is shipped by default; its network worker still starts only in
+# the live app and fails closed if the host secret broker is unavailable.
+default = ["live", "media", "grayjay-sync"]
 # Real YouTube data. The live backend shells out to **yt-dlp** (the
 # community-maintained extractor) for search / video / channel / streams and
 # keeps `rustypipe` compiled as a fallback source. `--features live` must
@@ -109,9 +115,17 @@ media = [
     "ui/mpris",
 ]
 # Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
-# the live `GrayjaySyncTransport`; the default build keeps only the deterministic
-# `StubTransport`, so nothing here can touch the hermetic path.
-grayjay-sync = ["dep:snow", "dep:flate2", "dep:base64"]
+# the live transport and portal-backed lifecycle. `--no-default-features`
+# retains the deterministic unavailable transport for hermetic consumers.
+grayjay-sync = [
+    "dep:snow",
+    "dep:flate2",
+    "dep:base64",
+    "dep:runtime-portal-xdg",
+    "dep:sha2",
+    "dep:zeroize",
+    "dep:dirs",
+]
 
 [lints]
 workspace = true

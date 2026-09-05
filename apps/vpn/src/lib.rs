@@ -81,3 +81,10 @@ pub fn app_root_demo_add() -> Box<dyn Widget> {
     app.seed_shot_add();
     Box::new(app)
 }
+
+/// Sample-seeded app configured for a named visual-review state.
+pub fn app_root_demo_state(state: &str) -> Box<dyn Widget> {
+    let mut app = VpnApp::new_demo();
+    app.seed_shot_state(state);
+    Box::new(app)
+}

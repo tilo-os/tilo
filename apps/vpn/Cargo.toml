@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+zeroize.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 # The qOS action model: every document-mutating operation is a serializable,

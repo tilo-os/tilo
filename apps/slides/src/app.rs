@@ -979,7 +979,7 @@ impl SlidesApp {
     /// is snapped to its resolved default so a narrow first frame shows the
     /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
     /// once per frame before `compute_chrome`.
-    fn sync_flaps(&mut self, dt: f64) -> SplitLayout {
+    fn sync_flaps(&mut self, dt: f64, reduce_motion: bool) -> SplitLayout {
         let rail = self.rail_layout();
         let insp = self.inspector_layout();
         self.rail_flap.reconcile(rail);
@@ -991,6 +991,9 @@ impl SlidesApp {
             // fall back to the layout default. Re-resolving via reconcile after
             // a fresh open_when_docked would re-snap, so instead just mark done.
             self.flap_uninitialised = false;
+        } else if reduce_motion {
+            self.rail_flap.snap(self.rail_flap.is_open(rail));
+            self.inspector_flap.snap(self.inspector_flap.is_open(insp));
         } else {
             self.rail_flap.tick(rail, dt);
             self.inspector_flap.tick(insp, dt);
@@ -4697,6 +4700,54 @@ impl Widget for SlidesApp {
             SlidesOperation::ShowOverview => self.mode = Mode::Overview,
             SlidesOperation::StartPresentation => self.enter_present(),
             SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::RevealSlide { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealElement {
+                slide,
+                element,
+                edit_text,
+            } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                let Some(target) = self.deck.slides[idx].element(&element) else {
+                    return Err("element no longer exists".into());
+                };
+                if edit_text && target.kind != ElementKind::Text {
+                    return Err("element is not editable text".into());
+                }
+                let text_len = target.text.chars().count();
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.sel = Some(element);
+                self.editing_text = edit_text;
+                if edit_text {
+                    // A text search result restores an immediately useful edit
+                    // state: the exact text resource is selected in full.
+                    self.sel_anchor = 0;
+                    self.caret = text_len;
+                }
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealNotes { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.goto_slide(idx);
+                self.editing_notes = true;
+                self.editing_text = false;
+                self.sel = None;
+                self.scroll_rail_to_current();
+            }
             SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
                 return Err(
                     "presentation file operations require the lifecycle-capable host".into(),
@@ -4883,14 +4934,14 @@ impl Widget for SlidesApp {
             self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
-        self.presentation.expire_transition();
+        self.presentation.expire_transition(theme.reduce_motion);
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
         let now = std::time::Instant::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
-        self.sync_flaps(dt);
+        self.sync_flaps(dt, theme.reduce_motion);
         self.sync_scroll_offsets(dt);
         self.stage_shots_demo();
         match self.mode {
@@ -4957,6 +5008,17 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        if reduced {
+            self.presentation.expire_transition(true);
+            let rail = self.rail_layout();
+            let inspector = self.inspector_layout();
+            self.rail_flap.snap(self.rail_flap.is_open(rail));
+            self.inspector_flap
+                .snap(self.inspector_flap.is_open(inspector));
+        }
     }
 
     /// Present mode wants the surface promoted to true OS fullscreen so the
@@ -5196,26 +5258,13 @@ impl Widget for SlidesApp {
         self.actions.take_committed()
     }
 
-    /// Fold the deck's slides into the unified Ctrl+K palette: a snapshot
-    /// [`SlideSearchProvider`](crate::search_provider::SlideSearchProvider)
-    /// makes every slide findable there by its text-box content or speaker
-    /// notes, alongside the actions the app exports.
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::SlideSearchProvider::new(
             &self.deck,
         ))]
-    }
-
-    /// Navigate to the slide a chosen palette row identifies. The row carries
-    /// the slide's stable id; resolve it to the current index and jump there.
-    /// Navigation is app-local presentation, so the doc args are unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::SlideSearchProvider::parse_action_id(action_id)
-            && let Some(idx) = self.deck.index_of(id)
-        {
-            self.goto_slide(idx);
-            self.scroll_rail_to_current();
-        }
     }
 }
 
@@ -7143,7 +7192,7 @@ mod tests {
         s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
         let mut a = app_with(s);
         a.rect = Rect::new(0.0, 0.0, w, 800.0);
-        a.sync_flaps(0.0);
+        a.sync_flaps(0.0, false);
         a
     }
 
@@ -7335,7 +7384,7 @@ mod tests {
         // flap sync (the real path) — both panels must become overlay flaps and
         // the canvas must span the full width.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
         assert_eq!(
             app.rail_layout(),
             SplitLayout::Overlay,
@@ -7374,7 +7423,7 @@ mod tests {
         a.cur_slide = 0;
         a.bootstrapped = true;
         a.rect = Rect::new(0.0, 0.0, 1280.0, h);
-        a.sync_flaps(0.0);
+        a.sync_flaps(0.0, false);
         a
     }
 
@@ -7483,7 +7532,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
         // Settle the flaps so nothing is mid-animation.
         for _ in 0..3 {
-            app.sync_flaps(1.0);
+            app.sync_flaps(1.0, false);
         }
         assert!(
             !app.needs_animation_frame(),
@@ -7495,6 +7544,20 @@ mod tests {
             app.needs_animation_frame(),
             "a live cross-fade pumps frames"
         );
+    }
+
+    #[test]
+    fn reduced_motion_settles_presentation_navigation_in_one_pass() {
+        let mut app = presenting_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.next_slide(1);
+        assert!(app.presentation.needs_animation_frame());
+
+        Widget::set_motion_reduced(&mut app, true);
+
+        assert!(!app.presentation.needs_animation_frame());
+        assert_eq!(app.presentation.transition_alpha(true), 1.0);
+        assert!(!app.needs_animation_frame());
     }
 
     // --- toolbar overflow menu ---------------------------------------------
@@ -7605,7 +7668,7 @@ mod tests {
         let mut app = app_with(s);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.sel = Some(id);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
         let chrome = app.compute_chrome();
         let el = app.selected_element().expect("a selected element").clone();
         let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
@@ -8294,7 +8357,7 @@ mod tests {
     }
     fn sized(app: &mut SlidesApp, w: f64, h: f64) {
         app.rect = Rect::new(0.0, 0.0, w, h);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
     }
 
     // --- deck title rename (was display-only: set_title had no caller) ------
@@ -9234,5 +9297,53 @@ mod tests {
         assert_eq!(slides.role, ui::a11y::Role::List);
         assert_eq!(slides.children.len(), app.deck.slides.len());
         assert!(slides.children.iter().any(|slide| slide.state.selected));
+    }
+
+    #[test]
+    fn brokered_text_reveal_restores_exact_slide_element_and_selection() {
+        use ui::widget::Widget as _;
+
+        let mut app = SlidesApp::demo(None);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let slide_index = 2;
+        let slide = &app.deck.slides[slide_index];
+        let slide_id = slide.id.clone();
+        let element = slide
+            .elements
+            .iter()
+            .find(|element| element.kind == ElementKind::Text && !element.text.is_empty())
+            .unwrap();
+        let element_id = element.id.clone();
+        let text_len = element.text.chars().count();
+        let payload = serde_json::to_vec(&crate::actions::SlidesOperation::RevealElement {
+            slide: slide_id,
+            element: element_id.clone(),
+            edit_text: true,
+        })
+        .unwrap();
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::SLIDES_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.cur_slide, slide_index);
+        assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
+        assert!(app.editing_text);
+        assert_eq!(
+            app.selection(),
+            Selection {
+                anchor: 0,
+                cursor: text_len,
+            }
+        );
+        assert_eq!(app.mode, Mode::Edit);
     }
 }

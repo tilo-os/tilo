@@ -9,7 +9,8 @@
 //! - [`profile`] — the fixed set of host paths every app may read.
 //! - [`gpu`] — which GPU a launched app renders on, resolved into
 //!   loader manifests and a device to expose.
-//! - [`landlock`] — FS access plan + in-process restriction.
+//! - [`landlock`] / [`landlock_shim`] — FS access planning plus fail-closed
+//!   restriction inside the completed bwrap mount namespace.
 //! - [`seccomp`] — baseline BPF policy.
 //! - [`services`] — well-known service socket resolution.
 //! - [`capabilities`] — workspace grants resolved into binds; the

@@ -121,3 +121,36 @@ fn epoch_increments_once_per_add() {
     let _ = alice_g.add_member_with_commit(carol_kp).unwrap();
     assert_eq!(alice_g.epoch(), epoch_after_bob + 1);
 }
+
+#[test]
+fn multi_party_add_cannot_drop_the_commit() {
+    let (_cid, mut alice_g, _bob_g, carol) = two_member_group_plus_carol();
+    let error = alice_g
+        .add_member(carol.fresh_key_package().unwrap())
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        channel_crypto::Error::CommitPropagationRequired { .. }
+    ));
+    assert_eq!(alice_g.member_count(), 2);
+}
+
+#[test]
+fn removal_commit_advances_survivors_and_excludes_removed_member() {
+    let (cid, mut alice_g, mut bob_g, carol) = two_member_group_plus_carol();
+    let (welcome, add_commit) = alice_g
+        .add_member_with_commit(carol.fresh_key_package().unwrap())
+        .unwrap();
+    bob_g.process_commit(&add_commit).unwrap();
+    let mut carol_g = ChannelGroup::process_welcome(cid, &welcome, carol).unwrap();
+
+    // Alice is leaf 0 and Bob is the first admitted member at leaf 1.
+    let remove_commit = alice_g.remove_member(1).unwrap();
+    carol_g.process_commit(&remove_commit).unwrap();
+    bob_g.process_commit(&remove_commit).unwrap();
+
+    assert_eq!(alice_g.member_count(), 2);
+    assert_eq!(carol_g.member_count(), 2);
+    assert_eq!(alice_g.epoch(), carol_g.epoch());
+    assert!(bob_g.encrypt(b"removed member cannot send").is_err());
+}

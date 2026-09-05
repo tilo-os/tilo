@@ -671,6 +671,21 @@ impl NavShell {
     /// calls), so the slides actually play and settle to no frames at rest
     /// (HIG §5).
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        if theme.reduce_motion {
+            let sidebar_before = self.sidebar_flap.reveal();
+            let push_before = self.push.reveal();
+            self.sidebar_flap.settle(self.sidebar_split_layout());
+            self.push.settle(SplitLayout::Docked);
+            self.animating = false;
+            self.last_tick = Some(Instant::now());
+            if self.sidebar_flap.reveal().to_bits() != sidebar_before.to_bits()
+                || self.push.reveal().to_bits() != push_before.to_bits()
+            {
+                self.recompute_rects();
+                self.place_children(theme, text_renderer);
+            }
+            return;
+        }
         let now = Instant::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
@@ -1742,6 +1757,32 @@ mod tests {
             !ns.needs_animation_frame(),
             "a settled shell requests no frames"
         );
+    }
+
+    #[test]
+    fn reduced_motion_snaps_push_and_drawer_to_their_targets() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Overview);
+        ns.show_detail();
+        ns.open_sidebar();
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let permissions = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &permissions,
+        );
+
+        assert_eq!(ns.push.reveal(), 1.0);
+        assert_eq!(ns.sidebar_flap.reveal(), 1.0);
+        assert!(!ns.needs_animation_frame());
     }
 
     #[test]

@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry};
+use registry_types::{
+    EntryAction, EntryChangeRequest, ModerationEvent, RegistryEntry, SignedRegistrySnapshot,
+};
 
 use crate::allowlist::PublisherAllowlist;
 
@@ -49,7 +51,15 @@ impl Storage {
     /// Returns [`StorageError::Io`] if the state directories can't be created.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
-        for name in ["entries", "pending", "reviews", "quarantined"] {
+        for name in [
+            "entries",
+            "pending",
+            "reviews",
+            "quarantined",
+            "moderation-cases",
+            "transparency",
+            "moderation-requests",
+        ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
         }
@@ -64,6 +74,65 @@ impl Storage {
     /// The `publishers.toml` path.
     pub fn publishers_path(&self) -> PathBuf {
         self.root.join("publishers.toml")
+    }
+
+    /// Public snapshot served to clients. It is written only by the offline
+    /// signing command, never by the HTTP serving process.
+    pub fn snapshot_path(&self) -> PathBuf {
+        self.root.join("published-snapshot.json")
+    }
+
+    /// Loads the currently published owner-signed snapshot, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot exceeds the local size bound, cannot
+    /// be read, or is not valid JSON.
+    pub fn load_snapshot(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        let path = self.snapshot_path();
+        if path
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > 16_777_216)
+        {
+            return Err(StorageError::Parse(
+                "published registry snapshot exceeds 16 MiB".into(),
+            ));
+        }
+        load_json(&path, "published registry snapshot")
+    }
+
+    /// Atomically publishes an owner-signed snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot cannot be encoded or written.
+    pub fn save_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        save_json(&self.snapshot_path(), snapshot)
+    }
+
+    /// Verified current moderation head for inclusion in an owner-signed
+    /// snapshot. Refuses a corrupt or non-contiguous log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transparency log or registry identity cannot
+    /// be read, or if the log's chain, signatures, or role authorization fail.
+    pub fn moderation_head(&self) -> Result<String, StorageError> {
+        let mut events = self.load_transparency::<ModerationEvent>()?;
+        events.sort_by_key(|event| event.sequence);
+        for (index, event) in events.iter().enumerate() {
+            if event.sequence != u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1) {
+                return Err(StorageError::Parse(
+                    "moderation log is not contiguous".into(),
+                ));
+            }
+        }
+        let head = registry_types::verify_transparency_chain(&events, "")
+            .map_err(|error| StorageError::Parse(error.to_string()))?;
+        let identity = self.load_identity()?;
+        registry_types::verify_moderation_authorization(&events, &identity.owner_pubkey_hex)
+            .map_err(|error| StorageError::Parse(error.to_string()))?;
+        Ok(head)
     }
 
     /// Load the server-identity file. Missing → default-empty
@@ -154,6 +223,24 @@ impl Storage {
         self.root
             .join("reviews")
             .join(format!("{}.json", filename_encode(review_id)))
+    }
+
+    fn moderation_case_path(&self, case_id: &str) -> PathBuf {
+        self.root
+            .join("moderation-cases")
+            .join(format!("{}.json", filename_encode(case_id)))
+    }
+
+    fn moderation_request_path(&self, request_id: &str) -> PathBuf {
+        self.root
+            .join("moderation-requests")
+            .join(format!("{}.json", filename_encode(request_id)))
+    }
+
+    fn transparency_path(&self, sequence: u64) -> PathBuf {
+        self.root
+            .join("transparency")
+            .join(format!("{sequence:020}.json"))
     }
 
     /// Process-wide lock used by the server and local reviewer CLI to
@@ -328,6 +415,53 @@ impl Storage {
     /// Returns an error when the review cannot be encoded or persisted.
     pub fn save_review(&self, review: &ReviewRecord) -> Result<(), StorageError> {
         save_json(&self.review_path(&review.review_id), review)
+    }
+
+    pub(crate) fn load_moderation_case<T: serde::de::DeserializeOwned>(
+        &self,
+        case_id: &str,
+    ) -> Result<Option<T>, StorageError> {
+        load_json(&self.moderation_case_path(case_id), "moderation case")
+    }
+
+    pub(crate) fn save_moderation_case<T: Serialize>(
+        &self,
+        case_id: &str,
+        value: &T,
+    ) -> Result<(), StorageError> {
+        save_json(&self.moderation_case_path(case_id), value)
+    }
+
+    pub(crate) fn load_moderation_request<T: serde::de::DeserializeOwned>(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<T>, StorageError> {
+        load_json(
+            &self.moderation_request_path(request_id),
+            "moderation request",
+        )
+    }
+
+    pub(crate) fn save_moderation_request<T: Serialize>(
+        &self,
+        request_id: &str,
+        value: &T,
+    ) -> Result<(), StorageError> {
+        save_json(&self.moderation_request_path(request_id), value)
+    }
+
+    pub(crate) fn load_transparency<T: serde::de::DeserializeOwned>(
+        &self,
+    ) -> Result<Vec<T>, StorageError> {
+        load_json_dir(&self.root.join("transparency"), "transparency record")
+    }
+
+    pub(crate) fn save_transparency<T: Serialize>(
+        &self,
+        sequence: u64,
+        value: &T,
+    ) -> Result<(), StorageError> {
+        save_json(&self.transparency_path(sequence), value)
     }
 }
 

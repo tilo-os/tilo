@@ -74,7 +74,8 @@ pub struct CatalogueApp {
     /// Publisher key the downloaded qpkg must be signed by.
     #[serde(default)]
     pub publisher_pubkey_hex: String,
-    /// `"verified"` or `"tofu"` — see [`TrustLevel`]. Untrusted entries never become a `CatalogueApp`.
+    /// `"publisher-signed"` means publisher and pinned-owner snapshot proofs
+    /// both verified. Untrusted entries never become a `CatalogueApp`.
     pub trust: String,
 }
 
@@ -130,8 +131,7 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
         qpkg_size_bytes: newest.qpkg_size_bytes,
         publisher_pubkey_hex: v.entry.publisher_pubkey_hex.clone(),
         trust: match v.trust {
-            TrustLevel::Verified => "verified".into(),
-            TrustLevel::UnverifiedOwner => "tofu".into(),
+            TrustLevel::PublisherSigned => "publisher-signed".into(),
             // Unreachable — filtered above. Kept total rather than panicking on a shape change.
             TrustLevel::Untrusted => "untrusted".into(),
         },
@@ -248,8 +248,34 @@ mod tests {
     }
 
     fn verified(e: RegistryEntry) -> VerifiedEntry {
-        let mut out = client::classify_entries(vec![e], &"01".repeat(32));
-        out.remove(0)
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+        let mut snapshot = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 10,
+            expires_at_unix: 20,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: vec![registry_types::PublisherAuthorization {
+                pubkey_hex: e.publisher_pubkey_hex.clone(),
+                can_add_new: true,
+            }],
+            entries: vec![e.clone()],
+            owner_signature_hex: String::new(),
+        };
+        registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
+        client::classify_snapshot(
+            &snapshot,
+            &hex::encode(owner.verifying_key().to_bytes()),
+            15,
+        )
+        .map_or(
+            VerifiedEntry {
+                entry: e,
+                trust: TrustLevel::Untrusted,
+            },
+            |mut entries| entries.remove(0),
+        )
     }
 
     #[test]
@@ -262,7 +288,7 @@ mod tests {
         assert_eq!(app.version, "2.0.0");
         assert_eq!(app.registry, "main");
         assert_eq!(app.download_url, "https://apps.example/dev.qos.sheets.qpkg");
-        assert_eq!(app.trust, "verified");
+        assert_eq!(app.trust, "publisher-signed");
     }
 
     /// An entry whose signature does not cover its own metadata must not

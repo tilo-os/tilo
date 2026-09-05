@@ -161,6 +161,12 @@ struct Pending {
     commit: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingReveal {
+    Sheet { sheet_id: String },
+    Cell { sheet_id: String, addr: Addr },
+}
+
 struct MenuButton {
     rect: Rect,
     label: String,
@@ -343,6 +349,9 @@ pub struct SheetsApp {
     /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
+    /// Query-ready workbook projection, rebuilt only when document heads
+    /// change so global search never reads the CRDT synchronously.
+    searchable_sheets: Vec<actions::SearchableSheet>,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
@@ -386,6 +395,7 @@ pub struct SheetsApp {
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
     pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
+    pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -465,6 +475,7 @@ impl SheetsApp {
             formula_char_x: Vec::new(),
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
+            searchable_sheets: Vec::new(),
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
@@ -489,6 +500,7 @@ impl SheetsApp {
             resource_invocation: None,
             resource_result: None,
             pending_resource_io: None,
+            pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
@@ -517,6 +529,7 @@ impl SheetsApp {
     pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: self.sheet_names.clone(),
+            searchable_sheets: self.searchable_sheets.clone(),
             palette_actions: self.native_palette_actions(),
         }
     }
@@ -710,6 +723,11 @@ impl SheetsApp {
     /// activation navigated.
     pub fn active_sheet_index(&self) -> usize {
         self.active_sheet
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_cell(&self) -> Addr {
+        self.grid.active()
     }
 
     /// `--shots`: force the floating status bubble fully visible so a single
@@ -945,6 +963,39 @@ impl SheetsApp {
         self.sheet_colors = SheetsDoc::sheet_colors(doc);
         self.doc_settings = SheetsDoc::doc_settings(doc);
         let cur = self.default_currency();
+        self.searchable_sheets = (0..self.sheet_names.len())
+            .filter_map(|idx| {
+                let id = SheetsDoc::sheet_resource_id(doc, idx)?;
+                let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
+                let values = formula::recalculate(&snap.raw);
+                let mut cells = snap
+                    .raw
+                    .iter()
+                    .map(|(&(col, row), raw)| {
+                        let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
+                            raw.strip_prefix('=')
+                                .and_then(|body| formula::infer_result_format(body, &snap.fmt))
+                                .unwrap_or(CellFormat::General)
+                        });
+                        let display = values
+                            .get(&(col, row))
+                            .map_or_else(String::new, |value| format_value(value, fmt));
+                        actions::SearchableCell {
+                            col,
+                            row,
+                            raw: raw.clone(),
+                            display,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                cells.sort_by_key(|cell| (cell.row, cell.col));
+                Some(actions::SearchableSheet {
+                    id,
+                    name: snap.name,
+                    cells,
+                })
+            })
+            .collect();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
         let values = formula::recalculate(&snap.raw);
 
@@ -3408,6 +3459,12 @@ impl Widget for SheetsApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
         match operation {
             actions::SheetsOperation::ImportCsv { path: None } => {
                 self.begin_import(Interchange::Csv)
@@ -3445,6 +3502,31 @@ impl Widget for SheetsApp {
                     "Showing results".into()
                 };
             }
+            actions::SheetsOperation::RevealSheet { sheet_id } => {
+                if !self
+                    .searchable_sheets
+                    .iter()
+                    .any(|sheet| sheet.id == sheet_id)
+                {
+                    return Err("sheet no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
+            }
+            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
+                if !self.searchable_sheets.iter().any(|sheet| {
+                    sheet.id == sheet_id
+                        && sheet
+                            .cells
+                            .iter()
+                            .any(|cell| cell.col == col && cell.row == row)
+                }) {
+                    return Err("cell no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Cell {
+                    sheet_id,
+                    addr: (col, row),
+                });
+            }
         }
         Ok(true)
     }
@@ -3461,6 +3543,12 @@ impl Widget for SheetsApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
         let direct = match &operation {
             actions::SheetsOperation::ImportCsv { path }
             | actions::SheetsOperation::ImportXlsx { path }
@@ -3549,6 +3637,23 @@ impl Widget for SheetsApp {
                     output: qos_actions::ActionOutput::default(),
                 }
             });
+        }
+        if let Some(reveal) = self.pending_reveal.take() {
+            let (sheet_id, selection) = match reveal {
+                PendingReveal::Sheet { sheet_id } => (sheet_id, (0, 0)),
+                PendingReveal::Cell { sheet_id, addr } => (sheet_id, addr),
+            };
+            if let Some(idx) = SheetsDoc::sheet_index_by_resource_id(state, &sheet_id) {
+                self.switch_sheet(state, idx);
+                self.grid.select_only(selection);
+                self.status = format!(
+                    "Went to {}!{}",
+                    self.sheet_names.get(idx).cloned().unwrap_or_default(),
+                    crate::model::addr_to_a1(selection.0, selection.1)
+                );
+            } else {
+                self.status = "That sheet no longer exists".into();
+            }
         }
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.
@@ -3680,6 +3785,10 @@ impl Widget for SheetsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary bracketing it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -3687,23 +3796,12 @@ impl Widget for SheetsApp {
         self.actions.take_committed()
     }
 
-    /// Fold the workbook's sheets into the unified Ctrl+K palette: a snapshot
-    /// [`SheetSearchProvider`](crate::search_provider::SheetSearchProvider)
-    /// makes every sheet findable there by name, alongside the actions the app
-    /// exports.
+    /// Fold sheets and populated cells into unified search. Every hit names an
+    /// exported resource View action; no app-owned activation callback exists.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::SheetSearchProvider::new(
-            &self.sheet_names,
+            &self.searchable_sheets,
         ))]
-    }
-
-    /// Switch to the sheet a chosen palette row identifies.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id)
-            && idx < self.sheet_names.len()
-        {
-            self.switch_sheet(doc, idx);
-        }
     }
 
     fn handle_event(
@@ -4886,6 +4984,44 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = seeded_app();
+        assert!(!app.grid.formula_view());
+        let toggle = serde_json::to_vec(&actions::SheetsOperation::ToggleFormulaView).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &toggle,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(!app.grid.formula_view());
+
+        let import = serde_json::to_vec(&actions::SheetsOperation::ImportCsv {
+            path: Some("/tmp/wrong-kind.csv".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                actions::SHEETS_OPERATION_TYPE,
+                &import,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.pending_resource_io.is_none());
+        assert!(app.resource_invocation.is_none());
     }
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {

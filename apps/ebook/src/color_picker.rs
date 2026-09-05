@@ -85,6 +85,79 @@ pub(super) struct ColorPicker {
 }
 
 impl ColorPicker {
+    pub(super) fn accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let Some(pick) = self.pick.as_ref() else {
+            return Vec::new();
+        };
+        let current = pick.edit().rgb;
+        let mut controls = self
+            .hits
+            .iter()
+            .filter_map(|(rect, action)| {
+                let (target, name) = match action {
+                    HitAction::Cancel => {
+                        ("books.color.cancel".into(), "Cancel colour change".into())
+                    }
+                    HitAction::Done => ("books.color.done".into(), "Use this colour".into()),
+                    HitAction::Swatch(rgb) => (
+                        format!(
+                            "books.color.swatch:{:02x}{:02x}{:02x}",
+                            rgb[0], rgb[1], rgb[2]
+                        ),
+                        format!("Choose colour #{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]),
+                    ),
+                    HitAction::Swallow => return None,
+                };
+                Some(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_bounds(*rect)
+                        .with_state(AccessState::new().focusable(true))
+                        .with_action_target(target),
+                )
+            })
+            .collect::<Vec<_>>();
+        controls.push(AccessNode::new(Role::StaticText).with_name(format!(
+            "Current colour #{:02X}{:02X}{:02X}",
+            current[0], current[1], current[2]
+        )));
+        vec![
+            AccessNode::new(Role::Dialog)
+                .with_name("Choose colour")
+                .with_state(AccessState::new().modal(true))
+                .with_children(controls),
+        ]
+    }
+
+    pub(super) fn semantic_press(&mut self, target: &str) -> Option<PickerPress> {
+        let action = self.hits.iter().rev().find_map(|(_, action)| {
+            let candidate = match action {
+                HitAction::Cancel => "books.color.cancel".into(),
+                HitAction::Done => "books.color.done".into(),
+                HitAction::Swatch(rgb) => format!(
+                    "books.color.swatch:{:02x}{:02x}{:02x}",
+                    rgb[0], rgb[1], rgb[2]
+                ),
+                HitAction::Swallow => return None,
+            };
+            (candidate == target).then(|| action.clone())
+        })?;
+        match action {
+            HitAction::Cancel => Some(PickerPress::Cancel),
+            HitAction::Done => Some(PickerPress::Done),
+            HitAction::Swatch(rgb) => {
+                let pick = self.pick.as_mut()?;
+                let (hue, sat, val) = rgb_to_hsv(rgb);
+                pick.hue = hue;
+                pick.sat = sat;
+                pick.val = val;
+                Some(PickerPress::Edit(pick.edit()))
+            }
+            HitAction::Swallow => None,
+        }
+    }
+
     pub(super) fn open(&mut self, target: PickTarget, rgb: [u8; 3]) {
         self.pick = Some(Pick::from_rgb(target, rgb));
         self.drag = None;

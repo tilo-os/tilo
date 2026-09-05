@@ -196,3 +196,27 @@ fn deterministic_dkg_for_fixed_seeds() {
     let (a2, _b2) = run_two_device_dkg();
     assert_eq!(a1.group_public_key, a2.group_public_key);
 }
+
+#[test]
+fn device_share_round_trip_restores_a_real_signer() {
+    let (a, b) = run_two_device_dkg();
+    let sealed = a.export_device_secret().unwrap();
+    let restored = ThresholdIdentity::from_device_secret(&sealed, a.total_shares).unwrap();
+    assert_eq!(restored.group_public_key, a.group_public_key);
+    assert_eq!(restored.this_share_index, a.this_share_index);
+
+    let payload = canonical_bytes(&b"after restart".to_vec()).unwrap();
+    let sig = threshold_sign(&restored, &b, &payload);
+    verify_threshold_signature(&restored.group_public_key, &payload, &sig).unwrap();
+}
+
+#[test]
+fn device_share_restore_rejects_truncation_and_impossible_totals() {
+    let (a, _) = run_two_device_dkg();
+    let mut sealed = a.export_device_secret().unwrap();
+    sealed.pop();
+    assert!(ThresholdIdentity::from_device_secret(&sealed, 2).is_err());
+
+    let intact = a.export_device_secret().unwrap();
+    assert!(ThresholdIdentity::from_device_secret(&intact, 1).is_err());
+}

@@ -28,5 +28,8 @@
 mod provider;
 mod registry;
 
-pub use provider::{SearchProvider, SearchResult, fuzzy_score};
+pub use provider::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    fuzzy_score,
+};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};

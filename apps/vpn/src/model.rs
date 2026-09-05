@@ -129,7 +129,7 @@ pub struct Connection {
     /// Absolute path to the real config file this tunnel brings up
     /// (`wg-quick up <path>` / `openvpn --config <path>`). Populated when a
     /// `.conf` / `.ovpn` is imported and persisted to the app's data dir.
-    /// `None` for hand-added stubs that have no real config yet.
+    /// `None` for an incomplete draft that has no imported configuration yet.
     pub config_path: Option<String>,
 }
 
@@ -166,27 +166,19 @@ impl Connection {
     }
 }
 
-/// Build a fresh saved connection stub with placeholder config, as created by
-/// the "add connection" affordances (the add form and the Ctrl+K palette). The
-/// `endpoint` is left blank for the caller to fill from its own input. The id is
-/// minted here, once, at authoring time — so both affordances dispatch a single
-/// [`crate::actions::VpnAction::AddConnection`] carrying an identical payload,
-/// and replay reproduces the exact same connection on a peer.
-pub fn stub_connection(name: &str, kind: ConnKind) -> Connection {
+/// Build an empty connection draft without inventing network configuration.
+///
+/// A draft is not ready to activate until a complete provider configuration is
+/// imported and validated. In particular, this function never guesses an
+/// address, resolver, route, peer identity, or credential.
+pub fn draft_connection(name: &str, kind: ConnKind) -> Connection {
     let name = if name.trim().is_empty() {
         format!("New {}", kind.long_name())
     } else {
         name.trim().to_string()
     };
     let mut c = Connection::new(&name, kind);
-    c.last_used = "Just added".to_string();
-    c.address = "10.0.0.2/32".to_string();
-    c.dns = "1.1.1.1".to_string();
-    c.allowed_ips = "0.0.0.0/0".to_string();
-    c.public_key = match kind {
-        ConnKind::WireGuard => "(import .conf to populate key)".to_string(),
-        ConnKind::OpenVpn => format!("CN={name}"),
-    };
+    c.last_used = "Never".to_string();
     c
 }
 

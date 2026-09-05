@@ -24,7 +24,9 @@ use registry_server::{
     bind_and_run,
 };
 use registry_types::{
-    EntryAction, RegistryEntry, RegistryHandshake, RegistryVersion, sign_change_request,
+    EntryAction, ModerationActorRole, ModerationCase, ModerationMutation, RegistryEntry,
+    RegistryHandshake, RegistryVersion, SignedModerationMutation, SignedRegistrySnapshot,
+    TransparencyPage, sign_change_request, sign_moderation_mutation,
 };
 
 /// Start a server against a fresh tempdir. Returns the bound
@@ -37,6 +39,7 @@ struct Harness {
     storage: Storage,
     allowlist: PublisherAllowlist,
     publisher: SigningKey,
+    owner: SigningKey,
     /// Second publisher who is NOT allowlisted — used for the
     /// negative test.
     outsider: SigningKey,
@@ -67,7 +70,9 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     });
     storage.save_allowlist(&allow).expect("save allowlist");
 
-    let state = AppState::new(storage.clone(), identity, allow.clone());
+    publish_snapshot(&storage, &allow, &owner_key);
+
+    let state = AppState::new(storage.clone(), identity);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let bound = bind_and_run(addr, state).await.expect("bind");
 
@@ -82,8 +87,154 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
         storage,
         allowlist: allow,
         publisher,
+        owner: owner_key,
         outsider,
     }
+}
+
+fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerationMutation {
+    sign_moderation_mutation(
+        request_id.into(),
+        now,
+        now.saturating_add(300),
+        ModerationActorRole::Reporter,
+        ModerationMutation::FileReport {
+            package_id: "dev.qos.editor".into(),
+            category: "security".into(),
+            summary: "Unexpected outbound connection during offline editing".into(),
+            evidence_digest_hex: "ab".repeat(32),
+        },
+        key,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
+    let h = spawn_server(true).await;
+    let entry = sample_entry(&h.publisher, 100);
+    let client = reqwest::Client::new();
+    client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, entry, &h.publisher))
+        .send()
+        .await
+        .unwrap();
+    approve(&h, "dev.qos.editor");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let report = signed_report(&h.outsider, "http-report-one", now);
+    let response = client
+        .post(url(h.addr, "/moderation/mutations"))
+        .json(&report)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let case: ModerationCase = response.json().await.unwrap();
+
+    let retry: ModerationCase = client
+        .post(url(h.addr, "/moderation/mutations"))
+        .json(&report)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retry, case);
+    let fetched: ModerationCase = client
+        .get(url(h.addr, &format!("/moderation/cases/{}", case.case_id)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched, case);
+
+    let page: TransparencyPage = client
+        .get(url(h.addr, "/moderation/transparency?from=1&limit=20"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 1);
+    registry_types::verify_transparency_chain(&page.events, "").unwrap();
+
+    let forged = sign_moderation_mutation(
+        "forged-decision".into(),
+        now,
+        now.saturating_add(300),
+        ModerationActorRole::Reviewer,
+        ModerationMutation::ReviewerDecision {
+            case_id: case.case_id.clone(),
+            decision: registry_types::ModerationDecision::NoAction,
+            reason: "Not enough evidence to establish the reported behavior".into(),
+        },
+        &h.outsider,
+    )
+    .unwrap();
+    assert_eq!(
+        client
+            .post(url(h.addr, "/moderation/mutations"))
+            .json(&forged)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    let owner_decision = sign_moderation_mutation(
+        "owner-decision".into(),
+        now,
+        now.saturating_add(300),
+        ModerationActorRole::Reviewer,
+        ModerationMutation::ReviewerDecision {
+            case_id: case.case_id,
+            decision: registry_types::ModerationDecision::NoAction,
+            reason: "Not enough evidence to establish the reported behavior".into(),
+        },
+        &h.owner,
+    )
+    .unwrap();
+    assert_eq!(
+        client
+            .post(url(h.addr, "/moderation/mutations"))
+            .json(&owner_decision)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn oversized_moderation_body_is_rejected_before_parse_or_disk_write() {
+    let h = spawn_server(true).await;
+    let response = reqwest::Client::new()
+        .post(url(h.addr, "/moderation/mutations"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body("x".repeat(70 * 1024))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    let page: TransparencyPage = reqwest::Client::new()
+        .get(url(h.addr, "/moderation/transparency?from=1&limit=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(page.events.is_empty());
 }
 
 fn approve(h: &Harness, package_id: &str) {
@@ -92,6 +243,42 @@ fn approve(h: &Harness, package_id: &str) {
     moderation
         .approve(&pending, "test-owner", "reviewed", 500, &h.allowlist)
         .expect("approve queued submission");
+    publish_snapshot(&h.storage, &h.allowlist, &h.owner);
+}
+
+fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &SigningKey) {
+    let previous = storage.load_snapshot().unwrap();
+    let mut entries = storage.load_entries().unwrap();
+    entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        sequence: previous
+            .as_ref()
+            .map_or(1, |old| old.sequence.saturating_add(1)),
+        issued_at_unix: now,
+        expires_at_unix: now.saturating_add(86_400),
+        previous_snapshot_hash_hex: previous
+            .as_ref()
+            .map(|old| registry_types::snapshot_hash(old).unwrap())
+            .unwrap_or_default(),
+        moderation_head_hex: storage.moderation_head().unwrap(),
+        publishers: allowlist
+            .publishers
+            .iter()
+            .map(|row| registry_types::PublisherAuthorization {
+                pubkey_hex: row.pubkey_hex.clone(),
+                can_add_new: row.can_add_new,
+            })
+            .collect(),
+        entries,
+        owner_signature_hex: String::new(),
+    };
+    registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
+    storage.save_snapshot(&snapshot).unwrap();
 }
 
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
@@ -133,6 +320,20 @@ async fn health_endpoint_returns_ok() {
         .await
         .expect("decode");
     assert_eq!(body, serde_json::json!({"ok": true}));
+}
+
+#[tokio::test]
+async fn server_refuses_a_tampered_or_expired_published_snapshot() {
+    let h = spawn_server(true).await;
+    let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
+    snapshot.expires_at_unix = 1;
+    h.storage.save_snapshot(&snapshot).unwrap();
+    let response = reqwest::Client::new()
+        .get(url(h.addr, "/entries"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -184,7 +385,7 @@ async fn signed_post_stays_private_until_approval() {
         "network retries must not create duplicate review work"
     );
 
-    let before: Vec<RegistryEntry> = client
+    let before: SignedRegistrySnapshot = client
         .get(url(h.addr, "/entries"))
         .send()
         .await
@@ -192,12 +393,15 @@ async fn signed_post_stays_private_until_approval() {
         .json()
         .await
         .expect("decode");
-    assert!(before.is_empty(), "pending apps must not enter search");
+    assert!(
+        before.entries.is_empty(),
+        "pending apps must not enter search"
+    );
     assert!(h.storage.load_entry(&entry.package_id).unwrap().is_none());
     assert!(h.storage.load_pending(&entry.package_id).unwrap().is_some());
 
     approve(&h, &entry.package_id);
-    let list: Vec<RegistryEntry> = client
+    let list: SignedRegistrySnapshot = client
         .get(url(h.addr, "/entries"))
         .send()
         .await
@@ -205,16 +409,16 @@ async fn signed_post_stays_private_until_approval() {
         .json()
         .await
         .expect("decode approved");
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].package_id, entry.package_id);
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].package_id, entry.package_id);
     assert_eq!(
-        list[0].signature_hex.len(),
+        list.entries[0].signature_hex.len(),
         128,
         "server preserves entry sig"
     );
 
     // GET /entries/<id> returns the same row.
-    let single: RegistryEntry = client
+    let single: SignedRegistrySnapshot = client
         .get(url(h.addr, "/entries/dev.qos.editor"))
         .send()
         .await
@@ -222,7 +426,7 @@ async fn signed_post_stays_private_until_approval() {
         .json()
         .await
         .expect("decode");
-    assert_eq!(single, list[0]);
+    assert_eq!(single, list);
 }
 
 #[tokio::test]
@@ -254,7 +458,7 @@ async fn add_then_update_bumps_stored_entry() {
         .expect("v2 send");
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 
-    let still_v1: RegistryEntry = client
+    let still_v1: SignedRegistrySnapshot = client
         .get(url(h.addr, "/entries/dev.qos.editor"))
         .send()
         .await
@@ -262,12 +466,12 @@ async fn add_then_update_bumps_stored_entry() {
         .json()
         .await
         .expect("decode still-public v1");
-    assert_eq!(still_v1.updated_at_unix, 100);
-    assert_ne!(still_v1.description, "improved editor");
+    assert_eq!(still_v1.entries[0].updated_at_unix, 100);
+    assert_ne!(still_v1.entries[0].description, "improved editor");
 
     approve(&h, "dev.qos.editor");
 
-    let stored: RegistryEntry = client
+    let stored: SignedRegistrySnapshot = client
         .get(url(h.addr, "/entries/dev.qos.editor"))
         .send()
         .await
@@ -275,8 +479,8 @@ async fn add_then_update_bumps_stored_entry() {
         .json()
         .await
         .expect("decode");
-    assert_eq!(stored.description, "improved editor");
-    assert_eq!(stored.updated_at_unix, 200);
+    assert_eq!(stored.entries[0].description, "improved editor");
+    assert_eq!(stored.entries[0].updated_at_unix, 200);
 }
 
 #[tokio::test]

@@ -4,15 +4,16 @@
 #
 # Pack and install with:
 #
-#     cargo build -p store -p pkg-cli -p install --release
+#     cargo build -p store -p pkg-cli --release
 #     mkdir -p target/store-payload/bin
 #     cp target/release/store  target/store-payload/bin/store
 #     target/release/qos-pkg pack \
 #         --manifest apps/store/qos-app.toml \
 #         --payload  target/store-payload \
 #         --output   target/store.qpkg
-#     target/release/qos-install install target/store.qpkg --allow-self-signed
-#     target/release/qos-install run    dev.qos.store
+# The signed OS image provisions this system app and its required app-host
+# capability. Published Store builds are never self-installed from inside the
+# Store sandbox.
 
 [package]
 id       = "dev.qos.store"
@@ -48,6 +49,8 @@ mode = "host"
 [sandbox.services]
 collab     = "optional@1"
 qos-fs     = "optional@1"
+app-host   = "required@1"
+identity   = "optional@1"
 
 [entrypoint]
 bin             = "bin/store"

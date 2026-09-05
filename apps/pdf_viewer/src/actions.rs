@@ -32,7 +32,9 @@ use qos_actions::{
 };
 
 use crate::doc::PdfDoc;
-use crate::model::{AnnoKind, Annotation, Comment, MARGIN, PtRect, Reply, Swatch};
+use crate::model::{
+    AnnoKind, Annotation, Comment, MARGIN, PtRect, Reply, Signature, SignatureInk, Swatch,
+};
 
 /// Registry `type_id` for every PDF-reader action.
 pub const PDF_VIEWER_ACTION_TYPE: &str = "pdf_viewer.action";
@@ -47,6 +49,12 @@ pub enum PdfOperation {
     FitPage,
     FitWidth,
     ToggleSidebar,
+    ToggleRail,
+    OpenSearch,
+    GoToPage { page: usize },
+    DuplicatePage { page: usize },
+    DeletePage { page: usize },
+    MovePage { from: usize, to: usize },
     Open { path: Option<String> },
     SaveAs { path: Option<String> },
 }
@@ -78,6 +86,12 @@ mod file_action_tests {
     }
 }
 
+/// Decode a PDF Viewer operation envelope.
+///
+/// # Errors
+///
+/// Returns a JSON decoding error when `type_id` identifies this operation
+/// family but `payload` is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PdfOperation>, String> {
     if type_id != PDF_VIEWER_OPERATION_TYPE {
         return Ok(None);
@@ -87,6 +101,11 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PdfOpera
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::expect_used,
+    clippy::needless_pass_by_value,
+    reason = "the owned enum is inspected after serialization and contains no fallible serde fields"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) -> ActionSpec {
     let spec = ActionSpec::operation(id, label, kind, PDF_VIEWER_OPERATION_TYPE, &value)
         .expect("PdfOperation is always serializable");
@@ -98,8 +117,15 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) ->
         | PdfOperation::NextPage
         | PdfOperation::ZoomIn
         | PdfOperation::ZoomOut
-        | PdfOperation::ToggleSidebar => spec.with_contract(ActionContract::view()),
-        PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => spec.destructive(),
+        | PdfOperation::ToggleSidebar
+        | PdfOperation::ToggleRail
+        | PdfOperation::OpenSearch
+        | PdfOperation::GoToPage { .. } => spec.with_contract(ActionContract::view()),
+        PdfOperation::Open { .. }
+        | PdfOperation::SaveAs { .. }
+        | PdfOperation::DuplicatePage { .. }
+        | PdfOperation::DeletePage { .. }
+        | PdfOperation::MovePage { .. } => spec.destructive(),
     }
 }
 
@@ -127,7 +153,7 @@ fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
             };
             EncodedAction {
                 type_id: PDF_VIEWER_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("PdfOperation serializes"),
+                payload: serde_json::to_vec(&operation).unwrap_or_default(),
             }
         },
     )
@@ -199,13 +225,22 @@ pub enum PdfViewerAction {
         author: String,
     },
     /// Recolour an existing annotation.
-    SetAnnotationColor { id: String, color: String },
+    SetAnnotationColor {
+        id: String,
+        color: String,
+    },
     /// Move an annotation's anchor (the draggable sticky-note marker). A no-op
     /// for ink, whose geometry is the polyline rather than a single anchor.
-    SetAnnotationPosition { id: String, x: f64, y: f64 },
+    SetAnnotationPosition {
+        id: String,
+        x: f64,
+        y: f64,
+    },
     /// Delete an annotation. Its anchored comments are removed with it, so a
     /// deleted note never leaves a dangling thread behind.
-    DeleteAnnotation { id: String },
+    DeleteAnnotation {
+        id: String,
+    },
     /// Create a sticky note: a `Note` annotation plus the empty (or prompted)
     /// comment pinned to it. Both ids are minted at authoring time.
     CreateNote {
@@ -221,9 +256,15 @@ pub enum PdfViewerAction {
         body: String,
     },
     /// Replace a comment's body text (the inline editor / palette edit).
-    SetCommentBody { id: String, body: String },
+    SetCommentBody {
+        id: String,
+        body: String,
+    },
     /// Set a comment's resolved flag (the resolve chip toggles it).
-    SetCommentResolved { id: String, resolved: bool },
+    SetCommentResolved {
+        id: String,
+        resolved: bool,
+    },
     /// Append a reply to a comment thread.
     AddReply {
         comment_id: String,
@@ -233,10 +274,32 @@ pub enum PdfViewerAction {
     /// Delete a comment. If it pins a sticky note, the note annotation is
     /// removed too (its cascade drops this comment and any siblings), matching
     /// the on-page rail's delete. Decided deterministically against the doc.
-    DeleteComment { id: String },
+    DeleteComment {
+        id: String,
+    },
+    /// Place a signature using the exact user-authored ink carried by the
+    /// envelope, so peers and history replay the same mark.
+    AddSignature {
+        id: String,
+        page: usize,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        signer: String,
+        date: String,
+        strokes: Option<Vec<Vec<(f64, f64)>>>,
+    },
+    DeleteSignature {
+        id: String,
+    },
 }
 
 impl Action for PdfViewerAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive deterministic reducer keeps every collaborative PDF mutation auditable"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             PdfViewerAction::AddAnnotation {
@@ -330,6 +393,32 @@ impl Action for PdfViewerAction {
                 }
                 PdfDoc::delete_comment(doc, id);
             }
+            PdfViewerAction::AddSignature {
+                id,
+                page,
+                x,
+                y,
+                w,
+                h,
+                signer,
+                date,
+                strokes,
+            } => PdfDoc::add_signature(
+                doc,
+                &Signature {
+                    id: id.clone(),
+                    page: *page,
+                    rect: PtRect::new(*x, *y, *w, *h),
+                    signer: signer.clone(),
+                    date: date.clone(),
+                    ink: strokes.as_ref().map_or(SignatureInk::Typed, |strokes| {
+                        SignatureInk::Drawn {
+                            strokes: strokes.clone(),
+                        }
+                    }),
+                },
+            ),
+            PdfViewerAction::DeleteSignature { id } => PdfDoc::delete_signature(doc, id),
         }
         Ok(())
     }
@@ -448,6 +537,27 @@ pub fn delete_comment_action(id: &str) -> PdfViewerAction {
     PdfViewerAction::DeleteComment { id: id.to_string() }
 }
 
+pub fn add_signature_action(signature: &Signature) -> PdfViewerAction {
+    PdfViewerAction::AddSignature {
+        id: signature.id.clone(),
+        page: signature.page,
+        x: signature.rect.x,
+        y: signature.rect.y,
+        w: signature.rect.w,
+        h: signature.rect.h,
+        signer: signature.signer.clone(),
+        date: signature.date.clone(),
+        strokes: match &signature.ink {
+            SignatureInk::Typed => None,
+            SignatureInk::Drawn { strokes } => Some(strokes.clone()),
+        },
+    }
+}
+
+pub fn delete_signature_action(id: &str) -> PdfViewerAction {
+    PdfViewerAction::DeleteSignature { id: id.to_string() }
+}
+
 // ===========================================================================
 // The resource tree published to Ctrl+K.
 // ===========================================================================
@@ -466,6 +576,11 @@ pub struct PdfResourceCtx {
     pub author: String,
     /// Base ordinal for a palette-authored comment's stable sort.
     pub created_seed: i64,
+    /// Current bounded find projection. Search itself stays local view state;
+    /// each materialized hit is still navigable by agents and history.
+    pub search_query: String,
+    pub search_pages: Vec<usize>,
+    pub outline: Vec<(String, usize, u8)>,
 }
 
 /// Build an immediate action spec, or `None` if `action` cannot be
@@ -548,6 +663,10 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
 /// Build the resource tree the reader currently has open: the open document, its
 /// annotations (each owning its pinned comments), and any free comments — every
 /// document-mutating operation exported as an action.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resource tree is deliberately assembled in one linear document hierarchy"
+)]
 pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new(
         format!("pdf.document:{}", ctx.doc_id),
@@ -598,6 +717,18 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             OperationKind::View,
             PdfOperation::ToggleSidebar,
         ),
+        (
+            "toggle-pages",
+            "Toggle page thumbnails",
+            OperationKind::View,
+            PdfOperation::ToggleRail,
+        ),
+        (
+            "find",
+            "Find in document",
+            OperationKind::View,
+            PdfOperation::OpenSearch,
+        ),
     ] {
         let mut spec = operation(id, label, kind, value.clone());
         if value == PdfOperation::PreviousPage && ctx.page <= 1 {
@@ -610,6 +741,96 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
     }
     root = root.with_action(file_operation("open", "Open PDF", false));
     root = root.with_action(file_operation("save-as", "Save annotated PDF", true));
+
+    for page in 1..=ctx.page_count {
+        let mut page_resource = Resource::new(
+            format!("pdf.page:{}:{page}", ctx.doc_id),
+            "pdf.page",
+            format!("Page {page}"),
+        )
+        .with_action(operation(
+            "open",
+            "Go to page",
+            OperationKind::View,
+            PdfOperation::GoToPage { page },
+        ));
+        page_resource = page_resource.with_action(operation(
+            "duplicate",
+            "Duplicate page",
+            OperationKind::Effect,
+            PdfOperation::DuplicatePage { page },
+        ));
+        if ctx.page_count > 1 {
+            page_resource = page_resource.with_action(operation(
+                "delete",
+                "Delete page",
+                OperationKind::Effect,
+                PdfOperation::DeletePage { page },
+            ));
+        }
+        if page > 1 {
+            page_resource = page_resource.with_action(operation(
+                "move-up",
+                "Move page up",
+                OperationKind::Effect,
+                PdfOperation::MovePage {
+                    from: page,
+                    to: page - 1,
+                },
+            ));
+        }
+        if page < ctx.page_count {
+            page_resource = page_resource.with_action(operation(
+                "move-down",
+                "Move page down",
+                OperationKind::Effect,
+                PdfOperation::MovePage {
+                    from: page,
+                    to: page + 1,
+                },
+            ));
+        }
+        root = root.with_child(page_resource);
+    }
+
+    for (index, (title, page, _level)) in ctx.outline.iter().enumerate() {
+        root = root.with_child(
+            Resource::new(
+                format!("pdf.outline:{}:{index}", ctx.doc_id),
+                "pdf.outline-item",
+                title.clone(),
+            )
+            .with_action(operation(
+                "open",
+                &format!("Go to page {page}"),
+                OperationKind::View,
+                PdfOperation::GoToPage { page: *page },
+            )),
+        );
+    }
+    if !ctx.search_query.trim().is_empty() {
+        let mut search = Resource::new(
+            format!("pdf.search:{}", ctx.doc_id),
+            "pdf.search",
+            format!("Find results for “{}”", ctx.search_query),
+        );
+        for (index, page) in ctx.search_pages.iter().copied().take(100).enumerate() {
+            search = search.with_child(
+                Resource::new(
+                    format!("pdf.search-result:{}:{index}", ctx.doc_id),
+                    "pdf.search-result",
+                    format!("Match {} · page {page}", index + 1),
+                )
+                .with_action(operation(
+                    "open",
+                    "Go to match",
+                    OperationKind::View,
+                    PdfOperation::GoToPage { page },
+                )),
+            );
+        }
+        root = root.with_child(search);
+    }
 
     // Document-level: add a sticky note carrying the prompted text at the
     // current page's top margin. The ids are minted once when the argument is
@@ -685,6 +906,31 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         root = root.with_child(comment_resource(c, &ctx.author));
     }
 
+    for signature in PdfDoc::list_signatures(doc) {
+        let label = format!("Signature by {} · p.{}", signature.signer, signature.page);
+        let mut resource = Resource::new(
+            format!("pdf.signature:{}", signature.id),
+            "pdf.signature",
+            label,
+        );
+        if let Some(spec) = encode_spec(
+            "delete",
+            "Delete signature",
+            &delete_signature_action(&signature.id),
+        ) {
+            resource = resource.with_action(spec);
+        }
+        resource = resource.with_action(operation(
+            "open",
+            "Go to signature",
+            OperationKind::View,
+            PdfOperation::GoToPage {
+                page: signature.page,
+            },
+        ));
+        root = root.with_child(resource);
+    }
+
     vec![root]
 }
 
@@ -746,6 +992,20 @@ mod tests {
         assert_eq!(document.kind, "pdf.document");
         let doc_actions: Vec<&str> = document.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(doc_actions.contains(&"add-note"), "{doc_actions:?}");
+        let page = document
+            .children
+            .iter()
+            .find(|r| r.kind == "pdf.page")
+            .expect("page resource");
+        assert!(page.actions.iter().any(|action| action.id == "duplicate"));
+        assert!(page.actions.iter().any(|action| action.id == "delete"));
+        assert!(
+            document
+                .children
+                .iter()
+                .any(|r| r.kind == "pdf.outline-item")
+        );
+        assert!(document.children.iter().any(|r| r.kind == "pdf.signature"));
 
         // An annotation resource owning at least one nested comment.
         let anno = document
@@ -789,6 +1049,31 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete comment")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn signature_actions_round_trip_through_the_registry() {
+        let mut doc = AutoCommit::new();
+        let signature = Signature {
+            id: "sig-action".into(),
+            page: 2,
+            rect: PtRect::new(10.0, 20.0, 180.0, 56.0),
+            signer: "Ada".into(),
+            date: "2026-09-05".into(),
+            ink: SignatureInk::Drawn {
+                strokes: vec![vec![(0.0, 0.5), (1.0, 0.5)]],
+            },
+        };
+        let encoded = encode(&add_signature_action(&signature));
+        let decoded = registry().decode(&encoded).unwrap();
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        assert_eq!(PdfDoc::list_signatures(&doc)[0].ink, signature.ink);
+
+        let encoded = encode(&delete_signature_action(&signature.id));
+        let decoded = registry().decode(&encoded).unwrap();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
+        assert!(PdfDoc::list_signatures(&doc).is_empty());
     }
 
     /// Deleting an annotation through its action removes the annotation *and*

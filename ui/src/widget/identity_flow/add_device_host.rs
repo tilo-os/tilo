@@ -11,8 +11,9 @@
 //! screen advances. The screen itself is *passive* — it just renders
 //! state and reports back when the protocol completes. Driving the
 //! actual round-2 receive happens in the shell-side
-//! `identity_provisioning` module via the broker shim; tests
-//! drive the same path through the in-memory `PairingHandshake`.
+//! `identity_provisioning` module via the bounded, pinned-TLS broker. Focused
+//! unit tests may inject an in-memory `PairingHandshake`; the shell integration
+//! test drives the full protocol over an independent socket.
 
 use std::collections::HashMap;
 
@@ -31,12 +32,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-#[cfg(test)]
-use crate::widget::identity_flow::compute_pairing_mac;
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
-    derive_pairing_mac_key, format_pairing_code, verify_pairing_mac,
+    format_pairing_code,
 };
+#[cfg(test)]
+use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
 use crate::widget::qr::QrWidget;
 
 /// Returned by `host_complete_dkg` — the new key material the host
@@ -46,6 +47,9 @@ use crate::widget::qr::QrWidget;
 pub struct HostDkgOutcome {
     pub completed: bool,
     pub round2_to_pairer: Option<EnrolmentRound2>,
+    /// Host's newly rotated threshold identity. The caller must persist this
+    /// through the device secret provider before reporting success.
+    pub identity: Option<threshold_identity::ThresholdIdentity>,
 }
 
 /// State + rendering for hosting a device-pairing handshake — the QR + short
@@ -62,6 +66,7 @@ pub struct AddDeviceHostScreen {
     session: Option<HostHandshakeState>,
     /// Final-line status, surfaced beneath the QR.
     status: String,
+    completed_identity: Option<threshold_identity::ThresholdIdentity>,
 }
 
 /// Per-handshake state, owned by the host screen.
@@ -100,6 +105,7 @@ impl AddDeviceHostScreen {
             qr: None,
             session: None,
             status: "Begin pairing to see a QR code.".to_string(),
+            completed_identity: None,
         }
     }
 
@@ -135,6 +141,7 @@ impl AddDeviceHostScreen {
             initiator_pk,
             completed: false,
         });
+        self.completed_identity = None;
         self.status = format!(
             "Waiting for the new device. Show them code {}.",
             format_pairing_code(code)
@@ -167,6 +174,23 @@ impl AddDeviceHostScreen {
             .and_then(|s| s.payload.to_json_bytes().ok())
     }
 
+    /// Bind the independently running TLS broker to the already-created
+    /// ceremony and regenerate the QR. This must happen before the QR is
+    /// shown; the endpoint and exact certificate become part of every frame's
+    /// authenticated transcript.
+    pub fn attach_broker(
+        &mut self,
+        endpoint: impl Into<String>,
+        certificate_der: &[u8],
+    ) -> Result<(), IdentityFlowError> {
+        let session = self.session.as_mut().ok_or_else(|| {
+            IdentityFlowError::DecodeFailed("begin pairing before attaching broker".into())
+        })?;
+        session.payload.set_broker(endpoint, certificate_der)?;
+        self.qr = Some(QrWidget::new(session.payload.to_json_bytes()?));
+        Ok(())
+    }
+
     pub fn handshake(&self) -> Option<&HostHandshakeState> {
         self.session.as_ref()
     }
@@ -176,7 +200,7 @@ impl AddDeviceHostScreen {
     /// Verifies the MAC, drains the `DkgSession`, runs
     /// `receive_round2` on it, and produces the host's own round-2
     /// contribution which the pairer needs to finalise. The caller
-    /// (the broker shim) is responsible for publishing that reply
+    /// (the shell broker) is responsible for publishing that reply
     /// back onto the pairing channel.
     ///
     /// # Errors
@@ -185,6 +209,7 @@ impl AddDeviceHostScreen {
     /// round fails.
     pub fn host_complete_dkg(
         &mut self,
+        pairer_round1: EnrolmentRound1,
         reply: EnrolmentRound2,
         mac: [u8; 64],
     ) -> Result<HostDkgOutcome, IdentityFlowError> {
@@ -192,11 +217,13 @@ impl AddDeviceHostScreen {
             .session
             .as_mut()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no active handshake".into()))?;
-        let mac_key = derive_pairing_mac_key(&s.nonce);
-        // The MAC covers the postcard-encoded reply.
-        let reply_bytes = postcard::to_allocvec(&reply)
-            .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
-        if !verify_pairing_mac(&mac_key, &reply_bytes, &mac) {
+        let expected = crate::widget::identity_flow::pairing_transcript_mac(
+            &s.payload,
+            "pairer-to-host",
+            &pairer_round1,
+            &reply,
+        )?;
+        if expected != mac {
             return Err(IdentityFlowError::PairingMacInvalid);
         }
         let mut session = s
@@ -205,22 +232,20 @@ impl AddDeviceHostScreen {
             .ok_or_else(|| IdentityFlowError::DecodeFailed("session already drained".into()))?;
         // The reply is addressed to share index 1 (the host); the pairer is
         // share index 2, so a single round-2 receive completes 2-of-2 DKG.
-        session.receive_round1(&[EnrolmentRound1 {
-            from_share_index: 2,
-            // Stand-in: the pairer's round-1 packet is not published over the
-            // pairing channel, only its round-2 reply is, so there is nothing
-            // real to pass here. `PairingHandshake` needs a pairer→host
-            // round-1 step before this (and the synthesized reply below) can
-            // carry real key material.
-            package_bytes: Vec::new(),
-        }])?;
+        let outgoing = session.receive_round1(&[pairer_round1])?;
+        let round2_to_pairer = outgoing.get(&2).cloned().ok_or_else(|| {
+            IdentityFlowError::DecodeFailed("DKG produced no round-2 packet for share 2".into())
+        })?;
         session.receive_round2(&[reply])?;
+        let mut rng = OsRng;
+        let mut identity =
+            threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+        identity.adopt_dkg_outcome(session)?;
         s.completed = true;
-        // The host's real outgoing round-2 depends on the pairer's round-1
-        // above, which isn't available yet — return a placeholder for now.
         Ok(HostDkgOutcome {
             completed: true,
-            round2_to_pairer: None,
+            round2_to_pairer: Some(round2_to_pairer),
+            identity: Some(identity),
         })
     }
 
@@ -237,8 +262,25 @@ impl AddDeviceHostScreen {
             .as_ref()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no active handshake".into()))?;
         let nonce = s.nonce;
-        if let Some((reply, mac)) = hs.take_pairer_reply(&nonce) {
-            let outcome = self.host_complete_dkg(reply, mac)?;
+        if let Some((round1, reply, mac)) = hs.take_pairer_exchange(&nonce) {
+            let pairer_round1 = round1.clone();
+            let outcome = self.host_complete_dkg(round1, reply, mac)?;
+            if let Some(round2) = outcome.round2_to_pairer.clone() {
+                let payload = self
+                    .session
+                    .as_ref()
+                    .ok_or_else(|| IdentityFlowError::DecodeFailed("session disappeared".into()))?
+                    .payload
+                    .clone();
+                let tag = crate::widget::identity_flow::pairing_transcript_mac(
+                    &payload,
+                    "host-to-pairer",
+                    &pairer_round1,
+                    &round2,
+                )?;
+                hs.publish_host_round2(&nonce, round2, tag);
+            }
+            self.completed_identity = outcome.identity;
             self.status = if outcome.completed {
                 "Device paired.".to_string()
             } else {
@@ -252,6 +294,12 @@ impl AddDeviceHostScreen {
 
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    /// Drain the host's completed threshold identity for immediate secure
+    /// persistence. Pairing is not durable until the caller has done so.
+    pub fn take_completed_identity(&mut self) -> Option<threshold_identity::ThresholdIdentity> {
+        self.completed_identity.take()
     }
 
     // Mirrors `Widget::handle_event`'s parameter list on purpose --
@@ -604,6 +652,9 @@ mod tests {
     #[test]
     fn pairer_reply_with_wrong_mac_is_rejected() {
         let (mut s, nonce) = fixture_host();
+        let mut rng = OsRng;
+        let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let (_session, round1) = pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         let reply = EnrolmentRound2 {
             from_share_index: 2,
             to_share_index: 1,
@@ -612,7 +663,7 @@ mod tests {
         let wrong_key = derive_pairing_mac_key(&[0xFFu8; 16]);
         let payload = postcard::to_allocvec(&reply).unwrap();
         let wrong_mac = compute_pairing_mac(&wrong_key, &payload);
-        let err = s.host_complete_dkg(reply, wrong_mac).unwrap_err();
+        let err = s.host_complete_dkg(round1, reply, wrong_mac).unwrap_err();
         assert!(matches!(err, IdentityFlowError::PairingMacInvalid));
         let _ = nonce; // explicit unused
     }
@@ -622,6 +673,35 @@ mod tests {
         let (mut s, _) = fixture_host();
         let hs = PairingHandshake::new();
         assert!(!s.poll_handshake(&hs).unwrap());
+    }
+
+    #[test]
+    fn broker_handshake_exchanges_both_real_dkg_rounds() {
+        let (mut host, _) = fixture_host();
+        let payload = host.handshake().unwrap().payload.clone();
+        let channel = PairingHandshake::new();
+        let pairer_channel = channel.clone();
+        let pairer = std::thread::spawn(move || {
+            let mut screen = crate::widget::identity_flow::pair_device::PairDeviceScreen::new();
+            screen.perform_pairing(&payload, &pairer_channel).unwrap()
+        });
+        let mut completed = false;
+        for _ in 0..500 {
+            if host.poll_handshake(&channel).unwrap() {
+                completed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(completed);
+        let host_identity = host.take_completed_identity().unwrap();
+        let pairer_identity = pairer.join().unwrap();
+        assert_eq!(
+            host_identity.group_public_key(),
+            pairer_identity.group_public_key()
+        );
+        assert!(!host_identity.is_single_device());
+        assert!(!pairer_identity.is_single_device());
     }
 
     #[test]

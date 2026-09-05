@@ -694,6 +694,13 @@ impl ui::widget::Widget for SnippetsApp {
                 }
                 self.open_snippet(id);
             }
+            actions::SnippetsOperation::RevealTag { tag } => {
+                if !self.library.tags().iter().any(|(known, _)| known == &tag) {
+                    return Err("tag no longer exists".into());
+                }
+                self.search_input.set_text("");
+                self.select(Selection::Tag(tag));
+            }
             actions::SnippetsOperation::FocusSearch => self.search_input.set_focus(true),
         }
         Ok(true)
@@ -730,17 +737,6 @@ impl ui::widget::Widget for SnippetsApp {
         vec![Box::new(
             crate::search_provider::SnippetSearchProvider::new(&self.library),
         )]
-    }
-
-    /// Open the snippet a chosen palette row identifies. Selection is app-local
-    /// presentation (per-peer, never in the shared doc), so the doc args are
-    /// unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id)
-            && self.library.get(id).is_some()
-        {
-            self.open_snippet(id);
-        }
     }
 
     // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a

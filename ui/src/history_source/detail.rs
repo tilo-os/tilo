@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use qos_actions::ActionFacet;
 
-use crate::widget::{HistoryEntry, HistoryEntryId, op_class_is_revertible};
+use crate::widget::{HistoryEntry, HistoryEntryId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryResourceTarget {
@@ -46,9 +46,9 @@ impl HistorySelectionDetail {
             summaries: selected.iter().map(|entry| entry.summary.clone()).collect(),
             can_compare: !selected.is_empty(),
             can_undo: !selected.is_empty()
-                && selected.iter().all(|entry| {
-                    entry.redaction.is_none() && op_class_is_revertible(entry.op_class)
-                }),
+                && selected
+                    .iter()
+                    .all(super::super::widget::history::HistoryEntry::is_revertible),
             contains_unclassified: selected.iter().any(|entry| entry.context.is_none()),
             ..Self::default()
         };

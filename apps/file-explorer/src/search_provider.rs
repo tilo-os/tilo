@@ -14,15 +14,44 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use ui::search::{SearchProvider, SearchResult};
+use ui::qos_actions::ActionAddress;
+use ui::search::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+};
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
 
-/// The `action_id` prefix. A chosen row's `action_id` is `fav:<path>`;
-/// [`parse_action_id`] turns it back into the destination path.
-const ACTION_PREFIX: &str = "fav:";
-const RECORD_ACTION_PREFIX: &str = "record:";
+pub const OPEN_ACTION: &str = "open";
+pub const REVEAL_ACTION: &str = "reveal";
+
+/// Stable resource identity for a local place. Hex keeps the resource/action
+/// wire separator out of ids even when a Unix path contains control bytes.
+pub fn place_resource_id(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let encoded = path
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .fold(String::new(), |mut output, byte| {
+            use std::fmt::Write as _;
+            write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+            output
+        });
+    format!("files.place:{encoded}")
+}
+
+pub fn place_open_address(path: &std::path::Path) -> ActionAddress {
+    ActionAddress::new(place_resource_id(path), OPEN_ACTION)
+}
+
+pub fn record_resource_id(record_id: uuid::Uuid) -> String {
+    format!("files.record:{record_id}")
+}
+
+pub fn record_reveal_address(record_id: uuid::Uuid) -> ActionAddress {
+    ActionAddress::new(record_resource_id(record_id), REVEAL_ACTION)
+}
 
 /// A directory projection is untrusted input. Keep the palette snapshot small
 /// even when a mount exposes an unusually large directory.
@@ -38,23 +67,12 @@ impl PlacesSearchProvider {
     /// Snapshot the current favourites into a provider.
     pub fn new(favorites: Vec<Favorite>) -> Self {
         Self {
-            favorites,
+            favorites: favorites
+                .into_iter()
+                .take(DEFAULT_SEARCH_INDEX_LIMIT)
+                .collect(),
             kind: crate::i18n::t("files-a11y-places"),
         }
-    }
-
-    /// The `action_id` for a place — its destination path is its identity.
-    pub fn action_id(path: &std::path::Path) -> String {
-        format!("{ACTION_PREFIX}{}", path.display())
-    }
-
-    /// Resolve an `action_id` produced by this provider back into a destination
-    /// path. Returns `None` for an id this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<PathBuf> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
     }
 }
 
@@ -64,6 +82,10 @@ impl SearchProvider for PlacesSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let q = query.to_lowercase();
         self.favorites
             .iter()
@@ -72,10 +94,11 @@ impl SearchProvider for PlacesSearchProvider {
                     || f.path.to_string_lossy().to_lowercase().contains(&q)
             })
             .map(|f| {
-                SearchResult::new(&self.kind, f.label.clone(), Self::action_id(&f.path))
+                SearchResult::for_action(&self.kind, f.label.clone(), place_open_address(&f.path))
                     .with_subtitle(f.path.display().to_string())
                     .with_icon(f.icon())
             })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
@@ -117,16 +140,6 @@ impl CollaborativeRecordSearchProvider {
             kind: crate::i18n::t("files-search-collaborative-records"),
         }
     }
-
-    pub fn action_id(record_id: uuid::Uuid) -> String {
-        format!("{RECORD_ACTION_PREFIX}{record_id}")
-    }
-
-    pub fn parse_action_id(action_id: &str) -> Option<uuid::Uuid> {
-        action_id
-            .strip_prefix(RECORD_ACTION_PREFIX)
-            .and_then(|value| uuid::Uuid::parse_str(value).ok())
-    }
 }
 
 impl SearchProvider for CollaborativeRecordSearchProvider {
@@ -135,6 +148,10 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let query = query.to_lowercase();
         self.records
             .iter()
@@ -147,10 +164,10 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
                         .contains(&query)
             })
             .map(|record| {
-                SearchResult::new(
+                SearchResult::for_action(
                     &self.kind,
                     record.name.clone(),
-                    Self::action_id(record.record_id),
+                    record_reveal_address(record.record_id),
                 )
                 .with_subtitle(crate::i18n::t_args(
                     "files-search-record-provenance",
@@ -161,6 +178,7 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
                 ))
                 .with_icon(ui::icons::icon_for_path(&record.provenance, record.is_dir))
             })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
@@ -232,15 +250,17 @@ mod tests {
             .find(|r| r.title == "Documents")
             .expect("Documents is findable");
         assert_eq!(
-            PlacesSearchProvider::parse_action_id(&hit.action_id),
-            Some(PathBuf::from("/home/tester/Documents"))
+            hit.action_address(),
+            Some(place_open_address(
+                PathBuf::from("/home/tester/Documents").as_path()
+            ))
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(PlacesSearchProvider::parse_action_id("contact:42").is_none());
-        assert!(PlacesSearchProvider::parse_action_id("fav:").is_none());
+    fn place_resource_ids_are_wire_safe() {
+        let address = place_open_address(PathBuf::from("/tmp/a\u{1f}b").as_path());
+        assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
     }
 
     #[test]
@@ -251,10 +271,7 @@ mod tests {
         entry.record_id = record_id;
         let provider = CollaborativeRecordSearchProvider::new(&[entry]);
         let hit = provider.search("workspace").pop().expect("path matches");
-        assert_eq!(
-            CollaborativeRecordSearchProvider::parse_action_id(&hit.action_id),
-            Some(record_id)
-        );
+        assert_eq!(hit.action_address(), Some(record_reveal_address(record_id)));
         assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
     }
 
@@ -300,11 +317,24 @@ mod tests {
         let hit = providers[0]
             .search("")
             .into_iter()
-            .find(|r| PlacesSearchProvider::parse_action_id(&r.action_id) == Some(home.clone()))
+            .find(|r| r.action_address() == Some(place_open_address(&home)))
             .expect("the Home favourite is findable through the real hook");
 
-        let mut doc = AutoCommit::new();
-        app.activate_search_result(&hit.action_id, &mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        let address = hit.action_address().expect("canonical action address");
+        let resources = app.resources(&doc);
+        let spec = ui::qos_actions::door::resolve(&resources, &address)
+            .expect("search address is exported");
+        assert_eq!(spec.kind, ui::qos_actions::OperationKind::View);
+        assert_eq!(spec.contract, ui::qos_actions::ActionContract::view());
+        let kind = spec.kind;
+        let encoded =
+            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+                .expect("search address is exported");
+        assert!(
+            app.invoke_resource_operation(kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
+                .unwrap()
+        );
         assert_eq!(
             app.current_path(),
             home,

@@ -66,8 +66,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::{ChatDoc, NewMessage};
@@ -75,6 +75,48 @@ use crate::model::{Attachment, ChannelKind};
 
 /// Registry `type_id` for every Chat action.
 pub const CHAT_ACTION_TYPE: &str = "chat.action";
+pub const CHAT_OPERATION_TYPE: &str = "chat.operation";
+
+/// Local presentation operations exported by Chat's resources. These are
+/// deliberately separate from [`ChatAction`]: opening a conversation, message,
+/// or person changes only this peer's view and must never enter the shared
+/// document or its undo/history stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChatOperation {
+    OpenChannel {
+        workspace: String,
+        channel: String,
+    },
+    RevealMessage {
+        workspace: String,
+        channel: String,
+        message: String,
+        parent: Option<String>,
+    },
+    OpenPerson {
+        user: String,
+    },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ChatOperation>, String> {
+    if type_id != CHAT_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn view_operation(id: &str, label: &str, operation: &ChatOperation) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        CHAT_OPERATION_TYPE,
+        operation,
+    )
+    .expect("ChatOperation is always serializable")
+}
 
 /// Every collaborative operation Chat exports on the shared workspace.
 ///
@@ -731,6 +773,7 @@ pub struct MessageResource {
     pub id: String,
     pub label: String,
     pub pinned: bool,
+    pub parent: Option<String>,
 }
 
 /// The presentation context Chat hands [`provide_resources`]: the local peer id,
@@ -774,8 +817,10 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
 /// all are reversible; only removal of durable rows needs confirmation.
 fn annotate_contracts(resource: &mut Resource) {
     for action in &mut resource.actions {
-        action.contract.reversible = true;
-        if action.id == "delete" {
+        if action.kind == OperationKind::Document {
+            action.contract.reversible = true;
+        }
+        if action.kind == OperationKind::Document && action.id == "delete" {
             let old = action.clone();
             *action = old.destructive();
         }
@@ -800,32 +845,68 @@ fn channel_label(ch: &ChannelResource) -> String {
 /// `chat.message:<id>` per message. Every operation is the same action the
 /// on-screen affordance dispatches.
 pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    if ctx.workspace_id.is_empty() {
-        return Vec::new();
-    }
-    let mut workspace = Resource::new(
-        format!("chat.workspace:{}", ctx.workspace_id),
-        "chat.workspace",
-        if ctx.workspace_name.trim().is_empty() {
-            "Workspace".to_string()
-        } else {
-            ctx.workspace_name.clone()
-        },
-    );
-    workspace = workspace.with_action(new_channel_action_spec(ctx));
+    let users = ChatDoc::list_users(doc);
+    let mut resource_ctx = ctx.clone();
+    resource_ctx.participants = users
+        .iter()
+        .map(|user| crate::mention::Participant {
+            id: user.id.clone(),
+            name: user.name.clone(),
+            is_agent: user.is_agent,
+        })
+        .collect();
+    let all_channels = ChatDoc::list_channels(doc);
+    let mut forest = Vec::new();
+    for ws in ChatDoc::list_workspaces(doc) {
+        let mut workspace = Resource::new(
+            format!("chat.workspace:{}", ws.id),
+            "chat.workspace",
+            if ws.name.trim().is_empty() {
+                "Workspace"
+            } else {
+                &ws.name
+            },
+        )
+        .with_action(new_channel_action_spec(&ws.id));
 
-    for ch in &ctx.channels {
-        let channel = build_channel_resource(ctx, doc, ch);
-        workspace = workspace.with_child(channel);
+        let mut channels = all_channels
+            .iter()
+            .filter(|channel| channel.workspace == ws.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        channels.sort_by_key(|channel| channel.order);
+        for channel in channels {
+            let ch = ChannelResource {
+                id: channel.id.clone(),
+                name: channel.name,
+                kind: channel.kind,
+                archived: channel.archived,
+            };
+            workspace =
+                workspace.with_child(build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]));
+        }
+        annotate_contracts(&mut workspace);
+        forest.push(workspace);
     }
 
-    annotate_contracts(&mut workspace);
-    vec![workspace]
+    let mut people = Resource::new("chat.people", "chat.people", "People");
+    for user in users {
+        people = people.with_child(
+            Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
+                .with_action(view_operation(
+                    "open",
+                    "Open person",
+                    &ChatOperation::OpenPerson { user: user.id },
+                )),
+        );
+    }
+    forest.push(people);
+    forest
 }
 
 /// Workspace-level: create a new text channel in the uncategorised group. The
 /// fresh id is minted once, here, at authoring time (like the on-screen "+").
-fn new_channel_action_spec(ctx: &ChatResourceCtx) -> ActionSpec {
+fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
     ActionSpec::prompted(
         "new-channel",
         "New channel",
@@ -833,7 +914,7 @@ fn new_channel_action_spec(ctx: &ChatResourceCtx) -> ActionSpec {
         "channel name…",
         ExecutionLocus::ClientLocal,
         {
-            let ws = ctx.workspace_id.clone();
+            let ws = workspace_id.to_string();
             move |name: &str| {
                 let name = name.trim();
                 let name = if name.is_empty() { "new-channel" } else { name };
@@ -855,13 +936,23 @@ fn new_channel_action_spec(ctx: &ChatResourceCtx) -> ActionSpec {
 fn build_channel_resource(
     ctx: &ChatResourceCtx,
     doc: &AutoCommit,
+    workspace_id: &str,
     ch: &ChannelResource,
+    messages: &[MessageResource],
 ) -> Resource {
     let mut channel = Resource::new(
         format!("chat.channel:{}", ch.id),
         "chat.channel",
         channel_label(ch),
-    );
+    )
+    .with_action(view_operation(
+        "open",
+        "Open conversation",
+        &ChatOperation::OpenChannel {
+            workspace: workspace_id.to_string(),
+            channel: ch.id.clone(),
+        },
+    ));
 
     // Post a message (Send, from the palette). Id + timestamp minted in the
     // closure at authoring time so the payload is self-contained.
@@ -936,12 +1027,9 @@ fn build_channel_resource(
         &delete_channel_action(&ch.id),
     ));
 
-    // Only the open channel exposes its messages as sub-resources.
-    if ch.id == ctx.active_channel {
-        for m in &ctx.messages {
-            let message = build_message_resource(ctx, ch, m);
-            channel = channel.with_child(message);
-        }
+    for m in messages {
+        let message = build_message_resource(ctx, workspace_id, ch, m);
+        channel = channel.with_child(message);
     }
 
     channel
@@ -950,6 +1038,7 @@ fn build_channel_resource(
 /// A message resource: edit/react (prompted), pin-or-unpin, and delete.
 fn build_message_resource(
     ctx: &ChatResourceCtx,
+    workspace_id: &str,
     ch: &ChannelResource,
     m: &MessageResource,
 ) -> Resource {
@@ -957,7 +1046,17 @@ fn build_message_resource(
         format!("chat.message:{}", m.id),
         "chat.message",
         m.label.clone(),
-    );
+    )
+    .with_action(view_operation(
+        "open",
+        "Reveal message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_string(),
+            channel: ch.id.clone(),
+            message: m.id.clone(),
+            parent: m.parent.clone(),
+        },
+    ));
 
     // Edit — prompted; the edit timestamp is minted in the closure.
     message = message.with_action(ActionSpec::prompted(
@@ -1013,6 +1112,30 @@ fn build_message_resource(
     message
 }
 
+fn message_label(
+    author_id: &str,
+    text: &str,
+    attachment: Option<&crate::model::Attachment>,
+    users: &[crate::model::User],
+) -> String {
+    let author = users
+        .iter()
+        .find(|user| user.id == author_id)
+        .map_or(author_id, |user| user.name.as_str());
+    let body = if text.trim().is_empty() {
+        match attachment {
+            Some(crate::model::Attachment::File { name, .. })
+            | Some(crate::model::Attachment::Image { name, .. })
+            | Some(crate::model::Attachment::Video { name, .. }) => name.as_str(),
+            None => "Attachment",
+        }
+    } else {
+        text.trim()
+    };
+    let snippet = body.chars().take(72).collect::<String>();
+    format!("{author}: {snippet}")
+}
+
 /// Wall-clock seconds since the epoch, used by the prompted palette closures to
 /// mint a send/edit timestamp at authoring time (presentation-side — the closure
 /// never crosses a boundary, only its self-contained [`EncodedAction`] does).
@@ -1026,6 +1149,43 @@ fn now_secs() -> i64 {
 impl ResourceProvider for crate::app::ChatApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.chat_resource_ctx(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let message_id = id.strip_prefix("chat.message:")?;
+        let message = self
+            .search_messages
+            .iter()
+            .find(|message| message.id == message_id)?;
+        let channel = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == message.channel)?;
+        let ch = ChannelResource {
+            id: channel.id.clone(),
+            name: channel.name.clone(),
+            kind: channel.kind,
+            archived: channel.archived,
+        };
+        let ws = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let users = ChatDoc::list_users(doc);
+        let model = MessageResource {
+            id: message.id.clone(),
+            label: message_label(
+                &message.author,
+                &message.text,
+                message.attachment.as_ref(),
+                &users,
+            ),
+            pinned: message.pinned,
+            parent: message.parent.clone(),
+        };
+        let mut resource = build_message_resource(&self.chat_resource_ctx(), &ws.id, &ch, &model);
+        annotate_contracts(&mut resource);
+        Some(resource)
     }
 }
 
@@ -1092,6 +1252,7 @@ mod tests {
                 id: m.id,
                 label: m.text.chars().take(24).collect(),
                 pinned: m.pinned,
+                parent: m.parent,
             })
             .collect();
         ChatResourceCtx {
@@ -1112,15 +1273,16 @@ mod tests {
         }
     }
 
-    /// Ctrl+K on Chat yields the workspace root, a `chat.channel:<id>` per
-    /// channel, and `chat.message:<id>` children under the open channel — each
-    /// exporting the documented actions. Drives the real resource-builder path.
+    /// Ctrl+K keeps the workspace/channel snapshot small while message actions
+    /// remain available through stable lazy resolution.
     #[test]
     fn ctrl_k_publishes_workspace_channel_and_message_tree() {
         let doc = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
-        assert_eq!(resources.len(), 1, "one workspace root");
-        let ws = &resources[0];
+        let ws = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+            .expect("Acme workspace root");
         assert_eq!(ws.kind, "chat.workspace");
         let ws_actions: Vec<&str> = ws.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ws_actions.contains(&"new-channel"), "{ws_actions:?}");
@@ -1140,11 +1302,17 @@ mod tests {
                 "channel missing {want}: {c_actions:?}"
             );
         }
-        assert!(
-            !crit.children.is_empty(),
-            "the open channel exposes its messages"
-        );
-        let msg = &crit.children[0];
+        assert!(crit.children.is_empty(), "messages resolve lazily");
+        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
+        let ctx = ctx_from(&doc);
+        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
+        let msg_model = MessageResource {
+            id: source.id,
+            label: source.text,
+            pinned: source.pinned,
+            parent: source.parent,
+        };
+        let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
         assert_eq!(msg.kind, "chat.message");
         let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["edit", "react", "pin", "delete"] {
@@ -1154,24 +1322,21 @@ mod tests {
             );
         }
 
-        // A non-open channel has no message children (only the open one is loaded).
+        // Non-open channels are exported too, so a global message hit can be
+        // resolved without granting it a private navigation escape hatch.
         let general = ws
             .children
             .iter()
             .find(|c| c.id.as_str() == "chat.channel:c_general")
             .expect("a second channel is present");
-        assert!(
-            general.children.is_empty(),
-            "only the open channel loads messages"
-        );
+        assert!(general.children.is_empty());
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
         let flat = qos_actions::flatten(&resources);
         let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
         assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
-        assert!(flat_labels.contains(&"Delete message"), "{flat_labels:?}");
-        assert!(flat_labels.contains(&"Pin message"), "{flat_labels:?}");
+        assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
 
         // The one palette loads the same tree without error.
         let mut palette = ui::ActionPalette::new();
@@ -1182,6 +1347,28 @@ mod tests {
                 .result_labels()
                 .iter()
                 .any(|l| l.contains("New channel"))
+        );
+    }
+
+    #[test]
+    fn ten_thousand_messages_do_not_expand_the_open_snapshot() {
+        let doc = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.messages = (0..10_000)
+            .map(|id| MessageResource {
+                id: format!("message-{id}"),
+                label: format!("Message {id}"),
+                pinned: false,
+                parent: None,
+            })
+            .collect();
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            resources
+                .iter()
+                .flat_map(|workspace| &workspace.children)
+                .filter(|resource| resource.kind == "chat.channel")
+                .all(|channel| channel.children.is_empty())
         );
     }
 
@@ -1522,12 +1709,21 @@ mod tests {
         );
 
         // Pin-message spec == pin builder.
-        let msg = &crit.children[0];
-        let msg_id = msg
-            .id
-            .as_str()
-            .trim_start_matches("chat.message:")
-            .to_string();
+        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
+        let msg_id = source.id.clone();
+        let ctx = ctx_from(&doc);
+        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
+        let msg = build_message_resource(
+            &ctx,
+            "ws_acme",
+            ch,
+            &MessageResource {
+                id: source.id,
+                label: source.text,
+                pinned: source.pinned,
+                parent: source.parent,
+            },
+        );
         let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
         let from_spec = immediate_encode(pin_spec);
         let from_builder = encode(&pin_message_action("c_crit", &msg_id, true));
@@ -1558,7 +1754,50 @@ mod tests {
             .iter()
             .find(|r| r.id.as_str() == "chat.channel:c_crit")
             .unwrap();
-        assert!(channel.actions.iter().all(|a| a.contract.reversible));
+        assert!(
+            channel
+                .actions
+                .iter()
+                .filter(|action| action.kind == OperationKind::Document)
+                .all(|action| action.contract.reversible)
+        );
+        let open = channel
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .unwrap();
+        assert_eq!(open.kind, OperationKind::View);
+        assert!(!open.contract.reversible);
+        let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
+        let ctx = ctx_from(&doc);
+        let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
+        let message = build_message_resource(
+            &ctx,
+            "ws_acme",
+            ch,
+            &MessageResource {
+                id: source.id,
+                label: source.text,
+                pinned: source.pinned,
+                parent: source.parent,
+            },
+        );
+        assert_eq!(
+            message
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .unwrap()
+                .kind,
+            OperationKind::View
+        );
+        assert!(
+            message
+                .actions
+                .iter()
+                .filter(|action| action.id != "open")
+                .all(|action| action.kind == OperationKind::Document)
+        );
         let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
         assert_eq!(

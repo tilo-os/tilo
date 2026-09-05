@@ -289,7 +289,10 @@ impl Default for WeatherApp {
 
 impl Widget for WeatherApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["weather.open-location", "weather.refresh"]
+        &[
+            crate::actions::OPEN_LOCATION_OPERATION,
+            crate::actions::REFRESH_OPERATION,
+        ]
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
@@ -299,7 +302,7 @@ impl Widget for WeatherApp {
             "refresh",
             "Refresh forecasts",
             OperationKind::Effect,
-            "weather.refresh",
+            crate::actions::REFRESH_OPERATION,
             &"",
         ) {
             root.actions.push(spec.with_contract(ActionContract {
@@ -327,7 +330,7 @@ impl Widget for WeatherApp {
         root.children
             .extend(core.model.locations.iter().map(|location| {
                 let mut resource = Resource::new(
-                    format!("location:{}", location.id),
+                    crate::actions::location_resource_id(location.id),
                     "weather.location",
                     location.name.clone(),
                 );
@@ -336,7 +339,7 @@ impl Widget for WeatherApp {
                         "open",
                         "Open forecast",
                         OperationKind::View,
-                        "weather.open-location",
+                        crate::actions::OPEN_LOCATION_OPERATION,
                         &location.id.to_string(),
                     )
                     .expect("weather location id is serializable")
@@ -355,7 +358,7 @@ impl Widget for WeatherApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == OperationKind::View && type_id == "weather.open-location" {
+        if kind == OperationKind::View && type_id == crate::actions::OPEN_LOCATION_OPERATION {
             let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
             let id = raw
                 .parse()
@@ -368,7 +371,7 @@ impl Widget for WeatherApp {
             }
             return Ok(true);
         }
-        if kind != OperationKind::Effect || type_id != "weather.refresh" {
+        if kind != OperationKind::Effect || type_id != crate::actions::REFRESH_OPERATION {
             return Ok(false);
         }
         if !self.live {
@@ -389,7 +392,7 @@ impl Widget for WeatherApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != "weather.refresh" {
+        if kind != OperationKind::Effect || type_id != crate::actions::REFRESH_OPERATION {
             return Ok(None);
         }
         if self.resource_refresh_invocation.is_some() || self.core.borrow().is_fetching() {
@@ -602,17 +605,6 @@ impl Widget for WeatherApp {
         vec![Box::new(crate::search_provider::CitySearchProvider::new(
             &self.core.borrow().model.locations,
         ))]
-    }
-
-    /// Open the saved city a chosen palette row identifies: select it and push
-    /// its forecast into view, the same path a tap on the city list takes.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::CitySearchProvider::parse_action_id(action_id)
-            && self.core.borrow_mut().open_location(id)
-            && let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request()
-        {
-            self.nav.show_detail();
-        }
     }
 
     fn name(&self) -> &'static str {
