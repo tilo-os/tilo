@@ -1448,20 +1448,37 @@ fn e2e_escape_closes_search_palette() {
 }
 
 #[test]
-fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
+fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
+    let before = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab;
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
     let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
     assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
     assert!(
-        chrome.borrow().overlays.overview,
-        "Ctrl+Tab must toggle the overview overlay in the live-binary event path"
+        !chrome.borrow().overlays.overview,
+        "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
+    );
+    let after = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab;
+    assert_ne!(after, before, "Ctrl+Tab must select the next tab");
+
+    let backwards = Modifiers::from(
+        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+    );
+    assert!(pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::Tab)),
+        backwards
+    ));
+    assert_eq!(
+        chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+        before,
+        "Ctrl+Shift+Tab must return to the previous tab"
     );
 }
 

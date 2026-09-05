@@ -2488,6 +2488,77 @@ mod tests {
         assert_eq!(event.physical_key.to_scancode(), Some(21));
     }
 
+    /// Exercise the exact German symbols and Shift handling that failed in
+    /// Electron/Xwayland during the host-session trial. This runs through the
+    /// production xkb translator using physical evdev positions, not a
+    /// pre-translated character fixture.
+    #[test]
+    fn german_xkb_shift_and_punctuation_keep_physical_positions() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["de".into()],
+            layouts: "de".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("German xkb keymap unavailable; skipping");
+            return;
+        };
+        let character = |outcome: KeyOutcome| {
+            let WindowEvent::KeyboardInput { event, .. } = outcome.input.expect("key input") else {
+                panic!("expected keyboard input")
+            };
+            let Key::Character(value) = event.logical_key else {
+                panic!("expected character key, got {:?}", event.logical_key)
+            };
+            (
+                value.to_string(),
+                event.text.map(|text| text.to_string()),
+                event.physical_key,
+            )
+        };
+
+        // German key left of Backspace: ß unshifted, ? shifted (evdev 12).
+        let eszett = xkb::Keycode::new(20);
+        let (plain, text, physical) = character(keyboard.process(eszett, true));
+        assert_eq!((plain.as_str(), text.as_deref()), ("ß", Some("ß")));
+        assert_eq!(physical.to_scancode(), Some(12));
+        let _ = keyboard.process(eszett, false);
+
+        let shift = xkb::Keycode::new(50); // evdev KEY_LEFTSHIFT + 8
+        let down = keyboard.process(shift, true);
+        assert!(
+            down.modifiers_changed
+                .expect("Shift must update modifiers")
+                .state()
+                .shift_key()
+        );
+        let (question, text, physical) = character(keyboard.process(eszett, true));
+        assert_eq!((question.as_str(), text.as_deref()), ("?", Some("?")));
+        assert_eq!(physical.to_scancode(), Some(12));
+        let _ = keyboard.process(eszett, false);
+
+        // German hash/apostrophe position (evdev 43) and uppercase letter.
+        let apostrophe = xkb::Keycode::new(51);
+        let (value, text, physical) = character(keyboard.process(apostrophe, true));
+        assert_eq!((value.as_str(), text.as_deref()), ("'", Some("'")));
+        assert_eq!(physical.to_scancode(), Some(43));
+        let _ = keyboard.process(apostrophe, false);
+        let a = xkb::Keycode::new(38);
+        let (upper, text, physical) = character(keyboard.process(a, true));
+        assert_eq!((upper.as_str(), text.as_deref()), ("A", Some("A")));
+        assert_eq!(physical.to_scancode(), Some(30));
+        let _ = keyboard.process(a, false);
+        let up = keyboard.process(shift, false);
+        assert!(
+            !up.modifiers_changed
+                .expect("Shift release must update modifiers")
+                .state()
+                .shift_key()
+        );
+    }
+
     #[test]
     fn xkb_alt_shift_cycles_configured_sources() {
         let settings = KeyboardSettings {
