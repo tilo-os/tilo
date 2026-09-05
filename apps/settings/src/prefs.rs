@@ -155,9 +155,13 @@ impl Default for DisplayPrefs {
 )]
 pub struct InputPrefs {
     pub natural_scroll: bool,
+    pub touchpad_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     /// 0.0..=1.0 pointer acceleration.
     pub pointer_speed: f64,
+    pub touchpad_pointer_speed: Option<f64>,
+    pub mouse_pointer_speed: Option<f64>,
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
     /// xkb layout code, e.g. `"us"`, `"de"`.
@@ -182,8 +186,12 @@ impl Default for InputPrefs {
     fn default() -> Self {
         Self {
             natural_scroll: false,
+            touchpad_natural_scroll: None,
+            mouse_natural_scroll: None,
             tap_to_click: true,
             pointer_speed: 0.5,
+            touchpad_pointer_speed: None,
+            mouse_pointer_speed: None,
             key_repeat: 0.5,
             keyboard_layout: "us".to_string(),
             tap_drag: true,
@@ -205,7 +213,11 @@ impl InputPrefs {
     pub fn normalise_keyboard_sources(&mut self) {
         let mut config = settings_store::hardware::RichInputConfig {
             pointer_speed: self.pointer_speed,
+            touchpad_pointer_speed: self.touchpad_pointer_speed,
+            mouse_pointer_speed: self.mouse_pointer_speed,
             natural_scroll: self.natural_scroll,
+            touchpad_natural_scroll: self.touchpad_natural_scroll,
+            mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
             tap_drag: self.tap_drag,
             disable_while_typing: self.disable_while_typing,

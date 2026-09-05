@@ -482,7 +482,13 @@ pub enum AccelProfile {
 #[serde(default)]
 pub struct RichInputConfig {
     pub pointer_speed: f64,
+    pub touchpad_pointer_speed: Option<f64>,
+    pub mouse_pointer_speed: Option<f64>,
+    /// Legacy fallback for settings written before mouse/touchpad scrolling
+    /// were independently configurable.
     pub natural_scroll: bool,
+    pub touchpad_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     pub tap_drag: bool,
     pub disable_while_typing: bool,
@@ -507,7 +513,11 @@ impl Default for RichInputConfig {
     fn default() -> Self {
         Self {
             pointer_speed: 0.5,
+            touchpad_pointer_speed: None,
+            mouse_pointer_speed: None,
             natural_scroll: false,
+            touchpad_natural_scroll: None,
+            mouse_natural_scroll: None,
             tap_to_click: true,
             tap_drag: true,
             disable_while_typing: true,

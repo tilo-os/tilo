@@ -104,39 +104,50 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     )
 }
 
-/// Import an existing GNOME user's keyboard sources on the first host-session
-/// login. An existing qOS keyboard choice always wins: desktop switching must
-/// not rewrite a preference the user subsequently changed in qOS.
-pub fn import_host_keyboard_settings() -> Result<(), Box<dyn Error>> {
+/// Import existing GNOME input preferences on the first host-session login.
+/// All keyboard, mouse, and touchpad values are collected and persisted in one
+/// settings transaction. Existing qOS choices always win.
+///
+/// # Errors
+///
+/// Returns an error when the shared settings store cannot persist the imported
+/// values. Missing schemas or unreadable host values are ignored individually.
+pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
     let existing = settings_store::load_section("input");
-    if existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts") {
+    let mut input = host_keyboard_updates(&existing, gsettings_get);
+    input.extend(host_pointer_updates(&existing, gsettings_get));
+    if input.is_empty() {
         return Ok(());
-    }
-    let sources = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.input-sources", "sources"])
-        .output()?;
-    if !sources.status.success() {
-        return Ok(());
-    }
-    let source_ids = parse_gnome_xkb_sources(&String::from_utf8_lossy(&sources.stdout));
-    let Some(active) = source_ids.first() else {
-        return Ok(());
-    };
-    let options = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.input-sources", "xkb-options"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| parse_gnome_compose_key(&String::from_utf8_lossy(&output.stdout)));
-    let mut input = serde_json::Map::new();
-    input.insert("keyboard_layout".into(), serde_json::json!(active));
-    input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
-    if let Some(compose) = options {
-        input.insert("compose_key".into(), serde_json::json!(compose));
     }
     settings_store::update_section("input", input)?;
-    tracing::info!("firstboot: imported host keyboard sources");
+    tracing::info!("firstboot: imported host input settings");
     Ok(())
+}
+
+fn host_keyboard_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    mut read: impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut input = serde_json::Map::new();
+    if existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts") {
+        return input;
+    }
+    let Some(raw_sources) = read("org.gnome.desktop.input-sources", "sources") else {
+        return input;
+    };
+    let source_ids = parse_gnome_xkb_sources(&raw_sources);
+    let Some(active) = source_ids.first() else {
+        return input;
+    };
+    input.insert("keyboard_layout".into(), serde_json::json!(active));
+    input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
+    if !existing.contains_key("compose_key")
+        && let Some(compose) = read("org.gnome.desktop.input-sources", "xkb-options")
+            .and_then(|raw| parse_gnome_compose_key(&raw))
+    {
+        input.insert("compose_key".into(), serde_json::json!(compose));
+    }
+    input
 }
 
 fn parse_gnome_xkb_sources(value: &str) -> Vec<String> {
@@ -162,6 +173,97 @@ fn parse_gnome_compose_key(value: &str) -> Option<String> {
         .into_iter()
         .find(|key| value.contains(&format!("compose:{key}")))
         .map(str::to_string)
+}
+
+fn host_pointer_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    mut read: impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut input = serde_json::Map::new();
+    {
+        let mut insert_bool = |key: &str, legacy_key: Option<&str>, schema: &str, setting: &str| {
+            if !existing.contains_key(key)
+                && legacy_key.is_none_or(|legacy| !existing.contains_key(legacy))
+                && let Some(value) = read(schema, setting).and_then(|raw| match raw.trim() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                })
+            {
+                input.insert(key.into(), serde_json::json!(value));
+            }
+        };
+        insert_bool(
+            "touchpad_natural_scroll",
+            Some("natural_scroll"),
+            "org.gnome.desktop.peripherals.touchpad",
+            "natural-scroll",
+        );
+        insert_bool(
+            "mouse_natural_scroll",
+            Some("natural_scroll"),
+            "org.gnome.desktop.peripherals.mouse",
+            "natural-scroll",
+        );
+        insert_bool(
+            "tap_to_click",
+            None,
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-to-click",
+        );
+        insert_bool(
+            "tap_drag",
+            None,
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-and-drag",
+        );
+        insert_bool(
+            "disable_while_typing",
+            None,
+            "org.gnome.desktop.peripherals.touchpad",
+            "disable-while-typing",
+        );
+        insert_bool(
+            "left_handed",
+            None,
+            "org.gnome.desktop.peripherals.mouse",
+            "left-handed",
+        );
+    }
+
+    for (key, schema) in [
+        (
+            "touchpad_pointer_speed",
+            "org.gnome.desktop.peripherals.touchpad",
+        ),
+        ("mouse_pointer_speed", "org.gnome.desktop.peripherals.mouse"),
+    ] {
+        if existing.contains_key(key) || existing.contains_key("pointer_speed") {
+            continue;
+        }
+        if let Some(speed) = read(schema, "speed")
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+            .filter(|speed| speed.is_finite())
+        {
+            input.insert(key.into(), serde_json::json!(host_pointer_speed(speed)));
+        }
+    }
+    input
+}
+
+fn host_pointer_speed(speed: f64) -> f64 {
+    speed.midpoint(1.0).clamp(0.0, 1.0)
+}
+
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Current wall-clock time as nanoseconds since the epoch, clamped to
@@ -751,6 +853,61 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_pointer_speed_maps_libinput_range_to_qos_range() {
+        assert_eq!(host_pointer_speed(-1.0), 0.0);
+        assert_eq!(host_pointer_speed(0.0), 0.5);
+        assert_eq!(host_pointer_speed(1.0), 1.0);
+        assert_eq!(host_pointer_speed(4.0), 1.0);
+    }
+
+    #[test]
+    fn host_pointer_import_preserves_legacy_qos_choices() {
+        let existing = serde_json::Map::from_iter([
+            ("natural_scroll".into(), serde_json::json!(false)),
+            ("pointer_speed".into(), serde_json::json!(0.8)),
+        ]);
+        let updates = host_pointer_updates(&existing, |_, key| match key {
+            "natural-scroll" => Some("true".into()),
+            "speed" => Some("-0.5".into()),
+            "tap-to-click" => Some("false".into()),
+            _ => None,
+        });
+        assert!(!updates.contains_key("touchpad_natural_scroll"));
+        assert!(!updates.contains_key("mouse_natural_scroll"));
+        assert!(!updates.contains_key("touchpad_pointer_speed"));
+        assert!(!updates.contains_key("mouse_pointer_speed"));
+        assert_eq!(updates.get("tap_to_click"), Some(&serde_json::json!(false)));
+    }
+
+    #[test]
+    fn host_pointer_import_keeps_device_classes_independent() {
+        let existing = serde_json::Map::new();
+        let updates = host_pointer_updates(&existing, |schema, key| match (schema, key) {
+            ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
+            ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
+            ("org.gnome.desktop.peripherals.touchpad", "speed") => Some("0.4".into()),
+            ("org.gnome.desktop.peripherals.mouse", "speed") => Some("-0.6".into()),
+            _ => None,
+        });
+        assert_eq!(
+            updates.get("touchpad_natural_scroll"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            updates.get("mouse_natural_scroll"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            updates.get("touchpad_pointer_speed"),
+            Some(&serde_json::json!(0.7))
+        );
+        assert_eq!(
+            updates.get("mouse_pointer_speed"),
+            Some(&serde_json::json!(0.2))
+        );
+    }
     use std::ffi::OsString;
     use std::sync::{Arc, Barrier};
 
