@@ -13,6 +13,11 @@
 
 use uuid::Uuid;
 
+/// Reserved `invokePublishedAction.peerId` meaning "the application
+/// connection making this request". Live broker peer ids are allocated from
+/// zero upward; the broker never assigns this sentinel.
+pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
+
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 
@@ -147,6 +152,11 @@ pub enum CollabRequest {
     },
     UpdateInvocation {
         id: u64,
+        update: qos_actions::InvocationUpdate,
+    },
+    /// Terminal receipt for an Effect initiated by this app's local UI.
+    RecordLocalEffect {
+        address: qos_actions::ActionAddress,
         update: qos_actions::InvocationUpdate,
     },
     InvokePublishedAction {
@@ -341,12 +351,18 @@ pub enum CollabEvent {
         payload: Vec<u8>,
         from_user_id: String,
     },
-    /// A validated signed document envelope from another peer. The mutation
-    /// kind is inside the signed payload, so a peer cannot relabel an
-    /// incremental as a snapshot or vice versa.
+    /// A validated signed document envelope from another peer. For cleartext
+    /// routes the mutation kind is inside the outer signed payload. For an
+    /// MLS route, `envelope.payload` remains the original signed ciphertext
+    /// and `decrypted_payload` holds endpoint-only plaintext after the inner
+    /// MLS authentication succeeds.
     Document {
         envelope: Box<SignedOp>,
         from_user_id: String,
+        /// Endpoint-decrypted typed mutation bytes. `None` for cleartext
+        /// envelopes (read directly from `envelope.payload`) and for broker
+        /// events, which never possess MLS keys.
+        decrypted_payload: Option<Vec<u8>>,
     },
     /// Response to a [`CollabRequest::FetchScrollback`]: a page of
     /// previously-validated ops plus `exhausted`.
@@ -360,6 +376,10 @@ pub enum CollabEvent {
         /// Ascending seq order. Empty when the broker has no matching
         /// range (typically evicted by compaction).
         ops: Vec<Box<SignedOp>>,
+        /// Endpoint-decrypted payload parallel to `ops`. Brokers leave this
+        /// empty because they have no MLS keys; SDK endpoints populate one
+        /// slot per op and drop undecryptable encrypted entries.
+        decrypted_payloads: Vec<Option<Vec<u8>>>,
         exhausted: bool,
     },
     /// One capability-checked invocation addressed to this application
@@ -373,7 +393,7 @@ pub enum CollabEvent {
         /// Broker-owned task/session provenance. The concrete application
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
-        context: Option<qos_actions::ActionContext>,
+        context: Option<Box<qos_actions::ActionContext>>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
@@ -410,10 +430,17 @@ impl CollabEvent {
     pub fn document_mutation(
         &self,
     ) -> Option<Result<DocumentMutation, collab_types::DocumentMutationError>> {
-        let Self::Document { envelope, .. } = self else {
+        let Self::Document {
+            envelope,
+            decrypted_payload,
+            ..
+        } = self
+        else {
             return None;
         };
-        Some(DocumentMutation::decode(&envelope.payload))
+        Some(DocumentMutation::decode(
+            decrypted_payload.as_deref().unwrap_or(&envelope.payload),
+        ))
     }
 }
 
@@ -589,6 +616,11 @@ enum SdkCommand {
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
     PrimaryReady(mpsc::SyncSender<Result<(), String>>),
+    InstallEncryption {
+        spec: RouteSpec,
+        group: Box<channel_crypto::ChannelGroup>,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -663,15 +695,17 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
 
 enum SdkDocumentSigner {
     #[cfg(unix)]
-    Certified(runtime_identity::SigningIdentity),
+    Certified(Box<runtime_identity::SigningIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
     /// still rejects the uncertified join before any op reaches policy.
-    Harness(ed25519_dalek::SigningKey),
+    Harness(Box<ed25519_dalek::SigningKey>),
 }
 
 fn harness_document_signer() -> SdkDocumentSigner {
-    SdkDocumentSigner::Harness(ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng))
+    SdkDocumentSigner::Harness(Box::new(ed25519_dalek::SigningKey::generate(
+        &mut rand_core::OsRng,
+    )))
 }
 
 #[cfg(unix)]
@@ -701,7 +735,7 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     Ok(SdkJoinIdentity {
         presentation,
         participant_kind: "person",
-        signer: SdkDocumentSigner::Certified(identity),
+        signer: SdkDocumentSigner::Certified(Box::new(identity)),
     })
 }
 
@@ -796,7 +830,7 @@ impl CollaborationManager {
             Some(SdkJoinIdentity {
                 presentation: identity.presentation,
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Harness(identity.device_key),
+                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
             }),
             "person",
         )
@@ -949,7 +983,7 @@ impl CollaborationManager {
             Some(SdkJoinIdentity {
                 presentation: identity.presentation,
                 participant_kind: "agent",
-                signer: SdkDocumentSigner::Harness(identity.device_key),
+                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
             }),
             "agent",
         )
@@ -1221,6 +1255,47 @@ impl CollaborationManager {
         if let Backend::Sdk(ch) = &mut self.backend {
             let _ = ch.outbound_tx.send(SdkCommand::Join(route));
         }
+    }
+
+    /// Install an already-provisioned MLS endpoint for `route`.
+    ///
+    /// From this point the route is fail-closed: locally generated document
+    /// mutations are encrypted and encrypted inbound envelopes are decrypted
+    /// before becoming [`CollabEvent::Document`].  The channel id must be the
+    /// deterministic id for the exact app/workspace/record route.  Group
+    /// provisioning and durable secret storage intentionally remain outside
+    /// the UI process; callers should obtain the group from the workspace
+    /// identity service and must reinstall it after a process restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a route/channel mismatch, an unavailable or
+    /// stopped collaboration worker, or a route that cannot be joined.
+    pub fn install_document_encryption(
+        &mut self,
+        route: RouteSpec,
+        group: channel_crypto::ChannelGroup,
+    ) -> Result<(), String> {
+        let record = route.record.as_deref().unwrap_or("");
+        let expected =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id.to_string(), record);
+        if group.channel_id() != expected {
+            return Err("MLS group does not belong to the requested document route".into());
+        }
+        let Backend::Sdk(ch) = &mut self.backend else {
+            return Err("collaboration broker is unavailable".into());
+        };
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        ch.outbound_tx
+            .send(SdkCommand::InstallEncryption {
+                spec: route,
+                group: Box::new(group),
+                reply: reply_tx,
+            })
+            .map_err(|_| "collaboration worker stopped".to_string())?;
+        reply_rx
+            .recv()
+            .map_err(|_| "collaboration worker stopped".to_string())?
     }
 
     /// Publish on an explicitly named additional route. The route is joined
@@ -1660,8 +1735,64 @@ async fn drive_shovel(
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
             }
+            SdkCommand::InstallEncryption { spec, group, reply } => {
+                let result = install_sdk_encryption(
+                    SdkJoinContext {
+                        client: &client,
+                        presentation: &presentation,
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                    },
+                    &mut routes,
+                    spec,
+                    *group,
+                )
+                .await;
+                let _ = reply.send(result);
+            }
         }
     }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+)]
+async fn install_sdk_encryption(
+    context: SdkJoinContext<'_>,
+    routes: &mut std::collections::HashMap<String, SdkRoute>,
+    spec: RouteSpec,
+    group: channel_crypto::ChannelGroup,
+) -> Result<(), String> {
+    let key = spec.channel_id();
+    ensure_sdk_route(
+        context.client,
+        context.presentation,
+        context.participant_handle,
+        context.participant_kind,
+        context.inbound_tx,
+        routes,
+        &spec,
+    )
+    .await?;
+    let route = routes
+        .get_mut(&key)
+        .ok_or_else(|| "joined MLS route disappeared".to_string())?;
+    *route
+        .encryption
+        .lock()
+        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())? =
+        Some(group);
+    Ok(())
+}
+
+struct SdkJoinContext<'a> {
+    client: &'a runtime_collab::CollabClient,
+    presentation: &'a [u8],
+    participant_handle: Option<&'a str>,
+    participant_kind: &'a str,
+    inbound_tx: &'a tokio_mpsc::UnboundedSender<CollabEvent>,
 }
 
 struct SdkRoute {
@@ -1669,6 +1800,7 @@ struct SdkRoute {
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
+    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -1715,7 +1847,8 @@ async fn ensure_sdk_route(
     // so a backlogged snapshot cannot make an agent decide against stale
     // local fallback data immediately after construction.
     spawn_action_catalogue_stream(&channel, inbound_tx).await?;
-    spawn_op_stream(&channel, inbound_tx).await;
+    let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
+    spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
@@ -1732,6 +1865,7 @@ async fn ensure_sdk_route(
             channel,
             presence,
             workspace_controls: std::collections::HashMap::new(),
+            encryption,
         },
     );
     Ok(())
@@ -1747,22 +1881,25 @@ async fn ensure_sdk_route(
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(event) = stream.read().await {
                 let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
-                    Ok(envelope) => match signed_document_event(envelope, event.from_user_id) {
-                        Ok(event) => event,
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                "collab: signed op has no typed document payload; dropping"
-                            );
-                            continue;
+                    Ok(envelope) => {
+                        match signed_document_event(envelope, event.from_user_id, &encryption) {
+                            Ok(event) => event,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    "collab: signed op has no typed document payload; dropping"
+                                );
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Err(error) => {
                         tracing::warn!(
                             "collab: signed op is not postcard SignedOp ({error}); dropping"
@@ -1874,7 +2011,7 @@ async fn spawn_invocation_stream(
                         action: invocation.action,
                         argument: invocation.argument,
                         actor: invocation.actor,
-                        context,
+                        context: context.map(Box::new),
                     })
                     .is_err()
                 {
@@ -2058,12 +2195,17 @@ async fn send_document_mutation(
 ) {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
-    let payload = match mutation.encode() {
+    let cleartext = match mutation.encode() {
         Ok(payload) => payload,
         Err(error) => {
             tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
             return;
         }
+    };
+    let Some((payload, encryption_metadata)) =
+        prepare_document_payload(&route.encryption, cleartext)
+    else {
+        return;
     };
     let now = std::time::SystemTime::now();
     let author = match signer {
@@ -2071,15 +2213,32 @@ async fn send_document_mutation(
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
         SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
     };
-    let mut op = SignedOp::new_unsigned(
-        payload,
-        collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id),
-        collab_types::Ed25519PublicKey::from_bytes(author),
-        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id),
-        collab_types::OpClass::Splice,
-        now,
-        next_certified_document_seq(now),
-    );
+    let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
+    let author = collab_types::Ed25519PublicKey::from_bytes(author);
+    let attestation =
+        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
+    let seq = next_certified_document_seq(now);
+    let mut op = match encryption_metadata {
+        Some(metadata) => SignedOp::new_unsigned_with_encryption(
+            payload,
+            artifact,
+            author,
+            attestation,
+            collab_types::OpClass::Splice,
+            now,
+            seq,
+            metadata,
+        ),
+        None => SignedOp::new_unsigned(
+            payload,
+            artifact,
+            author,
+            attestation,
+            collab_types::OpClass::Splice,
+            now,
+            seq,
+        ),
+    };
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -2123,6 +2282,33 @@ async fn send_document_mutation(
         }
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
+        }
+    }
+}
+
+fn prepare_document_payload(
+    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    cleartext: Vec<u8>,
+) -> Option<(Vec<u8>, Option<collab_types::EncryptionMetadata>)> {
+    let Ok(mut guard) = encryption.lock() else {
+        tracing::warn!("collab: MLS endpoint lock poisoned; dropping mutation");
+        return None;
+    };
+    let Some(group) = guard.as_mut() else {
+        return Some((cleartext, None));
+    };
+    let epoch = group.epoch();
+    match group.encrypt(&cleartext) {
+        Ok(ciphertext) => Some((
+            ciphertext,
+            Some(collab_types::EncryptionMetadata {
+                epoch,
+                channel: group.channel_id(),
+            }),
+        )),
+        Err(error) => {
+            tracing::warn!(%error, "collab: MLS encryption failed; dropping mutation");
+            None
         }
     }
 }
@@ -2210,25 +2396,36 @@ async fn dispatch_sdk_request(
             before_seq,
             max,
         } => {
-            let (ops, exhausted) = match route
+            let (ops, decrypted_payloads, exhausted) = match route
                 .channel
                 .fetch_scrollback_for(artifact.0.as_bytes(), before_seq, u32::from(max))
                 .await
             {
-                Ok(batch) => (
-                    batch
+                Ok(batch) => {
+                    let mut payloads = Vec::new();
+                    let ops = batch
                         .ops
                         .into_iter()
                         .filter_map(|bytes| postcard::from_bytes::<SignedOp>(&bytes).ok())
-                        .map(Box::new)
-                        .collect(),
-                    batch.done,
-                ),
-                Err(_) => (Vec::new(), true),
+                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption) {
+                            Ok(payload) => {
+                                payloads.push(payload);
+                                Some(Box::new(op))
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "collab: dropping undecryptable scrollback envelope");
+                                None
+                            }
+                        })
+                        .collect();
+                    (ops, payloads, batch.done)
+                }
+                Err(_) => (Vec::new(), Vec::new(), true),
             };
             let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
                 artifact,
                 ops,
+                decrypted_payloads,
                 exhausted,
             });
         }
@@ -2342,6 +2539,22 @@ async fn dispatch_sdk_request(
             }
             Err(error) => tracing::warn!(%error, id, "collab: encoding action update failed"),
         },
+        CollabRequest::RecordLocalEffect { address, update } => {
+            match serde_json::to_string(&update) {
+                Ok(json) => {
+                    if let Err(error) = route
+                        .channel
+                        .record_local_effect(&address.resource, &address.action, &json)
+                        .await
+                    {
+                        tracing::warn!(%error, "collab: recording local effect receipt failed");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "collab: encoding local effect receipt failed");
+                }
+            }
+        }
         CollabRequest::InvokePublishedAction {
             request_id,
             peer_id,
@@ -2474,12 +2687,49 @@ async fn dispatch_sdk_request(
 fn signed_document_event(
     envelope: SignedOp,
     from_user_id: String,
+    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
 ) -> Result<CollabEvent, collab_types::DocumentMutationError> {
-    let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+    let decrypted_payload = decrypt_document_payload(&envelope, encryption)?;
     Ok(CollabEvent::Document {
         envelope: Box::new(envelope),
         from_user_id,
+        decrypted_payload,
     })
+}
+
+fn decrypt_document_payload(
+    envelope: &SignedOp,
+    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+) -> Result<Option<Vec<u8>>, collab_types::DocumentMutationError> {
+    if let Some(metadata) = envelope.encryption {
+        let mut guard = encryption
+            .lock()
+            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
+        let group = guard
+            .as_mut()
+            .ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
+        if group.channel_id() != metadata.channel || group.epoch() < metadata.epoch {
+            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        }
+        let plaintext = group
+            .decrypt(&envelope.payload)
+            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
+        drop(guard);
+        let _mutation = collab_types::DocumentMutation::decode(&plaintext)?;
+        Ok(Some(plaintext))
+    } else {
+        if encryption
+            .lock()
+            .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?
+            .is_some()
+        {
+            // Once provisioned, accepting a plaintext envelope would be an
+            // active downgrade. There is no opportunistic fallback.
+            return Err(collab_types::DocumentMutationError::RouteMismatch);
+        }
+        let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+        Ok(None)
+    }
 }
 
 /// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
@@ -3438,6 +3688,7 @@ mod tests {
                 CollabEvent::Document {
                     envelope,
                     from_user_id,
+                    ..
                 } => Some((envelope, from_user_id)),
                 _ => None,
             })
@@ -3464,7 +3715,12 @@ mod tests {
             std::time::SystemTime::UNIX_EPOCH,
             43,
         );
-        let event = signed_document_event(op, "peer-alice".into()).unwrap();
+        let event = signed_document_event(
+            op,
+            "peer-alice".into(),
+            &std::sync::Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
         assert!(matches!(
             &event,
             CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
@@ -3473,6 +3729,59 @@ mod tests {
             event.document_mutation(),
             Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
         ));
+    }
+
+    #[test]
+    fn signed_document_event_decrypts_at_endpoint_and_rejects_replay() {
+        let channel = collab_types::ChannelId::new();
+        let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
+        let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
+        let bob_package = bob_key.fresh_key_package().unwrap();
+        let mut alice = channel_crypto::ChannelGroup::create(channel, alice_key).unwrap();
+        let welcome = alice.add_member(bob_package).unwrap();
+        let bob =
+            channel_crypto::ChannelGroup::process_welcome(channel, &welcome, bob_key).unwrap();
+        let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
+            .encode()
+            .unwrap();
+        let alice_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(alice)));
+        let (ciphertext, metadata) =
+            prepare_document_payload(&alice_endpoint, plaintext.clone()).unwrap();
+        let metadata = metadata.expect("a provisioned endpoint never sends plaintext");
+        assert_eq!(metadata.channel, channel);
+        let op = SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([9; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+            metadata,
+        );
+        let endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(bob)));
+        let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
+        assert!(matches!(
+            event.document_mutation(),
+            Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+        ));
+        let plaintext_downgrade = SignedOp::new_unsigned(
+            plaintext,
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([9; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            2,
+        );
+        assert!(
+            signed_document_event(plaintext_downgrade, "alice".into(), &endpoint).is_err(),
+            "a provisioned MLS route must reject plaintext downgrade"
+        );
+        assert!(
+            signed_document_event(op, "alice".into(), &endpoint).is_err(),
+            "the MLS receive ratchet must reject replaying one ciphertext"
+        );
     }
 
     #[test]

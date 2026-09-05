@@ -11,9 +11,12 @@ use std::sync::Arc;
 
 use capnp::Error;
 
-use crate::app_host_capnp::{Pinning as WirePinning, app_host};
+use crate::app_host_capnp::{
+    FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
+    app_host,
+};
 use crate::gc;
-use crate::install::install_qpkg;
+use crate::install::{InstallExpectation, install_verified_qpkg};
 use crate::registry::{Pinning, RegistryEntry};
 use crate::store::Store;
 use pkg::id::PackageId;
@@ -86,6 +89,50 @@ fn fill_entry(
 /// blobs are (deliberately) shared across packages.
 fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
     crate::store::dir_size(&entry.payload_root).unwrap_or(0)
+}
+
+fn launcher_bin() -> std::path::PathBuf {
+    std::env::var_os("QOS_LAUNCHER_BIN").map_or_else(
+        || std::path::PathBuf::from("/usr/bin/qos-launcher"),
+        std::path::PathBuf::from,
+    )
+}
+
+fn wayland_socket() -> Option<std::path::PathBuf> {
+    let display = std::env::var_os("WAYLAND_DISPLAY")?;
+    let display = std::path::PathBuf::from(display);
+    if display.is_absolute() {
+        Some(display)
+    } else {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .map(|root| root.join(display))
+    }
+}
+
+fn spawn_detached(mut command: std::process::Command) -> Result<String, Error> {
+    command
+        .spawn()
+        .map(|child| format!("started process {}", child.id()))
+        .map_err(|error| Error::failed(format!("launch failed: {error}")))
+}
+
+fn run_host_command(mut command: std::process::Command) -> Result<String, Error> {
+    let output = command
+        .output()
+        .map_err(|error| Error::failed(format!("host command failed: {error}")))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    }
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(Error::failed(format!(
+            "host command exited {}: {text}",
+            output.status.code().unwrap_or(1)
+        )))
+    }
 }
 
 // -------- Server impl -----------------------------------------------
@@ -257,8 +304,39 @@ impl app_host::Server for AppHostServer {
                 .map_err(|e| Error::failed(e.to_string()))?
                 .to_vec();
             let pinning = parse_pinning(p.get_pinning().map_err(|e| Error::failed(e.to_string()))?);
+            let expected_root = parse_id(
+                p.get_expected_root()
+                    .map_err(|e| Error::failed(e.to_string()))?,
+            )?;
+            let publisher_bytes = p
+                .get_expected_publisher()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let publisher: [u8; 32] = publisher_bytes.try_into().map_err(|_| {
+                Error::failed(format!(
+                    "publisher key must be 32 bytes, got {}",
+                    publisher_bytes.len()
+                ))
+            })?;
+            let app_id = p
+                .get_expected_app_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let version = p
+                .get_expected_version()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let expected = InstallExpectation {
+                package_root: expected_root,
+                publisher,
+                app_id,
+                version,
+                size_bytes: p.get_expected_size_bytes(),
+            };
             let id = tokio::task::spawn_blocking(move || {
-                let id = install_qpkg(&store, &qpkg_bytes, pinning).map_err(|e| e.to_string())?;
+                let id = install_verified_qpkg(&store, &qpkg_bytes, pinning, &expected)
+                    .map_err(|e| e.to_string())?;
                 // Best-effort post-install sweep. Errors here should not
                 // fail the install — we already have the bytes on disk.
                 if let Err(e) = gc::sweep(&store, max_bytes) {
@@ -290,6 +368,172 @@ impl app_host::Server for AppHostServer {
             let mut by = out.init_by_pinning();
             by.set_pinned_bytes(usage.pinned_bytes);
             by.set_tried_bytes(usage.tried_bytes);
+            Ok(())
+        }
+    }
+
+    fn launch(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::LaunchParams,
+        mut results: app_host::LaunchResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        let store = Arc::clone(&self.store);
+        async move {
+            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
+            let id = parse_id(p.get_id().map_err(|e| Error::failed(e.to_string()))?)?;
+            let status = tokio::task::spawn_blocking(move || {
+                let entry = store
+                    .resolve(id)
+                    .map_err(|e| Error::failed(e.to_string()))?;
+                let manifest = store
+                    .root()
+                    .join("manifests")
+                    .join(format!("{}.toml", id.to_hex()));
+                if let Some(parent) = manifest.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| Error::failed(format!("create manifest directory: {e}")))?;
+                }
+                atomic_file::write(&manifest, entry.manifest_text.as_bytes())
+                    .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
+                let mut command = std::process::Command::new(launcher_bin());
+                command
+                    .arg("run")
+                    .arg("--manifest")
+                    .arg(&manifest)
+                    .arg("--payload-root")
+                    .arg(&entry.payload_root);
+                if let Some(socket) = wayland_socket() {
+                    command.arg("--wayland-socket").arg(socket);
+                }
+                let status = spawn_detached(command)?;
+                store
+                    .mark_used(id)
+                    .map_err(|e| Error::failed(e.to_string()))?;
+                Ok::<_, Error>(status)
+            })
+            .await
+            .map_err(|e| Error::failed(format!("join: {e}")))??;
+            results.get().set_status(&status);
+            Ok(())
+        }
+    }
+
+    fn launch_desktop(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::LaunchDesktopParams,
+        mut results: app_host::LaunchDesktopResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let desktop_id = params
+                .get()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .get_desktop_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let status = tokio::task::spawn_blocking(move || {
+                let mut command = std::process::Command::new(launcher_bin());
+                command.arg("run-host").arg("--desktop-id").arg(desktop_id);
+                if let Some(socket) = wayland_socket() {
+                    command.arg("--wayland-socket").arg(socket);
+                }
+                spawn_detached(command)
+            })
+            .await
+            .map_err(|e| Error::failed(format!("join: {e}")))??;
+            results.get().set_status(&status);
+            Ok(())
+        }
+    }
+
+    fn flatpak(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::FlatpakParams,
+        mut results: app_host::FlatpakResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
+            let action = p.get_action().map_err(|e| Error::failed(e.to_string()))?;
+            let app_id = p
+                .get_app_id()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let reference = p
+                .get_reference()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_vec();
+            if reference.len() > 64 * 1024 {
+                return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
+            }
+            let status = tokio::task::spawn_blocking(move || {
+                let mut command = std::process::Command::new("flatpak");
+                match action {
+                    WireFlatpakAction::Install => {
+                        command.args(["install", "--user", "--noninteractive"]);
+                        if reference.is_empty() {
+                            command.args(["flathub", &app_id]);
+                        } else {
+                            use std::io::Write as _;
+                            let mut staged = tempfile::NamedTempFile::new().map_err(|e| {
+                                Error::failed(format!("stage Flatpak reference: {e}"))
+                            })?;
+                            staged.write_all(&reference).map_err(|e| {
+                                Error::failed(format!("stage Flatpak reference: {e}"))
+                            })?;
+                            command.arg(staged.path());
+                            return run_host_command(command);
+                        }
+                    }
+                    WireFlatpakAction::Update => {
+                        command.args(["update", "--user", "--noninteractive", &app_id]);
+                    }
+                    WireFlatpakAction::Remove => {
+                        command.args(["uninstall", "--user", "--noninteractive", &app_id]);
+                    }
+                }
+                run_host_command(command)
+            })
+            .await
+            .map_err(|e| Error::failed(format!("join: {e}")))??;
+            results.get().set_status(&status);
+            Ok(())
+        }
+    }
+
+    fn remote(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::RemoteParams,
+        mut results: app_host::RemoteResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
+            let action = p.get_action().map_err(|e| Error::failed(e.to_string()))?;
+            let name = p
+                .get_name()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let url = p
+                .get_url()
+                .map_err(|e| Error::failed(e.to_string()))?
+                .to_string()
+                .map_err(|e| Error::failed(e.to_string()))?;
+            let status = tokio::task::spawn_blocking(move || {
+                let mut command = std::process::Command::new("flatpak");
+                match action {
+                    WireRemoteAction::Add => {
+                        command.args(["remote-add", "--user", "--if-not-exists", &name, &url]);
+                    }
+                    WireRemoteAction::Remove => {
+                        command.args(["remote-delete", "--user", "--force", &name]);
+                    }
+                }
+                run_host_command(command)
+            })
+            .await
+            .map_err(|e| Error::failed(format!("join: {e}")))??;
+            results.get().set_status(&status);
             Ok(())
         }
     }

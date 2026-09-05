@@ -11,7 +11,7 @@
 //! the Ctrl+K palette dispatches — one source of truth, one replay path.
 //!
 //! The resource tree mirrors the data model: the calendar owns its events and
-//! its top-level tasks, and each exports the [`ActionSpec`]s Ctrl+K offers.
+//! its tasks, and each exports the [`ActionSpec`]s Ctrl+K offers.
 //!
 //! Presentation — which view is showing, the selected day, an open popover, the
 //! scroll position — stays out of the document and never becomes an action.
@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc::CalDoc;
@@ -41,8 +42,31 @@ use crate::model::{Event, Id, Palette, Priority, Recurrence, Task};
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
 pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Stable resource id for one event. Search, the palette, accessibility and
+/// agents all address this same resource.
+pub fn event_resource_id(id: Id) -> String {
+    format!("calendar.event:{id}")
+}
+
+/// Stable resource id for one task.
+pub fn task_resource_id(id: Id) -> String {
+    format!("calendar.task:{id}")
+}
+
+/// Canonical view action that reveals one event in the calendar.
+pub fn open_event_address(id: Id) -> ActionAddress {
+    ActionAddress::new(event_resource_id(id), "open")
+}
+
+/// Canonical view action that reveals one task in the calendar.
+pub fn open_task_address(id: Id) -> ActionAddress {
+    ActionAddress::new(task_resource_id(id), "open")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalendarOperation {
+    OpenEvent { id: String },
+    OpenTask { id: String },
     ShowMonth,
     ShowWeek,
     ShowDay,
@@ -60,7 +84,9 @@ fn calendar_operation(
     let spec = ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
         .expect("CalendarOperation is always serializable");
     match operation {
-        CalendarOperation::ShowMonth
+        CalendarOperation::OpenEvent { .. }
+        | CalendarOperation::OpenTask { .. }
+        | CalendarOperation::ShowMonth
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
         | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
@@ -395,8 +421,9 @@ pub struct EventResource {
     pub remote_delete: Option<String>,
 }
 
-/// One top-level task surfaced as a resource, with its subtask ids resolved so
-/// "Delete task" removes the whole subtree.
+/// One task surfaced as a resource, with its subtask ids resolved so deleting a
+/// parent removes the whole subtree. Subtasks are resources too: search and
+/// agents must be able to address every task the app presents.
 #[derive(Debug, Clone)]
 pub struct TaskResource {
     pub data: TaskData,
@@ -405,7 +432,7 @@ pub struct TaskResource {
 
 /// The presentation context the calendar hands [`provide_resources`]: a template
 /// for a palette-created event (built from the current view) plus the events and
-/// top-level tasks currently in the model. Everything here is derived from app
+/// tasks currently in the model. Everything here is derived from app
 /// state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone)]
 pub struct CalendarResourceCtx {
@@ -451,8 +478,8 @@ fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec 
 }
 
 /// Build the resource tree the calendar currently has open: the calendar itself
-/// (with a "New event" action), each event (rename + delete), and each top-level
-/// task (toggle + delete). Every document-mutating operation is exported as the
+/// (with a "New event" action), each event (open + rename + delete), and each
+/// task (open + toggle + delete). Every document-mutating operation is exported as the
 /// same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calendar.calendar", "calendar.calendar", "Calendar");
@@ -527,11 +554,18 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
 
     for ev in &ctx.events {
         let id = ev.data.id.clone();
+        let parsed_id = id.parse::<Id>().expect("resource event ids are valid");
         let mut child = Resource::new(
-            format!("calendar.event:{id}"),
+            event_resource_id(parsed_id),
             "calendar.event",
             event_label(&ev.data),
         );
+        child = child.with_action(calendar_operation(
+            "open",
+            "Open event",
+            OperationKind::View,
+            CalendarOperation::OpenEvent { id: id.clone() },
+        ));
         // Rename — a prompted action carrying the rest of the event unchanged.
         let data = ev.data.clone();
         child = child.with_action(ActionSpec::prompted(
@@ -556,16 +590,23 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
 
     for tk in &ctx.tasks {
         let id = tk.data.id.clone();
+        let parsed_id = id.parse::<Id>().expect("resource task ids are valid");
         let toggle_label = if tk.data.done {
             "Mark not done"
         } else {
             "Mark done"
         };
         let child = Resource::new(
-            format!("calendar.task:{id}"),
+            task_resource_id(parsed_id),
             "calendar.task",
             task_label(&tk.data),
         )
+        .with_action(calendar_operation(
+            "open",
+            "Open task",
+            OperationKind::View,
+            CalendarOperation::OpenTask { id: id.clone() },
+        ))
         .with_action(immediate_spec(
             "toggle",
             toggle_label,
@@ -625,8 +666,8 @@ mod tests {
     }
 
     /// Ctrl+K on the calendar yields the tree: the calendar with a "New event"
-    /// action, an `calendar.event` child per event exporting rename + delete, and
-    /// a `calendar.task` child per top-level task exporting toggle + delete.
+    /// action, an `calendar.event` child per event exporting open/rename/delete,
+    /// and a `calendar.task` child per task exporting open/toggle/delete.
     /// Drives the real resource hook.
     #[test]
     fn ctrl_k_publishes_the_calendar_tree() {
@@ -644,6 +685,7 @@ mod tests {
             .find(|r| r.kind == "calendar.event")
             .expect("an event resource");
         let ev_actions: Vec<&str> = event.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(ev_actions.contains(&"open"), "{ev_actions:?}");
         assert!(ev_actions.contains(&"edit"), "{ev_actions:?}");
         assert!(ev_actions.contains(&"delete"), "{ev_actions:?}");
 
@@ -653,6 +695,7 @@ mod tests {
             .find(|r| r.kind == "calendar.task")
             .expect("a task resource");
         let tk_actions: Vec<&str> = task.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(tk_actions.contains(&"open"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"toggle"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"delete"), "{tk_actions:?}");
 
@@ -685,6 +728,102 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Rename event")),
             "{labels:?}"
+        );
+    }
+
+    /// Search activation stays entirely inside the resource/action door for
+    /// both content types and invokes the exact exported view operation.
+    #[test]
+    fn search_rows_invoke_exported_event_and_task_view_actions() {
+        let (mut app, doc) = seeded();
+
+        let resources = Widget::resources(&app, &doc);
+        let all_hits = Widget::search_providers(&app)[0].search("");
+        assert!(
+            all_hits.iter().all(|hit| hit
+                .action_address()
+                .is_some_and(|address| qos_actions::door::resolve(&resources, &address).is_some())),
+            "every event, task and subtask hit resolves in the live resource tree"
+        );
+
+        for (query, expected_label, expected_kind) in [
+            ("bright smiles", "Dentist", "calendar.event"),
+            ("renew passport", "Renew passport", "calendar.task"),
+        ] {
+            let resources = Widget::resources(&app, &doc);
+            let mut palette = ui::ActionPalette::new();
+            palette.load_open_resources(&resources);
+            palette.set_providers(Widget::search_providers(&app));
+            palette.open();
+            palette.set_query(query);
+            let labels = palette.result_labels();
+            let row = labels
+                .iter()
+                .position(|label| label == expected_label)
+                .expect("the searchable content row is present");
+            palette.set_cursor(row);
+
+            palette.activate_selected();
+            let operation = palette
+                .take_operation()
+                .expect("canonical hit queued a broker operation");
+            assert_eq!(operation.kind, OperationKind::View);
+            let resource_id = operation
+                .context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str())
+                .expect("operation retains its resource identity");
+            assert!(resource_id.starts_with(expected_kind), "{resource_id}");
+            assert!(
+                palette.take_navigation().is_none(),
+                "legacy callback was not used"
+            );
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    operation.kind,
+                    &operation.encoded.type_id,
+                    &operation.encoded.payload,
+                    &doc,
+                    &ROOT,
+                )
+                .expect("view operation succeeds")
+            );
+            let id = resource_id
+                .rsplit_once(':')
+                .and_then(|(_, id)| id.parse::<Id>().ok())
+                .expect("resource id ends in the model UUID");
+            if expected_kind == "calendar.event" {
+                assert_eq!(app.selected_event(), Some(id), "exact event was selected");
+            } else {
+                assert_eq!(app.selected_task(), Some(id), "exact task was selected");
+            }
+        }
+
+        let dentist = app
+            .calendar_resource_ctx()
+            .events
+            .iter()
+            .find(|event| event.data.title == "Dentist")
+            .and_then(|event| event.data.id.parse::<Id>().ok())
+            .expect("Dentist event remains in the model");
+        let passport = app
+            .calendar_resource_ctx()
+            .tasks
+            .iter()
+            .find(|task| task.data.title == "Renew passport")
+            .and_then(|task| task.data.id.parse::<Id>().ok())
+            .expect("passport task remains in the model");
+        assert_ne!(
+            app.selected_event(),
+            Some(dentist),
+            "task activation replaced event selection"
+        );
+        assert_eq!(
+            app.selected_task(),
+            Some(passport),
+            "task activation selected the exact task"
         );
     }
 

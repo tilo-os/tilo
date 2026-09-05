@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use containers::app::ContainersApp;
 use containers::combobox;
-use containers::doc::{CreateField, Section, ViewDoc};
+use containers::doc::{CreateField, DetailTab, Section, ViewDoc};
 use containers::model::sample_engine;
 use containers::terminal;
 use taffy::prelude::*;
@@ -635,4 +635,106 @@ fn clicking_a_container_row_changes_selection() {
         ViewDoc::selected(&mut d.doc).is_some(),
         "clicking a container row selects it and opens the detail pane"
     );
+}
+
+fn semantic_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
+    fn walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
+        out.push(node);
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
+#[test]
+fn painted_controls_have_named_semantics_and_activation_reuses_hit_dispatch() {
+    let mut d = Driver::offline();
+    d.frame(); // consume the one-shot demo selection
+    ViewDoc::set_selected(&mut d.doc, None);
+    d.frame();
+    let expected = sample_engine().containers[0].id.clone();
+    let target = format!("containers.container:{expected}:select");
+    let tree = d
+        .app
+        .accessibility()
+        .expect("custom canvas exports a semantic window");
+    assert_eq!(tree.role, ui::a11y::Role::Window);
+    let nodes = semantic_nodes(&tree);
+    assert!(nodes.iter().any(|node| {
+        node.action_target.as_deref() == Some(target.as_str())
+            && node.role == ui::a11y::Role::ListItem
+            && node.name.as_deref().is_some_and(|name| !name.is_empty())
+            && node.bounds.is_some()
+    }));
+    assert!(d.app.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Activate,
+        &mut d.doc,
+        &d.root,
+    ));
+    assert_eq!(
+        ViewDoc::selected(&mut d.doc).as_deref(),
+        Some(expected.as_str())
+    );
+}
+
+#[test]
+fn create_dialog_hides_background_and_exposes_editable_fields() {
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    d.frame();
+    let tree = d.app.accessibility().expect("create dialog is semantic");
+    let nodes = semantic_nodes(&tree);
+    assert!(nodes.iter().any(|node| {
+        node.role == ui::a11y::Role::Dialog && node.name.as_deref() == Some("Create container")
+    }));
+    assert!(nodes.iter().any(|node| {
+        node.action_target.as_deref() == Some("containers.create.field:image")
+            && node.role == ui::a11y::Role::TextInput
+    }));
+    assert!(
+        !nodes.iter().any(|node| {
+            node.action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("containers.section:"))
+        }),
+        "modal semantics do not leak the background navigation"
+    );
+
+    assert!(d.app.perform_semantic_action(
+        "containers.create.field:image",
+        &ui::a11y::Action::SetValue("alpine:3.20".into()),
+        &mut d.doc,
+        &d.root,
+    ));
+    assert_eq!(
+        ViewDoc::create_field(&mut d.doc, CreateField::Image),
+        "alpine:3.20"
+    );
+}
+
+#[test]
+fn canonical_log_resource_opens_collaborative_detail_state() {
+    let mut d = Driver::offline();
+    let id = sample_engine().containers[1].id.clone();
+    let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
+    assert!(
+        d.app
+            .invoke_resource_operation(
+                ui::qos_actions::OperationKind::View,
+                "containers.logs",
+                &payload,
+                &d.doc,
+                &d.root,
+            )
+            .unwrap()
+    );
+    d.app.sync(&mut d.doc, &d.root);
+    assert_eq!(ViewDoc::section(&mut d.doc), Section::Containers);
+    assert_eq!(ViewDoc::selected(&mut d.doc).as_deref(), Some(id.as_str()));
+    assert_eq!(ViewDoc::tab(&mut d.doc), DetailTab::Logs);
 }

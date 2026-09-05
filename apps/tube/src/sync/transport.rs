@@ -30,7 +30,10 @@ use base64::Engine;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use snow::params::DHChoice;
+use snow::resolvers::{CryptoResolver, DefaultResolver};
 use snow::{Builder, HandshakeState, TransportState};
+use zeroize::Zeroizing;
 
 use super::protocol::{
     self, Frame, HEADER_SIZE, MAXIMUM_PACKET_SIZE, MAXIMUM_PACKET_SIZE_ENCRYPTED,
@@ -38,7 +41,13 @@ use super::protocol::{
     SerializedChannel, Subscription, SyncDeviceInfo, SyncSessionData, SyncSubscriptionsPackage,
     content_encoding, notify, opcode, stream, sync_opcode,
 };
-use super::{PeerId, SyncError, SyncResult, SyncState, SyncTransport};
+use super::{PeerDescriptor, PeerId, SyncError, SyncResult, SyncState, SyncTransport};
+
+/// A subscription/history exchange is metadata, not a media transfer.  This
+/// cap bounds streamed reassembly, gzip expansion, and JSON allocation even if
+/// an authenticated peer is buggy or hostile.
+const MAX_SYNC_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONCURRENT_STREAMS: usize = 4;
 
 // ---------------------------------------------------------------------------
 // base64 helpers — Grayjay's `toBase64()` is STANDARD (with padding); its
@@ -62,7 +71,34 @@ fn b64_decode(s: &str) -> SyncResult<Vec<u8>> {
             return Ok(v);
         }
     }
-    Err(SyncError::Pairing(format!("invalid base64 key: {s:?}")))
+    Err(SyncError::Pairing("invalid base64 value".into()))
+}
+
+const MAX_PAIRING_BLOB_BYTES: usize = 16 * 1024;
+const MAX_PEER_ADDRESSES: usize = 8;
+const MAX_PEER_ADDRESS_BYTES: usize = 255;
+const MAX_PAIRING_CODE_BYTES: usize = 1024;
+
+fn validate_device_info(info: &SyncDeviceInfo) -> SyncResult<()> {
+    let key = b64_decode(&info.public_key)?;
+    if key.len() != 32
+        || info.addresses.is_empty()
+        || info.addresses.len() > MAX_PEER_ADDRESSES
+        || info
+            .addresses
+            .iter()
+            .any(|address| address.is_empty() || address.len() > MAX_PEER_ADDRESS_BYTES)
+        || !(1..=i32::from(u16::MAX)).contains(&info.port)
+        || info
+            .pairing_code
+            .as_ref()
+            .is_some_and(|code| code.len() > MAX_PAIRING_CODE_BYTES)
+    {
+        return Err(SyncError::Pairing(
+            "pairing metadata is malformed or exceeds its bounds".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn now_epoch_secs() -> i64 {
@@ -88,7 +124,7 @@ fn io_err(e: std::io::Error) -> SyncError {
 /// key is what a peer stores at pairing time and re-authenticates on reconnect.
 #[derive(Clone)]
 pub struct DeviceKey {
-    pub private: Vec<u8>,
+    private: Zeroizing<Vec<u8>>,
     pub public: Vec<u8>,
 }
 
@@ -98,15 +134,34 @@ impl DeviceKey {
         let params = NOISE_PATTERN_MAIN.parse().map_err(snow_err)?;
         let kp = Builder::new(params).generate_keypair().map_err(snow_err)?;
         Ok(DeviceKey {
-            private: kp.private,
+            private: Zeroizing::new(kp.private),
             public: kp.public,
+        })
+    }
+
+    /// Rebuild a Noise identity from key material held by the host secret
+    /// broker. The public key is derived locally and is the only half Tube may
+    /// expose in pairing UI or durable peer metadata.
+    pub fn from_private(private: &[u8]) -> SyncResult<Self> {
+        if private.len() != 32 {
+            return Err(SyncError::KeyUnavailable(
+                "device key material has an invalid length".into(),
+            ));
+        }
+        let mut dh = DefaultResolver
+            .resolve_dh(&DHChoice::Curve25519)
+            .ok_or_else(|| SyncError::KeyUnavailable("Curve25519 is unavailable".into()))?;
+        dh.set(private);
+        Ok(Self {
+            private: Zeroizing::new(private.to_vec()),
+            public: dh.pubkey().to_vec(),
         })
     }
 
     /// Restore from a stored base64 keypair.
     pub fn from_base64(private_b64: &str, public_b64: &str) -> SyncResult<Self> {
         Ok(DeviceKey {
-            private: b64_decode(private_b64)?,
+            private: Zeroizing::new(b64_decode(private_b64)?),
             public: b64_decode(public_b64)?,
         })
     }
@@ -117,7 +172,7 @@ impl DeviceKey {
     }
 
     pub fn private_base64(&self) -> String {
-        b64_encode(&self.private)
+        b64_encode(self.private.as_slice())
     }
 }
 
@@ -420,11 +475,21 @@ impl GrayjaySession {
     /// Send an opcode/subOpcode/payload, segmenting with STREAM when the payload
     /// exceeds one packet. `gzip` compresses DATA payloads (Grayjay does this).
     fn send(&mut self, opcode: u8, sub_opcode: u8, payload: &[u8], gzip: bool) -> SyncResult<()> {
+        if payload.len() > MAX_SYNC_PAYLOAD_BYTES {
+            return Err(SyncError::Transport(
+                "outgoing sync payload exceeds resource bound".into(),
+            ));
+        }
         let (ce, processed) = if gzip && opcode == opcode::DATA {
             (content_encoding::GZIP, gzip_compress(payload)?)
         } else {
             (content_encoding::RAW, payload.to_vec())
         };
+        if processed.len() > MAX_SYNC_PAYLOAD_BYTES {
+            return Err(SyncError::Transport(
+                "encoded sync payload exceeds resource bound".into(),
+            ));
+        }
 
         if processed.len() + HEADER_SIZE <= MAXIMUM_PACKET_SIZE {
             let plaintext = protocol::encode_frame(opcode, sub_opcode, ce, &processed);
@@ -565,6 +630,15 @@ impl GrayjaySession {
                 }
                 let id = i32::from_le_bytes([d[0], d[1], d[2], d[3]]);
                 let expected = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
+                if expected > MAX_SYNC_PAYLOAD_BYTES
+                    || d.len() - 11 > expected
+                    || self.streams.len() >= MAX_CONCURRENT_STREAMS
+                    || self.streams.contains_key(&id)
+                {
+                    return Err(SyncError::Transport(
+                        "stream declaration exceeds resource bounds".into(),
+                    ));
+                }
                 let op = d[8];
                 let sub = d[9];
                 let ce = d[10];
@@ -595,6 +669,11 @@ impl GrayjaySession {
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch".into()));
                 }
+                if d.len() - 8 > r.expected_size.saturating_sub(r.buf.len()) {
+                    return Err(SyncError::Transport(
+                        "stream data exceeds declared size".into(),
+                    ));
+                }
                 r.buf.extend_from_slice(&d[8..]);
                 Ok(None)
             }
@@ -610,6 +689,11 @@ impl GrayjaySession {
                     .ok_or_else(|| SyncError::Transport("stream end for unknown id".into()))?;
                 if expected_off != r.buf.len() {
                     return Err(SyncError::Transport("stream offset mismatch at end".into()));
+                }
+                if d.len() - 8 > r.expected_size.saturating_sub(r.buf.len()) {
+                    return Err(SyncError::Transport(
+                        "stream end exceeds declared size".into(),
+                    ));
                 }
                 r.buf.extend_from_slice(&d[8..]);
                 if r.buf.len() != r.expected_size {
@@ -682,7 +766,15 @@ fn gzip_compress(data: &[u8]) -> SyncResult<Vec<u8>> {
 fn gzip_decompress(data: &[u8]) -> SyncResult<Vec<u8>> {
     let mut dec = GzDecoder::new(data);
     let mut out = Vec::new();
-    dec.read_to_end(&mut out).map_err(io_err)?;
+    dec.by_ref()
+        .take((MAX_SYNC_PAYLOAD_BYTES + 1) as u64)
+        .read_to_end(&mut out)
+        .map_err(io_err)?;
+    if out.len() > MAX_SYNC_PAYLOAD_BYTES {
+        return Err(SyncError::Transport(
+            "decompressed sync payload exceeds resource bound".into(),
+        ));
+    }
     Ok(out)
 }
 
@@ -733,17 +825,30 @@ impl GrayjaySyncTransport {
         self.peers.insert(info.public_key.clone(), info);
     }
 
-    fn parse_blob(blob: &str) -> SyncResult<SyncDeviceInfo> {
+    pub(crate) fn parse_blob(blob: &str) -> SyncResult<SyncDeviceInfo> {
         let blob = blob.trim();
+        if blob.is_empty() || blob.len() > MAX_PAIRING_BLOB_BYTES {
+            return Err(SyncError::Pairing(
+                "pairing invite is empty or too large".into(),
+            ));
+        }
         // Direct JSON.
         if let Ok(info) = serde_json::from_str::<SyncDeviceInfo>(blob) {
+            validate_device_info(&info)?;
             return Ok(info);
         }
         // A `grayjay://...` (or bare) base64/base64url of the JSON.
         let payload = blob.rsplit(['/', ':']).next().unwrap_or(blob);
         let bytes = b64_decode(payload)?;
-        serde_json::from_slice::<SyncDeviceInfo>(&bytes)
-            .map_err(|e| SyncError::Pairing(format!("unrecognized pairing blob: {e}")))
+        if bytes.len() > MAX_PAIRING_BLOB_BYTES {
+            return Err(SyncError::Pairing(
+                "decoded pairing invite is too large".into(),
+            ));
+        }
+        let info = serde_json::from_slice::<SyncDeviceInfo>(&bytes)
+            .map_err(|e| SyncError::Pairing(format!("unrecognized pairing blob: {e}")))?;
+        validate_device_info(&info)?;
+        Ok(info)
     }
 
     /// Open + handshake + authorize a session to a paired peer.
@@ -819,10 +924,14 @@ impl SyncTransport for GrayjaySyncTransport {
     }
 
     fn pair(&mut self, pairing_blob: &str) -> SyncResult<PeerId> {
-        let info = Self::parse_blob(pairing_blob)?;
+        let mut info = Self::parse_blob(pairing_blob)?;
+        let pairing_code = Zeroizing::new(info.pairing_code.take().unwrap_or_default());
         // Verify we can actually handshake + authorize with the advertised key
         // and code; on success the peer is paired and remembered.
-        let session = self.open_session(&info, info.pairing_code.as_deref())?;
+        let session = self.open_session(
+            &info,
+            (!pairing_code.is_empty()).then_some(pairing_code.as_str()),
+        )?;
         let peer_key = session.remote_public_key().to_string();
         let mut remembered = info.clone();
         remembered.public_key = peer_key.clone();
@@ -896,6 +1005,32 @@ impl SyncTransport for GrayjaySyncTransport {
             }
         }
         Ok(out)
+    }
+
+    fn restore_peer(&mut self, peer: &PeerDescriptor) -> SyncResult<()> {
+        let info = SyncDeviceInfo {
+            public_key: peer.public_key.clone(),
+            addresses: peer.addresses.clone(),
+            port: peer.port,
+            pairing_code: None,
+        };
+        validate_device_info(&info).map_err(|_| {
+            SyncError::Persistence("stored peer connection metadata is invalid".into())
+        })?;
+        self.remember_peer(info);
+        Ok(())
+    }
+
+    fn forget_peer(&mut self, peer: &PeerId) {
+        self.peers.remove(&peer.0);
+    }
+
+    fn peer_descriptor(&self, peer: &PeerId) -> Option<PeerDescriptor> {
+        self.peers.get(&peer.0).map(|info| PeerDescriptor {
+            public_key: info.public_key.clone(),
+            addresses: info.addresses.clone(),
+            port: info.port,
+        })
     }
 }
 
@@ -1190,13 +1325,38 @@ mod tests {
 
     #[test]
     fn blob_parses_json_and_base64() {
-        let json =
-            r#"{"publicKey":"AAAA","addresses":["10.0.0.2"],"port":12315,"pairingCode":"Xy"}"#;
-        let a = GrayjaySyncTransport::parse_blob(json).unwrap();
+        let json = serde_json::to_string(&SyncDeviceInfo {
+            public_key: b64_encode(&[3; 32]),
+            addresses: vec!["10.0.0.2".into()],
+            port: 12315,
+            pairing_code: Some("Xy".into()),
+        })
+        .unwrap();
+        let a = GrayjaySyncTransport::parse_blob(&json).unwrap();
         assert_eq!(a.port, 12315);
 
         let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
         let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pairing_metadata_is_bounded_before_network_or_persistence() {
+        assert!(GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err());
+        let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
+            public_key: b64_encode(&[4; 32]),
+            addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
+            port: 12315,
+            pairing_code: Some("ok".into()),
+        })
+        .unwrap();
+        assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
+    }
+
+    #[test]
+    fn gzip_expansion_is_bounded() {
+        let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
+        let error = gzip_decompress(&compressed).unwrap_err();
+        assert!(error.to_string().contains("exceeds resource bound"));
     }
 }

@@ -31,30 +31,21 @@ There are three layers:
    publisher allowlist, stages it for review, and exposes only
    approved entries to clients.
 
-3. **A registry client** (packaged as a `.qpkg` and installed on
-   qOS) queries the server, prompts the user on first pin, and
-   drives `pkg-cli install` under the hood. Not part of this
-   commit — the server + types come first.
+3. **The shared catalogue client** queries the server, requires a
+   preconfigured owner pin, verifies the complete snapshot, and drives the
+   verified installer path. The Store and desktop search use this same client.
 
 ### Trust chain
 
 ```
-                   +------------------+
-                   |  Registry Owner  |     <- pins clients: "trust me"
-                   |  Ed25519 pubkey  |
-                   +---------+--------+
-                             | signs
-                             v
-        +----------------+  publishers.toml   +---------------------+
-        | Allowlisted    | ---(is member)---> | RegistryEntry: sig, |
-        | Publisher key  |                    | qpkg_url, root hash |
-        +----------------+                    +----------+----------+
-                                                         | client downloads
-                                                         v
-                                                 +--------------+
-                                                 |    .qpkg     |
-                                                 |  pkg::verify |
-                                                 +--------------+
+ Registry owner offline key
+            | signs exact policy + entries + expiry + moderation head
+            v
+ SignedRegistrySnapshot <--- publisher signs each RegistryEntry
+            |
+            | pinned owner verification + durable anti-rollback checkpoint
+            v
+      verified .qpkg root ---> pkg::verify publisher identity again
 ```
 
 The **owner** signs an index snapshot for federation
@@ -106,8 +97,8 @@ and the length prefix on collections. See
 ```
 GET  /registry            → RegistryHandshake         (server identity)
 GET  /health              → { "ok": true }
-GET  /entries             → [RegistryEntry, …]
-GET  /entries/<pkg-id>    → RegistryEntry              (404 if not present)
+GET  /entries             → SignedRegistrySnapshot
+GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
 POST /entries             → EntryChangeRequest body    (202/404/409/403)
 ```
 
@@ -126,8 +117,9 @@ may only edit their own entries. `update` further requires
 `updated_at_unix > stored.updated_at_unix` to reject stale
 replays. A valid request returns `202 Accepted` with
 `{"status":"pending_review","id":"<package-id>"}`. GET requests
-never expose pending payloads: an update leaves the old release
-live, and a deletion leaves the app live, until approval.
+never expose pending payloads. They expose only the most recently published,
+owner-signed snapshot: approval changes staging state, and the public catalogue
+changes only after the offline signing step below.
 
 ## Bootstrapping your own instance
 
@@ -199,8 +191,24 @@ size and time bounds, refuse redirects and private-network destinations,
 re-derive the content-addressed identity and publisher signature, and
 compare the signed manifest's app id and version with the submission.
 Their output includes filesystem, network, portal, and service requests.
-Approval publishes the exact signed metadata; a moderator cannot quietly
-rewrite a publisher's submission.
+Approval moves the exact signed metadata into snapshot staging; a moderator
+cannot quietly rewrite a publisher's submission.
+
+Publish the next bounded-lifetime snapshot from an offline signing environment:
+
+```text
+chmod 0600 /secure/registry-owner.seed
+qos-registry-server sign-snapshot \
+  --owner-key-file /secure/registry-owner.seed \
+  --valid-for-seconds 86400
+```
+
+The seed file is exactly 32 secret bytes encoded as 64 hex characters. The
+command binds the sorted entry set, publisher authorization policies, monotonic
+sequence, predecessor hash, validity window, and current moderation-log head.
+It atomically writes `published-snapshot.json`. The long-running `serve` process
+only has the public identity and refuses to serve a missing, expired, tampered,
+or otherwise invalid snapshot; it never receives the owner private key.
 
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
@@ -297,13 +305,10 @@ outside the data-dir — the server is stateless across restarts.
   impersonation, illegal content, and abusive behavior.
 - **Keep decisions explainable.** Reviewer identity, reason, time, exact
   submission, and decision are durable JSON records under `reviews/`.
-- **Federation snapshots** — a moderator can serve a signed
-  index snapshot (using the `INDEX_DOMAIN` signing form
-  exposed by `registry-types`) so downstream mirrors can pin a
-  particular curation. The index-manifest schema is
-  intentionally left open here — projects that want to build
-  a mirror pipeline can define one on top of this crate's
-  primitives.
+- **Federation snapshots** use the versioned `SignedRegistrySnapshot` schema.
+  Clients verify the pinned owner signature, validity window, monotonic durable
+  checkpoint, every publisher signature, and membership in the exact signed
+  publisher policy. Bare entry arrays and TOFU are rejected.
 
 ## Threat model — what this design does NOT protect against
 

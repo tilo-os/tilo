@@ -47,6 +47,7 @@ taffy.workspace = true
 # (`CalDavConfig`, `RemoteCalendar`, `Event`, `Task`) are exactly the shapes a
 # CalDAV client consumes and produces, so enabling `live` is a drop-in.
 reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
+roxmltree = "0.20"
 
 [features]
 thin = ["dep:runtime-dylib"]

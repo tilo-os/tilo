@@ -65,6 +65,7 @@ sha2.workspace = true
 # own recorded public key. Threshold mode (t ≥ 2) stays entirely
 # inside frost.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+zeroize.workspace = true
 
 [dev-dependencies]
 # Same dep that qos-collab-types uses for ArtifactId / ChannelId /

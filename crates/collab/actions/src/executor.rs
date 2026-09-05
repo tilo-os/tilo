@@ -5,8 +5,8 @@
 //! [`replay`] decodes an envelope's action and applies it, reproducing
 //! the *identical* change on any replica at the same base state (peers);
 //! [`dispatch`] is the locus-aware front door — `ClientLocal` applies
-//! and hands to the transport for replication, `ServerPreferred`
-//! submits to a host or falls back to local apply when none answers.
+//! and hands to the transport for replication; `ServerPreferred` submits to
+//! an authoritative host and fails closed when none answers.
 //!
 //! The commit discipline is what makes replay deterministic: every
 //! apply pins the Automerge actor id (from the envelope's [`ActionId`])
@@ -220,9 +220,8 @@ pub enum HostDecision {
     /// A host accepted the action; it will execute authoritatively and
     /// broadcast the change. The caller must NOT apply locally.
     AcceptedByHost,
-    /// No host reachable; the caller applies locally and replicates as if
-    /// `ClientLocal`.
-    NoHostFallbackLocal,
+    /// No authoritative host is reachable. The caller must not apply locally.
+    Unavailable,
 }
 
 /// The transport an action is handed to after (or instead of) local
@@ -234,10 +233,10 @@ pub trait ActionTransport {
     fn replicate(&mut self, env: &ActionEnvelope);
 
     /// Submit a `ServerPreferred` action to a host for authoritative
-    /// execution. Default is "no host", so a local-only transport is a
-    /// one-method impl.
+    /// execution. Default is unavailable, so a local-only transport fails
+    /// closed for host-authoritative actions.
     fn submit_to_host(&mut self, _env: &ActionEnvelope) -> HostDecision {
-        HostDecision::NoHostFallbackLocal
+        HostDecision::Unavailable
     }
 }
 
@@ -246,9 +245,6 @@ pub trait ActionTransport {
 pub enum Dispatched {
     /// `ClientLocal`: applied to the local replica and replicated.
     AppliedLocal(ActionEnvelope),
-    /// `ServerPreferred` with no host reachable: applied locally as a
-    /// fallback and replicated.
-    AppliedLocalFallback(ActionEnvelope),
     /// `ServerPreferred` accepted by a host: NOT applied locally — the host
     /// executes and broadcasts the change.
     SubmittedToHost(ActionEnvelope),
@@ -258,9 +254,7 @@ impl Dispatched {
     /// The envelope produced, regardless of variant.
     pub fn envelope(&self) -> &ActionEnvelope {
         match self {
-            Dispatched::AppliedLocal(e)
-            | Dispatched::AppliedLocalFallback(e)
-            | Dispatched::SubmittedToHost(e) => e,
+            Dispatched::AppliedLocal(e) | Dispatched::SubmittedToHost(e) => e,
         }
     }
 
@@ -274,10 +268,8 @@ impl Dispatched {
 /// The locus-aware front door, routing `action` per its
 /// [`ExecutionLocus`](crate::action::ExecutionLocus): `ClientLocal` →
 /// [`apply_local`] then `transport.replicate`; `ServerPreferred` →
-/// `transport.submit_to_host`, applying locally + replicating only on
-/// [`HostDecision::NoHostFallbackLocal`]. The envelope's id/timestamp are
-/// fixed *before* submission, so a host and the local fallback execute
-/// the byte-identical change.
+/// `transport.submit_to_host`, refusing when no authoritative host is
+/// reachable. The envelope's id/timestamp are fixed before submission.
 ///
 /// # Errors
 ///
@@ -360,11 +352,9 @@ fn dispatch_by_maybe_context(
             let env = envelope_for(doc, action, encoded, actor, context);
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
-                HostDecision::NoHostFallbackLocal => {
-                    apply_under_envelope(doc, action, &env)?;
-                    transport.replicate(&env);
-                    Ok(Dispatched::AppliedLocalFallback(env))
-                }
+                HostDecision::Unavailable => Err(ActionError::Refused(
+                    "this action requires an authoritative host, but none is reachable".into(),
+                )),
             }
         }
     }
@@ -388,5 +378,5 @@ impl ActionTransport for LocalTransport {
     fn replicate(&mut self, env: &ActionEnvelope) {
         self.replicated.push(env.clone());
     }
-    // submit_to_host uses the trait default: NoHostFallbackLocal.
+    // submit_to_host uses the trait default: Unavailable.
 }

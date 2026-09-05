@@ -246,6 +246,12 @@ interface ChannelHandle {
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
   taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
+
+  # Record a terminal effect started by this application's own local UI.
+  # The broker re-resolves resource/action against the connection's current
+  # published surface and derives actor/workspace/context itself. Arguments,
+  # output and failure prose never cross this durable boundary.
+  recordLocalEffect @32 (resource :Text, action :Text, updateJson :Text) -> ();
 }
 
 interface WorkspaceControlHandle {

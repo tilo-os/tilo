@@ -830,8 +830,12 @@ impl Session {
                     return Ok(result);
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
-                Some(CollabEvent::Document { envelope, .. }) => {
-                    match DocumentMutation::decode(&envelope.payload)? {
+                Some(event @ CollabEvent::Document { .. }) => {
+                    match event
+                        .document_mutation()
+                        .transpose()?
+                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                    {
                         DocumentMutation::Snapshot(data) => {
                             let _ = self.absorb_snapshot(&data)?;
                         }
@@ -901,8 +905,12 @@ impl Session {
             tracing::debug!("asked the room for the document again");
         }
         match self.link.recv(wait)? {
-            Some(CollabEvent::Document { envelope, .. }) => {
-                changed = match DocumentMutation::decode(&envelope.payload)? {
+            Some(event @ CollabEvent::Document { .. }) => {
+                changed = match event
+                    .document_mutation()
+                    .transpose()?
+                    .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                {
                     DocumentMutation::Snapshot(data) => self.absorb_snapshot(&data)?,
                     DocumentMutation::Incremental(data) => {
                         self.merge_incremental_anywhere(&data)?
@@ -1393,8 +1401,12 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.broker_surfaces = surfaces;
                 }
-                Some(CollabEvent::Document { envelope, .. }) => {
-                    match DocumentMutation::decode(&envelope.payload)? {
+                Some(event @ CollabEvent::Document { .. }) => {
+                    match event
+                        .document_mutation()
+                        .transpose()?
+                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                    {
                         DocumentMutation::Snapshot(data) => {
                             let _ = self.absorb_snapshot(&data)?;
                         }
@@ -2044,6 +2056,16 @@ fn word_action_anchor(
             }
         }
         WordProcessorAction::ReplaceBody { .. } => qos_actions::InteractionAnchor::Resource,
+        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
+            .as_ref()
+            .map_or(qos_actions::InteractionAnchor::Resource, |id| {
+                qos_actions::InteractionAnchor::Objects {
+                    ids: vec![id.clone()],
+                }
+            }),
+        WordProcessorAction::ResolveComment { id } => qos_actions::InteractionAnchor::Objects {
+            ids: vec![id.clone()],
+        },
     }
 }
 

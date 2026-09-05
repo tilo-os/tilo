@@ -10,8 +10,9 @@
 //! the add-subscription dialog's commit) dispatch and what the Ctrl+K palette
 //! dispatches — one source of truth, one replay path.
 //!
-//! The resource tree mirrors the data model: the reader owns its folders and its
-//! subscriptions, and each exports the [`ActionSpec`]s Ctrl+K offers.
+//! The resource tree mirrors the data model: the reader owns its folders and
+//! subscriptions, and subscriptions own their articles. Each exports the
+//! [`ActionSpec`]s Ctrl+K, agents and accessibility can invoke.
 //!
 //! ## What is *not* an action
 //!
@@ -38,8 +39,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
@@ -49,9 +51,27 @@ use crate::model::{Feed, FeedKind, Folder, Id};
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
 pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
 
+pub fn feed_resource_id(id: Id) -> String {
+    format!("feeds.subscription:{id}")
+}
+
+pub fn article_resource_id(id: Id) -> String {
+    format!("feeds.article:{id}")
+}
+
+pub fn open_feed_address(id: Id) -> ActionAddress {
+    ActionAddress::new(feed_resource_id(id), "open")
+}
+
+pub fn open_article_address(id: Id) -> ActionAddress {
+    ActionAddress::new(article_resource_id(id), "open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedsOperation {
     RefreshAll,
+    RevealFeed { id: String },
+    RevealArticle { id: String },
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
@@ -319,6 +339,17 @@ pub struct FeedRef {
     pub title: String,
     /// Unread article ids in this feed, resolved at authoring time.
     pub unread: Vec<Id>,
+    /// Searchable articles nested beneath this stable subscription resource.
+    pub articles: Vec<ArticleRef>,
+}
+
+/// One article surfaced as a resource with its current document-backed flags.
+#[derive(Debug, Clone)]
+pub struct ArticleRef {
+    pub id: Id,
+    pub title: String,
+    pub read: bool,
+    pub starred: bool,
 }
 
 /// One folder surfaced as a resource.
@@ -349,6 +380,18 @@ fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
         })
 }
 
+fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        FEEDS_OPERATION_TYPE,
+        operation,
+    )
+    .expect("FeedsOperation is always serializable")
+    .retry_policy(RetryPolicy::Idempotent)
+}
+
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
 fn feed_label(f: &FeedRef) -> String {
     let t = f.title.trim();
@@ -361,8 +404,9 @@ fn feed_label(f: &FeedRef) -> String {
 
 /// Build the resource tree Feeds currently has open: the reader (with a "New
 /// folder" action), each folder (rename + delete), and each subscription
-/// (rename + move + mark-all-read + unsubscribe). Every document-mutating
-/// operation is exported as the same action the on-screen affordance dispatches.
+/// (open + rename + move + mark-all-read + unsubscribe), and each article
+/// (open + read + star). Every document-mutating operation is exported as the
+/// same action the on-screen affordance dispatches; open is a local View.
 pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
 
@@ -431,11 +475,12 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 
     for feed in &ctx.feeds {
         let id = feed.id;
-        let mut child = Resource::new(
-            format!("feeds.subscription:{id}"),
-            "feeds.subscription",
-            feed_label(feed),
-        );
+        let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
+        child = child.with_action(view_spec(
+            "open",
+            "Open feed",
+            &FeedsOperation::RevealFeed { id: id.to_string() },
+        ));
         child = child.with_action(ActionSpec::prompted(
             "rename",
             "Rename feed",
@@ -475,6 +520,38 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             .destructive()
             .reversible(),
         );
+        for article in &feed.articles {
+            let article_id = article.id;
+            let title = if article.title.trim().is_empty() {
+                "Untitled article".to_string()
+            } else {
+                article.title.clone()
+            };
+            let article_node =
+                Resource::new(article_resource_id(article_id), "feeds.article", title)
+                    .with_action(view_spec(
+                        "open",
+                        "Open article",
+                        &FeedsOperation::RevealArticle {
+                            id: article_id.to_string(),
+                        },
+                    ))
+                    .with_action(immediate_spec(
+                        "read",
+                        if article.read {
+                            "Mark unread"
+                        } else {
+                            "Mark read"
+                        },
+                        &mark_read_action(article_id, !article.read),
+                    ))
+                    .with_action(immediate_spec(
+                        "star",
+                        if article.starred { "Unstar" } else { "Star" },
+                        &set_starred_action(article_id, !article.starred),
+                    ));
+            child = child.with_child(article_node);
+        }
         root = root.with_child(child);
     }
 
@@ -550,6 +627,7 @@ mod tests {
             qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(refresh.kind, OperationKind::Effect);
 
         let folder = reader
             .children
@@ -571,6 +649,22 @@ mod tests {
         assert!(s_actions.contains(&"move"), "{s_actions:?}");
         assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
         assert_eq!(
+            feed.actions.iter().find(|a| a.id == "open").unwrap().kind,
+            OperationKind::View
+        );
+        assert_eq!(
+            feed.actions
+                .iter()
+                .find(|a| a.id == "mark-read")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
+        assert_eq!(
+            feed.actions.iter().find(|a| a.id == "rename").unwrap().kind,
+            OperationKind::Document
+        );
+        assert_eq!(
             feed.actions
                 .iter()
                 .find(|a| a.id == "unsubscribe")
@@ -578,6 +672,39 @@ mod tests {
                 .contract
                 .risk,
             qos_actions::RiskLevel::Destructive
+        );
+
+        let article = feed
+            .children
+            .iter()
+            .find(|resource| resource.kind == "feeds.article")
+            .expect("articles are first-class nested resources");
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "open")
+                .unwrap()
+                .kind,
+            OperationKind::View
+        );
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "read")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "star")
+                .unwrap()
+                .kind,
+            OperationKind::Document
         );
 
         // The full flattened tree exports every action — the palette's Actions

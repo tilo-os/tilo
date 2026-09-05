@@ -46,9 +46,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
+    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::SlidesDoc;
@@ -60,14 +60,61 @@ use crate::model::{
 pub const SLIDES_ACTION_TYPE: &str = "slides.action";
 pub const SLIDES_OPERATION_TYPE: &str = "slides.operation";
 
+pub fn slide_resource_id(slide: &str) -> String {
+    format!("slides.slide:{slide}")
+}
+
+pub fn element_resource_id(element: &str) -> String {
+    format!("slides.element:{element}")
+}
+
+pub fn text_resource_id(element: &str) -> String {
+    format!("slides.text:{element}")
+}
+
+pub fn notes_resource_id(slide: &str) -> String {
+    format!("slides.notes:{slide}")
+}
+
+pub fn open_slide_address(slide: &str) -> ActionAddress {
+    ActionAddress::new(slide_resource_id(slide), "open")
+}
+
+pub fn open_element_address(element: &str) -> ActionAddress {
+    ActionAddress::new(element_resource_id(element), "open")
+}
+
+pub fn open_text_address(element: &str) -> ActionAddress {
+    ActionAddress::new(text_resource_id(element), "open")
+}
+
+pub fn open_notes_address(slide: &str) -> ActionAddress {
+    ActionAddress::new(notes_resource_id(slide), "open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlidesOperation {
     ShowEditor,
     ShowOverview,
     StartPresentation,
     EndPresentation,
-    Open { path: Option<String> },
-    SaveAs { path: Option<String> },
+    RevealSlide {
+        slide: String,
+    },
+    RevealElement {
+        slide: String,
+        element: String,
+        edit_text: bool,
+    },
+    RevealNotes {
+        slide: String,
+    },
+    Open {
+        path: Option<String>,
+    },
+    SaveAs {
+        path: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -110,7 +157,11 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation)
     let spec = ActionSpec::operation(id, label, kind, SLIDES_OPERATION_TYPE, &value)
         .expect("SlidesOperation is always serializable");
     match value {
-        SlidesOperation::ShowEditor | SlidesOperation::ShowOverview => spec
+        SlidesOperation::ShowEditor
+        | SlidesOperation::ShowOverview
+        | SlidesOperation::RevealSlide { .. }
+        | SlidesOperation::RevealElement { .. }
+        | SlidesOperation::RevealNotes { .. } => spec
             .with_contract(ActionContract::view())
             .retry_policy(RetryPolicy::Idempotent),
         SlidesOperation::StartPresentation | SlidesOperation::EndPresentation => {
@@ -802,7 +853,7 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     for sr in &ctx.slides {
         let idx = sr.idx;
         let mut slide = Resource::new(
-            format!("slides.slide:{}", sr.data.id),
+            slide_resource_id(&sr.data.id),
             "slides.slide",
             format!(
                 "Slide {} · {}",
@@ -810,6 +861,15 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                 Layout::from_str(&sr.data.layout).label()
             ),
         );
+
+        slide = slide.with_action(operation(
+            "open",
+            "Open slide",
+            OperationKind::View,
+            SlidesOperation::RevealSlide {
+                slide: sr.data.id.clone(),
+            },
+        ));
 
         // Duplicate this slide immediately after it. Its ids are reminted at
         // authoring, baked into the payload, so the action replays identically.
@@ -844,11 +904,21 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         }
 
         for er in &sr.elements {
-            let child = Resource::new(
-                format!("slides.element:{}", er.id),
+            let mut child = Resource::new(
+                element_resource_id(&er.id),
                 "slides.element",
                 element_label(er.kind, &er.text),
             )
+            .with_action(operation(
+                "open",
+                "Reveal element",
+                OperationKind::View,
+                SlidesOperation::RevealElement {
+                    slide: sr.data.id.clone(),
+                    element: er.id.clone(),
+                    edit_text: false,
+                },
+            ))
             .with_action(immediate_spec(
                 "delete",
                 "Delete element",
@@ -864,7 +934,44 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                 "Send to back",
                 &lower_element_action(idx, er.id.clone()),
             ));
+            if er.kind == ElementKind::Text && !er.text.trim().is_empty() {
+                child = child.with_child(
+                    Resource::new(
+                        text_resource_id(&er.id),
+                        "slides.text",
+                        element_label(ElementKind::Text, &er.text),
+                    )
+                    .with_action(operation(
+                        "open",
+                        "Edit text",
+                        OperationKind::View,
+                        SlidesOperation::RevealElement {
+                            slide: sr.data.id.clone(),
+                            element: er.id.clone(),
+                            edit_text: true,
+                        },
+                    )),
+                );
+            }
             slide = slide.with_child(child);
+        }
+
+        if !sr.data.notes.trim().is_empty() {
+            slide = slide.with_child(
+                Resource::new(
+                    notes_resource_id(&sr.data.id),
+                    "slides.notes",
+                    element_label(ElementKind::Text, &sr.data.notes),
+                )
+                .with_action(operation(
+                    "open",
+                    "Open speaker notes",
+                    OperationKind::View,
+                    SlidesOperation::RevealNotes {
+                        slide: sr.data.id.clone(),
+                    },
+                )),
+            );
         }
 
         deck = deck.with_child(slide);
@@ -961,6 +1068,46 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Delete slide")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn nested_view_resources_export_stable_broker_addresses() {
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let slide = &resources[0].children[0];
+        let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
+        let open_slide = slide
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .unwrap();
+        assert_eq!(open_slide.kind, OperationKind::View);
+        assert_eq!(
+            open_slide_address(slide_id),
+            qos_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
+        );
+
+        let element = slide
+            .children
+            .iter()
+            .find(|resource| resource.kind == "slides.element" && !resource.children.is_empty())
+            .expect("slide has a searchable text element");
+        let text = &element.children[0];
+        let element_id = element.id.0.strip_prefix("slides.element:").unwrap();
+        assert_eq!(open_element_address(element_id).resource, element.id.0);
+        assert_eq!(open_text_address(element_id).resource, text.id.0);
+
+        let address = open_text_address(element_id);
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("text address resolves through the published resource tree");
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(SlidesOperation::RevealElement {
+                slide: slide_id.to_string(),
+                element: element_id.to_string(),
+                edit_text: true,
+            })
         );
     }
 

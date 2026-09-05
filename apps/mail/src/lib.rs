@@ -91,10 +91,12 @@ pub fn app_root() -> Box<dyn Widget> {
 /// The viewport a named `--shots` scenario should render at.
 pub fn shot_viewport(scenario: &str) -> (u32, u32) {
     match scenario {
-        "narrow" | "narrow_detail" | "narrow_drawer" => (560, 860),
+        "narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow" | "setup_narrow" => {
+            (560, 860)
+        }
         "mid" => (1000, 720),
         "compose" => (1180, 820),
-        "setup" | "setup_add" | "setup_oauth" | "firstrun" => (1100, 780),
+        "setup" | "setup_add" | "setup_oauth" | "firstrun" | "error" => (1100, 780),
         "html_mail" => (1280, 820),
         _ => (1280, 800),
     }
@@ -111,16 +113,20 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
     }
     let mut app = MailApp::new_sample();
     match scenario {
-        "compose" => app.prime_compose_shot(),
+        "compose" | "compose_narrow" => app.prime_compose_shot(),
         "narrow_detail" => app.prime_detail_shot(),
         "narrow_drawer" => app.prime_drawer_shot(),
-        "setup" => app.prime_setup_shot(),
+        "setup" | "setup_narrow" => app.prime_setup_shot(),
         // The add-account variant opens a blank setup sheet (no editing target)
         // so the shot shows the "Add account" flow with autofilled server
         // fields rather than an existing account's values.
         "setup_add" => app.prime_setup_add_shot(),
         "setup_oauth" => app.prime_setup_oauth_shot(),
         "html_mail" => app.prime_html_mail_shot(),
+        "empty" => app.prime_empty_shot(),
+        "loading" => app.prime_loading_shot(),
+        "offline" => app.prime_offline_shot(),
+        "error" => app.prime_error_shot(),
         _ => {}
     }
     Box::new(app)

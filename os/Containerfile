@@ -398,13 +398,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --features browser/wpe"; \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
+    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
     && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
          DESKTOP_RELEASE_ARGS="-p shell -p launcher -p qos-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p qos-power -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p qos-power -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p qos-model-gateway -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
@@ -413,7 +413,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        cargo build --release -p windows-vm \
          --bin qos-windows-vm-control --bin qos-windows-rail \
     && missing=0 \
-    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
+    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-app-host qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
          case "${QOS_PREBUILT_DESKTOP}:$b" in 1:shell|1:qos-launcher|1:qos-unlock-helper) continue ;; esac; \
          [ -x "target/release/$b" ] || missing=1; \
        done \
@@ -457,6 +457,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
+          target/release/qos-app-host \
           target/release/qos-power \
           target/release/qos-rollback \
           target/release/qos \
@@ -927,6 +928,8 @@ COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 # `verify` or extend the bundle from a running system.
 COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
+COPY --from=builder /out/qos-app-host /usr/libexec/qos-app-host
+COPY os/usr/lib/systemd/user/qos-app-host.service /usr/lib/systemd/user/qos-app-host.service
 # Package management on the running system: `qos-install` installs, lists and
 # removes `.qpkg`s into the user's own store, `qos-pkg` packs and verifies
 # them, and `qos-cli-shim` is what `qos-install` drops on $PATH for a package
@@ -1681,6 +1684,7 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable qos-identity.service && \
     systemctl --global enable qos-model-manager.service && \
     systemctl --global enable qos-model-gateway.service && \
+    systemctl --global enable qos-app-host.service && \
     systemctl --global enable qos-ush.service && \
     systemctl --global enable qos-fs-recipient.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
@@ -1903,6 +1907,18 @@ COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
 RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
     && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
 
+# Public marketplace trust input. The private owner key never enters the image
+# or serving process. Releases may rotate this build input, but empty, malformed,
+# or all-zero anchors fail the image build instead of silently enabling TOFU.
+ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY
+RUN if ! printf '%s\n' "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a-fA-F]{64}$' \
+      || [ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" = 0000000000000000000000000000000000000000000000000000000000000000 ]; then \
+      echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key" >&2; exit 1; \
+    fi \
+ && install -d -m 0755 /usr/share/qos/trust \
+ && printf '%s\n' "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" > /usr/share/qos/trust/qos-main-registry-owner.pub \
+ && chmod 0644 /usr/share/qos/trust/qos-main-registry-owner.pub
+
 # Collaborative Files installed-image contract.  This is deliberately inside
 # the production rootfs build rather than a source-tree lint: it inspects the
 # actual copied binaries, enabled system/user units, FUSE package/config,
@@ -1911,8 +1927,10 @@ RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
 # install + graphical login by build-image.yml.
 COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/qos/collaborative-files-image-contract.sh
 COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/qos/files-atspi-smoke.sh
+COPY shell/tests/native_atspi_smoke.sh /usr/libexec/qos/native-atspi-smoke.sh
 RUN chmod 0755 /usr/libexec/qos/collaborative-files-image-contract.sh \
         /usr/libexec/qos/files-atspi-smoke.sh \
+        /usr/libexec/qos/native-atspi-smoke.sh \
     && OS_ROOT=/ /usr/libexec/qos/collaborative-files-image-contract.sh image
 
 # Enrolment invariants, likewise at BUILD time. A build container has no

@@ -20,7 +20,11 @@
 //! interactive shell, distrobox enter / create — is an **external** podman
 //! operation (see [`crate::podman`] and the `apply_*` / `*_image` / `*_volume`
 //! methods on [`crate::app::ContainersApp`]). It mutates the podman daemon, not a
-//! shared CRDT, so by the recipe's rule it is *not* an action and stays as-is.
+//! shared CRDT, so it is exported as an `Effect`: lifecycle buttons emit inert
+//! [`ControlInvocation`](qos_actions::ControlInvocation)s and the host resolves
+//! current permission/availability, records the outcome in activity history,
+//! then calls the widget's operation handler. No container control shells out
+//! before that authority boundary.
 //!
 //! ## What is in the shared document — and why none of it is an action
 //!
@@ -53,11 +57,12 @@
 //!
 //! ## Consequence
 //!
-//! Containers publishes the transient engine objects as stable session
-//! resources with typed effect operations. In demo/offline mode those same
-//! operations remain enumerable but carry an explicit `engine_offline`
-//! availability reason. [`take_committed_action`](ui::widget::Widget::take_committed_action)
-//! remains `None`: lifecycle effects never create a document undo boundary.
+//! Containers publishes the transient engine objects (including nested log
+//! resources) as stable session resources with typed view/effect operations.
+//! In demo/offline mode effects remain enumerable but carry an explicit
+//! `engine_offline` availability reason. Effects appear in durable activity
+//! history but never create a document undo boundary; view/navigation state
+//! continues through the collaborative Automerge document.
 
 #[cfg(test)]
 mod tests {

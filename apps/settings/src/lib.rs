@@ -55,6 +55,7 @@
     )
 )]
 
+pub mod account_probe;
 pub mod accounts;
 pub mod actions;
 pub mod categories;

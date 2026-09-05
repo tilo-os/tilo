@@ -4,13 +4,36 @@
 
 use crate::icons::Icon;
 
+/// Maximum number of rows a provider should return from the legacy, unbudgeted
+/// [`SearchProvider::search`] entry point. Interactive callers use
+/// `search_limited`; this ceiling keeps tests and secondary consumers from
+/// accidentally materialising an entire library.
+pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 256;
+
+/// Default maximum number of records copied into an in-memory provider
+/// snapshot. Providers with a real indexed backend may use a different,
+/// explicitly reviewed bound.
+pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
+use qos_actions::ActionAddress;
+use std::borrow::Borrow;
+
+/// Marks an `action_id` as a framework-owned canonical activation. The tag
+/// keeps arbitrary legacy ids from becoming actions merely because they happen
+/// to contain qos-actions' wire separator.
+const ACTION_ADDRESS_PREFIX: &str = "\u{1}action\u{1f}";
+
 /// One typed hit produced by a [`SearchProvider`].
 ///
 /// App-agnostic on purpose: an app fills the display fields (`title`,
-/// `subtitle`, `kind`, `icon`) and an opaque `action_id` it can dispatch on
-/// when the row is activated. The framework never interprets `action_id` — it
-/// hands it straight back through
-/// [`SearchResultsView::take_activated`](crate::widget::SearchResultsView::take_activated).
+/// `subtitle`, `kind`, `icon`) and an activation target. New providers should
+/// use [`SearchResult::for_action`] or [`SearchResult::with_action_address`] to
+/// name an exported resource action. The palette resolves that address against
+/// the current resource tree and sends it through the same operation broker as
+/// every other affordance.
+///
+/// `action_id` remains public and opaque for compatibility with providers that
+/// predate the resource/action model. Those legacy values are still handed to
+/// the owning widget's navigation callback when they are activated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchResult {
     /// Primary line — what the row reads as (e.g. a contact's display name).
@@ -22,8 +45,12 @@ pub struct SearchResult {
     /// a `kind` are bucketed together under this label in the results overlay,
     /// so a mixed query reads as sectioned groups rather than one flat list.
     pub kind: String,
-    /// Opaque token the caller dispatches on when this row is activated —
-    /// a record id, a command name, a URL, whatever the app can resolve.
+    /// Activation token. Prefer the canonical encoded [`ActionAddress`] made
+    /// by [`for_action`](Self::for_action) or
+    /// [`with_action_address`](Self::with_action_address). Any value that is
+    /// not tagged as canonical is treated as a legacy opaque navigation id.
+    /// A tagged address that is not currently exported is omitted by the
+    /// palette rather than gaining authority through the legacy callback.
     pub action_id: String,
     /// Optional leading glyph drawn at the start of the row.
     pub icon: Option<Icon>,
@@ -48,6 +75,43 @@ impl SearchResult {
             icon: None,
             score: 0,
         }
+    }
+
+    /// A result that activates a canonical exported resource action.
+    ///
+    /// This is the preferred constructor for new providers. The address is
+    /// encoded into the existing `action_id` storage so adding canonical
+    /// activation does not break providers built against the legacy shape.
+    pub fn for_action(
+        kind: impl Into<String>,
+        title: impl Into<String>,
+        address: impl Borrow<ActionAddress>,
+    ) -> Self {
+        Self::new(
+            kind,
+            title,
+            format!("{ACTION_ADDRESS_PREFIX}{}", address.borrow().encode()),
+        )
+    }
+
+    /// Replace this hit's legacy activation id with a canonical action
+    /// address while retaining its display metadata.
+    #[must_use]
+    pub fn with_action_address(mut self, address: impl Borrow<ActionAddress>) -> Self {
+        self.action_id = format!("{ACTION_ADDRESS_PREFIX}{}", address.borrow().encode());
+        self
+    }
+
+    /// Decode this hit's canonical action address, if it carries one.
+    pub fn action_address(&self) -> Option<ActionAddress> {
+        self.action_id
+            .strip_prefix(ACTION_ADDRESS_PREFIX)
+            .and_then(ActionAddress::parse)
+    }
+
+    /// Whether this result opted into canonical action activation.
+    pub(crate) fn has_action_address(&self) -> bool {
+        self.action_id.starts_with(ACTION_ADDRESS_PREFIX)
     }
 
     #[must_use]
@@ -88,6 +152,22 @@ pub trait SearchProvider {
     /// returns a provider's "browse" set (recents / favourites / all), or an
     /// empty vec if browsing makes no sense for the source.
     fn search(&self, query: &str) -> Vec<SearchResult>;
+
+    /// Query with a materialisation budget. App providers must override this
+    /// and stop constructing hits once `limit` is reached. The fallback exists
+    /// only for tiny/test providers outside `apps/`; the repository contract
+    /// checker rejects app implementations that inherit it.
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let mut hits = self.search(query);
+        hits.truncate(limit);
+        hits
+    }
+
+    /// Lazily resolve a canonical search address that is intentionally absent
+    /// from the small open-resource snapshot.
+    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<qos_actions::Resource> {
+        None
+    }
 }
 
 /// Case-insensitive subsequence fuzzy score: `Some(score)` when `query` matches
@@ -180,6 +260,16 @@ mod tests {
     fn non_subsequence_does_not_match() {
         assert_eq!(fuzzy_score("xyz", "alphabet"), None);
         assert_eq!(fuzzy_score("abz", "abc"), None);
+    }
+
+    #[test]
+    fn canonical_action_address_round_trips_without_changing_legacy_shape() {
+        let address = ActionAddress::new("contacts.contact:ada", "open");
+        let hit = SearchResult::for_action("Contacts", "Ada", address.clone());
+        assert_eq!(hit.action_address(), Some(address));
+
+        let legacy = SearchResult::new("Contacts", "Ada", "contact:ada");
+        assert_eq!(legacy.action_address(), None);
     }
 
     #[test]

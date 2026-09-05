@@ -1625,6 +1625,17 @@ impl ChatApp {
         };
         let max_start = area.y0;
         let min_start = (area.y1 - total).min(area.y0);
+        if let Some(target) = self.revealed_message.as_deref()
+            && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
+        {
+            let before = rows
+                .iter()
+                .take(target_index)
+                .map(RowM::height)
+                .sum::<f64>();
+            let target_mid = divider_h + before + rows[target_index].height() / 2.0;
+            self.scroll = area.center().y - start_y - target_mid;
+        }
         let y = (start_y + self.scroll).clamp(min_start, max_start);
 
         let mut y = self.draw_messages_date_divider(scene, tf, tr, theme, area, y, divider_h);
@@ -1856,6 +1867,15 @@ impl ChatApp {
         let Some(m) = self.message(&rm.idx_id).cloned() else {
             return;
         };
+        if self.revealed_message.as_deref() == Some(m.id.as_str()) {
+            fill_round(
+                scene,
+                tf,
+                Rect::new(area.x0 + 4.0, *y, area.x1 - 4.0, *y + rm.height()),
+                8.0,
+                theme.tokens.colors.lift(0.45),
+            );
+        }
         let top_gap = if rm.show_header { 14.0 } else { 3.0 };
         *y += top_gap;
         // Top of the header + body region — the right-click target for your
@@ -3350,6 +3370,15 @@ impl ChatApp {
         for (u, voice) in rows {
             if y + row_h > panel.y1 {
                 break;
+            }
+            if self.revealed_person.as_deref() == Some(u.id.as_str()) {
+                fill_round(
+                    scene,
+                    tf,
+                    Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + row_h),
+                    10.0,
+                    c.lift(0.55),
+                );
             }
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(

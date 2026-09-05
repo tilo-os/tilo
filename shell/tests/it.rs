@@ -25,8 +25,6 @@ mod advertised_globals;
 mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
-#[path = "browser_stub.rs"]
-mod browser_stub;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "clipboard_e2e.rs"]

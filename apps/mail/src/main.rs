@@ -63,11 +63,17 @@ pub fn main() {
                 "narrow_drawer",
                 "mid",
                 "compose",
+                "compose_narrow",
                 "setup",
+                "setup_narrow",
                 "setup_add",
                 "setup_oauth",
                 "firstrun",
                 "html_mail",
+                "loading",
+                "empty",
+                "offline",
+                "error",
             ])
             .shot_viewport(shot_viewport)
             .configure_app(|app| mail::actions::register(app.action_registry_mut())),

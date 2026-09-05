@@ -243,6 +243,10 @@ pub struct CodeApp {
     /// The needle of the most recent search, kept after the job finishes so the
     /// panel can still say what these results are for.
     last_search_needle: String,
+    /// Declaration index rebuilt from collaborative buffers during sync. It is
+    /// presentation-only derived data; edits themselves remain native CRDT
+    /// text splices.
+    search_symbols: Vec<actions::SymbolRef>,
 
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
@@ -550,6 +554,7 @@ impl CodeApp {
             search_hits: Vec::new(),
             search_truncated: false,
             last_search_needle: String::new(),
+            search_symbols: Vec::new(),
             portal: None,
             portal_intent: None,
             resource_invocation: None,
@@ -1112,7 +1117,56 @@ impl CodeApp {
             project_name: self.session.project.name.clone(),
             next_id: self.session.project.peek_next_id() as u64,
             open_files,
+            symbols: self.search_symbols.clone(),
+            search_results: self.search_result_refs(),
         }
+    }
+
+    fn search_file_entries(&self) -> Vec<crate::search_provider::FileEntry> {
+        let open: HashSet<TreeId> = self.session.open.iter().map(|buffer| buffer.node).collect();
+        self.session
+            .project
+            .nodes
+            .iter()
+            .filter(|(_, item)| matches!(item.kind, NodeKind::File { .. }))
+            .map(|(node, item)| crate::search_provider::FileEntry {
+                node: *node,
+                name: item.name.clone(),
+                path: self.session.project.path_of(*node),
+                open: open.contains(node),
+            })
+            .collect()
+    }
+
+    fn search_result_refs(&self) -> Vec<actions::SearchResultRef> {
+        self.search_hits
+            .iter()
+            .map(|hit| actions::SearchResultRef {
+                node: self.session.project.nodes.iter().find_map(|(node, _)| {
+                    (self.session.project.disk_path_of(*node).as_deref()
+                        == Some(hit.path.as_path())
+                        || self.session.project.path_of(*node) == hit.rel)
+                        .then_some(*node as u64)
+                }),
+                path: hit.rel.clone(),
+                disk_path: Some(hit.path.display().to_string()),
+                preview: hit.preview.clone(),
+                line: hit.line.saturating_sub(1),
+                col: hit.col,
+            })
+            .collect()
+    }
+
+    fn refresh_search_symbols(&mut self, doc: &AutoCommit) {
+        self.search_symbols = self
+            .search_file_entries()
+            .into_iter()
+            .flat_map(|file| {
+                EditorDoc::read_buffer(doc, file.node).map_or_else(Vec::new, |text| {
+                    crate::search_provider::symbols_in(file.node, &file.path, &text)
+                })
+            })
+            .collect();
     }
 
     // ---- saving -----------------------------------------------------------
@@ -3369,6 +3423,7 @@ impl Widget for CodeApp {
         self.poll_portal(state);
         self.poll_search();
         self.ensure_buffers(state);
+        self.refresh_search_symbols(state);
         self.editor.sync(state, path);
         self.find.sync(state, path);
         self.drain_find_events(state);
@@ -3876,12 +3931,44 @@ impl Widget for CodeApp {
         }
         let operation: crate::actions::CodeEditorOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let expected = crate::actions::operation_kind(&operation)?;
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
+            ));
+        }
         match (kind, operation) {
             (
                 qos_actions::OperationKind::View,
                 crate::actions::CodeEditorOperation::Open { node },
             ) => {
                 self.open_node(node as TreeId);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CodeEditorOperation::RevealLocation {
+                    node,
+                    path,
+                    line,
+                    col,
+                    show_search,
+                },
+            ) => {
+                let target = node.map(|node| node as TreeId).or_else(|| {
+                    path.as_deref().and_then(|path| {
+                        self.session.project.reveal_path(std::path::Path::new(path))
+                    })
+                });
+                let Some(target) = target else {
+                    return Err("Code location no longer exists".to_string());
+                };
+                self.sidebar.set_project(&self.session.project);
+                self.open_node(target);
+                self.pending_jump = Some((line, col));
+                if show_search {
+                    self.panel_visible = true;
+                    self.panel.set_tab(PanelTab::Search);
+                }
             }
             (
                 qos_actions::OperationKind::Effect,
@@ -3913,6 +4000,12 @@ impl Widget for CodeApp {
         }
         let operation: crate::actions::CodeEditorOperation =
             serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let expected = crate::actions::operation_kind(&operation)?;
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
+            ));
+        }
         if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
             return Err("another file operation is already running".into());
         }
@@ -4002,23 +4095,15 @@ impl Widget for CodeApp {
             .flatten()
     }
 
-    /// Fold the open buffers and revealed project files into the unified Ctrl+K
-    /// palette: a snapshot
-    /// [`FileSearchProvider`](crate::search_provider::FileSearchProvider) makes
-    /// each findable there by name or path, alongside the actions the app
-    /// exports.
+    /// Publish canonical file, symbol and live project-result search rows. Each
+    /// row points at an exported resource action, so there is no callback-only
+    /// path with weaker semantics than the palette/agent door.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::FileSearchProvider::new(
-            &self.session,
+            self.search_file_entries(),
+            self.search_symbols.clone(),
+            self.search_result_refs(),
         ))]
-    }
-
-    /// Open / focus the file a chosen palette row identifies. The row carries
-    /// the file's node id; opening it focuses the existing tab or creates one.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(node) = crate::search_provider::FileSearchProvider::parse_action_id(action_id) {
-            self.open_node(node);
-        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -4111,10 +4196,156 @@ mod tests {
     }
 
     #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = synced_sample();
+        let active = app.active_file_node();
+        let other = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| Some(node.id) != active && matches!(node.kind, NodeKind::File { .. }))
+            .expect("sample has another file")
+            .id;
+        let open =
+            serde_json::to_vec(&crate::actions::CodeEditorOperation::Open { node: other as u64 })
+                .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.active_file_node(), active);
+
+        let open_file = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
+            path: Some("/tmp/wrong-kind.rs".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open_file,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.pending_resource_file.is_none());
+        assert!(app.resource_invocation.is_none());
+    }
+
+    #[test]
     fn new_app_opens_main_rs() {
         let app = CodeApp::with_sample();
         let active = app.session.active_buffer().unwrap();
         assert_eq!(active.name, "main.rs");
+    }
+
+    fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
+        let hit = app.search_providers()[0]
+            .search(query)
+            .into_iter()
+            .find(|hit| hit.kind == kind)
+            .expect("search hit");
+        let address = hit.action_address().expect("canonical address");
+        let resources = app.resources(doc);
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("address resolves in the live resource tree");
+        assert!(
+            Widget::invoke_resource_operation(
+                app,
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        app.sync(doc, &automerge::ROOT);
+    }
+
+    #[test]
+    fn file_search_uses_the_exported_open_action() {
+        let (mut app, mut doc) = synced_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| node.name == "prime.rs")
+            .unwrap()
+            .id;
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "prime.rs",
+            crate::search_provider::PROJECT_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(prime));
+    }
+
+    #[test]
+    fn symbol_search_resolves_and_reproduces_the_exact_caret() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.active_file_node().unwrap();
+        let text = EditorDoc::read_buffer(&doc, node).unwrap();
+        let expected_line = text
+            .lines()
+            .position(|line| line.contains("fn parse_limit"))
+            .unwrap();
+        let expected_col = text
+            .lines()
+            .nth(expected_line)
+            .unwrap()
+            .find("parse_limit")
+            .unwrap();
+
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "parse_limit",
+            crate::search_provider::SYMBOL_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(node));
+        assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
+    }
+
+    #[test]
+    fn project_result_search_resolves_and_restores_results_context() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.active_file_node().unwrap();
+        app.search_hits = vec![search::Hit {
+            path: "/virtual/ferris-cli/src/main.rs".into(),
+            rel: app.session.project.path_of(node),
+            line: 12,
+            col: 4,
+            len: 6,
+            preview: "canonical_result_needle".into(),
+            preview_offset: 0,
+        }];
+        app.last_search_needle = "canonical_result_needle".into();
+        app.push_search_state();
+
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "canonical_result_needle",
+            crate::search_provider::RESULT_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(node));
+        assert_eq!(app.editor.primary_caret(), (11, 4));
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Search);
     }
 
     #[test]
@@ -4700,6 +4931,7 @@ mod tests {
         let mut app = CodeApp::with_sample();
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
+        app.refresh_search_symbols(&doc);
         app.editor.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }

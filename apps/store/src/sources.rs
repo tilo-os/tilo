@@ -9,7 +9,7 @@ use registry_types::RegistryVersion;
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
 use crate::installed::InstalledEntry;
-use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource};
+use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 use crate::registry_client::VerifiedEntry;
 
 /// Convert a qOS registry entry into the unified store item shape.
@@ -21,6 +21,10 @@ use crate::registry_client::VerifiedEntry;
 /// `installed_index` is the pre-indexed install snapshot from
 /// [`crate::installed`] — passed by-ref so the merge can cheaply
 /// look up install state per package id.
+#[allow(
+    clippy::unreachable,
+    reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
+)]
 pub fn qos_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
@@ -40,19 +44,24 @@ pub fn qos_to_store_item(
             available: latest.clone(),
             pinned: e.pinned,
         });
-    let _ = verified.trust; // TrustLevel surfaces on the detail sheet;
-    // not part of the item shape yet.
     StoreItem {
         id: entry.package_id.clone(),
         name: entry.name.clone(),
         description: entry.description.clone(),
         categories: entry.categories.clone(),
         icon_url: entry.icon_url.clone(),
+        screenshot_urls: Vec::new(),
         homepage_url: entry.homepage.clone(),
         source_url: entry.source_url.clone(),
         install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: registry_name.to_string(),
+        },
+        trust: match verified.trust {
+            crate::registry_client::TrustLevel::PublisherSigned => StoreTrust::PublisherSigned,
+            crate::registry_client::TrustLevel::Untrusted => {
+                unreachable!("untrusted registry entry reached Store conversion")
+            }
         },
         versions,
         publisher_pubkey_hex: Some(entry.publisher_pubkey_hex.clone()),
@@ -94,10 +103,12 @@ pub fn flathub_placeholder_to_item(
         description: String::new(),
         categories: Vec::new(),
         icon_url: None,
+        screenshot_urls: Vec::new(),
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Flathub,
+        trust: StoreTrust::Flathub,
         versions: vec![StoreItemVersion {
             version: String::new(),
             released_at_unix: 0,
@@ -149,10 +160,21 @@ pub fn flathub_record_to_item(
         },
         categories,
         icon_url: r.icon.clone(),
+        screenshot_urls: r
+            .screenshots
+            .iter()
+            .filter_map(|shot| {
+                shot.img_desktop_url
+                    .clone()
+                    .or_else(|| shot.img_mobile_url.clone())
+            })
+            .take(6)
+            .collect(),
         homepage_url,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Flathub,
+        trust: StoreTrust::Flathub,
         versions: vec![StoreItemVersion {
             version: latest,
             released_at_unix: 0,
@@ -247,7 +269,7 @@ mod tests {
     fn verified(entry: RegistryEntry) -> VerifiedEntry {
         VerifiedEntry {
             entry,
-            trust: TrustLevel::Verified,
+            trust: TrustLevel::PublisherSigned,
         }
     }
 

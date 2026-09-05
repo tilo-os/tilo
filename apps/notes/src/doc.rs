@@ -197,6 +197,27 @@ impl NotesDoc {
         }
     }
 
+    /// Stable block identities and current plain text for one page. The Text
+    /// object's Automerge id survives list insertion, deletion and reordering.
+    pub fn page_block_snapshots(doc: &AutoCommit, id: PageId) -> Vec<(String, String)> {
+        let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
+            return Vec::new();
+        };
+        let key = id.to_string();
+        let Ok(Some((Value::Object(ObjType::Map), page))) = doc.get(&pages, key.as_str()) else {
+            return Vec::new();
+        };
+        let Ok(Some((Value::Object(ObjType::List), blocks))) = doc.get(&page, "blocks") else {
+            return Vec::new();
+        };
+        (0..doc.length(&blocks))
+            .filter_map(|index| {
+                let text = Self::block_text_obj(doc, &blocks, index)?;
+                Some((text.to_string(), doc.text(&text).unwrap_or_default()))
+            })
+            .collect()
+    }
+
     /// Append a new block `{ kind, text }` to a `blocks` List and return
     /// the new block's `text` `ObjId` (already seeded with `text`).
     ///

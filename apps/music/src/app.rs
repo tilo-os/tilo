@@ -977,6 +977,33 @@ impl MusicApp {
             .collect();
         crate::actions::MusicResourceCtx {
             playlists,
+            tracks: self
+                .lib
+                .tracks
+                .values()
+                .map(|track| crate::actions::CatalogResource {
+                    id: track.id.clone(),
+                    label: self.track_label(&track.id),
+                })
+                .collect(),
+            albums: self
+                .lib
+                .albums
+                .values()
+                .map(|album| crate::actions::CatalogResource {
+                    id: album.id.clone(),
+                    label: album.title.clone(),
+                })
+                .collect(),
+            artists: self
+                .lib
+                .artists
+                .values()
+                .map(|artist| crate::actions::CatalogResource {
+                    id: artist.id.clone(),
+                    label: artist.name.clone(),
+                })
+                .collect(),
             playback: self.pb.clone(),
         }
     }
@@ -4672,55 +4699,113 @@ mod tests {
 
     #[test]
     fn ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates() {
-        // The end-to-end seam the global Ctrl+K uses: the host collects the
-        // app's `Widget::search_providers()`, registers them into the shared
-        // `ui::search::SearchRegistry`, and on a chosen row calls
-        // `Widget::activate_search_result` — the exact flow in
-        // `ui::App::open_action_palette` / `action_palette_handle_key`.
-        use crate::search_type::SearchHit;
-        use ui::search::SearchRegistry;
+        // Exercise the real palette broker seam: a result address resolves in
+        // the exported resource tree, queues a typed operation, and never uses
+        // the legacy app callback.
         let (mut app, mut doc) = app_with_doc();
-
-        let mut registry = SearchRegistry::new();
-        for p in Widget::search_providers(&app) {
-            registry.register(p);
-        }
-        assert_eq!(
-            registry.provider_count(),
-            1,
-            "music contributes its library provider"
-        );
-
-        // A real song row activated through the Widget method plays the track.
         let track = app.lib.tracks.values().next().unwrap().clone();
-        let song = registry
-            .query(&track.title)
-            .into_iter()
-            .find(|r| r.action_id == SearchHit::track_link(&track.id))
-            .expect("the song is findable via the registered provider");
-        assert_eq!(song.kind, "Songs");
-        Widget::activate_search_result(&mut app, &song.action_id, &mut doc, &automerge::ROOT);
+        let resources = Widget::resources(&app, &doc);
+        let album = app.lib.albums.values().next().unwrap().clone();
+        let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
+        let playlist = app.lib.playlists.first().unwrap().clone();
+        let providers = Widget::search_providers(&app);
+        for (query, expected) in [
+            (
+                track.title.as_str(),
+                crate::actions::play_track_address(&track.id),
+            ),
+            (
+                album.title.as_str(),
+                crate::actions::open_album_address(&album.id),
+            ),
+            (
+                artist_for_resolution.name.as_str(),
+                crate::actions::open_artist_address(&artist_for_resolution.id),
+            ),
+            (
+                playlist.name.as_str(),
+                crate::actions::open_playlist_address(&playlist.id),
+            ),
+        ] {
+            let hit = providers[0]
+                .search(query)
+                .into_iter()
+                .find(|hit| hit.action_address().as_ref() == Some(&expected))
+                .expect("each searchable Music entity has its canonical hit");
+            let address = hit.action_address().expect("canonical search address");
+            assert!(
+                qos_actions::door::resolve(&resources, &address).is_some(),
+                "{address:?} resolves against the live Music resource tree"
+            );
+        }
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(Widget::search_providers(&app));
+        palette.open();
+        palette.set_query(&track.title);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &track.title)
+            .expect("song search row is present");
+        palette.set_cursor(row);
+        palette.activate_selected();
+        let operation = palette.take_operation().expect("play effect queued");
+        assert_eq!(operation.kind, qos_actions::OperationKind::Effect);
+        assert!(palette.take_navigation().is_none());
+        let heads = doc.get_heads();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
-            "activating the song row plays the real track through the play path"
+            "the brokered effect plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
+        assert_eq!(doc.get_heads(), heads, "playback is a transient effect");
 
-        // An artist row activated through the same method opens the artist page.
+        // Navigation follows the same path but is explicitly a View operation.
         let artist = app.lib.artists.values().next().unwrap().clone();
-        let arow = registry
-            .query(&artist.name)
-            .into_iter()
-            .find(|r| r.action_id == SearchHit::artist_link(&artist.id))
-            .expect("the artist is findable via the registered provider");
-        assert_eq!(arow.kind, "Artists");
-        Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(Widget::search_providers(&app));
+        palette.open();
+        palette.set_query(&artist.name);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &artist.name)
+            .expect("artist search row is present");
+        palette.set_cursor(row);
+        palette.activate_selected();
+        let operation = palette.take_operation().expect("artist view queued");
+        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
         assert_eq!(
             app.view,
             View::Artist(artist.id),
-            "activation opens the artist page"
+            "brokered view opens the artist page"
         );
+        assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
     }
 
     #[test]

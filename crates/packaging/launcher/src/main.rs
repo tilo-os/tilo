@@ -757,9 +757,11 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
-    // QOS_LAUNCHER_DISABLE_LANDLOCK=1 is a debug escape hatch, matching the
-    // knob threaded through `run` via `RunOptions.landlock_enforce`. Drop
-    // once the landlock shim is fully wired.
+    // QOS_LAUNCHER_DISABLE_LANDLOCK=1 is an explicit developer escape hatch,
+    // matching the knob threaded through `run` via
+    // `RunOptions.landlock_enforce`. Production app launches keep enforcement
+    // enabled and fail closed unless the in-namespace shim reports the full
+    // required policy.
     let landlock_enforce = !matches!(
         std::env::var("QOS_LAUNCHER_DISABLE_LANDLOCK").as_deref(),
         Ok("1" | "true")

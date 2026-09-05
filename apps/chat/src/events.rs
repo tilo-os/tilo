@@ -551,6 +551,10 @@ impl ChatApp {
         reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
     )]
     fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
+        // Search reveal accents are transient selection affordances. Once the
+        // person interacts with Chat directly, ordinary navigation takes over.
+        self.revealed_message = None;
+        self.revealed_person = None;
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
             self.menu = None;

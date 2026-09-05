@@ -70,6 +70,9 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// it the connected descriptor, so a same-UID process cannot manufacture a
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
+pub const APP_HOST_SERVICE: &str = "app-host";
+const STORE_APP_ID: &str = "dev.qos.store";
+pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
 /// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
@@ -138,6 +141,8 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
+    #[error("service `app-host` is restricted to the signed qOS Store package")]
+    AppHostUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -350,6 +355,10 @@ fn resolve_service_binds_inner(
             .map_err(|e| ServiceError::BadRequirement(raw_req.clone(), e))?;
         let path = socket_for(name);
 
+        if name == APP_HOST_SERVICE && context.is_none_or(|launch| launch.app_id != STORE_APP_ID) {
+            return Err(ServiceError::AppHostUnauthorized);
+        }
+
         if no_services {
             tracing::warn!(
                 "service `{name}` skipped: --no-services in effect (required={})",
@@ -449,6 +458,35 @@ fn resolve_service_binds_inner(
                 tracing::warn!(%source, "optional model gateway rejected launch handoff");
                 continue;
             }
+        }
+        if name == APP_HOST_SERVICE {
+            let Some(context) = context else {
+                return Err(ServiceError::AppHostUnauthorized);
+            };
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "protocol": 1,
+                "app_id": context.app_id,
+            }))
+            .map_err(|error| ServiceError::OpenFailed {
+                path: path.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            })?;
+            let len = u32::try_from(bytes.len()).map_err(|_| ServiceError::OpenFailed {
+                path: path.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "app-host handoff too large",
+                ),
+            })?;
+            stream
+                .write_all(&APP_HOST_LAUNCH_MAGIC)
+                .and_then(|()| stream.write_all(&len.to_be_bytes()))
+                .and_then(|()| stream.write_all(&bytes))
+                .and_then(|()| stream.flush())
+                .map_err(|source| ServiceError::OpenFailed {
+                    path: path.clone(),
+                    source,
+                })?;
         }
         // Owned from here, and deliberately left `FD_CLOEXEC`. The fork+dup2
         // never sets CLOEXEC on the descriptor it creates, so the app's copy
@@ -643,6 +681,22 @@ mod tests {
                 None => std::env::remove_var("XDG_RUNTIME_DIR"),
             }
         }
+    }
+
+    #[test]
+    fn app_host_capability_is_not_self_grantable_by_third_party_packages() {
+        let mut services = BTreeMap::new();
+        services.insert(APP_HOST_SERVICE.to_string(), "required@1".to_string());
+        let error = resolve_service_binds_for_launch(
+            &services,
+            false,
+            ServiceLaunchContext {
+                app_id: "org.example.untrusted",
+                workspace_id: None,
+            },
+        )
+        .expect_err("third-party manifest must not grant package-manager authority");
+        assert!(matches!(error, ServiceError::AppHostUnauthorized));
     }
 
     #[test]

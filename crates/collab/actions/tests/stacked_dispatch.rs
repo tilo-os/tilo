@@ -94,7 +94,7 @@ impl Action for Counter {
 
     fn locus(&self) -> ExecutionLocus {
         match self {
-            Counter::Append { .. } => ExecutionLocus::ServerPreferred,
+            Counter::Append { .. } => ExecutionLocus::ClientLocal,
             Counter::Put { .. }
             | Counter::Noop
             | Counter::EmptySplice
@@ -130,8 +130,9 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
         let mut envelopes = Vec::new();
 
         for i in 0..n {
-            // Alternate loci so both ClientLocal and ServerPreferred (no-host
-            // fallback) apply paths get stacked on the same doc.
+            // Alternate map/list mutation shapes on the same document. Host
+            // locus behavior is covered separately and deliberately cannot
+            // participate without an authoritative transport.
             let action = if i % 2 == 0 {
                 Counter::Put {
                     key: format!("k{i}"),

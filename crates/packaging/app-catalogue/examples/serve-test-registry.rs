@@ -27,7 +27,10 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use pkg::pack::SigningIdentity;
-use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+use registry_types::{
+    PublisherAuthorization, RegistryEntry, RegistryVersion, SignedRegistrySnapshot, sign_entry,
+    sign_snapshot,
+};
 
 #[path = "support/authoring.rs"]
 mod authoring;
@@ -48,6 +51,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> Result<(), String> {
     let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
     let package_id = arg("--package-id").unwrap_or_else(|| "dev.qos.sheets".to_string());
@@ -124,13 +128,36 @@ fn run() -> Result<(), String> {
         signature_hex: String::new(),
     };
     sign_entry(&mut entry, &key);
+    let owner = SigningKey::from_bytes(&[24; 32]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        sequence: 1,
+        issued_at_unix: now,
+        expires_at_unix: now.saturating_add(86_400),
+        previous_snapshot_hash_hex: String::new(),
+        moderation_head_hex: String::new(),
+        publishers: vec![PublisherAuthorization {
+            pubkey_hex: entry.publisher_pubkey_hex.clone(),
+            can_add_new: true,
+        }],
+        entries: vec![entry],
+        owner_signature_hex: String::new(),
+    };
+    sign_snapshot(&mut snapshot, &owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let entries_json =
-        serde_json::to_string(&vec![entry]).map_err(|e| format!("encode entries: {e}"))?;
+        serde_json::to_string(&snapshot).map_err(|e| format!("encode snapshot: {e}"))?;
 
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("create config dir: {e}"))?;
     std::fs::write(
         config_dir.join("registries.toml"),
-        format!("[[registry]]\nname = \"local test\"\nbase_url = \"{base_url}\"\n"),
+        format!(
+            "[[registry]]\nname = \"local test\"\nbase_url = \"{base_url}\"\nowner_pubkey_hex = \"{}\"\n",
+            hex::encode(owner.verifying_key().to_bytes())
+        ),
     )
     .map_err(|e| format!("write registries.toml: {e}"))?;
 

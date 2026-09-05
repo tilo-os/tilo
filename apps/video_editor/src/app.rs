@@ -5014,6 +5014,91 @@ impl VideoEditorApp {
     ) -> Result<(), String> {
         use crate::actions::VideoEditorOperation;
         match operation {
+            VideoEditorOperation::RevealClip { clip } => {
+                let id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid clip id: {clip}"))?;
+                let clip = self
+                    .project
+                    .clip(id)
+                    .cloned()
+                    .ok_or_else(|| format!("clip is no longer available: {id}"))?;
+                self.selection.select_only(id);
+                self.selected_media = Some(clip.media);
+                self.seek_to(clip.start);
+                self.reveal_inspector();
+            }
+            VideoEditorOperation::RevealTrack { track } => {
+                let id = track
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid track id: {track}"))?;
+                if self.project.track(id).is_none() {
+                    return Err(format!("track is no longer available: {id}"));
+                }
+                let mut clips: Vec<_> = self
+                    .project
+                    .clips_on(id)
+                    .into_iter()
+                    .map(|clip| (clip.id, clip.start, clip.media))
+                    .collect();
+                clips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                self.selection.ids = clips.iter().map(|(clip, _, _)| *clip).collect();
+                self.selection.primary = clips.first().map(|(clip, _, _)| *clip);
+                self.selected_media = clips.first().map(|(_, _, media)| *media);
+                if let Some((_, at, _)) = clips.first() {
+                    self.seek_to(*at);
+                    self.reveal_inspector();
+                }
+            }
+            VideoEditorOperation::RevealMarker { marker, clip } => {
+                let marker_id = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid marker id: {marker}"))?;
+                let (at, owner, media) = match clip {
+                    Some(clip) => {
+                        let clip_id = clip
+                            .parse::<Uuid>()
+                            .map_err(|_| format!("invalid clip id: {clip}"))?;
+                        let clip = self.project.clip(clip_id).ok_or_else(|| {
+                            format!("marker's clip is no longer available: {clip_id}")
+                        })?;
+                        let marker = clip
+                            .markers
+                            .iter()
+                            .find(|marker| marker.id == marker_id)
+                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                        (clip.start + marker.t, Some(clip_id), Some(clip.media))
+                    }
+                    None => {
+                        let marker = self
+                            .project
+                            .markers
+                            .iter()
+                            .find(|marker| marker.id == marker_id)
+                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                        (marker.t, None, None)
+                    }
+                };
+                if let Some(owner) = owner {
+                    self.selection.select_only(owner);
+                    self.selected_media = media;
+                    self.reveal_inspector();
+                } else {
+                    self.selection.clear();
+                }
+                self.seek_to(at);
+            }
+            VideoEditorOperation::RevealMedia { media } => {
+                let id = media
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid media id: {media}"))?;
+                if self.project.media(id).is_none() {
+                    return Err(format!("media is no longer available: {id}"));
+                }
+                self.selected_media = Some(id);
+                self.selection.clear();
+                self.bin_flap.open();
+            }
             VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
             VideoEditorOperation::OpenProject { path: None } => self.request_open_project(),
             VideoEditorOperation::SaveProject { path: None } => self.queue_save_project(),
@@ -8514,6 +8599,12 @@ impl Widget for VideoEditorApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
         self.perform_resource_operation(operation)?;
         Ok(true)
     }
@@ -8530,6 +8621,12 @@ impl Widget for VideoEditorApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
         if matches!(
             operation,
             crate::actions::VideoEditorOperation::CancelExport
@@ -8585,23 +8682,6 @@ impl Widget for VideoEditorApp {
         vec![Box::new(
             crate::search_provider::ProjectSearchProvider::new(&self.project),
         )]
-    }
-
-    /// Open the moment a chosen search row names.
-    ///
-    /// Every row this editor publishes resolves to an instant, so activating
-    /// one is the same move as clicking a marker — through
-    /// [`Self::seek_to`], not a raw write, so a running transport is stopped
-    /// and the view follows exactly as it does everywhere else.
-    ///
-    /// A row from another provider parses as `None` and is *declined*. A
-    /// silent fall-through would have been a seek to zero: choosing somebody
-    /// else's search hit would have thrown the playhead to the head of the
-    /// timeline, which is a worse answer than doing nothing.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(at) = crate::search_provider::parse_action_id(action_id) {
-            self.seek_to(at);
-        }
     }
 
     /// Hand the host the document heads captured before an on-screen affordance
@@ -20060,6 +20140,51 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = app_and_doc();
+        let selected_before = app.selected();
+        let playhead_before = app.playhead;
+        let clip = app.project.clips[0].id;
+        let reveal = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealClip {
+            clip: clip.to_string(),
+        })
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &reveal,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.selected(), selected_before);
+        assert_eq!(app.playhead, playhead_before);
+
+        let import = serde_json::to_vec(&crate::actions::VideoEditorOperation::ImportMedia {
+            path: Some("/tmp/wrong-kind.mp4".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &import,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.resource_operation.is_none());
+        assert!(app.resource_pending_operation.is_none());
+        assert!(app.resource_invocation.is_none());
+    }
+
     fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: bool) -> bool {
         let r = app.regions();
         let mods = if ctrl {
@@ -28033,56 +28158,80 @@ mod tests {
 
     // ---- the project as a search source ----------------------------------
 
-    /// A chosen search row opens the editor *at that position* — which is what
-    /// CLAUDE.md means by a provider plus a renderer, and what makes a hit a
-    /// place rather than a list entry.
+    /// A chosen search row resolves through the exported resource tree and the
+    /// operation broker, then opens the exact clip and timeline instant.
     #[test]
-    fn a_chosen_search_hit_seeks_the_timeline_to_it() {
-        let (mut app, mut doc) = app_and_doc();
-        let mut next = app.project.clone();
-        next.add_marker(12.5, "Coastline hold", 1);
-        app.dispatch_project_meta(&mut doc, next);
+    fn a_chosen_search_hit_brokers_the_exact_timeline_selection() {
+        let (mut app, doc) = app_and_doc();
+        let clip = app.project.clips[0].clone();
+        let media = app
+            .project
+            .media(clip.media)
+            .expect("clip source")
+            .name
+            .clone();
 
         let providers = app.search_providers();
         let provider = providers.first().expect("the editor publishes a provider");
         let hit = provider
-            .search("Coastline hold")
+            .search(&media)
             .into_iter()
-            .find(|h| h.title == "Coastline hold")
-            .expect("the marker is findable by name");
+            .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
+            .expect("the exact clip is findable by source name");
+        let address = hit.action_address().expect("canonical search address");
+        let encoded = qos_actions::door::encode(&app.resources(&doc), &address, None)
+            .expect("the address resolves through the live resource tree");
 
-        // Running, so the assertion below can tell the shared seek from a raw
-        // write to the playhead: a transport left running slides the moment
-        // that was just asked for straight back out from under the user.
         app.playing = true;
         app.playhead = 0.0;
-        app.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
         assert!(
-            (app.playhead - 12.5).abs() < 1e-3,
-            "the hit put the playhead on the marker: {}",
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("view operation succeeds")
+        );
+        assert!(
+            (app.playhead - clip.start).abs() < 1e-3,
+            "the hit put the playhead on the clip: {}",
             app.playhead,
         );
-        assert!(
-            !app.playing,
-            "and stopped the transport, as a marker click does"
-        );
+        assert_eq!(app.selected(), Some(clip.id));
+        assert_eq!(app.selected_media, Some(clip.media));
+        assert!(!app.playing, "the shared seek stops the transport");
     }
 
-    /// Somebody else's row is declined, not treated as a seek to zero.
+    /// Clip markers resolve their current collaborative position at execution
+    /// time and select their owner, rather than replaying a stale timestamp.
     #[test]
-    fn a_search_row_from_another_app_is_declined_rather_than_seeking_to_zero() {
-        let (mut app, mut doc) = app_and_doc();
-        app.playhead = 9.0;
-        app.playing = true;
-        for foreign in ["chat.channel:general", "", "video-editor.seek:not-a-number"] {
-            app.activate_search_result(foreign, &mut doc, &automerge::ROOT);
-            assert!(
-                (app.playhead - 9.0).abs() < 1e-9,
-                "{foreign} is not ours, so it moved nothing: {}",
-                app.playhead,
-            );
-            assert!(app.playing, "and did not stop the transport either");
-        }
+    fn marker_view_action_selects_its_owner_at_the_current_position() {
+        let (mut app, doc) = app_and_doc();
+        let cid = app.project.clips[0].id;
+        let marker = crate::model::Marker::new(1.25, "Exact beat", 1);
+        let marker_id = marker.id;
+        app.project
+            .clip_mut(cid)
+            .expect("clip")
+            .markers
+            .push(marker);
+        let clip = app.project.clip(cid).expect("clip").clone();
+        let resources = crate::actions::provide_resources(&app.video_resource_ctx().unwrap());
+        let address = crate::actions::reveal_marker_address(marker_id);
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("marker action is exported");
+        app.invoke_resource_operation(
+            qos_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .expect("view marker");
+        assert_eq!(app.selected(), Some(cid));
+        assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
     }
 
     /// The raw bytes of a rectangle of the frame.

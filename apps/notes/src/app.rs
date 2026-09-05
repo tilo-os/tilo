@@ -174,6 +174,13 @@ pub struct NotesApp {
     /// which must be removed locally too. Without it the unconditional local→doc
     /// mirror would resurrect an undone page every frame.
     known_in_doc: std::collections::HashSet<PageId>,
+    /// A block reveal requested by a brokered view operation. Re-applied after
+    /// the selected page binds to its collaborative block list, because binding
+    /// rebuilds the editor and otherwise resets focus to block zero.
+    pending_block_reveal: Option<(PageId, String)>,
+    /// Search/resource snapshot keyed by each block's durable Automerge Text
+    /// object id, refreshed from the collaborative document on every sync.
+    search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
 }
 
 impl NotesApp {
@@ -287,6 +294,8 @@ impl NotesApp {
             content_rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
             known_in_doc: std::collections::HashSet::new(),
+            pending_block_reveal: None,
+            search_blocks: HashMap::new(),
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -801,7 +810,27 @@ impl NotesApp {
     pub(crate) fn notes_resource_ctx(&self) -> crate::actions::NotesResourceCtx {
         crate::actions::NotesResourceCtx {
             pages: self.workspace.pages().to_vec(),
+            blocks: self.searchable_blocks(),
         }
+    }
+
+    fn searchable_blocks(&self) -> HashMap<PageId, Vec<crate::actions::NoteBlockResource>> {
+        self.search_blocks.clone()
+    }
+
+    fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+        self.search_blocks = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|page| {
+                let blocks = NotesDoc::page_block_snapshots(doc, page.id)
+                    .into_iter()
+                    .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
+                    .collect();
+                (page.id, blocks)
+            })
+            .collect();
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
@@ -1378,7 +1407,7 @@ impl Widget for NotesApp {
         kind: qos_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == qos_actions::OperationKind::Document {
@@ -1388,13 +1417,21 @@ impl Widget for NotesApp {
             return Ok(false);
         };
         match operation {
-            actions::NotesOperation::OpenPage { page } => {
+            actions::NotesOperation::OpenPage { page, block_id } => {
                 if self.workspace.get(page).is_none() {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.set_selected(Some(page));
-                self.bound_page = None;
-                self.sidebar.sync_from_workspace(&self.workspace);
+                if let Some(block_id) = block_id.as_ref()
+                    && !NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .any(|(id, _)| id == block_id)
+                {
+                    return Err("block no longer exists".into());
+                }
+                self.navigate_to(page);
+                if let Some(block_id) = block_id {
+                    self.pending_block_reveal = Some((page, block_id));
+                }
             }
         }
         Ok(true)
@@ -1409,6 +1446,17 @@ impl Widget for NotesApp {
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+        self.refresh_search_blocks(state);
+        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
+            && self.bound_page == Some(*page)
+            && let Some(index) = self
+                .search_blocks
+                .get(page)
+                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
+            && self.main.reveal_block(index)
+        {
+            self.pending_block_reveal = None;
+        }
     }
 
     /// Publish the open notebook + its pages (nested by the tree) so the host's
@@ -1417,6 +1465,10 @@ impl Widget for NotesApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before a sidebar affordance dispatched
@@ -1431,20 +1483,12 @@ impl Widget for NotesApp {
     /// every page findable there by title, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::NoteSearchProvider::new(
-            &self.workspace,
-        ))]
-    }
-
-    /// Navigate to the page a chosen palette row identifies. Selection is
-    /// app-local presentation (per-peer, never in the shared doc), so the doc
-    /// args are unused — this mirrors the click-on-link / Cmd-K page jump.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id)
-            && self.workspace.get(id).is_some()
-        {
-            self.navigate_to(id);
-        }
+        vec![Box::new(
+            crate::search_provider::NoteSearchProvider::with_blocks(
+                &self.workspace,
+                self.searchable_blocks(),
+            ),
+        )]
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
@@ -2501,6 +2545,98 @@ mod tests {
         assert!(
             matches!(action, crate::actions::NotesAction::UpsertPage(_)),
             "a create dispatches an UpsertPage"
+        );
+    }
+
+    #[test]
+    fn brokered_block_reveal_restores_exact_page_and_editor_focus() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        assert!(
+            app.main.editor().blocks().len() > 1,
+            "welcome has several blocks"
+        );
+        let block_id = app.search_blocks[&welcome][1].id.clone();
+        let operation = crate::actions::NotesOperation::OpenPage {
+            page: welcome,
+            block_id: Some(block_id),
+        };
+        let payload = serde_json::to_vec(&operation).unwrap();
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::NOTES_OPERATION_TYPE,
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .expect("broker accepts the exported Notes view operation")
+        );
+        app.sync(&mut state.doc, &state.root);
+
+        assert_eq!(app.selected_for_test(), Some(welcome));
+        assert_eq!(
+            app.main.editor().focused_index(),
+            Some(1),
+            "the canonical block action reveals the exact editor block"
+        );
+    }
+
+    #[test]
+    fn collaborative_identical_insert_preserves_the_original_block_target() {
+        use automerge::ObjType;
+        use automerge::transaction::Transactable as _;
+
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        let original = app.search_blocks[&welcome][1].clone();
+        let old_address = crate::actions::open_block_address(welcome, &original.id);
+        let operation = crate::actions::NotesOperation::OpenPage {
+            page: welcome,
+            block_id: Some(original.id),
+        };
+        let payload = serde_json::to_vec(&operation).unwrap();
+
+        // A collaborator inserts an identical-text block before the target.
+        // Content and index cannot distinguish them; CRDT object identity can.
+        let list = NotesDoc::page_blocks_list(&mut state.doc, welcome).unwrap();
+        let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
+        state.doc.put(&inserted, "kind", "paragraph").unwrap();
+        let text = state
+            .doc
+            .put_object(&inserted, "text", ObjType::Text)
+            .unwrap();
+        state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
+        app.sync(&mut state.doc, &state.root);
+
+        let exported = Widget::resources(&app, &state.doc);
+        let page = exported[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == crate::actions::page_resource_id(welcome))
+            .unwrap();
+        assert!(
+            page.children
+                .iter()
+                .any(|resource| resource.id.0 == old_address.resource),
+            "the original block's address survives the insertion"
+        );
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::NOTES_OPERATION_TYPE,
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .expect("durable block identity still resolves")
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.main.editor().focused_index(),
+            Some(2),
+            "the original block moved to index 2; the identical insertion at 0 is not revealed"
         );
     }
 

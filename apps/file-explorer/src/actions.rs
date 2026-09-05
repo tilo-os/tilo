@@ -59,16 +59,18 @@
 //!
 //! ## Consequence
 //!
-//! The file explorer exports **no** actions and publishes **no** Ctrl+K resource
-//! tree: [`Widget::resources`](ui::widget::Widget::resources) stays empty and
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch). The tests below prove each half of this split on
-//! the real production path: the document holds only the two native-`Text` input
-//! fields (no structural record), the search field replicates byte-identically
-//! for free, file operations mutate the filesystem while leaving the document's
-//! structure untouched, and favourites + zoom persist to per-user config files
-//! rather than the CRDT.
+//! The file explorer exports no replayable CRDT actions, but it does publish a
+//! Ctrl+K resource tree of local filesystem and View operations. Search hits,
+//! visible controls, accessibility activation and headless agents therefore
+//! converge on exported `open` / `reveal` addresses without pretending that
+//! navigation mutates the shared document. `take_committed_action` remains
+//! `None` because these operations create no CRDT undo boundary. The tests
+//! below prove each half of this split on the real production path: the
+//! document holds only the two native-`Text` input fields (no structural
+//! record), the search field replicates byte-identically for free, file
+//! operations mutate the filesystem while leaving the document's structure
+//! untouched, and favourites + zoom persist to per-user config files rather
+//! than the CRDT.
 
 #[cfg(test)]
 mod tests {

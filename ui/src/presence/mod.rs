@@ -1315,10 +1315,8 @@ impl PresenceCtx {
                     | PresenceKey::View { .. }
                     | PresenceKey::Pointer { .. } => false,
                 };
-                if belongs_here {
-                    if self.apply_interaction(*update).unwrap_or(false) {
-                        return RemotePresenceEffect::InteractionAdvanced;
-                    }
+                if belongs_here && self.apply_interaction(*update).unwrap_or(false) {
+                    return RemotePresenceEffect::InteractionAdvanced;
                 }
             }
             Following { target } => {
