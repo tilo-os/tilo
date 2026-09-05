@@ -3553,34 +3553,9 @@ impl ShellOverlayHost {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;
                 };
-                let mut st = chrome.borrow_mut();
-                let surface = {
-                    let tree = st.tree();
-                    tree.workspaces
-                        .iter()
-                        .flat_map(|workspace| workspace.strips.iter())
-                        .flat_map(|strip| strip.window_groups.iter())
-                        .find(|group| group.id == gid)
-                        .and_then(|group| group.tabs.iter().find(|tab| tab.id == tab_id))
-                        .and_then(|tab| match &tab.tile {
-                            crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-                                Some(*surface_id)
-                            }
-                            _ => None,
-                        })
-                };
-                let removed = {
-                    let mut tree = st.tree_mut();
-                    crate::compositor::tab_binding::remove_tab(&mut tree, tab_id)
-                };
-                if !removed {
+                if !Self::commit_tab_close(&chrome, gid, tab_id) {
                     return false;
                 }
-                // Commit the close to the atomic state file before the tab
-                // starts fading out.  Otherwise a compositor crash in the
-                // animation/protocol-close window can load the pre-close
-                // topology and visibly resurrect the window next session.
-                st.tree().flush_to_disk();
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -3589,14 +3564,73 @@ impl ShellOverlayHost {
                     None => g.request_close_active_tab(),
                 };
                 debug_assert!(closed, "tree and rendered tab strip diverged before close");
-                if let Some(surface_id) = surface {
-                    st.request_surface_close(surface_id);
-                }
-                st.bump();
                 return closed;
             }
         }
         false
+    }
+
+    /// Commit one close to the replicated tree, atomic local state and the
+    /// exact foreign surface, in that order. Both keyboard/context-menu
+    /// closes and pointer closes converge here; the latter have already
+    /// started their widget animation when this runs.
+    fn commit_tab_close(chrome: &Chrome, gid: GroupId, tab_id: u64) -> bool {
+        let mut st = chrome.borrow_mut();
+        let surface = {
+            let tree = st.tree();
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .find(|group| group.id == gid)
+                .and_then(|group| group.tabs.iter().find(|tab| tab.id == tab_id))
+                .and_then(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                        Some(*surface_id)
+                    }
+                    _ => None,
+                })
+        };
+        let removed = {
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::remove_tab(&mut tree, tab_id)
+        };
+        if !removed {
+            return false;
+        }
+        // Close is durable before the client is asked to exit. A crash, an
+        // unrelated revision or a slow client must all observe absence.
+        st.tree().flush_to_disk();
+        if let Some(surface_id) = surface {
+            st.request_surface_close(surface_id);
+        }
+        st.bump();
+        true
+    }
+
+    /// Drain close buttons from the rendered rows into the same lifecycle
+    /// transaction used by keyboard closes. This is intentionally run in
+    /// the input dispatch that produced the request, not on a later frame.
+    fn harvest_pending_tab_closes(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mut requests = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                requests.extend(
+                    group
+                        .take_pending_close_commits()
+                        .into_iter()
+                        .map(|tab| (group.id, tab)),
+                );
+            }
+        }
+        requests.into_iter().fold(false, |changed, (group, tab)| {
+            Self::commit_tab_close(&chrome, group, tab) || changed
+        })
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -7937,7 +7971,7 @@ impl ShellOverlayHost {
                 if let (Some(chrome), Some(group)) = (self.chrome.clone(), group) {
                     let mut st = chrome.borrow_mut();
                     st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
+                    st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
                     st.bump();
                     drop(st);
                     self.active_kind_filter = app_kind_filter();
@@ -9463,6 +9497,10 @@ impl ShellOverlayHost {
                 content_child,
                 taffy,
             );
+            // A visible tab/maximized close button begins its animation in
+            // the widget above. Commit that exact tab before this input
+            // dispatch returns so no revision or crash can restore it.
+            let _ = self.harvest_pending_tab_closes();
         }
 
         // Same step as Super+Left/Right, avoiding a park on the window
@@ -9694,6 +9732,10 @@ impl Widget for ShellOverlayHost {
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
         let content_dirty = self.content.update(doc, path);
+        // Normally drained synchronously by input dispatch. Keep this
+        // fallback for accessibility/synthetic activation paths that can
+        // queue a widget close without returning through pointer dispatch.
+        let close_dirty = self.harvest_pending_tab_closes();
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -9765,6 +9807,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || close_dirty
             || palette_dirty
             || sidebar_dirty
             || notifications_dropped
@@ -17924,6 +17967,35 @@ mod tests {
             ui::widget::CaptureMode::Screenshot
         );
         assert!(h.chrome.borrow().overlays.capture);
+    }
+
+    #[test]
+    fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
+        use crate::shell::chrome_state::{OpenTarget, SearchScope};
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        let group = crate::shell::window_actions::focused_group(&h.chrome.borrow())
+            .expect("demo workspace has a focused group");
+        let super_key = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("t".into())),
+            super_key
+        ));
+
+        let state = h.chrome.borrow();
+        assert_eq!(state.open_target, OpenTarget::Here(group));
+        assert_eq!(
+            state.search_scope,
+            SearchScope::Workspace,
+            "the keyboard twin of a group + must not reopen generic global search"
+        );
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![ResourceKind::Application, ResourceKind::HostApplication]
+        );
+        assert!(h.host.palette_visible());
     }
 
     #[test]
