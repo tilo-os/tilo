@@ -20,12 +20,13 @@ thin = ["dep:runtime-dylib"]
 # the shared media layer (GStreamer). `--shots` still renders the synthesized
 # representative frame at runtime (no file is decoded during a shot), so the
 # screenshot path stays hermetic even with the decoder compiled in.
-default = ["decode"]
+default = ["decode", "portal"]
 # Real GStreamer decode of the opened file/stream, via the shared media layer.
 decode = ["media/decode"]
-# Real host-native file picking via the XDG FileChooser portal (ashpd). Off by
-# default so the hermetic build needs no D-Bus / tokio; `--open PATH` opens a
-# file directly without the portal.
+# Real host-native file picking via the XDG FileChooser portal (ashpd). This is
+# part of the shipped default: an Open button that cannot open a picker is not
+# a complete player. Hermetic tests use `--no-default-features`; `--open PATH`
+# remains available for direct, portal-granted launches.
 portal = ["ui/portal"]
 
 [dependencies]

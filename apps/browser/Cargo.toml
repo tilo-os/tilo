@@ -44,6 +44,7 @@ url.workspace = true
 # (.crx behind a small binary header); manifest.json describes them.
 zip.workspace = true
 serde_json.workspace = true
+blake3.workspace = true
 
 tracing.workspace = true
 

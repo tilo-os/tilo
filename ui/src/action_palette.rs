@@ -5,7 +5,12 @@
 //! exporting [`ActionSpec`](qos_actions::ActionSpec)s — the operations
 //! Ctrl+K offers. An app can also fold in *searchable content* via
 //! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
-//! their hits appear as navigable result rows in the same surface.
+//! their hits can address an exported resource action and therefore enter the
+//! same broker path; legacy opaque navigation ids remain supported during
+//! migration. Search providers are discovery-only: a provider-returned
+//! resource is never accepted as authority. The host resolves every addressed
+//! resource through the owning widget and permission-filters it before
+//! activation.
 //!
 //! One registry, one renderer, one flow: input is the shared
 //! [`SearchField`](crate::widget::SearchField); results render through
@@ -14,8 +19,9 @@
 //! [`dispatch_with_context`](qos_actions::dispatch_with_context)es through `qos_actions` — the same
 //! path a remote peer replays — with a
 //! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
-//! its argument in the field; a content row hands its opaque `action_id`
-//! back to the app to navigate, never a CRDT mutation.
+//! its argument in the field. A canonical search hit resolves to that same
+//! action machinery. Only a legacy content row hands its opaque `action_id`
+//! back to the app to navigate.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
@@ -53,13 +59,17 @@ const FIELD_H: f64 = 38.0;
 const GAP: f64 = 10.0;
 /// Cap per group so one busy provider can't flood the overlay.
 const PER_GROUP_CAP: usize = 8;
+/// Maximum number of provider hits materialised for one keystroke. Providers
+/// may emit several groups, so leave room for each while keeping work bounded.
+const PROVIDER_HIT_BUDGET: usize = 32;
 
 /// How activating one row resolves.
 #[derive(Clone)]
 enum RowResolution {
-    /// An exported action — dispatch through `qos_actions`.
-    Dispatch(Box<ActionKind>),
-    /// A search-provider hit — hand the opaque id back to the app to navigate.
+    /// An exported action, deliberately retained as an inert address. It is
+    /// resolved against the latest resource forest only when activated.
+    Address(qos_actions::ActionAddress),
+    /// A legacy search-provider hit — hand the opaque id back to the app.
     Navigate(String),
 }
 
@@ -92,17 +102,9 @@ enum ActionKind {
     },
 }
 
-enum ArgumentBuilder {
-    Text(Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>),
-    Json(Box<qos_actions::ActionSpec>),
-}
-
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
-    build: ArgumentBuilder,
-    context: ActionContext,
-    kind: OperationKind,
-    confirmation: ConfirmationPolicy,
+    address: qos_actions::ActionAddress,
 }
 
 struct ConfirmState {
@@ -110,11 +112,42 @@ struct ConfirmState {
     expected: String,
 }
 
+enum PendingInput {
+    Immediate,
+    Text(String),
+    Json(String),
+    Invalid,
+}
+
 /// A palette activation after address resolution and argument collection.
 pub struct PendingOperation {
+    /// The address whose current authority must still be present at dispatch.
+    pub address: qos_actions::ActionAddress,
     pub encoded: EncodedAction,
     pub context: ActionContext,
     pub kind: OperationKind,
+    input: PendingInput,
+    confirmation: ConfirmationPolicy,
+    confirmation_evidence: serde_json::Value,
+}
+
+impl PendingOperation {
+    /// Reconstruct the door argument collected by the palette. Keeping the
+    /// typed JSON prefix makes palette, semantic, button, and agent calls use
+    /// the same strict binder in the application host.
+    pub fn wire_argument(&self) -> Option<String> {
+        match &self.input {
+            PendingInput::Immediate | PendingInput::Invalid => None,
+            PendingInput::Text(value) => Some(value.clone()),
+            PendingInput::Json(value) => {
+                Some(format!("{}{}", qos_actions::ARGUMENTS_JSON_PREFIX, value))
+            }
+        }
+    }
+
+    pub fn confirmation_evidence(&self) -> &serde_json::Value {
+        &self.confirmation_evidence
+    }
 }
 
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
@@ -192,14 +225,40 @@ impl ActionPalette {
         self.rebuild(&query);
     }
 
+    /// Replace only the authority snapshot, without moving the visible result
+    /// rows or cursor. The host calls this immediately before handling input;
+    /// a selected row can then disappear/refuse safely instead of changing the
+    /// user's selection to a different action during the same key press.
+    pub fn refresh_open_resources(&mut self, resources: &[Resource]) {
+        self.resources = resources.to_vec();
+    }
+
+    /// Resource ids referenced by the current canonical search rows.
+    ///
+    /// The host uses these inert ids to resolve lazy resources through the
+    /// owning widget. Providers deliberately cannot supply authority.
+    pub fn referenced_action_resource_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .index
+            .values()
+            .filter_map(|resolution| match resolution {
+                RowResolution::Address(address) => Some(address.resource.clone()),
+                RowResolution::Navigate(_) => None,
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
         self.ambient_context = context;
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
 
-    /// Fold in searchable-content sources. Their hits appear as navigable result
-    /// rows, grouped by each provider's kind.
+    /// Fold in searchable-content sources. Canonically addressed hits dispatch
+    /// through the resource/action path; legacy opaque hits remain navigable.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
         self.providers = providers;
         // `.to_string()` is load-bearing here, not redundant: it ends the
@@ -305,7 +364,7 @@ impl ActionPalette {
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
-        let pending = self.pending_dispatch.take()?;
+        let pending = self.take_operation()?;
         if pending.kind != OperationKind::Document {
             return Some(Err(qos_actions::ActionError::Refused(format!(
                 "{} operation requires the owning widget",
@@ -325,7 +384,37 @@ impl ActionPalette {
     /// The application host uses this to route effects/views to the owning
     /// widget and document operations to the deterministic executor.
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
-        self.pending_dispatch.take()
+        let mut pending = self.pending_dispatch.take()?;
+        let authority = self.authority_for(&pending.address)?;
+        let spec = qos_actions::door::resolve(&authority, &pending.address)?;
+        if !spec.contract.availability.is_available()
+            || spec.kind != pending.kind
+            || spec.contract.confirmation != pending.confirmation
+        {
+            return None;
+        }
+        pending.encoded = match &pending.input {
+            PendingInput::Immediate => {
+                qos_actions::door::encode(&authority, &pending.address, None).ok()?
+            }
+            PendingInput::Text(value) => {
+                qos_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
+            }
+            PendingInput::Json(value) => {
+                let arguments =
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
+                        .ok()?;
+                qos_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
+            }
+            PendingInput::Invalid => pending.encoded.clone(),
+        };
+        Some(pending)
+    }
+
+    fn authority_for(&self, address: &qos_actions::ActionAddress) -> Option<Vec<Resource>> {
+        qos_actions::door::resolve(&self.resources, address)
+            .is_some()
+            .then(|| self.resources.clone())
     }
 
     /// Drain a completed content activation: the opaque `action_id` of the
@@ -361,61 +450,50 @@ impl ActionPalette {
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Dispatch(kind)) => match *kind {
-                ActionKind::Immediate {
-                    encoded,
-                    context,
-                    kind,
-                    confirmation,
-                } => {
-                    self.queue_or_confirm(
-                        PendingOperation {
-                            encoded,
-                            context,
-                            kind,
-                        },
-                        confirmation,
-                    );
-                }
-                ActionKind::Prompted {
-                    prompt,
-                    build,
-                    context,
-                    kind,
-                    confirmation,
-                } => {
-                    // Repurpose the field to collect the argument; clear the result
-                    // list so only the prompt shows.
-                    self.field = SearchField::new();
-                    self.field.set_placeholder(&prompt);
-                    self.field.set_focused(true);
-                    self.results.set_groups(Vec::new());
-                    self.arg = Some(ArgState {
-                        build: ArgumentBuilder::Text(build),
+            Some(RowResolution::Address(address)) => {
+                let Some(kind) = self.action_kind_for_address(&address) else {
+                    let query = self.field.value().to_string();
+                    self.rebuild(&query);
+                    return;
+                };
+                match kind {
+                    ActionKind::Immediate {
+                        encoded,
                         context,
                         kind,
                         confirmation,
-                    });
+                    } => {
+                        self.queue_or_confirm(
+                            PendingOperation {
+                                address,
+                                encoded,
+                                context,
+                                kind,
+                                input: PendingInput::Immediate,
+                                confirmation: confirmation.clone(),
+                                confirmation_evidence: serde_json::json!({}),
+                            },
+                            confirmation,
+                        );
+                    }
+                    ActionKind::Prompted { prompt, .. } => {
+                        // Repurpose the field to collect the argument; clear the result
+                        // list so only the prompt shows.
+                        self.field = SearchField::new();
+                        self.field.set_placeholder(&prompt);
+                        self.field.set_focused(true);
+                        self.results.set_groups(Vec::new());
+                        self.arg = Some(ArgState { address });
+                    }
+                    ActionKind::Typed { prompt, .. } => {
+                        self.field = SearchField::new();
+                        self.field.set_placeholder(&prompt);
+                        self.field.set_focused(true);
+                        self.results.set_groups(Vec::new());
+                        self.arg = Some(ArgState { address });
+                    }
                 }
-                ActionKind::Typed {
-                    prompt,
-                    spec,
-                    context,
-                    kind,
-                    confirmation,
-                } => {
-                    self.field = SearchField::new();
-                    self.field.set_placeholder(&prompt);
-                    self.field.set_focused(true);
-                    self.results.set_groups(Vec::new());
-                    self.arg = Some(ArgState {
-                        build: ArgumentBuilder::Json(spec),
-                        context,
-                        kind,
-                        confirmation,
-                    });
-                }
-            },
+            }
             Some(RowResolution::Navigate(target)) => {
                 self.pending_nav = Some(target);
                 self.open = false;
@@ -424,86 +502,120 @@ impl ActionPalette {
         }
     }
 
+    fn action_kind_for_address(&self, address: &qos_actions::ActionAddress) -> Option<ActionKind> {
+        let fa = flatten(&self.resources)
+            .into_iter()
+            .find(|fa| fa.key == address.encode())?;
+        if !fa.action.contract.availability.is_available() {
+            return None;
+        }
+        let mut context = ActionContext::for_resource(
+            &fa.action.label,
+            fa.resource_id.as_str(),
+            &fa.resource_kind,
+            &fa.resource_label,
+        );
+        if let Some(ambient) = self.ambient_context.as_ref() {
+            context = context.enriched_by(ambient);
+        }
+        let structured = fa.action.params().len() > 1
+            || fa
+                .action
+                .params()
+                .first()
+                .is_some_and(|parameter| parameter.ty != qos_actions::ParamType::Text);
+        Some(match &fa.action.input {
+            ActionInput::Immediate(enc) => ActionKind::Immediate {
+                encoded: enc.clone(),
+                context,
+                kind: fa.action.kind,
+                confirmation: fa.action.contract.confirmation.clone(),
+            },
+            ActionInput::Prompted { .. } if structured => ActionKind::Typed {
+                prompt: format!(
+                    "JSON arguments: {}",
+                    fa.action
+                        .params()
+                        .iter()
+                        .map(|parameter| parameter.name.as_ref())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                spec: Box::new(fa.action.clone()),
+                context,
+                kind: fa.action.kind,
+                confirmation: fa.action.contract.confirmation.clone(),
+            },
+            ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
+                prompt: prompt.clone(),
+                build: build.clone(),
+                context,
+                kind: fa.action.kind,
+                confirmation: fa.action.contract.confirmation.clone(),
+            },
+        })
+    }
+
     /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
     /// as the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
         let mut rows: Vec<SearchResult> = Vec::new();
         let mut index: HashMap<String, RowResolution> = HashMap::new();
 
-        // Actions from the resource forest.
+        // Keep only inert addresses in the row index. Encoding and callbacks
+        // are resolved later, against the authority snapshot current at the
+        // moment of activation.
         for fa in flatten(&self.resources) {
+            if !fa.action.contract.availability.is_available() {
+                continue;
+            }
             let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
-            if fuzzy_score(query, &title).is_none()
-                && fa
+            if fuzzy_score(query, &title).is_some()
+                || fa
                     .action
                     .description
                     .as_deref()
                     .and_then(|d| fuzzy_score(query, d))
-                    .is_none()
+                    .is_some()
             {
-                continue;
+                let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
+                if let Some(desc) = &fa.action.description {
+                    r = r.with_subtitle(desc.clone());
+                }
+                index.insert(
+                    fa.key.clone(),
+                    RowResolution::Address(qos_actions::ActionAddress::new(
+                        fa.resource_id.as_str(),
+                        fa.action.id.as_str(),
+                    )),
+                );
+                rows.push(r);
             }
-            let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
-            if let Some(desc) = &fa.action.description {
-                r = r.with_subtitle(desc.clone());
-            }
-            let mut context = ActionContext::for_resource(
-                &fa.action.label,
-                fa.resource_id.as_str(),
-                &fa.resource_kind,
-                &fa.resource_label,
-            );
-            if let Some(ambient) = self.ambient_context.as_ref() {
-                context = context.enriched_by(ambient);
-            }
-            let structured = fa.action.params().len() > 1
-                || fa
-                    .action
-                    .params()
-                    .first()
-                    .is_some_and(|parameter| parameter.ty != qos_actions::ParamType::Text);
-            let kind = match &fa.action.input {
-                ActionInput::Immediate(enc) => ActionKind::Immediate {
-                    encoded: enc.clone(),
-                    context,
-                    kind: fa.action.kind,
-                    confirmation: fa.action.contract.confirmation.clone(),
-                },
-                ActionInput::Prompted { .. } if structured => ActionKind::Typed {
-                    prompt: format!(
-                        "JSON arguments: {}",
-                        fa.action
-                            .params()
-                            .iter()
-                            .map(|parameter| parameter.name.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    spec: Box::new(fa.action.clone()),
-                    context,
-                    kind: fa.action.kind,
-                    confirmation: fa.action.contract.confirmation.clone(),
-                },
-                ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
-                    prompt: prompt.clone(),
-                    build: build.clone(),
-                    context,
-                    kind: fa.action.kind,
-                    confirmation: fa.action.contract.confirmation.clone(),
-                },
-            };
-            index.insert(fa.key.clone(), RowResolution::Dispatch(Box::new(kind)));
-            rows.push(r);
         }
 
         // Searchable content from folded-in providers (already query-filtered).
+        // A canonical hit uses the same ActionKind as its exported action row,
+        // including typed arguments, confirmation, provenance and operation
+        // kind. Untagged ids retain legacy navigation behavior; a tagged but
+        // stale address is omitted rather than silently changing semantics.
         for provider in &self.providers {
-            for hit in provider.search(query) {
+            for hit in provider.search_limited(query, PROVIDER_HIT_BUDGET) {
                 let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
-                index.insert(
-                    row_id.clone(),
-                    RowResolution::Navigate(hit.action_id.clone()),
-                );
+                let resolution = if hit.has_action_address() {
+                    // Discovery is intentionally allowed to name a resource
+                    // absent from the contextual snapshot. The owning widget
+                    // and host permission door decide whether it exists and
+                    // is actionable immediately before activation.
+                    hit.action_address().map(RowResolution::Address)
+                } else {
+                    Some(RowResolution::Navigate(hit.action_id.clone()))
+                };
+                let Some(resolution) = resolution else {
+                    // A stale canonical address is not authority and must not
+                    // fall through to an app-defined opaque callback.
+                    continue;
+                };
+                index.insert(row_id.clone(), resolution);
                 let mut r = SearchResult::new(hit.kind.clone(), hit.title.clone(), row_id)
                     .with_score(hit.score);
                 if let Some(sub) = &hit.subtitle {
@@ -588,6 +700,10 @@ impl ActionPalette {
     /// Feed a keyboard event to the open palette; returns whether consumed.
     /// While open, the palette is modal: it swallows every key so nothing
     /// leaks to the app behind it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one modal keyboard state machine keeps confirmation, typed arguments, navigation and dispatch ordering explicit"
+    )]
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -623,7 +739,17 @@ impl ActionPalette {
                     .as_ref()
                     .is_some_and(|state| value == state.expected);
                 if accepted {
-                    self.pending_dispatch = self.confirm.take().map(|state| state.pending);
+                    self.pending_dispatch = self.confirm.take().map(|state| {
+                        let mut pending = state.pending;
+                        pending.confirmation_evidence = match pending.confirmation {
+                            ConfirmationPolicy::None => serde_json::json!({}),
+                            ConfirmationPolicy::Confirm => serde_json::json!({ "confirm": true }),
+                            ConfirmationPolicy::Phrase { .. } => {
+                                serde_json::json!({ "confirmation_phrase": value })
+                            }
+                        };
+                        pending
+                    });
                     self.open = false;
                 }
             } else {
@@ -638,27 +764,71 @@ impl ActionPalette {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
-                    let confirmation = state.confirmation;
-                    let encoded = match state.build {
-                        ArgumentBuilder::Text(build) => build(&value),
-                        ArgumentBuilder::Json(spec) => serde_json::from_str::<
-                            serde_json::Map<String, serde_json::Value>,
-                        >(&value)
-                        .map_err(|error| error.to_string())
-                        .and_then(|arguments| {
-                            spec.build_json(&arguments)
-                                .map_err(|error| error.to_string())
-                        })
-                        .unwrap_or_else(|error| EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: error.into_bytes(),
-                        }),
+                    let address = state.address;
+                    let Some(fresh) = self.action_kind_for_address(&address) else {
+                        self.exit_argument_mode();
+                        return true;
+                    };
+                    let (encoded, context, kind, confirmation, input) = match fresh {
+                        ActionKind::Prompted {
+                            build,
+                            context,
+                            kind,
+                            confirmation,
+                            ..
+                        } => {
+                            let encoded = build(&value);
+                            let input = if encoded.type_id
+                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                            {
+                                PendingInput::Invalid
+                            } else {
+                                PendingInput::Text(value)
+                            };
+                            (encoded, context, kind, confirmation, input)
+                        }
+                        ActionKind::Typed {
+                            spec,
+                            context,
+                            kind,
+                            confirmation,
+                            ..
+                        } => {
+                            let encoded = serde_json::from_str::<
+                                serde_json::Map<String, serde_json::Value>,
+                            >(&value)
+                            .map_err(|error| error.to_string())
+                            .and_then(|arguments| {
+                                spec.build_json(&arguments)
+                                    .map_err(|error| error.to_string())
+                            })
+                            .unwrap_or_else(|error| EncodedAction {
+                                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                payload: error.into_bytes(),
+                            });
+                            let input = if encoded.type_id
+                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                            {
+                                PendingInput::Invalid
+                            } else {
+                                PendingInput::Json(value)
+                            };
+                            (encoded, context, kind, confirmation, input)
+                        }
+                        ActionKind::Immediate { .. } => {
+                            self.exit_argument_mode();
+                            return true;
+                        }
                     };
                     self.queue_or_confirm(
                         PendingOperation {
+                            address,
                             encoded,
-                            context: state.context,
-                            kind: state.kind,
+                            context,
+                            kind,
+                            input,
+                            confirmation: confirmation.clone(),
+                            confirmation_evidence: serde_json::json!({}),
                         },
                         confirmation,
                     );
@@ -888,6 +1058,99 @@ mod tests {
         }
     }
 
+    /// A provider using the canonical migration API. The hit's title is
+    /// intentionally unrelated to the action label, proving address
+    /// resolution does not depend on the action row also matching the query.
+    struct CanonicalPeople;
+    impl SearchProvider for CanonicalPeople {
+        fn name(&self) -> &'static str {
+            "People"
+        }
+
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            fuzzy_score(query, "Ada Lovelace")
+                .map(|_| {
+                    vec![SearchResult::for_action(
+                        "People",
+                        "Ada Lovelace",
+                        qos_actions::ActionAddress::new("test.thing:1", "mark"),
+                    )]
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    struct LazyCorpus {
+        materialized: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SearchProvider for LazyCorpus {
+        fn name(&self) -> &'static str {
+            "Large corpus"
+        }
+
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("the palette must use the budgeted query hook")
+        }
+
+        fn search_limited(&self, _query: &str, limit: usize) -> Vec<SearchResult> {
+            self.materialized
+                .fetch_add(limit, std::sync::atomic::Ordering::Relaxed);
+            (0..limit)
+                .map(|id| {
+                    SearchResult::for_action(
+                        "Large corpus",
+                        format!("Item {id}"),
+                        qos_actions::ActionAddress::new(format!("lazy.item:{id}"), "open"),
+                    )
+                })
+                .collect()
+        }
+
+        fn resolve_action_resource(
+            &self,
+            address: &qos_actions::ActionAddress,
+        ) -> Option<Resource> {
+            address.resource.strip_prefix("lazy.item:")?;
+            Some(
+                Resource::new(&address.resource, "lazy.item", &address.resource).with_action(
+                    ActionSpec::immediate(
+                        "open",
+                        "Open",
+                        NOTE_TYPE,
+                        &Note {
+                            key: "opened".into(),
+                            value: address.resource.clone(),
+                        },
+                    )
+                    .ok()?,
+                ),
+            )
+        }
+    }
+
+    #[test]
+    fn large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority() {
+        let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[]);
+        palette.set_providers(vec![Box::new(LazyCorpus {
+            materialized: Arc::clone(&materialized),
+        })]);
+        materialized.store(0, std::sync::atomic::Ordering::Relaxed);
+        palette.open();
+        assert_eq!(
+            materialized.load(std::sync::atomic::Ordering::Relaxed),
+            PROVIDER_HIT_BUDGET
+        );
+        assert_eq!(palette.len(), PER_GROUP_CAP);
+        palette.activate_selected();
+        assert!(
+            palette.take_operation().is_none(),
+            "provider discovery must not become dispatch authority"
+        );
+    }
+
     /// Both an ACTION (from the resource tree) and a searchable CONTENT hit
     /// (from a folded-in provider) surface, grouped, for one query.
     #[test]
@@ -1024,6 +1287,100 @@ mod tests {
         assert!(!p.is_open(), "navigation closes the palette");
     }
 
+    /// Canonical provider hits are broker operations, not opaque navigation
+    /// callbacks. This is the per-app migration contract.
+    #[test]
+    fn activating_canonical_search_hit_queues_pending_operation() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_providers(vec![Box::new(CanonicalPeople)]);
+        p.open();
+        p.set_query("ada");
+
+        assert_eq!(p.result_labels(), vec!["Ada Lovelace"]);
+        p.activate_selected();
+
+        let pending = p.take_operation().expect("broker operation pending");
+        assert_eq!(
+            pending.address,
+            qos_actions::ActionAddress::new("test.thing:1", "mark")
+        );
+        assert_eq!(pending.encoded.type_id, NOTE_TYPE);
+        assert_eq!(pending.kind, OperationKind::Document);
+        assert_eq!(
+            pending
+                .context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.thing:1")
+        );
+        assert!(
+            p.take_navigation().is_none(),
+            "canonical hits never enter the legacy navigation callback"
+        );
+        assert!(!p.is_open());
+    }
+
+    #[test]
+    fn removed_canonical_action_is_refused_at_activation() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_providers(vec![Box::new(CanonicalPeople)]);
+        p.open();
+        p.set_query("ada");
+
+        // The row remains visually selected for this key press, but its
+        // authority snapshot is fresh and no longer contains the address.
+        p.refresh_open_resources(&[]);
+        p.activate_selected();
+
+        assert!(p.take_operation().is_none());
+        assert!(p.take_navigation().is_none());
+        assert!(p.is_open(), "a stale selection leaves the palette usable");
+        assert!(
+            !p.is_empty(),
+            "discovery may remain visible so a later permission/resource refresh can enable it"
+        );
+    }
+
+    #[test]
+    fn disabled_canonical_action_is_refused_at_activation() {
+        let mut disabled = thing_resource();
+        disabled.actions[0].contract.availability = qos_actions::Availability::Unavailable {
+            code: "offline".into(),
+            reason: "The service went offline".into(),
+        };
+
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_providers(vec![Box::new(CanonicalPeople)]);
+        p.open();
+        p.set_query("ada");
+        p.refresh_open_resources(&[disabled]);
+        p.activate_selected();
+
+        assert!(p.take_operation().is_none());
+        assert!(p.take_navigation().is_none());
+        assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn removed_action_is_refused_again_at_dispatch_boundary() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_providers(vec![Box::new(CanonicalPeople)]);
+        p.open();
+        p.set_query("ada");
+        p.activate_selected();
+
+        // Covers state changing after activation but before the host drains
+        // the pending operation (and consequential confirmation flows).
+        p.refresh_open_resources(&[]);
+        assert!(p.take_operation().is_none());
+        assert!(p.take_navigation().is_none());
+    }
+
     /// A PROMPTED action collects its argument in the field, then dispatches the
     /// action built from the typed text.
     #[test]
@@ -1113,10 +1470,22 @@ mod tests {
 
         palette.field.set_query("MARK THING");
         palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
-        palette
-            .take_dispatch(&mut doc, &registry(), &mut transport)
-            .expect("exact confirmation queues the operation")
-            .expect("confirmed dispatch succeeds");
+        let pending = palette
+            .take_operation()
+            .expect("exact confirmation queues the operation");
+        assert_eq!(
+            pending.confirmation_evidence(),
+            &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
+            "the broker receives the exact evidence the palette verified"
+        );
+        ActionPalette::dispatch_encoded(
+            &mut doc,
+            &pending.encoded,
+            &registry(),
+            &mut transport,
+            pending.context,
+        )
+        .expect("confirmed dispatch succeeds");
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()

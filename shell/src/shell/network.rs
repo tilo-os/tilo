@@ -3212,8 +3212,10 @@ impl ShellNetwork {
         if envelope.artifact != artifact
             || envelope.attestation_id
                 != collab_types::document_attestation_id(app_id, cluster_id, record_id)
-            || envelope.encryption.is_some()
-            || collab_types::DocumentMutation::decode(&envelope.payload).is_err()
+            || collab_types::validate_document_payload_route(
+                app_id, cluster_id, record_id, envelope,
+            )
+            .is_err()
         {
             return None;
         }

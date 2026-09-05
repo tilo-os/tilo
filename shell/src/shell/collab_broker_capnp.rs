@@ -31,9 +31,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[cfg(test)]
+use collab_types::DocumentMutation;
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
-    SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
+    Actor, ArtifactId, ArtifactKind, CapDecision, RedactedMarker, ResourceRef, SignedOp,
+    ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
@@ -58,6 +60,14 @@ use crate::shell::state::{
 const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
+
+fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
+    if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
+        current_connection
+    } else {
+        requested
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -408,6 +418,9 @@ struct PendingInvocation {
     retryable_on_disconnect: bool,
     execution: qos_actions::ExecutionMode,
     result: qos_actions::ResultSpec,
+    operation_kind: qos_actions::OperationKind,
+    cluster_id: String,
+    context: qos_actions::ActionContext,
     /// Admission/progress heartbeat. A silent application must not leave a
     /// broker-owned job in `Accepted` forever.
     last_activity: std::time::Instant,
@@ -582,6 +595,7 @@ impl CapnpBrokerState {
                     retryable: pending.retryable_on_disconnect,
                 },
             };
+            self.record_effect_receipt(&pending, &update);
             self.record_completion(id, pending.actor.clone(), update);
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -600,6 +614,38 @@ impl CapnpBrokerState {
                 completed.remove(&oldest);
             }
         }
+    }
+
+    fn record_effect_receipt(
+        &self,
+        pending: &PendingInvocation,
+        update: &qos_actions::InvocationUpdate,
+    ) {
+        if pending.operation_kind != qos_actions::OperationKind::Effect {
+            return;
+        }
+        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(update) else {
+            return;
+        };
+        let Some(membership) = &self.membership else {
+            return;
+        };
+        let mut tree = membership.write();
+        let Some(workspace_id) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == pending.cluster_id)
+            .map(|workspace| workspace.id)
+        else {
+            return;
+        };
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            update.invocation(),
+            &pending.actor,
+            pending.context.clone(),
+            status,
+        );
     }
 
     /// So tests can register channel state before pushing signed
@@ -1088,6 +1134,16 @@ impl CapnpBrokerState {
         }
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
+        let mut receipt_context = qos_actions::ActionContext::for_resource(
+            &offered.1.action_label,
+            &offered.1.resource,
+            &offered.1.resource_kind,
+            &offered.1.resource_label,
+        )
+        .with_app(&offered.0.app_id, &offered.0.app_id);
+        if let Some(ambient) = &context {
+            receipt_context = receipt_context.enriched_by(ambient);
+        }
         self.pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?
@@ -1118,6 +1174,9 @@ impl CapnpBrokerState {
                     ),
                     execution: offered.1.contract.execution.clone(),
                     result: offered.1.contract.result.clone(),
+                    operation_kind: offered.1.operation_kind,
+                    cluster_id: offered.0.route.cluster_id.clone(),
+                    context: receipt_context,
                     last_activity: std::time::Instant::now(),
                     cancellation_requested_at: None,
                 },
@@ -1537,6 +1596,7 @@ impl CapnpBrokerState {
                             retryable: invocation.retryable_on_disconnect,
                         },
                     };
+                    self.record_effect_receipt(&invocation, &update);
                     self.record_completion(id, invocation.actor.clone(), update);
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -1596,7 +1656,7 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
         envelope: &SignedOp,
-    ) -> Result<DocumentMutation, capnp::Error> {
+    ) -> Result<collab_types::RoutedDocumentPayload, capnp::Error> {
         let expected_artifact =
             document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let expected_attestation =
@@ -1604,17 +1664,33 @@ impl CapnpBrokerState {
         if route.app_id.is_empty()
             || envelope.artifact != expected_artifact
             || envelope.attestation_id != expected_attestation
-            || envelope.encryption.is_some()
         {
             return Err(capnp::Error::failed(
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let mutation = DocumentMutation::decode(&envelope.payload).map_err(|error| {
+        let mutation = collab_types::validate_document_payload_route(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+            envelope,
+        )
+        .map_err(|error| {
             capnp::Error::failed(format!(
-                "certified document operation has an invalid typed payload: {error}"
+                "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let broker_channels = self.broker_channels.lock().map_err(|_| {
+            capnp::Error::failed("collaboration governance state is unavailable".into())
+        })?;
+        if !broker_channels.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+            return Err(capnp::Error::failed(
+                "plaintext document operation rejected after MLS migration".into(),
+            ));
+        }
+        drop(broker_channels);
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -1691,6 +1767,7 @@ impl CapnpBrokerState {
             CollabEvent::Document {
                 envelope,
                 from_user_id,
+                ..
             } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
@@ -2048,6 +2125,119 @@ impl CapnpChannelHandle {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn record_local_effect(
+        self: Rc<Self>,
+        params: channel_handle::RecordLocalEffectParams,
+        _results: channel_handle::RecordLocalEffectResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let resource = match request
+            .get_resource()
+            .map_err(|error| error.to_string())
+            .and_then(|value| value.to_str().map_err(|error| error.to_string()))
+        {
+            Ok(value) => value.to_string(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let action = match request
+            .get_action()
+            .map_err(|error| error.to_string())
+            .and_then(|value| value.to_str().map_err(|error| error.to_string()))
+        {
+            Ok(value) => value.to_string(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let update = match request
+            .get_update_json()
+            .map_err(|error| capnp::Error::failed(error.to_string()))
+            .and_then(|value| {
+                value
+                    .to_str()
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            })
+            .and_then(|json| {
+                serde_json::from_str::<qos_actions::InvocationUpdate>(json)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            }) {
+            Ok(update) => update,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(&update) else {
+            return Promise::err(capnp::Error::failed(
+                "only a terminal effect may enter workspace activity".into(),
+            ));
+        };
+        let Some((surface, offered)) = self
+            .state
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&self.peer_id).cloned())
+            .and_then(|surface| {
+                let offered = surface
+                    .actions
+                    .iter()
+                    .find(|candidate| candidate.resource == resource && candidate.action == action)
+                    .cloned()?;
+                Some((surface, offered))
+            })
+        else {
+            return Promise::err(capnp::Error::failed(
+                "the application no longer publishes that action".into(),
+            ));
+        };
+        if offered.operation_kind != qos_actions::OperationKind::Effect {
+            return Promise::err(capnp::Error::failed(
+                "only Effects produce durable invocation receipts".into(),
+            ));
+        }
+        let mut context = qos_actions::ActionContext::for_resource(
+            offered.action_label,
+            offered.resource,
+            offered.resource_kind,
+            offered.resource_label,
+        )
+        .with_app(&surface.app_id, &surface.app_id);
+        let actor = current.broker_actor().id;
+        let Some(membership) = &self.state.membership else {
+            return Promise::err(capnp::Error::failed(
+                "the action broker has no workspace authority".into(),
+            ));
+        };
+        let mut tree = membership.write();
+        let Some(workspace_id) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .map(|workspace| workspace.id)
+        else {
+            return Promise::err(capnp::Error::failed(
+                "the application workspace is no longer hosted".into(),
+            ));
+        };
+        // Local invocations have no task ambient context; retain this as an
+        // ordinary semantic action record.
+        context.purpose = None;
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            update.invocation(),
+            &actor,
+            context,
+            status,
+        );
+        Promise::ok(())
+    }
+
     fn open_workspace_control(
         self: Rc<Self>,
         params: channel_handle::OpenWorkspaceControlParams,
@@ -2679,6 +2869,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
             };
             drop(registry);
+            state.record_effect_receipt(&pending, &update);
             state.record_completion(id, pending.actor.clone(), update);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -2835,6 +3026,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .remove(&id)
                     .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
                 drop(registry);
+                state.record_effect_receipt(&pending, &update);
                 state.record_completion(id, pending.actor.clone(), update);
                 if let Ok(mut requests) = state.cancellation_requests.lock() {
                     requests.remove(&id);
@@ -2955,7 +3147,8 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
         };
-        let peer_id = request.get_peer_id();
+        let requested_peer_id = request.get_peer_id();
+        let peer_id = invocation_target_peer(requested_peer_id, self.peer_id);
         let resource = match request.get_resource().and_then(|s| {
             s.to_str()
                 .map_err(|error| capnp::Error::failed(error.to_string()))
@@ -3626,7 +3819,9 @@ fn handle_signed_op_send(
     };
     match validation {
         Ok(()) => {
+            let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
+                mls_vault = ch.mls_vault.clone();
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -3634,6 +3829,13 @@ fn handle_signed_op_send(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
+            }
+            if envelope.op_class == collab_types::OpClass::Compaction
+                && let Some(metadata) = envelope.encryption
+                && let Some(vault) = mls_vault
+                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
+            {
+                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
             if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -3644,6 +3846,7 @@ fn handle_signed_op_send(
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),
                 from_user_id,
+                decrypted_payload: None,
             };
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -5175,6 +5378,48 @@ mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
+        let expected_channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let mut encrypted = SignedOp::new_unsigned_with_encryption(
+            b"opaque MLS application frame".to_vec(),
+            artifact,
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            2,
+            collab_types::EncryptionMetadata {
+                epoch: 7,
+                channel: expected_channel,
+            },
+        );
+        sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
+        assert!(matches!(
+            state
+                .authorize_certified_document(&route, &admitted, &encrypted)
+                .expect("broker authorizes signed clear metadata without decrypting"),
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
+                if channel == expected_channel
+        ));
+        handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
+        let delivered = received.try_recv().expect("opaque MLS fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
+            encrypted,
+            "broker must relay ciphertext byte-for-byte"
+        );
+
+        let mut wrong_channel = encrypted.clone();
+        wrong_channel.encryption.as_mut().expect("metadata").channel =
+            collab_types::ChannelId::new();
+        sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
+        assert!(
+            state
+                .authorize_certified_document(&route, &admitted, &wrong_channel)
+                .is_err(),
+            "validly signed ciphertext for another MLS channel must not be routed"
+        );
+
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
 
         downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
@@ -5235,6 +5480,7 @@ mod tests {
             &CollabEvent::Document {
                 envelope: Box::new(envelope),
                 from_user_id: "peer@42".into(),
+                decrypted_payload: None,
             },
             1,
             &target,
@@ -5542,5 +5788,125 @@ mod tests {
                 .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
+    }
+
+    #[test]
+    fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(32),
+            "Agent effect room",
+        );
+        workspace.set_owner("owner");
+        let cluster_id = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(Arc::clone(&membership)),
+            None,
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let invocation = qos_actions::InvocationId::new();
+        let pending = PendingInvocation {
+            peer_id: 7,
+            tx,
+            update: qos_actions::InvocationUpdate::Accepted { invocation },
+            last_sequence: 0,
+            actor: "agent:Scribe".into(),
+            cancellable: false,
+            retryable_on_disconnect: false,
+            execution: qos_actions::ExecutionMode::Immediate,
+            result: qos_actions::ResultSpec::None,
+            operation_kind: qos_actions::OperationKind::Effect,
+            cluster_id,
+            context: qos_actions::ActionContext::for_resource(
+                "Publish",
+                "document:brief",
+                "document",
+                "Release brief",
+            )
+            .with_app("org.qos.Writer", "Writer")
+            .with_group("task:release", "Release", "task"),
+            last_activity: std::time::Instant::now(),
+            cancellation_requested_at: None,
+        };
+        let update = qos_actions::InvocationUpdate::Failed {
+            invocation,
+            error: qos_actions::ActionFailure {
+                code: "publish_denied".into(),
+                message: "authorization=secret-value".into(),
+                details: Some(serde_json::json!({"body": "private draft"})),
+                retryable: false,
+            },
+        };
+
+        state.record_effect_receipt(&pending, &update);
+        state.record_effect_receipt(&pending, &update);
+
+        let succeeded_invocation = qos_actions::InvocationId::new();
+        let mut succeeded_pending = pending;
+        succeeded_pending.update = qos_actions::InvocationUpdate::Accepted {
+            invocation: succeeded_invocation,
+        };
+        state.record_effect_receipt(
+            &succeeded_pending,
+            &qos_actions::InvocationUpdate::Succeeded {
+                invocation: succeeded_invocation,
+                output: qos_actions::ActionOutput {
+                    value: Some(serde_json::json!({"token": "output-secret"})),
+                    resources: vec!["files.entry:/private/export".into()],
+                },
+            },
+        );
+        let mut private_view = succeeded_pending;
+        private_view.operation_kind = qos_actions::OperationKind::View;
+        let view_invocation = qos_actions::InvocationId::new();
+        state.record_effect_receipt(
+            &private_view,
+            &qos_actions::InvocationUpdate::Succeeded {
+                invocation: view_invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+        );
+
+        let tree = membership.read();
+        let receipts = &tree.workspaces[0].effect_receipts;
+        assert_eq!(
+            receipts.len(),
+            2,
+            "invocation identity deduplicates retry delivery"
+        );
+        assert_eq!(receipts[0].actor, "agent:Scribe");
+        assert_eq!(
+            receipts[0]
+                .context
+                .group
+                .as_ref()
+                .map(|group| group.id.as_str()),
+            Some("task:release")
+        );
+        let durable = serde_json::to_string(receipts).expect("serialize receipts");
+        assert!(!durable.contains("secret-value"));
+        assert!(!durable.contains("private draft"));
+        assert!(!durable.contains("output-secret"));
+        assert!(!durable.contains("private/export"));
+        assert!(durable.contains("publish_denied"));
+        assert!(receipts.iter().any(|receipt| {
+            receipt.invocation == succeeded_invocation
+                && receipt.status == qos_actions::EffectReceiptStatus::Succeeded
+        }));
+    }
+
+    #[test]
+    fn current_connection_invocation_sentinel_cannot_target_another_app() {
+        assert_eq!(
+            invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
+            41
+        );
+        assert_eq!(invocation_target_peer(7, 41), 7);
     }
 }

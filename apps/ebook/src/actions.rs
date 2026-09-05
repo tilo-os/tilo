@@ -37,7 +37,30 @@ pub enum EbookOperation {
     ToggleContents,
     ToggleNotes,
     OpenSettings,
-    OpenBook { path: Option<String> },
+    /// Reveal an existing library resource without changing the shared
+    /// document. `block` is present for annotation hits and absent for a book
+    /// or chapter row.
+    Reveal {
+        book_id: String,
+        chapter: usize,
+        page: usize,
+        block: Option<usize>,
+    },
+    OpenBook {
+        path: Option<String>,
+    },
+}
+
+pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
+    match operation {
+        EbookOperation::PreviousPage
+        | EbookOperation::NextPage
+        | EbookOperation::ToggleContents
+        | EbookOperation::ToggleNotes
+        | EbookOperation::OpenSettings
+        | EbookOperation::Reveal { .. } => OperationKind::View,
+        EbookOperation::OpenBook { .. } => OperationKind::Effect,
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +90,11 @@ mod file_action_tests {
     }
 }
 
+/// Decode a presentation operation when `type_id` belongs to Books.
+///
+/// # Errors
+///
+/// Returns a descriptive JSON error when a Books payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOperation>, String> {
     if type_id != EBOOK_OPERATION_TYPE {
         return Ok(None);
@@ -76,11 +104,39 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOpe
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    reason = "the owned enum makes call sites legible and this fieldless/string-only operation schema is infallibly serializable"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
     ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
         .expect("EbookOperation is always serializable")
 }
 
+fn reveal_operation(
+    book_id: &str,
+    chapter: usize,
+    page: usize,
+    block: Option<usize>,
+) -> ActionSpec {
+    operation(
+        "open",
+        "Open",
+        OperationKind::View,
+        EbookOperation::Reveal {
+            book_id: book_id.to_string(),
+            chapter,
+            page,
+            block,
+        },
+    )
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
 fn open_book_operation() -> ActionSpec {
     ActionSpec::typed_operation(
         "open-book",
@@ -790,7 +846,13 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
         format!("ebook.highlight:{group}"),
         "ebook.highlight",
         anno_label(first),
-    );
+    )
+    .with_action(reveal_operation(
+        book_id,
+        first.chapter,
+        0,
+        Some(first.block),
+    ));
 
     // Change colour — a prompted action taking a colour name.
     hl = hl.with_action(ActionSpec::prompted(
@@ -853,6 +915,7 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
             "ebook.comment",
             anno_label(cm),
         )
+        .with_action(reveal_operation(book_id, cm.chapter, 0, Some(cm.block)))
         .with_action(ActionSpec::prompted(
             "edit-comment",
             "Edit comment",
@@ -888,7 +951,7 @@ fn highlight_resources(annos: &[Annotation], book_id: &str) -> (Vec<Resource>, V
 }
 
 /// Bookmark resources, each with a single delete action.
-fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
+fn bookmark_resources(annos: &[Annotation], book_id: &str) -> Vec<Resource> {
     annos
         .iter()
         .filter(|a| a.kind == AnnoKind::Bookmark)
@@ -899,6 +962,7 @@ fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
                 "ebook.bookmark",
                 anno_label(a),
             )
+            .with_action(reveal_operation(book_id, a.chapter, 0, Some(a.block)))
             .with_action(encode_spec(
                 "delete",
                 "Delete bookmark",
@@ -910,13 +974,18 @@ fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
 
 /// Standalone-note resources (note rows not attached to a highlight group),
 /// each with edit + delete actions.
-fn standalone_note_resources(annos: &[Annotation], highlight_groups: &[Uuid]) -> Vec<Resource> {
+fn standalone_note_resources(
+    annos: &[Annotation],
+    highlight_groups: &[Uuid],
+    book_id: &str,
+) -> Vec<Resource> {
     annos
         .iter()
         .filter(|a| a.kind == AnnoKind::Note && !highlight_groups.contains(&a.group))
         .map(|a| {
             let id = a.id;
             Resource::new(format!("ebook.note:{id}"), "ebook.note", anno_label(a))
+                .with_action(reveal_operation(book_id, a.chapter, 0, Some(a.block)))
                 .with_action(ActionSpec::prompted(
                     "edit",
                     "Edit note",
@@ -937,70 +1006,119 @@ fn standalone_note_resources(annos: &[Annotation], highlight_groups: &[Uuid]) ->
 /// Build the resource tree Books currently has open: the book being read, its
 /// highlights (each owning its comments), its bookmarks, and its standalone
 /// notes — every document-mutating operation exported as an action.
-pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+fn book_resource(
+    book: &crate::model::Book,
+    current: Option<&BookResourceCtx>,
+    doc: &AutoCommit,
+) -> Resource {
     let root = Resource::new(
-        format!("ebook.book:{}", ctx.book_id),
+        format!("ebook.book:{}", book.id),
         "ebook.book",
-        ctx.book_title.clone(),
+        if book.title.trim().is_empty() {
+            "Untitled".to_string()
+        } else {
+            book.title.clone()
+        },
     );
-    let mut root = book_level_actions(root, ctx);
-    for (id, label, kind, value) in [
-        (
-            "previous-page",
-            "Previous page",
-            OperationKind::View,
-            EbookOperation::PreviousPage,
-        ),
-        (
-            "next-page",
-            "Next page",
-            OperationKind::View,
-            EbookOperation::NextPage,
-        ),
-        (
-            "contents",
-            "Toggle table of contents",
-            OperationKind::View,
-            EbookOperation::ToggleContents,
-        ),
-        (
-            "notes",
-            "Toggle notes",
-            OperationKind::View,
-            EbookOperation::ToggleNotes,
-        ),
-        (
-            "settings",
-            "Open reading settings",
-            OperationKind::View,
-            EbookOperation::OpenSettings,
-        ),
-    ] {
-        root = root.with_action(operation(id, label, kind, value));
-    }
-    root = root.with_action(open_book_operation());
+    let progress = BooksDoc::read_progress(doc, &book.id);
+    let root = root.with_action(reveal_operation(
+        &book.id,
+        progress.chapter,
+        progress.page,
+        None,
+    ));
+    let mut root = match current {
+        Some(ctx) if ctx.book_id == book.id => book_level_actions(root, ctx),
+        _ => root,
+    };
 
-    let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
-    let (highlights, highlight_groups) = highlight_resources(&annos, &ctx.book_id);
+    for (chapter, item) in book.chapters.iter().enumerate() {
+        let label = if item.title.trim().is_empty() {
+            format!("Chapter {}", chapter + 1)
+        } else {
+            item.title.clone()
+        };
+        root = root.with_child(
+            Resource::new(
+                format!("ebook.chapter:{}:{chapter}", book.id),
+                "ebook.chapter",
+                label,
+            )
+            .with_action(reveal_operation(&book.id, chapter, 0, None)),
+        );
+    }
+
+    if current.is_some_and(|ctx| ctx.book_id == book.id) {
+        for (id, label, kind, value) in [
+            (
+                "previous-page",
+                "Previous page",
+                OperationKind::View,
+                EbookOperation::PreviousPage,
+            ),
+            (
+                "next-page",
+                "Next page",
+                OperationKind::View,
+                EbookOperation::NextPage,
+            ),
+            (
+                "contents",
+                "Toggle table of contents",
+                OperationKind::View,
+                EbookOperation::ToggleContents,
+            ),
+            (
+                "notes",
+                "Toggle notes",
+                OperationKind::View,
+                EbookOperation::ToggleNotes,
+            ),
+            (
+                "settings",
+                "Open reading settings",
+                OperationKind::View,
+                EbookOperation::OpenSettings,
+            ),
+        ] {
+            root = root.with_action(operation(id, label, kind, value));
+        }
+        root = root.with_action(open_book_operation());
+    }
+
+    let annos = BooksDoc::annotations_for(doc, &book.id);
+    let (highlights, highlight_groups) = highlight_resources(&annos, &book.id);
     for hl in highlights {
         root = root.with_child(hl);
     }
-    for bm in bookmark_resources(&annos) {
+    for bm in bookmark_resources(&annos, &book.id) {
         root = root.with_child(bm);
     }
-    for note in standalone_note_resources(&annos, &highlight_groups) {
+    for note in standalone_note_resources(&annos, &highlight_groups, &book.id) {
         root = root.with_child(note);
     }
 
-    vec![root]
+    root
+}
+
+/// Build the canonical resource tree for every book in the shelf. Search,
+/// agents and accessibility all resolve the same stable addresses from this
+/// tree, including resources that are not currently visible.
+pub fn provide_resources(
+    books: &[crate::model::Book],
+    current: Option<&BookResourceCtx>,
+    doc: &AutoCommit,
+) -> Vec<Resource> {
+    books
+        .iter()
+        .map(|book| book_resource(book, current, doc))
+        .collect()
 }
 
 impl ResourceProvider for crate::app::BooksApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.book_resource_ctx() {
-            Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
-        }
+        let ctx = self.book_resource_ctx();
+        provide_resources(self.library(), ctx.as_ref(), doc)
     }
 }
 
@@ -1087,16 +1205,24 @@ mod tests {
         (app, doc, book_id, group)
     }
 
-    /// Ctrl+K on Books yields the full nested tree: the open book →
-    /// highlight → comment, plus bookmark and standalone-note resources, each
-    /// with the actions the data model implies. Drives the real resource hook.
+    /// Ctrl+K on Books yields the whole shelf. The open book owns its chapter
+    /// and annotation resources, with highlight → comments nested beneath it.
     #[test]
     fn ctrl_k_publishes_the_full_nested_tree() {
-        let (app, doc, _book, _group) = open_with_annotations();
+        let (app, doc, book_id, _group) = open_with_annotations();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one open book");
-        let book = &resources[0];
+        assert_eq!(resources.len(), app.library().len(), "every shelf book");
+        assert!(resources.iter().all(|book| {
+            book.actions
+                .iter()
+                .any(|action| action.id == "open" && action.kind == OperationKind::View)
+        }));
+        let book = resources
+            .iter()
+            .find(|book| book.id.as_str() == format!("ebook.book:{book_id}"))
+            .expect("open book resource");
         assert_eq!(book.kind, "ebook.book");
+        assert!(book.children.iter().any(|r| r.kind == "ebook.chapter"));
         let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(
             book_actions.contains(&"toggle-bookmark"),

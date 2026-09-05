@@ -1417,9 +1417,11 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
             Notification::new(
                 "Remote input stopped",
                 match revoked {
-                    0 => "No peer was driving this session.".to_string(),
-                    1 => "1 shared window is now view-only.".to_string(),
-                    n => format!("{n} shared windows are now view-only."),
+                    0 => "Remote control and sharing sessions were stopped.".to_string(),
+                    1 => "Remote control was removed and sharing was stopped.".to_string(),
+                    n => {
+                        format!("Remote control was removed from {n} shares; sharing was stopped.")
+                    }
                 },
             )
             .with_severity(NotificationSeverity::Warning)

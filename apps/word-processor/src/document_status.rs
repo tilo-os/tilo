@@ -85,7 +85,17 @@ impl DocumentStatus {
         );
         self.bubble
             .set_hover(self.pinned || reveal_zone.contains(pointer), now);
-        let alpha = self.bubble.alpha(now);
+        // Reduced-motion keeps the useful linger but removes the animated
+        // opacity ramp: the chip is either fully present or gone.
+        let alpha = if theme.reduce_motion {
+            if self.bubble.is_visible(now) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            self.bubble.alpha(now)
+        };
         if alpha <= 0.0 {
             return;
         }

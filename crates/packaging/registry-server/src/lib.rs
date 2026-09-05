@@ -41,6 +41,7 @@ use tracing::{error, info};
 pub mod allowlist;
 pub mod bundle_review;
 pub mod moderation;
+pub mod moderation_api;
 pub mod serve;
 pub mod storage;
 
@@ -49,6 +50,7 @@ pub use bundle_review::{
     BundleReviewError, InspectedVersion, InspectionPolicy, inspect_bytes, inspect_entry,
 };
 pub use moderation::{ModerationError, ModerationService};
+pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
     PendingSubmission, ReviewDecision, ReviewRecord, ReviewSubject, ServerIdentity, Storage,

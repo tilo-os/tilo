@@ -96,6 +96,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--empty` renders the real live app (persisted document + configured
         // accounts, i.e. empty on a fresh machine) rather than the sample seed.
         let empty = args.iter().any(|a| a == "--empty");
+        let sync_state = parse_flag_value(&args, "--sync-state")
+            .and_then(|value| value.to_str().map(ToOwned::to_owned));
         // Event-form screenshots: `--new-event` opens the New-Event edit form;
         // `--date-popover` / `--calendar-popover` additionally float the date
         // grid / calendar selector over it.
@@ -116,6 +118,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(hr) = scroll_hour {
                     app.shots_scroll_timeline(hr);
                 }
+                if let Some(state) = &sync_state {
+                    app.shots_set_sync_state(state);
+                }
                 return Box::new(app) as Box<dyn Widget>;
             }
             let mut app = CalendarApp::new_demo();
@@ -124,6 +129,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(hr) = scroll_hour {
                 app.shots_scroll_timeline(hr);
+            }
+            if let Some(state) = &sync_state {
+                app.shots_set_sync_state(state);
             }
             if screen.as_deref() == Some("calendar") {
                 app.shots_show_calendar();

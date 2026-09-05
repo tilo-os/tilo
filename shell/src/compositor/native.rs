@@ -4154,19 +4154,34 @@ pub fn run() -> ! {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
                 AccessibilityRequest::Action(request) => {
-                    if !session.is_locked()
-                        && let Some(action) = ui::accesskit_bridge::accesskit_action_to_ours(
-                            request.action,
-                            request.data.as_ref(),
-                        )
-                        && frame_builder.dispatch_a11y_action(
-                            request.target_node,
-                            &action,
-                            &mut test_control_ctx.doc,
-                            &test_control_ctx.root_obj,
-                            &mut test_control_ctx.focus,
-                        )
-                    {
+                    if session.is_locked() {
+                        // The lock owns a deliberately tiny, non-leaking tree.
+                        // Only its password field is actionable; stale ids from
+                        // the hidden desktop are rejected here.
+                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                            match (request.action, request.data.as_ref()) {
+                                (ui::accesskit::Action::Focus, _) => {}
+                                (
+                                    ui::accesskit::Action::SetValue,
+                                    Some(ui::accesskit::ActionData::Value(value)),
+                                ) if !lock.is_verifying() => {
+                                    lock.clear_input();
+                                    lock.push_str(value);
+                                    session_changed = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if let Some(action) = ui::accesskit_bridge::accesskit_action_to_ours(
+                        request.action,
+                        request.data.as_ref(),
+                    ) && frame_builder.dispatch_a11y_action(
+                        request.target_node,
+                        &action,
+                        &mut test_control_ctx.doc,
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    ) {
                         session_changed = true;
                     }
                     // Even an unsupported or stale action gets a fresh tree:
@@ -4965,8 +4980,40 @@ pub fn run() -> ! {
             let t_layout_start = Instant::now();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-            native_accessibility.set_window_focus(!session.is_locked());
-            if !session.is_locked() {
+            native_accessibility.set_window_focus(true);
+            if session.is_locked() {
+                let lock_outputs: Vec<LockOutput> = backend
+                    .outputs()
+                    .iter()
+                    .map(|o| LockOutput {
+                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
+                        size: (f64::from(o.size.0), f64::from(o.size.1)),
+                    })
+                    .collect();
+                let lock_outputs = if lock_outputs.is_empty() {
+                    let vp = frame_builder.viewport();
+                    vec![LockOutput {
+                        origin: (0.0, 0.0),
+                        size: (vp.0, vp.1),
+                    }]
+                } else {
+                    lock_outputs
+                };
+                let now = chrono::Local::now();
+                let clock = now.format("%H:%M").to_string();
+                let date = now.format("%A, %B %-d").to_string();
+                let view = LockView {
+                    password_len: lock.buffer_len(),
+                    error: lock.error(),
+                    clock: &clock,
+                    date: &date,
+                    notification_count: frame_builder.chrome().notification_count(),
+                    verifying: lock.is_verifying(),
+                };
+                native_accessibility.update_if_active(|| {
+                    lock_screen::build_accessibility_tree(&lock_outputs, &view)
+                });
+            } else {
                 native_accessibility.update_if_active(|| {
                     frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
                 });

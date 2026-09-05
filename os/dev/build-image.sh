@@ -190,6 +190,13 @@ fi
 # base image plainly has are missing — QOS_BUILD_ARGS=--no-cache is the way out.
 read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
 
+QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY="${QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}"
+if [ "$QOS_SKIP_BUILD" != 1 ]; then
+  [[ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" =~ ^[0-9a-fA-F]{64}$ ]] \
+    && [ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" != 0000000000000000000000000000000000000000000000000000000000000000 ] \
+    || die "set QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY to the published qOS-main Ed25519 owner key"
+fi
+
 # $1 = the composefs digest to seal into the UKI ("" to let bootc compute it).
 build_image() {
   podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
@@ -201,6 +208,7 @@ build_image() {
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
     --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
+    --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
     --build-arg "QOS_GENERATION=$QOS_GENERATION" \
     --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
     --build-arg "QOS_CFS_DIGEST=${1:-}" \

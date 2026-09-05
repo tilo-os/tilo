@@ -398,8 +398,32 @@ guarantee is that the group key rotates on *every* membership change; removal is
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
 
-Also: `channel-crypto` is a **dev-dependency** of `shell` (`shell/Cargo.toml:251`), so MLS is
-compiled only for tests and is absent from production builds.
+Historically `channel-crypto` was a **dev-dependency** of `shell`, so MLS was
+compiled only for tests and absent from application endpoints.
+
+**Library defect resolved; production integration remains open.**
+`ChannelGroup::remove_member` now creates and merges an OpenMLS removal commit
+and returns its serialized bytes for fan-out. Existing members process the same
+commit, and the removed member becomes inactive after processing it. The
+two-member convenience admission now refuses once an existing peer would need
+a commit, so multi-party admission cannot silently discard epoch state. Held by
+`third_member_joins::removal_commit_advances_survivors_and_excludes_removed_member`
+and `multi_party_add_cannot_drop_the_commit`. Production brokers now validate
+route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
+`ui::collaboration` can encrypt/decrypt after a trusted caller installs the
+exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
+atomic OpenMLS state, signed revision-bound governance frames, a durable
+targeted Welcome/commit/removal journal, partial-failure rollback, and a
+snapshot-acknowledged plaintext gate. The shell now has a broker-internal,
+handle-only workspace authority transaction with idempotency and crash recovery
+tying those primitives to role admission/revocation. Production broker startup
+installs the Secret Service provider without a file-key fallback. Its document
+store fsyncs encrypted compaction snapshots before minting route-bound receipts;
+restart, wrong-route and tamper behavior are covered by hermetic provider tests.
+The remaining work is user-facing device/member provisioning and recovery UX,
+plus an authenticated peer-control adapter that drains and acknowledges the
+already durable targeted governance outbox. The ciphertext document relay is
+intentionally not that adapter; it must never broadcast Welcome bytes.
 
 ---
 

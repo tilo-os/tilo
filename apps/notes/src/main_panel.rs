@@ -343,6 +343,18 @@ impl MainPanel {
         &mut self.editor
     }
 
+    /// Reveal a block without mutating the collaborative document.
+    pub fn reveal_block(&mut self, index: usize) -> bool {
+        if index >= self.editor.blocks().len() {
+            return false;
+        }
+        self.editor.set_focus(true);
+        self.editor
+            .focus_block(index, ui::widget::CursorPlacement::Start);
+        self.dirty = true;
+        true
+    }
+
     /// Test hook: the panel's current vertical scroll offset in px.
     /// Lets integration tests assert wheel scrolling + the
     /// `apply_layout` overflow clamp through the real event path.

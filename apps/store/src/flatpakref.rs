@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{InstalledState, StoreItem, StoreItemVersion, StoreSource};
+use crate::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
 /// The install-relevant fields from a `[Flatpak Ref]` keyfile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,10 +101,12 @@ impl FlatpakRef {
             description: self.comment,
             categories: vec!["Opened file".to_string()],
             icon_url: None,
+            screenshot_urls: Vec::new(),
             homepage_url: None,
             source_url: (!self.url.is_empty()).then_some(self.url),
             install_ref_path: Some(self.source_path.to_string_lossy().into_owned()),
             source: StoreSource::Flathub,
+            trust: StoreTrust::Flathub,
             versions: vec![StoreItemVersion {
                 version: self.branch,
                 released_at_unix: 0,

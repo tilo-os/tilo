@@ -275,6 +275,28 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return render_to_path(audio_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
     }
 
+    // A populated External Accounts acceptance surface. Unlike the live pane,
+    // which must honestly show an empty inventory on a fresh install, this
+    // deterministic capture exercises row hierarchy, status, and maintenance
+    // actions at both responsive widths without touching the user's stores.
+    if fname.contains("accountdemo") || fname.contains("accountform") {
+        let viewport = if fname.contains("narrow") {
+            NARROW_SHOTS_VIEWPORT
+        } else {
+            DEFAULT_SHOTS_VIEWPORT
+        };
+        let mut app = SettingsApp::with_selected(Category::ExternalAccounts)
+            .with_width_hint(viewport.0 as f32)
+            .with_account_directory_for_shot(crate::accounts::sample_directory());
+        if fname.contains("accountform") {
+            app = app.with_account_form_for_shot(crate::accounts::AccountKind::Nextcloud);
+        }
+        if fname.contains("narrow") {
+            app = app.with_narrow_content_shot();
+        }
+        return render_to_path(Box::new(app), viewport, out);
+    }
+
     // Per-panel capture: a `…panel-<slug>.png` filename (or the
     // `QOS_SHOTS_PANEL` env var) renders the wide layout on that category.
     let panel_slug = std::env::var("QOS_SHOTS_PANEL").ok().or_else(|| {

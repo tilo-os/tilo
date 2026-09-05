@@ -12,9 +12,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ArtifactKind, ChannelState, DocumentMutation, OpClass, RedactedMarker,
-    ValidationError, document_artifact_id, document_attestation_id, validate_admitted_inbound_op,
+    ArtifactId, ArtifactKind, ChannelState, OpClass, RedactedMarker, ValidationError,
+    validate_admitted_inbound_op,
 };
+#[cfg(test)]
+use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use ui::collaboration::CollabEvent;
 
 use crate::shell::collab_broker_capnp::CapnpBrokerState;
@@ -405,6 +407,17 @@ pub struct BrokerHandle {
     capnp_quit: Arc<AtomicBool>,
     pub(crate) fanout: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
+    /// Trusted shell-only MLS lifecycle transaction boundary. This is never
+    /// exposed through the app-facing Cap'n Proto service.
+    mls_authority: Option<
+        Arc<
+            Mutex<
+                crate::shell::collab_mls_authority::MlsAuthorityCoordinator<
+                    crate::shell::collab_mls_authority::SecretServiceMlsVault,
+                >,
+            >,
+        >,
+    >,
     peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
 }
 
@@ -555,6 +568,27 @@ impl AppActionBroker {
 }
 
 impl BrokerHandle {
+    /// Apply a typed, handle-only MLS membership transaction at the trusted
+    /// workspace lifecycle boundary. Apps cannot call this interface.
+    pub fn apply_mls_authority_transaction(
+        &self,
+        transaction: runtime_collab::MlsAuthorityTransaction,
+    ) -> Result<[u8; 32], crate::shell::collab_mls_authority::MlsAuthorityError> {
+        let authority = self.mls_authority.as_ref().ok_or_else(|| {
+            crate::shell::collab_mls_authority::MlsAuthorityError::VaultUnavailable(
+                "Secret Service MLS lifecycle authority is unavailable".into(),
+            )
+        })?;
+        authority
+            .lock()
+            .map_err(|_| {
+                crate::shell::collab_mls_authority::MlsAuthorityError::Persistence(
+                    "MLS lifecycle authority lock poisoned".into(),
+                )
+            })?
+            .apply(transaction)
+    }
+
     /// Cloneable handle for the live resource/action search provider.
     pub fn app_action_broker(&self) -> Option<AppActionBroker> {
         self.fanout
@@ -838,16 +872,25 @@ impl DrainQueues {
                 let Ok(mut ch) = self.channels.lock() else {
                     return false;
                 };
-                let state = ch.state_for(artifact);
-                state.artifacts.insert(artifact, ArtifactKind::Note);
-                state.artifact_apps.insert(artifact, entry.app_id.clone());
-                validate_admitted_inbound_op(
-                    &envelope,
-                    entry.role,
-                    state,
-                    std::time::SystemTime::now(),
-                    Duration::from_secs(300),
-                )
+                let channel = collab_types::document_channel_id(
+                    &entry.app_id,
+                    &entry.cluster_id,
+                    &entry.record_id,
+                );
+                if !ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+                    Err(ValidationError::DocumentRouteMismatch)
+                } else {
+                    let state = ch.state_for(artifact);
+                    state.artifacts.insert(artifact, ArtifactKind::Note);
+                    state.artifact_apps.insert(artifact, entry.app_id.clone());
+                    validate_admitted_inbound_op(
+                        &envelope,
+                        entry.role,
+                        state,
+                        std::time::SystemTime::now(),
+                        Duration::from_secs(300),
+                    )
+                }
             };
             match (mutation, validation) {
                 (Ok(_), Ok(())) => {
@@ -888,12 +931,20 @@ impl DrainQueues {
     ) {
         let artifact = envelope.artifact;
         if let Ok(mut ch) = self.channels.lock() {
+            let mls_vault = ch.mls_vault.clone();
             let state = ch.state_for(artifact);
             state.record_validated_op(envelope.clone());
             if envelope.op_class == OpClass::Compaction
                 && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
             {
                 let _ = state.apply_compaction(&cp);
+            }
+            if envelope.op_class == OpClass::Compaction
+                && let Some(metadata) = envelope.encryption
+                && let Some(vault) = mls_vault
+                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
+            {
+                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
         }
         if envelope.op_class == OpClass::Redact {
@@ -913,6 +964,7 @@ impl DrainQueues {
         let event = CollabEvent::Document {
             envelope: Box::new(envelope),
             from_user_id,
+            decrypted_payload: None,
         };
         // An unaddressed route is dropped rather than shown to every app.
         self.table.fanout_to_route(&event, u64::MAX, route);
@@ -1008,6 +1060,7 @@ impl DrainQueues {
             let event = CollabEvent::ScrollbackBatch {
                 artifact: entry.artifact,
                 ops: entry.ops.into_iter().map(Box::new).collect(),
+                decrypted_payloads: Vec::new(),
                 exhausted: true,
             };
             for route in waiting {
@@ -1021,15 +1074,14 @@ impl DrainQueues {
 fn validate_document_route(
     route: &CrdtRoute,
     envelope: &collab_types::SignedOp,
-) -> Result<DocumentMutation, ValidationError> {
-    if envelope.artifact != document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id)
-        || envelope.attestation_id
-            != document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id)
-        || envelope.encryption.is_some()
-    {
-        return Err(ValidationError::DocumentRouteMismatch);
-    }
-    DocumentMutation::decode(&envelope.payload).map_err(|_| ValidationError::DocumentRouteMismatch)
+) -> Result<collab_types::RoutedDocumentPayload, ValidationError> {
+    collab_types::validate_document_payload_route(
+        &route.app_id,
+        &route.cluster_id,
+        &route.record_id,
+        envelope,
+    )
+    .map_err(|_| ValidationError::DocumentRouteMismatch)
 }
 
 fn spawn_inner(
@@ -1041,6 +1093,33 @@ fn spawn_inner(
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
+    #[cfg(not(test))]
+    let mut mls_authority = None;
+    #[cfg(test)]
+    let mls_authority = None;
+    #[cfg(not(test))]
+    match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
+        Ok(vault) => {
+            let vault = Arc::new(vault);
+            if let Ok(mut state) = channels.lock() {
+                state.install_mls_vault(Arc::clone(&vault));
+            }
+            if let Some(workspaces) = membership.clone() {
+                match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
+                    vault.authority_root(),
+                    vault,
+                    workspaces,
+                    Arc::clone(&channels),
+                ) {
+                    Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
+                    Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed")
+        }
+    }
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -1107,6 +1186,7 @@ fn spawn_inner(
         capnp_quit,
         fanout: table,
         channels,
+        mls_authority,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
 }
@@ -1233,7 +1313,8 @@ mod tests {
 
         assert!(matches!(
             validate_document_route(&route, &envelope),
-            Ok(DocumentMutation::Snapshot(data)) if data == b"whole document"
+            Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Snapshot(data)))
+                if data == b"whole document"
         ));
         assert_eq!(
             validate_document_route(
@@ -1247,6 +1328,39 @@ mod tests {
         assert_eq!(
             validate_document_route(&route, &envelope),
             Err(ValidationError::DocumentRouteMismatch),
+        );
+    }
+
+    #[test]
+    fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
+        let route = CrdtRoute::record("dev.qos.notes", "room-1", "record-1");
+        let expected_channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let (_, author) = collab_types::generate_keypair();
+        let mut envelope = collab_types::SignedOp::new_unsigned_with_encryption(
+            b"opaque-not-a-document-mutation".to_vec(),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            author,
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+            collab_types::EncryptionMetadata {
+                epoch: 9,
+                channel: expected_channel,
+            },
+        );
+        assert_eq!(
+            validate_document_route(&route, &envelope),
+            Ok(collab_types::RoutedDocumentPayload::Encrypted {
+                channel: expected_channel,
+                epoch: 9,
+            })
+        );
+        envelope.encryption.as_mut().expect("metadata").channel = collab_types::ChannelId::new();
+        assert_eq!(
+            validate_document_route(&route, &envelope),
+            Err(ValidationError::DocumentRouteMismatch)
         );
     }
 

@@ -428,6 +428,10 @@ pub struct ChatApp {
     /// workspace appear in this workspace's People/call chrome.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
+    /// Whole-document snapshots used by global search. The visible `messages`
+    /// and `users` remain workspace-scoped projections for rendering.
+    pub(crate) search_messages: Vec<Message>,
+    pub(crate) search_users: Vec<User>,
     /// Voice membership per channel in the active workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
@@ -461,6 +465,8 @@ pub struct ChatApp {
     pub(crate) focus: Focus,
     pub(crate) scroll: f64,
     pub(crate) thread_open: Option<Id>,
+    pub(crate) revealed_message: Option<Id>,
+    pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Point,
@@ -668,6 +674,8 @@ impl ChatApp {
             categories: Vec::new(),
             users: Vec::new(),
             messages: Vec::new(),
+            search_messages: Vec::new(),
+            search_users: Vec::new(),
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),
@@ -680,6 +688,8 @@ impl ChatApp {
             focus: Focus::Main,
             scroll: 0.0,
             thread_open: Some("m_concept".into()),
+            revealed_message: None,
+            revealed_person: None,
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
@@ -831,6 +841,7 @@ impl ChatApp {
                 id: m.id.clone(),
                 label: self.message_resource_label(m),
                 pinned: m.pinned,
+                parent: m.parent.clone(),
             })
             .collect();
         actions::ChatResourceCtx {
@@ -1768,6 +1779,12 @@ impl ChatApp {
             };
         }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
+        self.search_messages = self
+            .channels
+            .iter()
+            .flat_map(|channel| ChatDoc::list_messages(doc, &channel.id))
+            .collect();
+        self.search_users = ChatDoc::list_users(doc);
         // Cache voice membership for this workspace only. The document's
         // channel list is global, so filtering here is as important as it is
         // for the People projection below: a huddle elsewhere is not a huddle
@@ -2634,6 +2651,10 @@ impl Widget for ChatApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -2717,30 +2738,124 @@ impl Widget for ChatApp {
         self.actions.take_committed()
     }
 
-    /// Fold the conversations into the unified Ctrl+K palette: a snapshot
-    /// [`ChannelSearchProvider`](crate::search_provider::ChannelSearchProvider)
-    /// makes every text channel findable there by name or topic, alongside the
-    /// actions the app exports.
+    /// Fold conversations, full-text messages, and people into global search.
+    /// Every result names an exported `View` action; there is no app-private
+    /// activation path.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ChannelSearchProvider::new(&self.channels, &self.workspaces),
-        )]
+        vec![Box::new(crate::search_provider::ChatSearchProvider::new(
+            &self.channels,
+            &self.workspaces,
+            &self.search_messages,
+            &self.search_users,
+        ))]
     }
 
-    /// Open the conversation a chosen palette row identifies: switch to its
-    /// workspace and make it the active channel (the next `reload` loads its
-    /// messages). View state is per-peer presentation, so the doc args are
-    /// unused — the same fields the sidebar's own channel click sets.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id)
-            && let Some(ws) = self.channel(&id).map(|c| c.workspace.clone())
-        {
-            self.active_ws = ws;
-            self.active_channel = id;
-            self.thread_open = None;
-            self.scroll = 0.0;
-            self.focus = Focus::Main;
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CHAT_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
         }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind != qos_actions::OperationKind::View {
+            return Err("Chat navigation requires a View operation".into());
+        }
+        match operation {
+            crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.revealed_person = None;
+                self.scroll = 0.0;
+                self.focus = Focus::Main;
+            }
+            crate::actions::ChatOperation::RevealMessage {
+                workspace,
+                channel,
+                message,
+                parent,
+            } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                if !ChatDoc::list_messages(doc, &channel)
+                    .iter()
+                    .any(|item| item.id == message)
+                {
+                    return Err("message no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = parent;
+                self.revealed_message = Some(message);
+                self.revealed_person = None;
+                self.scroll = 0.0;
+                self.focus = if self.thread_open.is_some() {
+                    Focus::Thread
+                } else {
+                    Focus::Main
+                };
+                if self.thread_open.is_some() {
+                    self.right_flap.open();
+                }
+            }
+            crate::actions::ChatOperation::OpenPerson { user } => {
+                if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
+                    return Err("person no longer exists".into());
+                }
+                // Prefer the current workspace when it already evidences this
+                // person; otherwise open the first workspace where they wrote.
+                if !self.users.iter().any(|item| item.id == user)
+                    && let Some(channel) = self.channels.iter().find(|channel| {
+                        ChatDoc::list_messages(doc, &channel.id)
+                            .iter()
+                            .any(|message| {
+                                message.author == user
+                                    || message.mentions.iter().any(|mention| mention.user == user)
+                                    || message
+                                        .reactions
+                                        .iter()
+                                        .any(|reaction| reaction.users.iter().any(|id| id == &user))
+                            })
+                    })
+                {
+                    self.active_ws = channel.workspace.clone();
+                    self.active_channel = channel.id.clone();
+                }
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.revealed_person = Some(user);
+                self.focus = Focus::Main;
+                self.right_flap.open();
+            }
+        }
+        Ok(true)
     }
 
     fn name(&self) -> &'static str {

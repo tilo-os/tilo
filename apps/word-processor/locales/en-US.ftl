@@ -195,6 +195,8 @@ layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }   ·   
 layout-spacing-readout = { $name } spacing  { $px } px   ·   drag the handle — every "{ $name }" block follows
 
 ## Canvas
+a11y-document-editor = Document editor
+a11y-group-review = Review suggestions
 page-indicator = Page { $n }
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).

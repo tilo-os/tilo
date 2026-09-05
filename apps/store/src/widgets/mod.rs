@@ -6,8 +6,10 @@
 //! reusable pieces that show up on more than one screen so the
 //! layout code isn't repeated.
 
+pub mod artwork;
 pub mod card;
 pub mod chips;
 
+pub use artwork::Artwork;
 pub use card::{CARD_HEIGHT, store_card};
 pub use chips::{FilterChipSelection, filter_chip_row};

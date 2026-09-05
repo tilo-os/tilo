@@ -327,14 +327,20 @@ written by the normal exit path, so a `SIGKILL`ed compositor loses them.
 
 ## Per-app screenshots
 
-`apps/terminal` and `apps/file-explorer` accept `--shots PATH` and write a 1200×720 RGBA PNG of the cold-start UI to `PATH` without opening a window:
+First-party apps using the shared launcher accept `--shots PATH` (and an
+optional `--viewport WIDTHxHEIGHT`) and write a PNG without opening a window.
+For example:
 
 ```bash
 ./target/debug/terminal --shots /tmp/terminal.png
 ./target/debug/file-explorer  --shots /tmp/files.png
+./target/debug/browser --shots /tmp/browser.png
 ```
 
-Both flow through `quick_ui::offscreen::OffscreenRenderer` and run a single `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event loop. Smoke tests live in each app's `tests/shots_smoke.rs` and assert the output starts with the PNG magic header.
+They flow through `quick_ui::offscreen::OffscreenRenderer` and run a single
+`sync → build_layout → compute_layout → apply_layout → draw` cycle — no event
+loop. Browser also offers focused deterministic chrome states and, with the
+`wpe` feature, `--shots-live` for the real engine-to-frame path.
 
 ## Per-app interaction: `--headless-drive`
 
@@ -442,7 +448,10 @@ Two things it pins that are easy to get wrong by hand:
 
 ## What's still missing
 
-- **`browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.
+There is no known first-party app without the shared deterministic `--shots`
+path. Hardware- and service-backed states still need separate installed-image
+or live-provider evidence; a deterministic screenshot is visual evidence, not
+proof that an external device, network service, or codec works.
 
 ## CI integration
 

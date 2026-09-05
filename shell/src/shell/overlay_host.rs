@@ -557,6 +557,19 @@ enum ShortcutGuideFocus {
     Done,
 }
 
+/// Shell-owned overlays that contribute synthetic children to the host's
+/// accessibility node, in the exact order in which those children are
+/// published. Geometry and focus routing must use this same order: deriving
+/// their indices independently lets one visible modal shift another overlay's
+/// semantic path onto the wrong target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessibleOverlay {
+    MemberSheet,
+    RoomActivity,
+    QuickSettings,
+    ShortcutHelp,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -1338,6 +1351,31 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
+        let mut order = Vec::with_capacity(4);
+        if self.workspace_settings_overlay.member_sheet_is_open() {
+            order.push(AccessibleOverlay::MemberSheet);
+        }
+        let flags = self.overlay_flags();
+        if flags.room_activity {
+            order.push(AccessibleOverlay::RoomActivity);
+        }
+        if flags.quick_settings
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                matches!(
+                    chrome.borrow().quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            })
+        {
+            order.push(AccessibleOverlay::QuickSettings);
+        }
+        if flags.shortcut_help {
+            order.push(AccessibleOverlay::ShortcutHelp);
+        }
+        order
+    }
+
     /// Attach the session's live application action directory after the
     /// collaboration broker has bound. Kept explicit so bare/headless hosts
     /// do not fabricate a broker.
@@ -9988,107 +10026,95 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
-        if self.workspace_settings_overlay.member_sheet_is_open() {
-            root.children.push(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Workspace permission decision")
-                    .with_description(
-                        "Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.",
-                    )
-                    .with_state(AccessState::new().modal(true)),
-            );
-        }
-        if self.overlay_flags().room_activity {
-            root.children
-                .push(self.room_activity.accessibility_snapshot());
-        }
-        if let Some(chrome) = self.chrome.as_ref() {
-            let state = chrome.borrow();
-            if state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
-                )
-            {
-                root.children
-                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+        for overlay in self.accessible_overlay_order() {
+            match overlay {
+                AccessibleOverlay::MemberSheet => root.children.push(
+                    AccessNode::new(Role::Dialog)
+                        .with_name("Workspace permission decision")
+                        .with_description(
+                            "Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.",
+                        )
+                        .with_state(AccessState::new().modal(true)),
+                ),
+                AccessibleOverlay::RoomActivity => root
+                    .children
+                    .push(self.room_activity.accessibility_snapshot()),
+                AccessibleOverlay::QuickSettings => {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        root.children.push(
+                            self.qs_root
+                                .accessibility_snapshot(&chrome.borrow().quick_settings),
+                        );
+                    }
+                }
+                AccessibleOverlay::ShortcutHelp => {
+                    use settings_store::hardware::ShortcutAction;
+                    let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                    let chord = |action| {
+                        shortcuts
+                            .bindings
+                            .get(&action)
+                            .map(settings_store::hardware::KeyChord::display)
+                            .unwrap_or_else(|| "unassigned".to_string())
+                    };
+                    root.children.push(
+                        AccessNode::new(Role::Dialog)
+                            .with_name("Desktop keyboard and mouse guide")
+                            .with_description(format!(
+                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                                chord(ShortcutAction::FocusPreviousWindow),
+                                chord(ShortcutAction::FocusNextWindow),
+                                chord(ShortcutAction::PreviousTab),
+                                chord(ShortcutAction::NextTab),
+                                chord(ShortcutAction::PreviousStrip),
+                                chord(ShortcutAction::NextStrip),
+                                chord(ShortcutAction::ResizeNarrower),
+                                chord(ShortcutAction::ResizeWider),
+                            ))
+                            .with_state(AccessState::new().modal(true)),
+                    );
+                }
             }
-        }
-        if self.overlay_flags().shortcut_help {
-            use settings_store::hardware::ShortcutAction;
-            let shortcuts = settings_store::hardware::ShortcutConfig::load();
-            let chord = |action| {
-                shortcuts
-                    .bindings
-                    .get(&action)
-                    .map(settings_store::hardware::KeyChord::display)
-                    .unwrap_or_else(|| "unassigned".to_string())
-            };
-            root.children.push(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Desktop keyboard and mouse guide")
-                    .with_description(format!(
-                        "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
-                        chord(ShortcutAction::FocusPreviousWindow),
-                        chord(ShortcutAction::FocusNextWindow),
-                        chord(ShortcutAction::PreviousTab),
-                        chord(ShortcutAction::NextTab),
-                        chord(ShortcutAction::PreviousStrip),
-                        chord(ShortcutAction::NextStrip),
-                        chord(ShortcutAction::ResizeNarrower),
-                        chord(ShortcutAction::ResizeWider),
-                    ))
-                    .with_state(AccessState::new().modal(true)),
-            );
         }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let room_activity_open = self.overlay_flags().room_activity;
-        if room_activity_open && path.first() == Some(&0) {
-            return self.room_activity.accessibility_rect_for_path(path);
+        let (&overlay_index, child_path) = path.split_first()?;
+        match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::RoomActivity => {
+                let mut local_path = Vec::with_capacity(path.len());
+                local_path.push(0);
+                local_path.extend_from_slice(child_path);
+                self.room_activity.accessibility_rect_for_path(&local_path)
+            }
+            AccessibleOverlay::QuickSettings => {
+                self.qs_root.accessibility_rect_for_path(child_path)
+            }
+            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
         }
-        let quick_settings_index = usize::from(room_activity_open);
-        if path.first() != Some(&quick_settings_index) {
-            return None;
-        }
-        let child_path = path.get(1..)?;
-        let chrome = self.chrome.as_ref()?;
-        let state = chrome.borrow();
-        (state.overlays.quick_settings
-            && matches!(
-                state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            ))
-        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
-        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let room_activity_open = self.overlay_flags().room_activity;
-        if room_activity_open && path.first() == Some(&0) {
-            return self.room_activity.focus_accessibility_path(path);
-        }
-        let quick_settings_index = usize::from(room_activity_open);
-        if path.first() != Some(&quick_settings_index) {
-            return false;
-        }
-        let Some(child_path) = path.get(1..) else {
+        let Some((&overlay_index, child_path)) = path.split_first() else {
             return false;
         };
-        let Some(chrome) = self.chrome.as_ref() else {
+        let Some(overlay) = self.accessible_overlay_order().get(overlay_index).copied() else {
             return false;
         };
-        let state = chrome.borrow();
-        state.overlays.quick_settings
-            && matches!(
-                state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            )
-            && self
-                .qs_root
-                .focus_accessibility_path(child_path, &state.quick_settings)
+        match overlay {
+            AccessibleOverlay::RoomActivity => {
+                let mut local_path = Vec::with_capacity(path.len());
+                local_path.push(0);
+                local_path.extend_from_slice(child_path);
+                self.room_activity.focus_accessibility_path(&local_path)
+            }
+            AccessibleOverlay::QuickSettings => self.chrome.as_ref().is_some_and(|chrome| {
+                self.qs_root
+                    .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+            }),
+            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => false,
+        }
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -16914,6 +16940,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn accessibility_overlay_paths_share_the_published_coexistence_order() {
+        let mut h = build_harness();
+        h.host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.overlays.room_activity = true;
+            chrome.overlays.quick_settings = true;
+            chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        }
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                "Workspace permission decision",
+                "Workspace activity",
+                "Quick Settings"
+            ],
+            "the published child order is the address space used by geometry and focus"
+        );
+
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0]),
+            None,
+            "the prose-only member sheet owns child zero"
+        );
+        assert!(
+            h.host.synthetic_accessibility_rect(&[1]).is_some(),
+            "Room Activity moves to child one when the member sheet is visible"
+        );
+        assert!(
+            h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
+            "Quick Settings moves to child two when both earlier overlays are visible"
+        );
+    }
+
+    #[test]
+    fn accessibility_focus_routes_through_shifted_overlay_indices() {
+        let mut h = build_harness();
+        h.host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.overlays.ws_settings = true;
+            chrome.overlays.room_activity = true;
+            chrome.overlays.quick_settings = true;
+            chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        }
+        h.host.force_ws_settings_settled();
+        h.host.force_room_activity_settled();
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+
+        assert!(
+            h.host.focus_synthetic_accessibility(&[1, 0]),
+            "Room Activity's first control remains focusable at its shifted path"
+        );
+        assert!(
+            h.host.focus_synthetic_accessibility(&[2, 0]),
+            "Quick Settings' first control remains focusable at its shifted path"
+        );
+        assert!(
+            !h.host.focus_synthetic_accessibility(&[0, 0]),
+            "the member-sheet path must not leak through to a different overlay"
+        );
+    }
+
     /// Super+S calls the wheel to wherever the pointer is, so the
     /// workspace list is reachable from the right-hand end of a strip
     /// without scrolling all the way back to its left edge.
@@ -18169,6 +18270,7 @@ mod maximize_harvest_tests {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -18353,6 +18455,7 @@ mod resync_strips_tests {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),

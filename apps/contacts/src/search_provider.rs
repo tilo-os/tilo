@@ -3,23 +3,20 @@
 //! This is the reference wiring for the shared search framework
 //! ([`ui::search`]): Contacts declares its searchable type by implementing
 //! [`SearchProvider`], turning matching address-book records into typed
-//! [`SearchResult`]s that any search surface — the app's own field, or a future
-//! shell-level Ctrl+K — can rank and present alongside every other provider's
-//! hits. The app no longer has to render or rank a bespoke result list; it only
-//! declares what it can find and dispatches on the opaque `action_id` a chosen
-//! row hands back.
+//! [`SearchResult`]s that any search surface can rank and present alongside
+//! every other provider's hits. Each hit addresses the contact resource's
+//! exported `open` view action, so pointer, keyboard, assistive technology and
+//! agents all enter through the same brokered operation.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+};
 
-use crate::model::{ContactId, ContactStore};
+use crate::model::ContactStore;
 
 /// The kind label (and result group header) Contacts produces.
 pub const CONTACT_KIND: &str = "Contacts";
-
-/// The `action_id` prefix. A chosen row's `action_id` is `contact:<uuid>`;
-/// [`parse_action_id`] turns it back into a [`ContactId`] the app selects.
-const ACTION_PREFIX: &str = "contact:";
 
 /// A [`SearchProvider`] over a snapshot of the address book. Rebuild it (cheap)
 /// whenever the store changes, or when the search surface opens.
@@ -31,22 +28,13 @@ impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
         Self {
-            contacts: store.contacts.clone(),
+            contacts: store
+                .contacts
+                .iter()
+                .take(DEFAULT_SEARCH_INDEX_LIMIT)
+                .cloned()
+                .collect(),
         }
-    }
-
-    /// The `action_id` for a contact — what a chosen row hands back.
-    pub fn action_id(id: ContactId) -> String {
-        format!("{ACTION_PREFIX}{id}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back to a
-    /// [`ContactId`], so the host can select the chosen contact. Returns `None`
-    /// for an id this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<ContactId> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .and_then(|rest| ContactId::parse_str(rest).ok())
     }
 }
 
@@ -56,6 +44,10 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         // The model's cross-field matcher expects a lower-cased query and
         // searches name / org / title / phones / emails / addresses / notes /
         // groups — richer than a title-only match, so a phone- or email-only
@@ -66,9 +58,12 @@ impl SearchProvider for ContactSearchProvider {
             .iter()
             .filter(|c| c.matches(&q))
             .map(|c| {
-                let mut r =
-                    SearchResult::new(CONTACT_KIND, c.display_name(), Self::action_id(c.id))
-                        .with_icon(Icon::Mail);
+                let mut r = SearchResult::for_action(
+                    CONTACT_KIND,
+                    c.display_name(),
+                    crate::actions::open_contact_address(c.id),
+                )
+                .with_icon(Icon::Mail);
                 let sub = c.subtitle();
                 if !sub.is_empty() {
                     r = r.with_subtitle(sub);
@@ -79,6 +74,7 @@ impl SearchProvider for ContactSearchProvider {
                 }
                 r
             })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
@@ -128,10 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_id_resolves_back_to_the_chosen_contact() {
-        // The end-to-end seam: register the provider, query through the shared
-        // registry, take the ranked top hit, and dispatch its opaque action_id
-        // back to a real contact in the store.
+    fn result_addresses_the_exported_open_action() {
         let store = store_with_samples();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(ContactSearchProvider::new(&store)));
@@ -141,15 +134,15 @@ mod tests {
         let top = &groups[0].results[0];
         assert_eq!(top.title, "Grace Hopper", "the best match leads");
 
-        let id = ContactSearchProvider::parse_action_id(&top.action_id)
-            .expect("action_id parses back to a ContactId");
         let contact = store
-            .get(id)
-            .expect("the id resolves to a real stored contact");
+            .contacts
+            .iter()
+            .find(|contact| contact.display_name() == top.title)
+            .expect("the result names a stored contact");
         assert_eq!(
-            contact.display_name(),
-            top.title,
-            "activation lands on the right record"
+            top.action_address(),
+            Some(crate::actions::open_contact_address(contact.id)),
+            "search publishes the resource tree's canonical view action"
         );
     }
 
@@ -167,12 +160,6 @@ mod tests {
             ada.score >= 1,
             "a favourite result carries a positive score bias"
         );
-    }
-
-    #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(ContactSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(ContactSearchProvider::parse_action_id("contact:not-a-uuid").is_none());
     }
 
     #[test]

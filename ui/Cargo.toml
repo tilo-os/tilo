@@ -94,6 +94,8 @@ tracing.workspace = true
 # Standard app startup installs the workspace's logging subscriber once.
 tracing-subscriber.workspace = true
 zeroize.workspace = true
+rustls.workspace = true
+chacha20poly1305.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
@@ -178,6 +180,7 @@ open.workspace = true
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { path = "../crates/collab/collab-types" }
+channel-crypto = { path = "../crates/collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `qdoc::history` (`versions` / `materialize_at`) and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and

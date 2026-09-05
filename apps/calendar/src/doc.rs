@@ -164,6 +164,107 @@ impl CalDoc {
         let _ = doc.delete(&tasks, id.to_string().as_str());
     }
 
+    // --- CalDAV reconciliation metadata ---------------------------------
+
+    /// Persist the stable server resource identity separately from the Event
+    /// model. Credentials and transient device health never enter this map.
+    pub fn set_remote_binding(
+        doc: &mut AutoCommit,
+        id: Id,
+        calendar_id: &str,
+        href: &str,
+        etag: Option<&str>,
+    ) {
+        let bindings = Self::map_at(doc, "caldav_bindings");
+        let item = Self::ensure_child(doc, &bindings, &id.to_string());
+        let _ = doc.put(&item, "cal", calendar_id);
+        let _ = doc.put(&item, "href", href);
+        let _ = doc.put(&item, "etag", etag.unwrap_or_default());
+    }
+
+    pub fn remote_binding(doc: &AutoCommit, id: Id) -> Option<(String, String, Option<String>)> {
+        let Ok(Some((Value::Object(ObjType::Map), bindings))) = doc.get(&ROOT, "caldav_bindings")
+        else {
+            return None;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&bindings, id.to_string().as_str())
+        else {
+            return None;
+        };
+        let cal = get_str(doc, &item, "cal");
+        let href = get_str(doc, &item, "href");
+        if cal.is_empty() || href.is_empty() {
+            return None;
+        }
+        let etag = get_str(doc, &item, "etag");
+        Some((cal, href, (!etag.is_empty()).then_some(etag)))
+    }
+
+    pub fn remote_id_for_href(doc: &AutoCommit, calendar_id: &str, href: &str) -> Option<Id> {
+        let Ok(Some((Value::Object(ObjType::Map), bindings))) = doc.get(&ROOT, "caldav_bindings")
+        else {
+            return None;
+        };
+        for key in doc.keys(&bindings) {
+            let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&bindings, key.as_str())
+            else {
+                continue;
+            };
+            if get_str(doc, &item, "cal") == calendar_id
+                && crate::caldav::hrefs_equal(&get_str(doc, &item, "href"), href)
+            {
+                if let Ok(id) = key.parse::<Id>() {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn remote_bindings_for_calendar(doc: &AutoCommit, calendar_id: &str) -> Vec<(Id, String)> {
+        let Ok(Some((Value::Object(ObjType::Map), bindings))) = doc.get(&ROOT, "caldav_bindings")
+        else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        for key in doc.keys(&bindings) {
+            let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&bindings, key.as_str())
+            else {
+                continue;
+            };
+            if get_str(doc, &item, "cal") == calendar_id
+                && let Ok(id) = key.parse::<Id>()
+            {
+                result.push((id, get_str(doc, &item, "href")));
+            }
+        }
+        result
+    }
+
+    pub fn remove_remote_binding(doc: &mut AutoCommit, id: Id) {
+        let bindings = Self::map_at(doc, "caldav_bindings");
+        let _ = doc.delete(&bindings, id.to_string().as_str());
+    }
+
+    pub fn set_sync_token(doc: &mut AutoCommit, calendar_id: &str, token: &str) {
+        let tokens = Self::map_at(doc, "caldav_sync_tokens");
+        let _ = doc.put(&tokens, calendar_id, token);
+    }
+
+    pub fn sync_tokens(doc: &AutoCommit) -> Vec<(String, String)> {
+        let Ok(Some((Value::Object(ObjType::Map), tokens))) = doc.get(&ROOT, "caldav_sync_tokens")
+        else {
+            return Vec::new();
+        };
+        doc.keys(&tokens)
+            .filter_map(|calendar| {
+                let value = get_str(doc, &tokens, &calendar);
+                (!value.is_empty()).then_some((calendar, value))
+            })
+            .collect()
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "parent is caller-supplied but always a live Map fetched-or-created just above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
@@ -615,6 +716,34 @@ mod tests {
         assert_eq!(
             CalDoc::delete_outbox(&doc),
             vec![("icloud/personal".to_string(), b)]
+        );
+    }
+
+    #[test]
+    fn caldav_identity_etag_and_checkpoint_survive_document_restart() {
+        let mut doc = AutoCommit::new();
+        let id = crate::model::Id::new_v4();
+        CalDoc::set_remote_binding(
+            &mut doc,
+            id,
+            "work/default",
+            "/dav/work/a.ics",
+            Some("\"etag-7\""),
+        );
+        CalDoc::set_sync_token(&mut doc, "work/default", "token-8");
+        let bytes = doc.save();
+        let restored = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(
+            CalDoc::remote_binding(&restored, id),
+            Some((
+                "work/default".into(),
+                "/dav/work/a.ics".into(),
+                Some("\"etag-7\"".into())
+            ))
+        );
+        assert_eq!(
+            CalDoc::sync_tokens(&restored),
+            vec![("work/default".into(), "token-8".into())]
         );
     }
 

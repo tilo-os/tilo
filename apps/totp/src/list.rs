@@ -422,8 +422,15 @@ impl AccountList {
         }
 
         // Countdown ring.
-        let frac = totp::period_progress(&account, now);
         let secs = totp::seconds_remaining(&account, now);
+        // Reduced motion retains useful expiry information without sweeping
+        // continuously: the ring advances in whole-second steps alongside its
+        // numeric label.
+        let frac = if theme.reduce_motion {
+            f64::from(secs) / f64::from(account.period.max(1))
+        } else {
+            totp::period_progress(&account, now)
+        };
         self.ring
             .place(l.ring_c, RING_R)
             .set_fraction(frac)

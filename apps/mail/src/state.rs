@@ -291,13 +291,14 @@ impl MailState {
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
-        self.mailbox.mark_read(id, true);
-        self.persist_flags(doc, id);
-        MailDoc::set_selected(doc, Some(&id.to_string()));
-        // Reading a message flips \Seen on the server (no-op offline).
+        // Opening is the user-visible read boundary. Use the exact same typed,
+        // replayable flag action as the row/reader/palette instead of a private
+        // direct write; `set_read` also mirrors \Seen to IMAP. Indexing and
+        // prefetch never call this method and remain side-effect free.
         if was_unread {
-            self.sync_flag_to_server(id);
+            self.set_read(doc, id, true);
         }
+        MailDoc::set_selected(doc, Some(&id.to_string()));
         self.push_intent(Intent::ShowDetail);
     }
 
@@ -364,6 +365,38 @@ impl MailState {
             self.push_intent(Intent::Engine(EngineRequest::Fetch { account, folder }));
         }
         self.dirty = true;
+    }
+
+    /// Reveal a folder as local presentation state. Canonical resource `View`
+    /// operations use this path, so navigation does not create a document edit.
+    pub fn reveal_folder(&mut self, folder: Folder) {
+        self.folder = folder;
+        self.search.clear();
+        self.selected = self
+            .current_threads()
+            .first()
+            .and_then(|thread| thread.message_ids.last().copied());
+        let account = self.accounts.active_config();
+        if !account.email.is_empty() {
+            self.push_intent(Intent::Engine(EngineRequest::Fetch { account, folder }));
+        }
+        self.push_intent(Intent::ShowOverview);
+        self.dirty = true;
+    }
+
+    /// Reveal a loaded message as presentation state. The owning app follows a
+    /// successful resource-operation reveal with the normal collaborative
+    /// mark-read action at its next mutable document boundary.
+    pub fn reveal_message(&mut self, id: MessageId) -> bool {
+        let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
+            return false;
+        };
+        self.folder = folder;
+        self.search.clear();
+        self.selected = Some(id);
+        self.push_intent(Intent::ShowDetail);
+        self.dirty = true;
+        true
     }
 
     pub fn reselect_after_remove(&mut self, doc: &mut AutoCommit) {
@@ -530,12 +563,10 @@ impl MailState {
         // push the narrow detail (that's a tap).
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
-        self.mailbox.mark_read(id, true);
-        self.persist_flags(doc, id);
-        MailDoc::set_selected(doc, Some(&id.to_string()));
         if was_unread {
-            self.sync_flag_to_server(id);
+            self.set_read(doc, id, true);
         }
+        MailDoc::set_selected(doc, Some(&id.to_string()));
         self.dirty = true;
     }
 }

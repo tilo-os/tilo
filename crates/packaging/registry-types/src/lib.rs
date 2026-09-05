@@ -62,6 +62,8 @@
 pub mod change;
 pub mod entry;
 pub mod handshake;
+pub mod moderation;
+pub mod snapshot;
 pub mod verify;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
@@ -70,6 +72,19 @@ pub use entry::{
     index_signing_message, sign_entry,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
+pub use moderation::{
+    MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
+    ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
+    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_signing_message,
+    sign_moderation_mutation, transparency_event_hash, verify_moderation_authorization,
+    verify_moderation_mutation, verify_transparency_chain,
+};
+pub use snapshot::{
+    MAX_SNAPSHOT_ENCODED_BYTES, MAX_SNAPSHOT_ENTRIES, MAX_SNAPSHOT_PUBLISHERS,
+    MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization, SNAPSHOT_PROTOCOL,
+    SignedRegistrySnapshot, SnapshotError, sign_snapshot, snapshot_hash, snapshot_signing_message,
+    verify_snapshot,
+};
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 
 /// Length in bytes of an Ed25519 signature, once decoded from hex.

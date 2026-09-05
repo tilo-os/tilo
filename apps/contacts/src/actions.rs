@@ -37,9 +37,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
+    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -48,6 +48,18 @@ use crate::model::{Address, Birthday, Contact, ContactId, Labeled};
 /// Registry `type_id` for every contacts action.
 pub const CONTACTS_ACTION_TYPE: &str = "contacts.action";
 pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
+
+/// Stable resource id for one contact. Search, the palette, accessibility and
+/// remote callers all address this same resource rather than translating a
+/// second, private navigation token.
+pub fn contact_resource_id(id: ContactId) -> String {
+    format!("contacts.contact:{id}")
+}
+
+/// Canonical view action that reveals one contact in the app.
+pub fn open_contact_address(id: ContactId) -> ActionAddress {
+    ActionAddress::new(contact_resource_id(id), "open")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContactsOperation {
@@ -421,7 +433,7 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
     for contact in &ctx.contacts {
         let id = contact.id.to_string();
         let mut child = Resource::new(
-            format!("contacts.contact:{id}"),
+            contact_resource_id(contact.id),
             "contacts.contact",
             contact.display_name(),
         );
@@ -508,7 +520,6 @@ impl ResourceProvider for crate::app::ContactsApp {
 mod tests {
     use super::*;
     use crate::app::ContactsApp;
-    use crate::search_provider::ContactSearchProvider;
     use automerge::ROOT;
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
@@ -795,11 +806,10 @@ mod tests {
         );
     }
 
-    /// The action side and the search side coexist: the same live app exports a
-    /// mutating resource tree AND a working `SearchProvider` that resolves a real
-    /// contact. Adding actions did not break navigation.
+    /// Search addresses the exact view action in the live resource tree; it
+    /// does not mint a parallel navigation namespace.
     #[test]
-    fn search_provider_still_resolves_a_contact() {
+    fn search_provider_addresses_an_exported_contact_action() {
         let (app, doc) = seeded();
 
         // The mutation side is live.
@@ -808,7 +818,7 @@ mod tests {
             "resources are exported"
         );
 
-        // The navigation side still finds and resolves a contact.
+        // The search side finds the contact and names its exported action.
         let providers = Widget::search_providers(&app);
         assert_eq!(providers.len(), 1, "one contacts search provider");
         let hits = providers[0].search("hopper");
@@ -816,11 +826,16 @@ mod tests {
             .iter()
             .find(|r| r.title == "Grace Hopper")
             .expect("the provider surfaces the real matching contact");
-        let id = ContactSearchProvider::parse_action_id(&hit.action_id)
-            .expect("action_id parses back to a ContactId");
+        let id = ContactsDoc::list_contacts(&doc)
+            .into_iter()
+            .find(|contact| contact.display_name() == hit.title)
+            .expect("the result names a stored contact")
+            .id;
+        let address = hit.action_address().expect("search hit is canonical");
+        assert_eq!(address, open_contact_address(id));
         assert!(
-            ContactsDoc::list_contacts(&doc).iter().any(|c| c.id == id),
-            "the chosen row resolves to a real stored contact"
+            qos_actions::door::resolve(&Widget::resources(&app, &doc), &address).is_some(),
+            "the address is exported to the palette, accessibility and agents"
         );
     }
 }

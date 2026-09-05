@@ -53,6 +53,13 @@ pub enum CameraOperation {
     Delete { id: String },
 }
 
+/// Decode one Camera effect payload, declining operation types owned by other
+/// widgets.
+///
+/// # Errors
+///
+/// Returns an error when a payload claiming to be a Camera operation is not
+/// valid JSON for [`CameraOperation`].
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOperation>, String> {
     if type_id != CAMERA_OPERATION_TYPE {
         return Ok(None);
@@ -302,10 +309,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         ) {
             child = child.with_action(spec);
         }
-        // File deletion also has to clear collaborative favourite metadata.
-        // The current immutable effect adapter cannot dispatch that document
-        // follow-up, so publish the operation honestly instead of offering a
-        // half-delete that leaves stale shared state.
+        // File deletion also clears collaborative favourite metadata. The
+        // host's compound-operation boundary gives Camera the document only
+        // for this admission turn, so deleting through Search/Ctrl+K follows
+        // the same replayable metadata path as the on-screen Delete control.
         if let Ok(spec) = ActionSpec::operation(
             "delete-file",
             "Delete capture from disk",
@@ -313,10 +320,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             CAMERA_OPERATION_TYPE,
             &CameraOperation::Delete { id: it.id.clone() },
         ) {
-            child = child.with_action(spec.destructive().unavailable(
-                "document_followup_required",
-                "Deletion is available in Camera until effect completion can dispatch its metadata action",
-            ));
+            child = child.with_action(spec.destructive());
         }
         root = root.with_child(child);
     }
@@ -528,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn device_effects_are_canonical_and_delete_is_honestly_blocked() {
+    fn device_effects_are_canonical_and_delete_is_destructive() {
         let resources = provide_resources(
             &CameraResourceCtx {
                 items: vec![GalleryItem {
@@ -552,7 +556,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "delete-file")
             .unwrap();
-        assert!(!delete.contract.availability.is_available());
+        assert!(delete.contract.availability.is_available());
         assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
     }
 }

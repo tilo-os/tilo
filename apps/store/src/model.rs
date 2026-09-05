@@ -37,6 +37,22 @@ impl StoreSource {
     }
 }
 
+/// Provenance claim the Store can substantiate for an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StoreTrust {
+    PublisherSigned,
+    Flathub,
+}
+
+impl StoreTrust {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PublisherSigned => "Publisher + registry verified",
+            Self::Flathub => "Flathub distribution",
+        }
+    }
+}
+
 /// Whether the item is already on the machine, and if so at what
 /// version. The store cross-references its item feed against the
 /// on-disk install registry when producing this.
@@ -164,10 +180,14 @@ pub struct StoreItem {
     pub description: String,
     /// Free-form categories used for the derived category chip row.
     pub categories: Vec<String>,
-    /// Icon URL, if the source publishes one. The store may leave this
-    /// unfetched at first render and just show a placeholder — decoding
-    /// remote images is a follow-up.
+    /// Icon URL, if the source publishes one. Artwork is fetched lazily
+    /// through the Store's bounded HTTPS-only image cache; rejected or
+    /// unavailable images use deterministic initial artwork.
     pub icon_url: Option<String>,
+    /// Source-provided preview artwork, fetched lazily through the bounded
+    /// HTTPS-only cache used for icons.
+    #[serde(default)]
+    pub screenshot_urls: Vec<String>,
     /// Project homepage URL, if known.
     pub homepage_url: Option<String>,
     /// Source-code URL, if the item exposes it. qOS entries do; most
@@ -183,6 +203,8 @@ pub struct StoreItem {
     pub install_ref_path: Option<String>,
     /// Where this came from.
     pub source: StoreSource,
+    /// Source verification retained through the full ingestion/UI pipeline.
+    pub trust: StoreTrust,
     /// Newest → oldest.
     pub versions: Vec<StoreItemVersion>,
     /// Publisher pubkey (hex) for qOS entries. `None` for Flatpak.
@@ -363,12 +385,14 @@ mod tests {
             description: format!("Some {name} app"),
             categories: vec!["Productivity".into()],
             icon_url: None,
+            screenshot_urls: Vec::new(),
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
             source: StoreSource::Qos {
                 registry_name: "qOS main".into(),
             },
+            trust: StoreTrust::PublisherSigned,
             versions: vec![StoreItemVersion {
                 version: latest.into(),
                 released_at_unix: 0,
@@ -388,10 +412,12 @@ mod tests {
             description: format!("{name} on Flathub"),
             categories: vec!["Games".into()],
             icon_url: None,
+            screenshot_urls: Vec::new(),
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
             source: StoreSource::Flathub,
+            trust: StoreTrust::Flathub,
             versions: vec![StoreItemVersion {
                 version: "1.0".into(),
                 released_at_unix: 0,

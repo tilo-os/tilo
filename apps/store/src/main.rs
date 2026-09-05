@@ -38,7 +38,7 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-use store::app::RemoteIntent;
+use store::app::{ModerationIntent, RemoteIntent};
 use store::worker::{Request, StoreWorker};
 use store::{FlatpakRef, StoreApp};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -55,6 +55,21 @@ fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.store", live_root)
             .max_positionals(1)
+            .scenarios(&[
+                "wide",
+                "narrow",
+                "detail",
+                "progress",
+                "error",
+                "moderation",
+                "moderation-case",
+                "moderation-loading",
+                "moderation-offline",
+                "moderation-error",
+                "empty",
+                "offline",
+            ])
+            .configure_app(|app| store::doc_actions::register(app.action_registry_mut()))
             .shot_handler(shot_handler),
     );
 }
@@ -83,10 +98,11 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    store::shots::render_to_path(
+    store::shots::render_scenario_to_path(
         args.viewport
             .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT),
         out,
+        args.scenario.as_deref(),
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
@@ -101,13 +117,61 @@ struct LiveStore {
 impl LiveStore {
     fn new(worker: StoreWorker) -> Self {
         Self {
-            inner: StoreApp::new(),
+            inner: StoreApp::new().with_image_store(store::images::image_store()),
             worker,
         }
     }
 }
 
 impl ui::widget::Widget for LiveStore {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        self.inner.local_resource_operation_handlers()
+    }
+
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::qos_actions::Resource> {
+        self.inner.resources(doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: ui::qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<bool, String> {
+        self.inner
+            .invoke_resource_operation(kind, type_id, payload, doc, path)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: ui::qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.inner
+            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.inner
+            .poll_resource_operation(invocation, cancellation_requested, doc, path)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
+    )]
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         // Drain any snapshots the worker produced since last frame.
         while let Some(snap) = self.worker.try_snapshot() {
@@ -127,6 +191,10 @@ impl ui::widget::Widget for LiveStore {
             }
             self.inner.set_remotes(snap.remotes);
             self.inner.set_status_line(snap.status_line);
+            self.inner.set_operation_error(snap.operation_error);
+            if let Some(case) = snap.moderation_case {
+                self.inner.set_moderation_case(state, path, &case);
+            }
         }
         // `inner.sync` drains click edges into the pending-action
         // queue; hand each one to the worker with the full item so it
@@ -182,6 +250,59 @@ impl ui::widget::Widget for LiveStore {
             };
             self.worker.request(request);
         }
+        for (intent, invocation) in self.inner.take_lifecycle_remote() {
+            let request = match intent {
+                RemoteIntent::Refresh => Request::RefreshRemotes,
+                RemoteIntent::Add { name, url } => Request::RemoteAdd { name, url },
+                RemoteIntent::Remove(name) => Request::RemoteRemove(name),
+            };
+            if !self
+                .worker
+                .request_with_invocation(request, Some(invocation))
+            {
+                self.inner.complete_lifecycle_invocation(
+                    invocation,
+                    Some("store worker is unavailable".into()),
+                );
+            }
+        }
+        for (intent, invocation) in self.inner.take_moderation_requests() {
+            let request = match intent {
+                ModerationIntent::Submit {
+                    registry_name,
+                    envelope,
+                } => Request::SubmitReport {
+                    registry_name,
+                    envelope,
+                },
+                ModerationIntent::Refresh {
+                    registry_name,
+                    case_id,
+                } => Request::RefreshModeration {
+                    registry_name,
+                    case_id,
+                },
+                ModerationIntent::Appeal {
+                    registry_name,
+                    case_id,
+                    reason,
+                } => Request::AppealModeration {
+                    registry_name,
+                    case_id,
+                    reason,
+                },
+            };
+            if !self
+                .worker
+                .request_with_invocation(request, Some(invocation))
+            {
+                self.inner.complete_lifecycle_invocation(
+                    invocation,
+                    Some("Store worker is unavailable; the report draft was not submitted".into()),
+                );
+            }
+        }
+        self.inner.set_worker_busy(self.worker.has_pending());
     }
     fn build_layout(
         &mut self,
@@ -269,11 +390,17 @@ impl ui::widget::Widget for LiveStore {
     fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
         self.inner.children_mut()
     }
+    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+        self.inner.take_control_invocation()
+    }
     fn name(&self) -> &'static str {
         "LiveStore"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.inner.get_rect()
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.inner.accessibility()
     }
     fn take_structure_dirty(&mut self) -> bool {
         self.inner.take_structure_dirty()

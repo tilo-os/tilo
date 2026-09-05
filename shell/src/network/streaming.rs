@@ -184,6 +184,13 @@ impl ShareRegistry {
         revoked
     }
 
+    /// Remove every live share after an emergency stop. This is deliberately
+    /// stronger than making rows read-only: a later firewall rebuild must not
+    /// resurrect a session the user believed they had terminated.
+    pub fn clear(&mut self) {
+        self.shares.clear();
+    }
+
     /// Route an inbound `InputEvent` to `sink` if the registry permits it.
     /// **Not the injection path** — only the share gate; not checked against
     /// the surface's rect, occlusion, chords, or rate budget. A seat sink

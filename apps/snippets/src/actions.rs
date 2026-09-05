@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::SnippetsDoc;
@@ -33,9 +33,37 @@ use crate::model::{Language, Snippet, SnippetId};
 pub const SNIPPETS_ACTION_TYPE: &str = "snippets.action";
 pub const SNIPPETS_OPERATION_TYPE: &str = "snippets.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Stable resource id for one snippet. Search and every other caller use this
+/// exact identity instead of maintaining a second navigation namespace.
+pub fn snippet_resource_id(id: SnippetId) -> String {
+    format!("snippets.snippet:{id}")
+}
+
+/// Canonical view action that opens one snippet.
+pub fn open_snippet_address(id: SnippetId) -> ActionAddress {
+    ActionAddress::new(snippet_resource_id(id), "open")
+}
+
+/// Stable resource id for a tag. Hex encoding preserves arbitrary Unicode tag
+/// names without letting punctuation become resource-address syntax.
+pub fn tag_resource_id(tag: &str) -> String {
+    let encoded = tag
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("snippets.tag:{encoded}")
+}
+
+/// Canonical view action that reveals all snippets carrying `tag`.
+pub fn reveal_tag_address(tag: &str) -> ActionAddress {
+    ActionAddress::new(tag_resource_id(tag), "reveal")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnippetsOperation {
     OpenSnippet { id: SnippetId },
+    RevealTag { tag: String },
     FocusSearch,
 }
 
@@ -318,10 +346,25 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
         },
     ));
 
-    for s in SnippetsDoc::list(doc) {
+    let snippets = SnippetsDoc::list(doc);
+    let tags = snippets
+        .iter()
+        .flat_map(|snippet| snippet.tags.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for tag in tags {
+        lib = lib.with_child(
+            Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
+                "reveal",
+                "Reveal tagged snippets",
+                SnippetsOperation::RevealTag { tag },
+            )),
+        );
+    }
+
+    for s in snippets {
         let id = s.id;
         let mut r = Resource::new(
-            format!("snippets.snippet:{id}"),
+            snippet_resource_id(id),
             "snippets.snippet",
             snippet_label(&s),
         );
@@ -466,7 +509,11 @@ mod tests {
         assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
         assert!(!lib.children.is_empty(), "the seeded library has snippets");
 
-        let snip = &lib.children[0];
+        let snip = lib
+            .children
+            .iter()
+            .find(|resource| resource.kind == "snippets.snippet")
+            .expect("a snippet child resource");
         assert_eq!(snip.kind, "snippets.snippet");
         let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
@@ -483,6 +530,41 @@ mod tests {
                 "snippet resource missing {want}: {ids:?}"
             );
         }
+
+        let tag = lib
+            .children
+            .iter()
+            .find(|resource| resource.kind == "snippets.tag")
+            .expect("seeded snippets publish tag resources");
+        let reveal = tag
+            .actions
+            .iter()
+            .find(|action| action.id == "reveal")
+            .expect("tag exports its reveal action");
+        assert_eq!(reveal.kind, OperationKind::View);
+        let tag_name =
+            match decode_operation(SNIPPETS_OPERATION_TYPE, &immediate_encode(reveal).payload) {
+                Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
+                other => panic!("unexpected tag operation: {other:?}"),
+            };
+        assert_eq!(
+            reveal_tag_address(&tag_name),
+            ActionAddress::new(&tag.id.0, &reveal.id)
+        );
+
+        let open = snip
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("snippet exports open");
+        assert_eq!(open.kind, OperationKind::View);
+        assert!(
+            snip.actions
+                .iter()
+                .filter(|action| action.id != "open")
+                .all(|action| action.kind == OperationKind::Document),
+            "snippet edits and deletes remain document actions"
+        );
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -625,7 +707,11 @@ mod tests {
     fn palette_and_builder_encode_identically() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let snip = &resources[0].children[0];
+        let snip = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "snippets.snippet")
+            .expect("a snippet resource");
         let id_str = snip.id.as_str().trim_start_matches("snippets.snippet:");
         let id: SnippetId = id_str.parse().unwrap();
         let seeded_fav = SnippetsDoc::get(&doc, id).unwrap().favorite;
