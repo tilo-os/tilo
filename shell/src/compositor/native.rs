@@ -5107,6 +5107,7 @@ pub fn run() -> ! {
                     .map(|o| LockOutput {
                         origin: (f64::from(o.position.0), f64::from(o.position.1)),
                         size: (f64::from(o.size.0), f64::from(o.size.1)),
+                        scale: f64::from(o.scale),
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
@@ -5114,6 +5115,7 @@ pub fn run() -> ! {
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
+                        scale: 1.0,
                     }]
                 } else {
                     lock_outputs

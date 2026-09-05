@@ -98,6 +98,7 @@ pub fn build_accessibility_tree(outputs: &[LockOutput], view: &LockView<'_>) -> 
     let output = outputs.first().copied().unwrap_or(LockOutput {
         origin: (0.0, 0.0),
         size: (width, height),
+        scale: 1.0,
     });
     let (cx, cy) = output.center();
 
