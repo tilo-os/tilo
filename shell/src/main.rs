@@ -309,10 +309,17 @@ fn main() -> std::process::ExitCode {
         return verify_collaboration_identity_entrypoint(provision_identity_requested);
     }
 
-    if firstboot_requested && let Err(e) = firstboot::run() {
-        // Don't fail the boot — log and continue. A non-zero exit still poisons
-        // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
-        tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
+    if firstboot_requested {
+        if let Err(e) = firstboot::run() {
+            // Don't fail the boot — log and continue. A non-zero exit still poisons
+            // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
+            tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
+        }
+        if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
+            && let Err(e) = firstboot::import_host_keyboard_settings()
+        {
+            tracing::warn!("firstboot: host keyboard import failed ({e}); using qOS defaults");
+        }
     }
     // `--firstboot` is the host-session wrapper hook: it performs setup then
     // falls through to the normal compositor entry point. System units use

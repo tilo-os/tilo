@@ -4443,6 +4443,19 @@ pub fn run() -> ! {
             session_changed = true;
         }
 
+        // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
+        // client starts auto-repeat after a press and only stops once it sees the
+        // matching release.  Scene construction can occasionally block on a GPU
+        // fence for hundreds of milliseconds, so waiting until the end-of-frame
+        // flush below turns an ordinary tap into a burst (or apparently stuck
+        // repeat) under render pressure.  Flush events queued by this input batch
+        // before doing any layout/render work.  The later flush remains necessary
+        // for protocol events produced while dispatching client requests.
+        if had_backend_events && let Err(err) = display.flush_clients() {
+            eprintln!("nirios compositor: input flush_clients error: {err}");
+            break;
+        }
+
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
         if settings_watch.changed(Instant::now()) {
@@ -4629,6 +4642,34 @@ pub fn run() -> ! {
         frame_builder.set_fullscreen(state.fullscreen_group);
 
         {
+            // A close affordance mutates the rendered/persisted tree first, then
+            // queues the protocol surface here. Remove it from the compositor's
+            // authoritative foreign tree before reconciliation, otherwise the
+            // still-live client can be adopted straight back while it handles
+            // xdg_toplevel.close. Sending close asks the application to exit in
+            // the normal desktop way; it is not a process kill.
+            let mut close_requests = Vec::new();
+            frame_builder.with_chrome(|chrome| {
+                close_requests = chrome.take_surface_close_requests();
+            });
+            for surface_id in close_requests {
+                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface(
+                    &mut state.workspace_tree,
+                    surface_id,
+                );
+                if let Some(toplevel) = state
+                    .xdg_shell_state
+                    .toplevel_surfaces()
+                    .iter()
+                    .find(|toplevel| {
+                        crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+                    })
+                    .cloned()
+                {
+                    toplevel.send_close();
+                }
+            }
+
             // Mirror foreign toplevels adopted at the protocol layer into the rendered
             // tab tree, reaping tabs whose client went away — a diff of protocol tree
             // against rendered, so idempotent and self-healing (no phantom tabs from a

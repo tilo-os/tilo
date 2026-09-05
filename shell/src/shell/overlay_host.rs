@@ -3546,13 +3546,45 @@ impl ShellOverlayHost {
                 if g.id != gid {
                     continue;
                 }
+                let tab_id = tab.unwrap_or_else(|| g.active_tab_id());
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let mut st = chrome.borrow_mut();
+                let surface = {
+                    let tree = st.tree();
+                    tree.workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.strips.iter())
+                        .flat_map(|strip| strip.window_groups.iter())
+                        .find(|group| group.id == gid)
+                        .and_then(|group| group.tabs.iter().find(|tab| tab.id == tab_id))
+                        .and_then(|tab| match &tab.tile {
+                            crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                                Some(*surface_id)
+                            }
+                            _ => None,
+                        })
+                };
+                let removed = {
+                    let mut tree = st.tree_mut();
+                    crate::compositor::tab_binding::remove_tab(&mut tree, tab_id)
+                };
+                if !removed {
+                    return false;
+                }
+                // The durable tree/document mutation must succeed before the
+                // widget begins its close animation. A visual-only close is
+                // precisely what allowed the next resync to restore a window.
                 let closed = match tab {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                // No `bump()`: closing a tab has no tree-side counterpart
-                // (no `doc_remove_tab`), so a revision bump would resync
-                // this row from the tree and splice the tab straight back.
+                debug_assert!(closed, "tree and rendered tab strip diverged before close");
+                if let Some(surface_id) = surface {
+                    st.request_surface_close(surface_id);
+                }
+                st.bump();
                 return closed;
             }
         }
@@ -3699,15 +3731,24 @@ impl ShellOverlayHost {
         let Some(group) = requested else {
             return false;
         };
+        self.open_new_tab_palette_for_group(group);
+        true
+    }
+
+    /// Configure the application picker opened by a group's `+` affordance.
+    /// Split from the widget one-shot harvest so its scope/placement contract
+    /// has direct regression coverage.
+    fn open_new_tab_palette_for_group(&mut self, group: GroupId) {
         // Must run before the palette's scope resolution and launch path
         // read the active pointers.
         self.harvest_active_tab_writeback();
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
-            // `All`, not `ActiveApp`: a "+" asks what to open, and only the
-            // widest scope offers something not already running.
-            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            // The group is the placement target and its workspace is the
+            // search boundary. Machine-wide search belongs to Super+K; a
+            // local "+" must not silently reach into other workspaces.
+            st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
             st.bump();
         }
         // Narrowed to kinds that can *be* a tab, so results aren't buried
@@ -3723,7 +3764,6 @@ impl ShellOverlayHost {
         // Re-run the query even when the palette was already up: the rows
         // carry a placement hint that just changed.
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-        true
     }
 
     /// Drops a stale `OpenTarget::Here` and kind filter once the palette
@@ -7284,6 +7324,14 @@ impl ShellOverlayHost {
         let alt_down = mstate.alt_key();
         let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
+        // Print Screen is a desktop key, not application input. Keep it as a
+        // direct route into the same trusted Capture Studio used by
+        // Super+Shift+S and screenshot portal requests.
+        if matches!(logical_key, Key::Named(NamedKey::PrintScreen)) {
+            let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            *handled = true;
+            return true;
+        }
         if self.handle_member_permission_sheet_keyboard(logical_key, handled) {
             return true;
         }
@@ -7471,6 +7519,17 @@ impl ShellOverlayHost {
                 }
                 _ => {}
             }
+            *handled = true;
+            return true;
+        }
+        // The configurable Super+Arrow bindings remain useful for spatial
+        // navigation, but people arriving from another Linux desktop should
+        // not have to discover them before they can switch windows. Walk the
+        // same flat strip sequence as keyboard, wheel, and touchpad focus.
+        if alt_down && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let _ = self.step_focus_along_strip(if shift_down { -1 } else { 1 });
+            // Own the edge case too: Alt+Tab must never leak into the focused
+            // application merely because the strip has only one window.
             *handled = true;
             return true;
         }
@@ -17753,6 +17812,72 @@ mod tests {
     }
 
     #[test]
+    fn print_screen_opens_screenshot_capture_without_modifiers() {
+        let mut h = build_harness();
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Screenshot
+        );
+        assert!(h.chrome.borrow().overlays.capture);
+    }
+
+    #[test]
+    fn alt_tab_walks_the_window_strip_and_shift_reverses() {
+        let mut h = build_harness();
+        let first = {
+            let state = h.chrome.borrow();
+            crate::compositor::client_input::step_active_window(&state.tree(), 1)
+                .expect("the demo strip contains another window")
+        };
+        let alt = Modifiers::from(ModifiersState::ALT);
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), alt));
+        {
+            let state = h.chrome.borrow();
+            let tree = state.tree();
+            assert_eq!(tree.active_group_for(first.0), Some(first.1));
+            let active_tab = tree
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == first.0))
+                .and_then(|strip| strip.window_groups.iter().find(|group| group.id == first.1))
+                .map(|group| group.active_tab);
+            assert_eq!(active_tab, Some(first.2));
+        }
+
+        let previous = {
+            let state = h.chrome.borrow();
+            crate::compositor::client_input::step_active_window(&state.tree(), -1)
+                .expect("the forward step can be reversed")
+        };
+        let alt_shift = Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Tab)),
+            alt_shift
+        ));
+        let state = h.chrome.borrow();
+        let tree = state.tree();
+        assert_eq!(tree.active_group_for(previous.0), Some(previous.1));
+        let active_tab = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == previous.0))
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == previous.1)
+            })
+            .map(|group| group.active_tab);
+        assert_eq!(active_tab, Some(previous.2));
+    }
+
+    #[test]
     fn capture_entry_always_uses_the_requested_mode_instead_of_the_previous_one() {
         let mut h = build_harness();
         assert!(h.host.open_capture_studio(ui::widget::CaptureMode::Pip));
@@ -19182,6 +19307,54 @@ mod resync_strips_tests {
             host.group_at_for_tests(strip_id, 2).is_none(),
             "removed group dropped from row"
         );
+    }
+
+    #[test]
+    fn close_then_revision_resync_does_not_restore_the_window_group() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        tree.seed_doc_from_cache();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(group_id, Some(1)));
+
+        assert!(
+            chrome.borrow().tree().workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
+            "close is a tree mutation, not merely a widget fade"
+        );
+        // This is the exact edge that used to restore the stale group: `+`
+        // and many unrelated actions bump chrome, then strip resync reads the
+        // persisted tree.
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        assert!(
+            host.group_at_for_tests(strip_id, 0).is_none(),
+            "resync after another revision must keep the closed group absent"
+        );
+    }
+
+    #[test]
+    fn group_plus_is_a_workspace_scoped_app_picker_targeting_that_group() {
+        use crate::shell::chrome_state::{OpenTarget, SearchScope};
+        use crate::shell::search::ResourceKind;
+
+        let (tree, _strip_id, group_id) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.open_new_tab_palette_for_group(group_id);
+
+        let st = chrome.borrow();
+        assert_eq!(st.open_target, OpenTarget::Here(group_id));
+        assert_eq!(
+            st.search_scope,
+            SearchScope::Workspace,
+            "a local group affordance must not open machine-wide search"
+        );
+        assert_eq!(
+            host.active_kind_filter,
+            vec![ResourceKind::Application, ResourceKind::HostApplication],
+            "the group + is an app picker, not generic search"
+        );
+        assert!(host.palette_visible(), "the picker opens immediately");
     }
 
     #[test]
