@@ -247,8 +247,11 @@ jobs:
         run: bash tools/ci-sccache.sh report || true
 
   publish:
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     needs: [plan, build]
+    # Resolve the completed dependencies before deciding whether this is a
+    # publishing run. Without `always()`, Forgejo can leave the intentionally
+    # disabled PR publisher in `blocked` instead of `skipped`.
+    if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     runs-on: runner
     enable-openid-connect: true
     steps:
