@@ -308,9 +308,9 @@ fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_b
             // snapshot for this process becoming reachable.
             if current_process_joined
                 && current.full_content_replication
-                && !current.filesystem_endpoints.is_empty()
+                && let Some(endpoint) = current.filesystem_endpoints.first()
             {
-                return current.filesystem_endpoints[0].clone();
+                return endpoint.clone();
             }
             last_status = Some(current);
         }
@@ -935,307 +935,313 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
 /// Real owner/NAS/collaborator process boundary. The NAS starts from the
 /// exported production bundle, receives an update and deletion, then remains
 /// the only reachable source across both owner loss and its own restart.
-#[test]
-fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() {
-    if !real_fuse_available("owner/NAS/collaborator lifecycle") {
-        return;
-    }
+macro_rules! run_nas_replica_lifecycle_scenario {
+    () => {{
+        if !real_fuse_available("owner/NAS/collaborator lifecycle") {
+            return;
+        }
 
-    let temp = tempfile::tempdir().unwrap();
-    let owner_identity = temp.path().join("owner");
-    let nas_identity = temp.path().join("nas");
-    let reader_identity = temp.path().join("reader");
-    let offline_reader_identity = temp.path().join("offline-reader");
-    let (owner, _) = install_identity(&owner_identity, [0xa1; 32], [0xa2; 32], true);
-    let (_, _) = install_identity(&nas_identity, [0xa1; 32], [0xa3; 32], false);
-    let (reader, _) = install_identity(&reader_identity, [0xa4; 32], [0xa5; 32], false);
-    let (offline_reader, _) =
-        install_identity(&offline_reader_identity, [0xa6; 32], [0xa7; 32], false);
-    let acl = temp.path().join("acl.json");
-    let caps = vec![
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Read,
-        ),
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Write,
-        ),
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Read,
-        ),
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Read,
-        ),
-    ];
-    std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
-    let owner_mount = temp.path().join("owner-mount");
-    std::fs::create_dir(&owner_mount).unwrap();
-    let owner_cache = temp.path().join("owner-cache");
-    let owner_gate = owner_cache.join("gate.sock");
-    let seed = temp.path().join("seed");
-    std::fs::create_dir(&seed).unwrap();
-    std::fs::write(seed.join("survivor.txt"), b"before-nas").unwrap();
-    std::fs::write(seed.join("deleted.txt"), b"delete-me").unwrap();
-    let mut owner_process = spawn_fs(
-        binary,
-        &owner_identity,
-        &owner_mount,
-        &owner_cache,
-        &owner_gate,
-        &acl,
-        &["serve", "--seed", seed.to_str().unwrap()],
-        false,
-    );
-    owner_process.wait_line("Hosting workspace");
-    let owner_ticket = owner_process.wait_ticket();
-    owner_process.wait_line("Mounting QuickFS");
-    let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
-        get_xattr(
-            &owner_mount.join("deleted.txt"),
-            fs::syncstate::CONTENT_HASH_XATTR,
-        )
-        .ok()
-    })
-    .try_into()
-    .unwrap();
-    let deleted_manifest = Hash::from(deleted_manifest_bytes);
-    let original_survivor_manifest: [u8; 32] = get_xattr(
-        &owner_mount.join("survivor.txt"),
-        fs::syncstate::CONTENT_HASH_XATTR,
-    )
-    .unwrap()
-    .try_into()
-    .unwrap();
-
-    let bundle = temp.path().join("home-peer.toml");
-    let replica_cache = temp.path().join("nas-cache");
-    let status = temp.path().join("nas-status.json");
-    export_home_peer_bundle(
-        binary,
-        &owner_identity,
-        &owner_cache,
-        &acl,
-        &bundle,
-        &replica_cache,
-        &status,
-    );
-    let mut nas = spawn_replica(binary, &nas_identity, &bundle);
-    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
-
-    // Update/delete after the NAS is ready. Its next coalesced generation
-    // must be complete before the owner is removed.
-    std::fs::write(owner_mount.join("survivor.txt"), b"updated-through-nas").unwrap();
-    std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
-
-    let original = fs::Ticket::decode(&owner_ticket).unwrap();
-    let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
-        let manifest: [u8; 32] = get_xattr(
+        let temp = tempfile::tempdir().unwrap();
+        let owner_identity = temp.path().join("owner");
+        let nas_identity = temp.path().join("nas");
+        let reader_identity = temp.path().join("reader");
+        let offline_reader_identity = temp.path().join("offline-reader");
+        let (owner, _) = install_identity(&owner_identity, [0xa1; 32], [0xa2; 32], true);
+        let (_, _) = install_identity(&nas_identity, [0xa1; 32], [0xa3; 32], false);
+        let (reader, _) = install_identity(&reader_identity, [0xa4; 32], [0xa5; 32], false);
+        let (offline_reader, _) =
+            install_identity(&offline_reader_identity, [0xa6; 32], [0xa7; 32], false);
+        let acl = temp.path().join("acl.json");
+        let caps = vec![
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Read,
+            ),
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Write,
+            ),
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Read,
+            ),
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Read,
+            ),
+        ];
+        std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+        let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+        let owner_mount = temp.path().join("owner-mount");
+        std::fs::create_dir(&owner_mount).unwrap();
+        let owner_cache = temp.path().join("owner-cache");
+        let owner_gate = owner_cache.join("gate.sock");
+        let seed = temp.path().join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        std::fs::write(seed.join("survivor.txt"), b"before-nas").unwrap();
+        std::fs::write(seed.join("deleted.txt"), b"delete-me").unwrap();
+        let mut owner_process = spawn_fs(
+            binary,
+            &owner_identity,
+            &owner_mount,
+            &owner_cache,
+            &owner_gate,
+            &acl,
+            &["serve", "--seed", seed.to_str().unwrap()],
+            false,
+        );
+        owner_process.wait_line("Hosting workspace");
+        let owner_ticket = owner_process.wait_ticket();
+        owner_process.wait_line("Mounting QuickFS");
+        let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
+            get_xattr(
+                &owner_mount.join("deleted.txt"),
+                fs::syncstate::CONTENT_HASH_XATTR,
+            )
+            .ok()
+        })
+        .try_into()
+        .unwrap();
+        let deleted_manifest = Hash::from(deleted_manifest_bytes);
+        let original_survivor_manifest: [u8; 32] = get_xattr(
             &owner_mount.join("survivor.txt"),
             fs::syncstate::CONTENT_HASH_XATTR,
         )
-        .ok()?
+        .unwrap()
         .try_into()
-        .ok()?;
-        (manifest != original_survivor_manifest).then_some(manifest)
-    });
-    let updated_manifest = Hash::from(updated_manifest);
-    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
-    let replicated_generation = wait_for(PROCESS_TIMEOUT, || {
-        if let Some(exit) = nas.child.try_wait().unwrap() {
-            panic!(
-                "replica exited {exit}; logs:\n{}",
-                nas.logs.lock().unwrap().join("\n")
-            );
-        }
-        let bytes = std::fs::read(replica_workspace_cache.join("namespace.bin")).ok()?;
-        let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
-        (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
-            && namespace.entry_at("deleted.txt").is_none())
-        .then(|| hex::encode(blake3::hash(&bytes).as_bytes()))
-    });
-    wait_for(PROCESS_TIMEOUT, || {
-        let current = fs::full_replica::load_status(&status).ok().flatten()?;
-        (current.full_content_replication
-            && current.namespace_generation.as_deref() == Some(&replicated_generation))
-        .then_some(())
-    });
-    let nas_ticket = fs::Ticket {
-        node: nas_endpoint,
-        workspace: original.workspace,
-    }
-    .encode()
-    .unwrap();
-    let reader_mount = temp.path().join("reader-mount");
-    std::fs::create_dir(&reader_mount).unwrap();
-    let reader_cache = temp.path().join("reader-cache");
-    let reader_gate = reader_cache.join("gate.sock");
-    let mut reader_process = spawn_fs(
-        binary,
-        &reader_identity,
-        &reader_mount,
-        &reader_cache,
-        &reader_gate,
-        &acl,
-        &["mount", "--ticket", &nas_ticket],
-        false,
-    );
-    reader_process.wait_line("Joined workspace");
-    reader_process.wait_line("Mounting QuickFS");
-    let reader_file = reader_mount.join("survivor.txt");
-    let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
-        get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
+        .unwrap();
+
+        let bundle = temp.path().join("home-peer.toml");
+        let replica_cache = temp.path().join("nas-cache");
+        let status = temp.path().join("nas-status.json");
+        export_home_peer_bundle(
+            binary,
+            &owner_identity,
+            &owner_cache,
+            &acl,
+            &bundle,
+            &replica_cache,
+            &status,
+        );
+        let mut nas = spawn_replica(binary, &nas_identity, &bundle);
+        let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
+
+        // Update/delete after the NAS is ready. Its next coalesced generation
+        // must be complete before the owner is removed.
+        std::fs::write(owner_mount.join("survivor.txt"), b"updated-through-nas").unwrap();
+        std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
+
+        let original = fs::Ticket::decode(&owner_ticket).unwrap();
+        let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
+            let manifest: [u8; 32] = get_xattr(
+                &owner_mount.join("survivor.txt"),
+                fs::syncstate::CONTENT_HASH_XATTR,
+            )
             .ok()?
             .try_into()
-            .ok()
-    });
-    assert_eq!(Hash::from(reader_manifest), updated_manifest);
-    assert_eq!(std::fs::metadata(&reader_file).unwrap().len(), 19);
-    let reader_bytes = std::fs::read(&reader_file).unwrap_or_else(|error| {
-        panic!(
-            "collaborator could not hydrate NAS content: {error}; NAS logs:\n{}",
-            nas.logs.lock().unwrap().join("\n")
-        )
-    });
-    assert_eq!(
-        reader_bytes,
-        b"updated-through-nas",
-        "collaborator observed wrong NAS bytes; NAS logs:\n{}",
-        nas.logs.lock().unwrap().join("\n")
-    );
-    assert!(!reader_mount.join("deleted.txt").exists());
-    reader_process.stop();
-
-    let revoked_acl = temp.path().join("revoked-acl.json");
-    let revoked_caps = vec![
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Read,
-        ),
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Write,
-        ),
-        collab_types::CapOverride::new(
-            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
-            collab_types::Scope::FsPath("/".into()),
-            collab_types::Effect::Grant,
-            collab_types::Verb::Read,
-        ),
-    ];
-    std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
-    publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
-    let replica_authority = replica_cache
-        .join(original.workspace_id().to_string())
-        .join("workspace-authority.bin");
-    wait_for(PROCESS_TIMEOUT, || {
-        let authority = fs::workspace_authority::WorkspaceAuthority::open(
-            &replica_authority,
-            original.workspace_id(),
-            owner,
-            owner,
-            Vec::new(),
-        )
-        .ok()?;
-        (!authority
-            .handle()
-            .permits_peer(&reader, "/survivor.txt", fs::Access::Read))
-        .then_some(())
-    });
-    let revoked_mount = temp.path().join("revoked-reader-mount");
-    std::fs::create_dir(&revoked_mount).unwrap();
-    let revoked_cache = temp.path().join("revoked-reader-cache");
-    let revoked_gate = revoked_cache.join("gate.sock");
-    let mut revoked = spawn_fs(
-        binary,
-        &reader_identity,
-        &revoked_mount,
-        &revoked_cache,
-        &revoked_gate,
-        &acl,
-        &["mount", "--ticket", &nas_ticket],
-        false,
-    );
-    let revoked_status = wait_for(PROCESS_TIMEOUT, || revoked.child.try_wait().unwrap());
-    assert!(
-        !revoked_status.success(),
-        "a newer signed authority revision revokes the previously granted collaborator"
-    );
-    owner_process.stop();
-
-    // Crash/restart the NAS while the owner remains offline. The second fresh
-    // collaborator reads the same retained namespace and bytes from its
-    // durable cache, proving startup does not require the owner endpoint.
-    nas.kill_and_wait();
-    let mut nas = spawn_replica(binary, &nas_identity, &bundle);
-    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
-    let restart_ticket = fs::Ticket {
-        node: nas_endpoint,
-        workspace: original.workspace,
-    }
-    .encode()
-    .unwrap();
-    let restart_mount = temp.path().join("restart-reader-mount");
-    std::fs::create_dir(&restart_mount).unwrap();
-    let restart_cache = temp.path().join("restart-reader-cache");
-    let restart_gate = restart_cache.join("gate.sock");
-    let mut restarted = spawn_fs(
-        binary,
-        &offline_reader_identity,
-        &restart_mount,
-        &restart_cache,
-        &restart_gate,
-        &acl,
-        &["mount", "--ticket", &restart_ticket],
-        false,
-    );
-    restarted.wait_line("Joined workspace");
-    restarted.wait_line("Mounting QuickFS");
-    wait_for_process(&mut restarted, || {
-        (std::fs::read(restart_mount.join("survivor.txt"))
-            .ok()?
-            .as_slice()
-            == b"updated-through-nas")
-            .then_some(())
-    });
-    restarted.stop();
-
-    nas.kill_and_wait();
-    // Inspect the stopped daemon's real durable store: removal from the
-    // namespace is insufficient if obsolete manifests/chunks still consume a
-    // home peer's bounded disk indefinitely.
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let store = fs::ContentStore::open(replica_workspace_cache)
-            .await
-            .unwrap();
-        let deleted_chunk = Hash::new(b"delete-me");
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            .ok()?;
+            (manifest != original_survivor_manifest).then_some(manifest)
+        });
+        let updated_manifest = Hash::from(updated_manifest);
+        let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
+        let replicated_generation = wait_for(PROCESS_TIMEOUT, || {
+            if let Some(exit) = nas.child.try_wait().unwrap() {
+                panic!(
+                    "replica exited {exit}; logs:\n{}",
+                    nas.logs.lock().unwrap().join("\n")
+                );
             }
-        })
-        .await
-        .expect("replica GC reclaims deleted manifest and chunk");
-        store.store().shutdown().await.unwrap();
-    });
+            let bytes = std::fs::read(replica_workspace_cache.join("namespace.bin")).ok()?;
+            let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
+            (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
+                && namespace.entry_at("deleted.txt").is_none())
+            .then(|| hex::encode(blake3::hash(&bytes).as_bytes()))
+        });
+        wait_for(PROCESS_TIMEOUT, || {
+            let current = fs::full_replica::load_status(&status).ok().flatten()?;
+            (current.full_content_replication
+                && current.namespace_generation.as_deref() == Some(&replicated_generation))
+            .then_some(())
+        });
+        let nas_ticket = fs::Ticket {
+            node: nas_endpoint,
+            workspace: original.workspace,
+        }
+        .encode()
+        .unwrap();
+        let reader_mount = temp.path().join("reader-mount");
+        std::fs::create_dir(&reader_mount).unwrap();
+        let reader_cache = temp.path().join("reader-cache");
+        let reader_gate = reader_cache.join("gate.sock");
+        let mut reader_process = spawn_fs(
+            binary,
+            &reader_identity,
+            &reader_mount,
+            &reader_cache,
+            &reader_gate,
+            &acl,
+            &["mount", "--ticket", &nas_ticket],
+            false,
+        );
+        reader_process.wait_line("Joined workspace");
+        reader_process.wait_line("Mounting QuickFS");
+        let reader_file = reader_mount.join("survivor.txt");
+        let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
+            get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
+                .ok()?
+                .try_into()
+                .ok()
+        });
+        assert_eq!(Hash::from(reader_manifest), updated_manifest);
+        assert_eq!(std::fs::metadata(&reader_file).unwrap().len(), 19);
+        let reader_bytes = std::fs::read(&reader_file).unwrap_or_else(|error| {
+            panic!(
+                "collaborator could not hydrate NAS content: {error}; NAS logs:\n{}",
+                nas.logs.lock().unwrap().join("\n")
+            )
+        });
+        assert_eq!(
+            reader_bytes,
+            b"updated-through-nas",
+            "collaborator observed wrong NAS bytes; NAS logs:\n{}",
+            nas.logs.lock().unwrap().join("\n")
+        );
+        assert!(!reader_mount.join("deleted.txt").exists());
+        reader_process.stop();
+
+        let revoked_acl = temp.path().join("revoked-acl.json");
+        let revoked_caps = vec![
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Read,
+            ),
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Write,
+            ),
+            collab_types::CapOverride::new(
+                collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
+                collab_types::Scope::FsPath("/".into()),
+                collab_types::Effect::Grant,
+                collab_types::Verb::Read,
+            ),
+        ];
+        std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+        publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
+        let replica_authority = replica_cache
+            .join(original.workspace_id().to_string())
+            .join("workspace-authority.bin");
+        wait_for(PROCESS_TIMEOUT, || {
+            let authority = fs::workspace_authority::WorkspaceAuthority::open(
+                &replica_authority,
+                original.workspace_id(),
+                owner,
+                owner,
+                Vec::new(),
+            )
+            .ok()?;
+            (!authority
+                .handle()
+                .permits_peer(&reader, "/survivor.txt", fs::Access::Read))
+            .then_some(())
+        });
+        let revoked_mount = temp.path().join("revoked-reader-mount");
+        std::fs::create_dir(&revoked_mount).unwrap();
+        let revoked_cache = temp.path().join("revoked-reader-cache");
+        let revoked_gate = revoked_cache.join("gate.sock");
+        let mut revoked = spawn_fs(
+            binary,
+            &reader_identity,
+            &revoked_mount,
+            &revoked_cache,
+            &revoked_gate,
+            &acl,
+            &["mount", "--ticket", &nas_ticket],
+            false,
+        );
+        let revoked_status = wait_for(PROCESS_TIMEOUT, || revoked.child.try_wait().unwrap());
+        assert!(
+            !revoked_status.success(),
+            "a newer signed authority revision revokes the previously granted collaborator"
+        );
+        owner_process.stop();
+
+        // Crash/restart the NAS while the owner remains offline. The second fresh
+        // collaborator reads the same retained namespace and bytes from its
+        // durable cache, proving startup does not require the owner endpoint.
+        nas.kill_and_wait();
+        let mut nas = spawn_replica(binary, &nas_identity, &bundle);
+        let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
+        let restart_ticket = fs::Ticket {
+            node: nas_endpoint,
+            workspace: original.workspace,
+        }
+        .encode()
+        .unwrap();
+        let restart_mount = temp.path().join("restart-reader-mount");
+        std::fs::create_dir(&restart_mount).unwrap();
+        let restart_cache = temp.path().join("restart-reader-cache");
+        let restart_gate = restart_cache.join("gate.sock");
+        let mut restarted = spawn_fs(
+            binary,
+            &offline_reader_identity,
+            &restart_mount,
+            &restart_cache,
+            &restart_gate,
+            &acl,
+            &["mount", "--ticket", &restart_ticket],
+            false,
+        );
+        restarted.wait_line("Joined workspace");
+        restarted.wait_line("Mounting QuickFS");
+        wait_for_process(&mut restarted, || {
+            (std::fs::read(restart_mount.join("survivor.txt"))
+                .ok()?
+                .as_slice()
+                == b"updated-through-nas")
+                .then_some(())
+        });
+        restarted.stop();
+
+        nas.kill_and_wait();
+        // Inspect the stopped daemon's real durable store: removal from the
+        // namespace is insufficient if obsolete manifests/chunks still consume a
+        // home peer's bounded disk indefinitely.
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let store = fs::ContentStore::open(replica_workspace_cache)
+                .await
+                .unwrap();
+            let deleted_chunk = Hash::new(b"delete-me");
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("replica GC reclaims deleted manifest and chunk");
+            store.store().shutdown().await.unwrap();
+        });
+    }};
+}
+
+#[test]
+fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() {
+    run_nas_replica_lifecycle_scenario!();
 }
 
 // The skew matrix spells out receipt and grant behavior at every clock edge.

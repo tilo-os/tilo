@@ -41,20 +41,22 @@ claim     = "deadbeef"
 signature = ""
 
 [sandbox]
-# `net` deliberately absent from `namespaces`: this app opens no
-# socket of its own.
+# Files only uses HTTPS to the user-configured WebDAV/Nextcloud origins. The
+# client disables automatic redirects and refuses to send credentials across
+# an origin boundary; this declaration is required for those real file actions.
 namespaces = [
     "user",
     "pid",
     "uts",
     "ipc",
     "mount",
+    "net",
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
 
 [sandbox.net]
-mode = "off"
+mode = "host"
 
 [sandbox.portals]
 open-uri = "via-host"

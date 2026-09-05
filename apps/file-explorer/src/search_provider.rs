@@ -21,9 +21,11 @@ use ui::search::{
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
+use crate::remote_accounts::RemoteAccount;
 
 pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
+pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
 
 /// Stable resource identity for a local place. Hex keeps the resource/action
 /// wire separator out of ids even when a Unix path contains control bytes.
@@ -35,7 +37,7 @@ pub fn place_resource_id(path: &std::path::Path) -> String {
         .iter()
         .fold(String::new(), |mut output, byte| {
             use std::fmt::Write as _;
-            write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+            let _ = write!(output, "{byte:02x}");
             output
         });
     format!("files.place:{encoded}")
@@ -51,6 +53,13 @@ pub fn record_resource_id(record_id: uuid::Uuid) -> String {
 
 pub fn record_reveal_address(record_id: uuid::Uuid) -> ActionAddress {
     ActionAddress::new(record_resource_id(record_id), REVEAL_ACTION)
+}
+
+pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
+    ActionAddress::new(
+        crate::remote_accounts::resource_id(&account.id),
+        REMOTE_ACCOUNT_OPEN_ACTION,
+    )
 }
 
 /// A directory projection is untrusted input. Keep the palette snapshot small
@@ -183,6 +192,67 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
     }
 }
 
+/// Searchable snapshot of the canonical, non-secret file-provider accounts.
+/// This is deliberately a small metadata projection, not a remote directory
+/// crawler: the mount daemon owns remote I/O and Files must remain responsive
+/// and offline-safe while the palette is open.
+pub struct RemoteAccountSearchProvider {
+    accounts: Vec<RemoteAccount>,
+    kind: String,
+}
+
+impl RemoteAccountSearchProvider {
+    pub fn new(accounts: Vec<RemoteAccount>) -> Self {
+        Self {
+            accounts: accounts
+                .into_iter()
+                .take(MAX_COLLABORATIVE_SEARCH_RECORDS)
+                .collect(),
+            kind: "Remote file accounts".into(),
+        }
+    }
+}
+
+impl SearchProvider for RemoteAccountSearchProvider {
+    fn name(&self) -> &str {
+        &self.kind
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let query = query.to_lowercase();
+        self.accounts
+            .iter()
+            .filter(|account| {
+                account.label.to_lowercase().contains(&query)
+                    || account.host.contains(&query)
+                    || account.kind.label().to_lowercase().contains(&query)
+            })
+            .map(|account| {
+                SearchResult::for_action(
+                    &self.kind,
+                    account.label.clone(),
+                    remote_account_open_address(account),
+                )
+                .with_subtitle(format!(
+                    "{} · {} · {}",
+                    account.kind.label(),
+                    account.host,
+                    account.health.label()
+                ))
+                .with_icon(ui::icons::icon_for_path(
+                    std::path::Path::new("remote-folder"),
+                    true,
+                ))
+            })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +324,25 @@ mod tests {
             Some(place_open_address(
                 PathBuf::from("/home/tester/Documents").as_path()
             ))
+        );
+    }
+
+    #[test]
+    fn remote_accounts_are_searchable_by_label_host_and_kind() {
+        let account = RemoteAccount {
+            id: accounts::AccountId::from("cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+            label: "Personal cloud".into(),
+            host: "cloud.example".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+        };
+        let provider = RemoteAccountSearchProvider::new(vec![account.clone()]);
+        for query in ["personal", "example", "nextcloud"] {
+            assert_eq!(provider.search(query).len(), 1, "{query}");
+        }
+        assert_eq!(
+            provider.search("personal")[0].action_address(),
+            Some(remote_account_open_address(&account))
         );
     }
 

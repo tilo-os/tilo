@@ -488,6 +488,12 @@ pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> boo
     mac.verify_slice(tag).is_ok()
 }
 
+/// Authenticate a DKG round against the complete pairing transcript.
+///
+/// # Errors
+///
+/// Returns an error if the payload nonce is invalid or the transcript cannot
+/// be encoded.
 pub fn pairing_transcript_mac(
     payload: &PairingPayload,
     direction: &str,
@@ -676,7 +682,8 @@ impl PairingHandshake {
         let name = rustls::pki_types::ServerName::try_from("qos-pairing.invalid").ok()?;
         let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
         let mut stream = rustls::StreamOwned::new(connection, tcp);
-        stream.write_all(&(bytes.len() as u32).to_be_bytes()).ok()?;
+        let frame_len = u32::try_from(bytes.len()).ok()?;
+        stream.write_all(&frame_len.to_be_bytes()).ok()?;
         stream.write_all(&bytes).ok()?;
         let mut len = [0; 4];
         stream.read_exact(&mut len).ok()?;
@@ -692,6 +699,11 @@ impl PairingHandshake {
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
     /// must already be a private directory; this constructor creates it as
     /// `0700` when absent and rejects symlinks or permissive directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the spool cannot be created securely or its durable
+    /// expiry metadata is invalid or cannot be persisted.
     pub fn durable(
         root: impl Into<PathBuf>,
         expires_at: SystemTime,
@@ -922,7 +934,7 @@ impl PairingHandshake {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .entry(key)
                     .or_default()
-                    .reply = Some((reply, PairingMac::from_bytes(mac)))
+                    .reply = Some((reply, PairingMac::from_bytes(mac)));
             }
             PairingBackend::Durable(backend) => {
                 let _ = Self::durable_update(backend, nonce, |state| {
@@ -979,15 +991,19 @@ impl PairingHandshake {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
-                let mut guard = inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let state = guard.get_mut(&key)?;
-                if state.pairer_round1.is_none() || state.reply.is_none() {
-                    return None;
-                }
-                let round1 = state.pairer_round1.take()?;
-                let (round2, mac) = state.reply.take()?;
+                let (round1, round2, mac) = {
+                    let mut guard = inner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let state = guard.get_mut(&key)?;
+                    if state.pairer_round1.is_none() || state.reply.is_none() {
+                        return None;
+                    }
+                    let round1 = state.pairer_round1.take()?;
+                    let (round2, mac) = state.reply.take()?;
+                    drop(guard);
+                    (round1, round2, mac)
+                };
                 Some((round1, round2, mac.into_bytes()?))
             }
             PairingBackend::Durable(backend) => {
@@ -1028,7 +1044,7 @@ impl PairingHandshake {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .entry(key)
                     .or_default()
-                    .host_round2 = Some((reply, PairingMac::from_bytes(mac)))
+                    .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
             }
             PairingBackend::Durable(backend) => {
                 let _ = Self::durable_update(backend, nonce, |state| {
@@ -1386,7 +1402,7 @@ impl InviteRedemptionAuthority {
                 || std::env::temp_dir().join(format!("qos-ui-test-{}", std::process::id())),
                 PathBuf::from,
             );
-            return Self::at(base.join("invite-redemption-authority"));
+            Self::at(base.join("invite-redemption-authority"))
         }
         #[cfg(not(test))]
         Err(IdentityFlowError::Io(std::io::Error::new(
@@ -1426,6 +1442,7 @@ impl InviteRedemptionAuthority {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(self.root.join("issue.lock"))?;
         for _ in 0..250 {
@@ -1472,42 +1489,40 @@ impl InviteRedemptionAuthority {
             file.take(33).read_to_end(&mut bytes)?;
             Ok(Some(bytes))
         };
-        let bytes = match read_existing()? {
-            Some(bytes) => bytes,
-            None => {
-                let mut key = zeroize::Zeroizing::new([0; 32]);
-                OsRng.fill_bytes(&mut *key);
-                let mut random = [0; 16];
-                OsRng.fill_bytes(&mut random);
-                let temporary = self
-                    .root
-                    .join(format!(".authority-key-{}.tmp", hex::encode(random)));
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&temporary)?;
-                file.write_all(&*key)?;
-                file.sync_all()?;
-                let published = std::fs::hard_link(&temporary, &path);
-                let _ = std::fs::remove_file(&temporary);
-                match published {
-                    Ok(()) => {
-                        std::fs::OpenOptions::new()
-                            .read(true)
-                            .open(&self.root)?
-                            .sync_all()?;
-                        zeroize::Zeroizing::new(key.to_vec())
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        read_existing()?.ok_or_else(|| {
-                            IdentityFlowError::Io(std::io::Error::other(
-                                "published invite authority key disappeared",
-                            ))
-                        })?
-                    }
-                    Err(error) => return Err(error.into()),
+        let bytes = if let Some(bytes) = read_existing()? {
+            bytes
+        } else {
+            let mut key = zeroize::Zeroizing::new([0; 32]);
+            OsRng.fill_bytes(&mut *key);
+            let mut random = [0; 16];
+            OsRng.fill_bytes(&mut random);
+            let temporary = self
+                .root
+                .join(format!(".authority-key-{}.tmp", hex::encode(random)));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(&*key)?;
+            file.sync_all()?;
+            let published = std::fs::hard_link(&temporary, &path);
+            let _ = std::fs::remove_file(&temporary);
+            match published {
+                Ok(()) => {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(&self.root)?
+                        .sync_all()?;
+                    zeroize::Zeroizing::new(key.to_vec())
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing()?
+                    .ok_or_else(|| {
+                        IdentityFlowError::Io(std::io::Error::other(
+                            "published invite authority key disappeared",
+                        ))
+                    })?,
+                Err(error) => return Err(error.into()),
             }
         };
         let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
@@ -1528,6 +1543,7 @@ impl InviteRedemptionAuthority {
         secret: [u8; 32],
         expires_unix: u64,
     ) -> Result<(), IdentityFlowError> {
+        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::{Read, Write};
         use std::os::unix::fs::OpenOptionsExt;
         // Serialize cleanup, quota accounting, and create-new publication
@@ -1576,7 +1592,6 @@ impl InviteRedemptionAuthority {
                 "invite redemption authority is full",
             )));
         }
-        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         let secret = zeroize::Zeroizing::new(secret);
         let key = self.master_key()?;
         let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
@@ -1597,7 +1612,10 @@ impl InviteRedemptionAuthority {
             .map_err(|_| {
                 IdentityFlowError::SigningFailed("invite authority encryption failed".into())
             })?;
-        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(32 + ciphertext.len()));
+        let record_capacity = 32usize.checked_add(ciphertext.len()).ok_or_else(|| {
+            IdentityFlowError::EncodeFailed("invite authority record is too large".into())
+        })?;
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(record_capacity));
         bytes.extend_from_slice(&expires_unix.to_be_bytes());
         bytes.extend_from_slice(&nonce);
         bytes.extend_from_slice(&ciphertext);
@@ -1626,6 +1644,9 @@ impl InviteRedemptionAuthority {
         capability: &[u8],
         now_unix: u64,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
+        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let capability: [u8; 32] = capability.try_into().map_err(|_| {
             IdentityFlowError::DecodeFailed("redemption capability must be 32 bytes".into())
         })?;
@@ -1647,8 +1668,6 @@ impl InviteRedemptionAuthority {
             .read(true)
             .open(&self.root)?
             .sync_all()?;
-        use std::io::Read;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -1672,14 +1691,20 @@ impl InviteRedemptionAuthority {
                 "redemption record is corrupt".into(),
             ));
         }
-        let expiry =
-            u64::from_be_bytes(bytes[..8].try_into().map_err(|_| {
-                IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
-            })?);
+        let expiry = u64::from_be_bytes(
+            bytes
+                .get(..8)
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                })?
+                .try_into()
+                .map_err(|_| {
+                    IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                })?,
+        );
         if expiry <= now_unix {
             return Err(IdentityFlowError::InviteExpired);
         }
-        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         let key = self.master_key()?;
         let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
         let digest = Sha512::digest(capability);
@@ -1688,9 +1713,16 @@ impl InviteRedemptionAuthority {
         aad.extend_from_slice(&expiry.to_be_bytes());
         let plaintext = cipher
             .decrypt(
-                (&bytes[8..32]).into(),
+                bytes
+                    .get(8..32)
+                    .ok_or_else(|| {
+                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                    })?
+                    .into(),
                 Payload {
-                    msg: &bytes[32..],
+                    msg: bytes.get(32..).ok_or_else(|| {
+                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                    })?,
                     aad: &aad,
                 },
             )
@@ -1726,6 +1758,7 @@ pub fn mint_invite(
     let channel_name = channel_name.into();
     let inviter_label = inviter_label.into();
     if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
+        let authority = InviteRedemptionAuthority::at(&locator.authority_root)?;
         return mint_invite_at(
             channel,
             channel_name,
@@ -1736,22 +1769,25 @@ pub fn mint_invite(
             expires_at,
             locator.endpoint.clone(),
             locator.certificate.clone(),
-            InviteRedemptionAuthority::at(&locator.authority_root)?,
+            &authority,
         );
     }
     #[cfg(test)]
-    return mint_invite_at(
-        channel,
-        channel_name,
-        owner_pubkey,
-        owner_signing_key,
-        inviter_label,
-        role,
-        expires_at,
-        String::new(),
-        Vec::new(),
-        invite_redemption_authority()?,
-    );
+    {
+        let authority = invite_redemption_authority()?;
+        mint_invite_at(
+            channel,
+            channel_name,
+            owner_pubkey,
+            owner_signing_key,
+            inviter_label,
+            role,
+            expires_at,
+            String::new(),
+            Vec::new(),
+            &authority,
+        )
+    }
     #[cfg(not(test))]
     Err(IdentityFlowError::DecodeFailed(
         "invite redemption broker unavailable".into(),
@@ -1790,6 +1826,7 @@ pub fn mint_invite_for_broker(
             "invite broker certificate is empty or too large".into(),
         ));
     }
+    let authority = InviteRedemptionAuthority::at(authority_root)?;
     mint_invite_at(
         channel,
         channel_name.into(),
@@ -1800,7 +1837,7 @@ pub fn mint_invite_for_broker(
         expires_at,
         redemption_endpoint,
         redemption_certificate,
-        InviteRedemptionAuthority::at(authority_root)?,
+        &authority,
     )
 }
 
@@ -1815,7 +1852,7 @@ fn mint_invite_at(
     expires_at: SystemTime,
     redemption_endpoint: String,
     redemption_certificate: Vec<u8>,
-    authority: InviteRedemptionAuthority,
+    authority: &InviteRedemptionAuthority,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
@@ -2973,12 +3010,12 @@ mod tests {
 
     #[test]
     fn invite_capability_is_one_use() {
-        let (owner_sk, owner_pk) = generate_keypair();
+        let (owner_signing_key, owner_verifying_key) = generate_keypair();
         let env = mint_invite(
             ChannelId::new(),
             "engineering",
-            owner_pk,
-            &owner_sk,
+            owner_verifying_key,
+            &owner_signing_key,
             "Alice",
             Role::Editor,
             SystemTime::now() + Duration::from_secs(3600),

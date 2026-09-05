@@ -423,7 +423,7 @@ fn authenticate_service(
         let launch = context.ok_or(ServiceError::AppHostUnauthorized)?;
         write_app_host_handoff(stream, launch.app_id).map_err(|source| {
             ServiceError::OpenFailed {
-            path: path.to_path_buf(),
+                path: path.to_path_buf(),
                 source,
             }
         })?;

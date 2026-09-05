@@ -215,6 +215,10 @@ pub trait SyncTransport: Send {
     fn pull(&mut self, peer: &PeerId) -> SyncResult<SyncState>;
 
     /// Restore public connection metadata after an app restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the transport cannot restore the peer's route.
     fn restore_peer(&mut self, _peer: &PeerDescriptor) -> SyncResult<()> {
         Err(SyncError::NotImplemented)
     }

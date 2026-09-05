@@ -404,6 +404,75 @@ impl Flex {
             scene.stroke(&Stroke::new(w), transform, c, None, &self.shape(s.radius));
         }
     }
+
+    fn dispatch_child_event(&mut self, dispatch: &mut EventDispatch<'_>, node_id: NodeId) -> bool {
+        let Ok(child_nodes) = dispatch.taffy.children(node_id) else {
+            return false;
+        };
+        if let Some(index) = self
+            .children
+            .iter()
+            .position(|child| child.wants_pointer_capture())
+            && let (Some(&child_node), Some(child)) =
+                (child_nodes.get(index), self.children.get_mut(index))
+        {
+            child.handle_event(
+                dispatch.event,
+                dispatch.scale_factor,
+                dispatch.modifiers,
+                dispatch.state,
+                dispatch.path,
+                dispatch.handled,
+                dispatch.focus_target,
+                child_node,
+                dispatch.taffy,
+            );
+            return true;
+        }
+        self.dispatch_children_by_layer(true, dispatch, &child_nodes);
+        if !*dispatch.handled {
+            self.dispatch_children_by_layer(false, dispatch, &child_nodes);
+        }
+        false
+    }
+
+    fn dispatch_children_by_layer(
+        &mut self,
+        floating: bool,
+        dispatch: &mut EventDispatch<'_>,
+        child_nodes: &[NodeId],
+    ) {
+        for (child, &child_node) in self.children.iter_mut().zip(child_nodes) {
+            if child.is_floating() != floating {
+                continue;
+            }
+            child.handle_event(
+                dispatch.event,
+                dispatch.scale_factor,
+                dispatch.modifiers,
+                dispatch.state,
+                dispatch.path,
+                dispatch.handled,
+                dispatch.focus_target,
+                child_node,
+                dispatch.taffy,
+            );
+            if *dispatch.handled {
+                break;
+            }
+        }
+    }
+}
+
+struct EventDispatch<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: &'a winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    taffy: &'a TaffyTree<()>,
 }
 
 impl Widget for Flex {
@@ -665,66 +734,19 @@ impl Widget for Flex {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Children first so inner interactive widgets win.
-        if let Ok(child_nodes) = taffy.children(node_id) {
-            if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture())
-                && let (Some(&cn), Some(child)) = (child_nodes.get(idx), self.children.get_mut(idx))
-            {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    cn,
-                    taffy,
-                );
+        {
+            let mut dispatch = EventDispatch {
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            };
+            if self.dispatch_child_event(&mut dispatch, node_id) {
                 return;
-            }
-            // Floating children (e.g. an on-video "Skip" button) get first dibs
-            // so a click on them isn't stolen by the surface beneath; a miss
-            // falls through to the in-flow children below.
-            for (cw, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
-                if !cw.is_floating() {
-                    continue;
-                }
-                cw.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    cn,
-                    taffy,
-                );
-                if *handled {
-                    break;
-                }
-            }
-            if !*handled {
-                for (cw, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
-                    if cw.is_floating() {
-                        continue;
-                    }
-                    cw.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                    if *handled {
-                        break;
-                    }
-                }
             }
         }
 
