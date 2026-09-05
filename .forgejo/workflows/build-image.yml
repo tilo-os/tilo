@@ -160,9 +160,26 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
             | jq -er .value)
           echo "::add-mask::$jwt"
-          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
-            --header "Authorization: Bearer $jwt" \
-            "$COLLECTION_URL" -o "$work/apps.tar.gz"
+          case "$COLLECTION_URL" in
+            https://*)
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
+                --header "Authorization: Bearer $jwt" \
+                "$COLLECTION_URL" -o "$work/apps.tar.gz"
+              ;;
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+              # The in-cluster Forgejo service is reached over the cluster's
+              # private network. Do not follow redirects from this allowlisted
+              # HTTP origin, and never permit arbitrary cleartext package URLs.
+              curl --proto '=http' --fail --retry 3 \
+                --header "Authorization: Bearer $jwt" \
+                "$COLLECTION_URL" -o "$work/apps.tar.gz"
+              ;;
+            *)
+              printf 'unsupported app collection URL origin\n' >&2
+              exit 1
+              ;;
+          esac
           printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
             | sha256sum --check --strict
           found=0
@@ -234,9 +251,23 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
             | jq -er .value)
           echo "::add-mask::$jwt"
-          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
-            --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
-            --output "$work/desktop.tar.gz"
+          case "$PAYLOAD_URL" in
+            https://*)
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
+                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --output "$work/desktop.tar.gz"
+              ;;
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+              curl --proto '=http' --fail --retry 3 \
+                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --output "$work/desktop.tar.gz"
+              ;;
+            *)
+              printf 'unsupported desktop payload URL origin\n' >&2
+              exit 1
+              ;;
+          esac
           printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
             | sha256sum --check --strict
           expected=$'SHA256SUMS\nmanifest.json\nqos-launcher\nqos-unlock-helper\nshell'
