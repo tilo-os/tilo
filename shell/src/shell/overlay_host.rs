@@ -7150,7 +7150,8 @@ impl ShellOverlayHost {
     /// tab; `Super+K`/`Super+Space`/`Alt+Space` open in global scope
     /// (`Alt+Space` is the nested-Wayland-client substitute, since a
     /// host DE running qOS as a client swallows Super first).
-    /// `Super+H` toggles workspace history; `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
+    /// `Super+H` toggles workspace history; `Alt+Tab` changes windows,
+    /// `Ctrl+Tab` changes tabs, `Super+Tab` toggles the overview; Esc closes the top
     /// overlay. Only called for a `Pressed` `KeyboardInput`.
     fn capture_shortcut_chord(
         &mut self,
@@ -7542,6 +7543,21 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Keep the two conventional navigation families as stable aliases
+        // even when somebody experiments with the editable bindings. This
+        // also makes an old/partial settings file harmless after upgrade.
+        if alt_down && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let direction = if shift_down { -1 } else { 1 };
+            let _ = self.step_focus_along_strip(direction);
+            *handled = true;
+            return true;
+        }
+        if mstate.control_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let direction = if shift_down { -1 } else { 1 };
+            let _ = self.cycle_focused_tab(direction);
+            *handled = true;
+            return true;
+        }
         if self.handle_overview_keyboard_nav(logical_key, handled) {
             return true;
         }
@@ -7743,7 +7759,8 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if matches!(logical_key, Key::Named(NamedKey::Tab))
+        if super_down
+            && matches!(logical_key, Key::Named(NamedKey::Tab))
             && let Some(chrome) = self.chrome.clone()
         {
             let mut st = chrome.borrow_mut();
@@ -7808,9 +7825,10 @@ impl ShellOverlayHost {
             }
             return true;
         }
-        // Shift+ArrowUp/Down move focus between strips —
+        // Super+Shift+ArrowUp/Down move focus between strips —
         // workspaces already own the unshifted pair.
-        if shift_down
+        if super_down
+            && shift_down
             && matches!(
                 logical_key,
                 Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
@@ -7828,8 +7846,10 @@ impl ShellOverlayHost {
             }
             return true;
         }
-        // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
-        if matches!(logical_key, Key::Named(NamedKey::ArrowUp))
+        // Super+ArrowUp / Super+ArrowDown — switch active workspace. Ctrl's
+        // arrow chords stay with terminals, editors and text fields.
+        if super_down
+            && matches!(logical_key, Key::Named(NamedKey::ArrowUp))
             && let Some(chrome) = self.chrome.clone()
         {
             let mut st = chrome.borrow_mut();
@@ -7838,7 +7858,8 @@ impl ShellOverlayHost {
             }
             return true;
         }
-        if matches!(logical_key, Key::Named(NamedKey::ArrowDown))
+        if super_down
+            && matches!(logical_key, Key::Named(NamedKey::ArrowDown))
             && let Some(chrome) = self.chrome.clone()
         {
             let mut st = chrome.borrow_mut();
@@ -11577,7 +11598,7 @@ impl ShellOverlayHost {
 
     fn shortcut_help_button_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x1 - 52.0,
+            self.rect.x1 - 156.0,
             self.rect.y1 - 52.0,
             self.rect.x1 - 16.0,
             self.rect.y1 - 16.0,
@@ -11626,10 +11647,11 @@ impl ShellOverlayHost {
             &RoundedRect::from_rect(rect, rect.height() / 2.0),
         );
         let size = theme.tokens.typography.scale.sm;
-        let (w, h) = text_renderer.measure("?", size, None);
+        let label = "Keyboard shortcuts  F1";
+        let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text_weighted(
             scene,
-            "?",
+            label,
             size,
             colors.text_primary,
             transform.pre_translate(

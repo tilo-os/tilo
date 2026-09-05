@@ -833,16 +833,40 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn ctrl_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn ctrl_shift_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string(), "Shift".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn alt_shift_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Shift".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
             (ShortcutAction::ShortcutHelp, super_chord("/")),
-            (ShortcutAction::FocusPreviousWindow, super_chord("left")),
-            (ShortcutAction::FocusNextWindow, super_chord("right")),
-            (ShortcutAction::PreviousTab, super_chord("[")),
-            (ShortcutAction::NextTab, super_chord("]")),
+            (ShortcutAction::FocusPreviousWindow, alt_shift_chord("tab")),
+            (ShortcutAction::FocusNextWindow, alt_chord("tab")),
+            (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
+            (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::PreviousStrip, super_shift_chord("up")),
             (ShortcutAction::NextStrip, super_shift_chord("down")),
             (ShortcutAction::PreviousWorkspace, super_chord("up")),
@@ -1043,8 +1067,17 @@ mod tests {
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(
             cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
-            "Super+Left"
+            "Alt+Shift+Tab"
         );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
+            "Alt+Tab"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::PreviousTab].display(),
+            "Ctrl+Shift+Tab"
+        );
+        assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
     }
 
     #[test]
