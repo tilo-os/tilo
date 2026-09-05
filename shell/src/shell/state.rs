@@ -5984,6 +5984,47 @@ impl WorkspaceTree {
         None
     }
 
+    /// Delete one tab from the replicated document, deleting its group as
+    /// well when that tab was the group's last member. The in-memory tree is
+    /// still the source of truth; this is the narrow document mirror used by
+    /// user-driven close so a later merge cannot resurrect the closed tab.
+    pub(crate) fn doc_remove_tab(
+        &mut self,
+        strip_id: StripId,
+        group_id: GroupId,
+        tab_id: TabId,
+        remove_group: bool,
+    ) -> bool {
+        use automerge::{ROOT, transaction::Transactable};
+
+        if !remove_group {
+            let Some((_, tabs, _, tab_idx)) = self.locate_tab(strip_id, tab_id) else {
+                return false;
+            };
+            return self.doc.delete(&tabs, tab_idx).is_ok();
+        }
+
+        let Some((_, ws_idx, strip_idx, group_idx)) = self.locate_group(group_id) else {
+            return false;
+        };
+        let Some(workspaces) = Self::doc_obj(&self.doc, &ROOT, "workspaces") else {
+            return false;
+        };
+        let Some(workspace) = Self::doc_obj(&self.doc, &workspaces, ws_idx) else {
+            return false;
+        };
+        let Some(strips) = Self::doc_obj(&self.doc, &workspace, "strips") else {
+            return false;
+        };
+        let Some(strip) = Self::doc_obj(&self.doc, &strips, strip_idx) else {
+            return false;
+        };
+        let Some(groups) = Self::doc_obj(&self.doc, &strip, "window_groups") else {
+            return false;
+        };
+        self.doc.delete(&groups, group_idx).is_ok()
+    }
+
     /// Mirror a `move_tab_across_strips` mutation into the doc: captures
     /// the tab's scalars from the source, deletes it there, and appends a
     /// fresh map to the destination strip's first window-group's `tabs`.

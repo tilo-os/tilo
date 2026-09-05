@@ -30,9 +30,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{
     ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
-use winit::keyboard::{
-    Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey, SmolStr,
-};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use super::devices::{ModeInfo, filter_kms_nodes, order_by_connected_connectors};
 #[cfg(test)]
@@ -1833,7 +1832,7 @@ impl KeyboardXkb {
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
         let input = keysym_to_winit_key(sym.raw()).map(|logical| {
             let text = text_for(sym.key_char(), new_mods);
-            keyboard_input_event(logical, text, pressed)
+            keyboard_input_event(logical, text, pressed, keycode.raw().saturating_sub(8))
         });
 
         KeyOutcome {
@@ -1861,6 +1860,11 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         keysyms::KEY_Page_Up | keysyms::KEY_KP_Page_Up => Some(NamedKey::PageUp),
         keysyms::KEY_Page_Down | keysyms::KEY_KP_Page_Down => Some(NamedKey::PageDown),
         keysyms::KEY_space => Some(NamedKey::Space),
+        keysyms::KEY_Print => Some(NamedKey::PrintScreen),
+        keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => Some(NamedKey::Shift),
+        keysyms::KEY_Control_L | keysyms::KEY_Control_R => Some(NamedKey::Control),
+        keysyms::KEY_Alt_L | keysyms::KEY_Alt_R => Some(NamedKey::Alt),
+        keysyms::KEY_Super_L | keysyms::KEY_Super_R => Some(NamedKey::Super),
         // The function row. Without these, media/brightness keys reach `key_char()` (no character for them) and the press is dropped before any handler sees it — why volume-up did nothing on real hardware.
         keysyms::KEY_XF86AudioRaiseVolume => Some(NamedKey::AudioVolumeUp),
         keysyms::KEY_XF86AudioLowerVolume => Some(NamedKey::AudioVolumeDown),
@@ -1898,14 +1902,19 @@ fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
 
 /// Build a `WindowEvent::KeyboardInput`. Mirrors the zero-init workaround
 /// in `compositor::native::keyboard_input_event`/`overlay_host::key_press`: winit's `pub(crate)` `platform_specific` field tolerates the zeroed struct.
-fn keyboard_input_event(logical_key: Key, text: Option<SmolStr>, pressed: bool) -> WindowEvent {
+fn keyboard_input_event(
+    logical_key: Key,
+    text: Option<SmolStr>,
+    pressed: bool,
+    evdev_keycode: u32,
+) -> WindowEvent {
     // SAFETY: every public field of `KeyEvent` is overwritten below, and
     // the only non-public field (`platform_specific: KeyEventExtra`)
     // tolerates the all-zero bit pattern — the same invariant the two
     // existing `KeyEvent`-building helpers in this crate rely on.
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    ev.physical_key = PhysicalKey::from_scancode(evdev_keycode);
     ev.location = KeyLocation::Standard;
     ev.state = if pressed {
         ElementState::Pressed
@@ -2224,6 +2233,10 @@ mod tests {
             keysym_to_winit_key(ks::KEY_space),
             Some(Key::Named(NamedKey::Space))
         ));
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_Print),
+            Some(Key::Named(NamedKey::PrintScreen))
+        );
         // Letter keysyms carry case from the keysym itself (US 'a' vs 'A').
         match keysym_to_winit_key(ks::KEY_a) {
             Some(Key::Character(s)) => assert_eq!(s.as_str(), "a"),
@@ -2233,9 +2246,14 @@ mod tests {
             Some(Key::Character(s)) => assert_eq!(s.as_str(), "A"),
             other => panic!("KEY_A mapped to {other:?}"),
         }
-        // Bare modifier keysyms have no logical key — their effect rides on the separate `ModifiersChanged` event instead.
-        assert!(keysym_to_winit_key(ks::KEY_Control_L).is_none());
-        assert!(keysym_to_winit_key(ks::KEY_Shift_L).is_none());
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_Control_L),
+            Some(Key::Named(NamedKey::Control))
+        );
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_Shift_L),
+            Some(Key::Named(NamedKey::Shift))
+        );
     }
 
     /// The function row has to survive the keysym translation — these keysyms have no character, so anything not in this table falls through `key_char()` and is dropped before a handler runs.
@@ -2289,11 +2307,12 @@ mod tests {
             .modifiers_changed
             .expect("shift press should flip the modifier mask");
         assert!(m.state().shift_key(), "left shift down -> shift active");
-        // The bare modifier produces no logical key event.
-        assert!(
-            down.input.is_none(),
-            "bare modifier yields no KeyboardInput"
-        );
+        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("modifier key input")
+        else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+        assert_eq!(event.physical_key.to_scancode(), Some(42));
 
         let up = kbd.process(shift, false);
         let m = up
@@ -2324,6 +2343,7 @@ mod tests {
                 );
                 assert_eq!(event.state, ElementState::Pressed);
                 assert!(event.text.is_some(), "typed alpha key carries text");
+                assert_eq!(event.physical_key.to_scancode(), Some(30));
             }
             other => panic!("expected KeyboardInput, got {other:?}"),
         }
@@ -2348,6 +2368,7 @@ mod tests {
             panic!("expected keyboard input")
         };
         assert_eq!(event.logical_key, Key::Character("z".into()));
+        assert_eq!(event.physical_key.to_scancode(), Some(21));
     }
 
     #[test]

@@ -669,6 +669,8 @@ impl RichInputConfig {
             Some("ralt") => Some("compose:ralt"),
             Some("menu") => Some("compose:menu"),
             Some("caps") => Some("compose:caps"),
+            Some("rwin") => Some("compose:rwin"),
+            Some("lwin") => Some("compose:lwin"),
             _ => None,
         } {
             options.push(option.into());
