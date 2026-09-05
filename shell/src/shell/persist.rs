@@ -130,6 +130,12 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut durable = tree.clone();
+    // A Wayland surface id belongs to this compositor process.  Persisting a
+    // `Foreign` tab makes that dead id look like a real window after the next
+    // login; when the application is launched again its new surface is added
+    // beside the stale one.  Keep explicit symbolic/continuation placeholders,
+    // but never put a live client binding on disk.
+    strip_foreign_surfaces(&mut durable);
     for ws in &mut durable.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
@@ -163,6 +169,11 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Normalise so the next write stamps the current version rather
     // than carrying an old one forward for ever.
     tree.schema_version = STATE_SCHEMA_VERSION;
+    // Repair state written by older builds which serialised process-local
+    // Wayland surface ids.  This must happen before seeding the room document,
+    // otherwise the dead window is immediately promoted back into the
+    // authoritative topology.
+    strip_foreign_surfaces(&mut tree);
     // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
     // nothing and existing workspaces never propagate after restart.
     tree.seed_doc_from_cache();
@@ -170,6 +181,79 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
+}
+
+/// Remove live compositor-client bindings from a durable tree and repair the
+/// focus/index structures that referred to them.
+///
+/// `PeerWindow` and `AppPlaceholder` are intentionally retained: unlike a
+/// `Foreign` tile they are symbolic records with no process-local object id,
+/// and are the explicit continuation contract.
+fn strip_foreign_surfaces(tree: &mut WorkspaceTree) {
+    use crate::shell::state::TileContent;
+
+    let mut removed_tabs = std::collections::HashSet::new();
+    let mut removed_surfaces = std::collections::HashSet::new();
+
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                group.tabs.retain(|tab| {
+                    if let TileContent::Foreign { surface_id, .. } = &tab.tile {
+                        removed_tabs.insert(tab.id);
+                        removed_surfaces.insert(*surface_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if !group.tabs.iter().any(|tab| tab.id == group.active_tab) {
+                    group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
+                }
+            }
+            strip.window_groups.retain(|group| !group.tabs.is_empty());
+        }
+        workspace
+            .shared_surfaces
+            .retain(|surface, _| !removed_surfaces.contains(surface));
+        for collaborator in &mut workspace.collaborators {
+            if collaborator
+                .active_tab
+                .is_some_and(|tab| removed_tabs.contains(&tab))
+            {
+                collaborator.active_tab = None;
+            }
+        }
+    }
+
+    let valid_active_groups: std::collections::HashSet<_> = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .map(move |group| (strip.id, group.id))
+        })
+        .collect();
+    tree.active_group
+        .retain(|strip_id, group_id| valid_active_groups.contains(&(*strip_id, *group_id)));
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            if !tree.active_group.contains_key(&strip.id)
+                && let Some(group) = strip.window_groups.first()
+            {
+                tree.active_group.insert(strip.id, group.id);
+            }
+        }
+    }
+    tree.continuation_tabs
+        .retain(|tab| !removed_tabs.contains(tab));
+    tree.continuation_owned_tabs
+        .retain(|tab, _| !removed_tabs.contains(tab));
+    tree.continuation_file_references
+        .retain(|tab, _| !removed_tabs.contains(tab));
 }
 
 /// A missing file is the first boot and carries no notice; anything
@@ -223,6 +307,93 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn foreign_tabs(tree: &WorkspaceTree) -> Vec<(u64, u64)> {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match &tab.tile {
+                crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                    Some((tab.id, *surface_id))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn live_foreign_surfaces_never_survive_a_state_round_trip() {
+        use crate::shell::state::{Tab, TileContent};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let survivor = group.tabs[0].id;
+        group.tabs.push(Tab {
+            id: 90_001,
+            title: "External editor".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.example.Editor".into(),
+                surface_id: 0xfeed_beef,
+            },
+        });
+        group.active_tab = 90_001;
+
+        save_tree_to(&tree, &path).expect("save");
+        let loaded = load_tree_from(&path).expect("load");
+
+        assert!(foreign_tabs(&loaded).is_empty());
+        let loaded_group = &loaded.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(loaded_group.active_tab, survivor);
+        assert!(
+            loaded_group
+                .tabs
+                .iter()
+                .any(|tab| tab.id == loaded_group.active_tab),
+            "removing a live surface must repair the selected tab"
+        );
+    }
+
+    #[test]
+    fn load_repairs_legacy_foreign_tabs_but_keeps_explicit_placeholders() {
+        use crate::shell::state::{Tab, TileContent};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("legacy-state.json");
+        let mut legacy = WorkspaceTree::bootstrap_default();
+        let group = &mut legacy.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: 90_002,
+            title: "Stale client".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.example.Editor".into(),
+                surface_id: 1234,
+            },
+        });
+        group.tabs.push(Tab {
+            id: 90_003,
+            title: "Continue here".into(),
+            tile: TileContent::PeerWindow {
+                app_id: "org.example.Editor".into(),
+                label: "Continue here".into(),
+                note: String::new(),
+            },
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
+            .expect("stage legacy state");
+
+        let loaded = load_tree_from(&path).expect("load legacy state");
+        assert!(foreign_tabs(&loaded).is_empty());
+        assert!(
+            loaded.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter()
+                .any(|tab| matches!(&tab.tile, TileContent::PeerWindow { .. }))
+        );
+    }
 
     /// Presence must not survive the process that observed it — a
     /// persisted roster would paint people who aren't there. Safe to
