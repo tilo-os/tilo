@@ -102,7 +102,7 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
 #[must_use]
 pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
     if going_to_sleep {
-        PowerSignal::Lock
+        PowerSignal::PreparingForSleep
     } else {
         PowerSignal::ResumedFromSleep
     }
@@ -126,6 +126,12 @@ pub struct PowerService {
     /// The logind `idle:sleep` lock mirroring the registry (present iff the registry currently
     /// holds any inhibitor).
     idle_sleep_lock: Option<LogindInhibitor>,
+    /// Delay inhibitor held while awake. It is released only after the
+    /// compositor confirms that locked chrome has been submitted.
+    sleep_delay_lock: Option<LogindInhibitor>,
+    sleep_lock_drawn: bool,
+    preparing_for_sleep: bool,
+    suspend_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl PowerService {
@@ -160,6 +166,7 @@ impl PowerService {
                 None
             }
         };
+        let sleep_delay_lock = take_sleep_delay_lock(&logind).await;
 
         Ok(Self {
             logind,
@@ -172,6 +179,10 @@ impl PowerService {
             last_lid_closed: None,
             _delegate_lock: delegate,
             idle_sleep_lock: None,
+            sleep_delay_lock,
+            sleep_lock_drawn: false,
+            preparing_for_sleep: false,
+            suspend_task: None,
         })
     }
 
@@ -208,6 +219,7 @@ impl PowerService {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    self.reap_suspend_task().await;
                     self.drain_commands().await;
                     self.mirror_inhibit_registry().await;
                     self.poll_lid().await;
@@ -217,7 +229,7 @@ impl PowerService {
                     }
                 }
                 Some(msg) = next_or_pending(&mut sleep_stream) => {
-                    self.handle_prepare_for_sleep(&msg);
+                    self.handle_prepare_for_sleep(&msg).await;
                 }
                 Some(changed) = next_or_pending(&mut profile_stream) => {
                     match changed.get().await {
@@ -278,7 +290,7 @@ impl PowerService {
         }
         if suspend {
             info!(target: "qos::power", percent = snap.percent, "critical battery: suspending");
-            self.do_suspend().await;
+            self.start_suspend().await;
         }
     }
 
@@ -297,7 +309,7 @@ impl PowerService {
         match lid_edge_effect(prev, closed, &self.policy) {
             Effect::Suspend => {
                 info!(target: "qos::power", "lid closed: suspending");
-                self.do_suspend().await;
+                self.start_suspend().await;
             }
             Effect::Lock => {
                 info!(target: "qos::power", "lid closed: locking");
@@ -307,15 +319,21 @@ impl PowerService {
         }
     }
 
-    fn handle_prepare_for_sleep(&self, msg: &zbus::Message) {
+    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message) {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
                 info!(target: "qos::power", "system preparing for sleep: locking session");
+                self.preparing_for_sleep = true;
+                self.bridge.push_signal(sleep_reaction(true));
+                self.release_sleep_delay_if_ready();
             } else {
                 info!(target: "qos::power", "resumed from sleep");
+                self.preparing_for_sleep = false;
+                self.sleep_lock_drawn = false;
+                self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
+                self.bridge.push_signal(sleep_reaction(false));
             }
-            self.bridge.push_signal(sleep_reaction(going_to_sleep));
         }
     }
 
@@ -323,7 +341,11 @@ impl PowerService {
     async fn drain_commands(&mut self) {
         for cmd in self.bridge.drain_commands() {
             match cmd {
-                PowerCommand::Suspend => self.do_suspend().await,
+                PowerCommand::Suspend => self.start_suspend().await,
+                PowerCommand::LockScreenDrawn => {
+                    self.sleep_lock_drawn = true;
+                    self.release_sleep_delay_if_ready();
+                }
                 PowerCommand::UpdatePolicy(policy) => self.policy = policy,
             }
         }
@@ -358,15 +380,63 @@ impl PowerService {
 
     /// Issue the real suspend, if logind says it can. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
-    async fn do_suspend(&self) {
+    async fn start_suspend(&mut self) {
+        if self.suspend_task.is_some() {
+            return;
+        }
         match self.logind.can_suspend().await {
             Ok(v) if v == "yes" => {
-                if let Err(e) = self.logind.suspend(false).await {
-                    warn!(target: "qos::power", error = %e, "logind Suspend failed");
-                }
+                // Ask the compositor to lock before invoking logind. The delay
+                // inhibitor remains held until the drawn-frame acknowledgement,
+                // including for externally initiated sleep.
+                self.sleep_lock_drawn = false;
+                self.bridge.push_signal(PowerSignal::PreparingForSleep);
+                let logind = self.logind.clone();
+                self.suspend_task = Some(tokio::spawn(async move {
+                    if let Err(e) = logind.suspend(false).await {
+                        warn!(target: "qos::power", error = %e, "logind Suspend failed");
+                    }
+                }));
             }
             Ok(v) => warn!(target: "qos::power", verdict = %v, "logind says cannot suspend"),
             Err(e) => warn!(target: "qos::power", error = %e, "CanSuspend failed"),
+        }
+    }
+
+    async fn reap_suspend_task(&mut self) {
+        if self
+            .suspend_task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+            && let Some(task) = self.suspend_task.take()
+            && let Err(error) = task.await
+        {
+            warn!(target: "qos::power", %error, "logind Suspend task failed");
+        }
+    }
+
+    fn release_sleep_delay_if_ready(&mut self) {
+        if self.preparing_for_sleep && self.sleep_lock_drawn {
+            debug!(target: "qos::power", "lock frame drawn; releasing sleep delay inhibitor");
+            self.sleep_delay_lock = None;
+        }
+    }
+}
+
+async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor> {
+    match logind
+        .inhibit(
+            "sleep",
+            "qOS compositor",
+            "Draw lock screen before sleep",
+            "delay",
+        )
+        .await
+    {
+        Ok(lock) => Some(lock),
+        Err(error) => {
+            warn!(target: "qos::power", %error, "sleep delay inhibitor unavailable");
+            None
         }
     }
 }
@@ -418,7 +488,7 @@ mod tests {
 
     #[test]
     fn sleep_always_locks_before_resume_is_reported() {
-        assert_eq!(sleep_reaction(true), PowerSignal::Lock);
+        assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
         assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
     }
 
