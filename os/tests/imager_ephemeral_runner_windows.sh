@@ -25,9 +25,9 @@ has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
   && has "$script" 'Assert-qOSPrivateMetadataFile $TokenFile' \
   && has "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)' \
   && has "$script" 'if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/"))' \
-  && has "$script" '$Label -cne "windows"' \
+  && has "$script" '$Label -cne "imager-windows-x86_64"' \
   && has "$script" '"one-job", "--url"' \
-  && has "$script" '"--token-url", $TokenUrl, "--label", "windows:host", "--wait"' \
+  && has "$script" '"--token-url", $TokenUrl, "--label", "imager-windows-x86_64:host", "--wait"' \
   && has "$script" 'if (-not $Process.WaitForExit($MaxWait * 1000))' \
   && has "$script" 'taskkill.exe" /PID $Process.Id /T /F' \
   && has "$script" 'if (-not $Process.HasExited) { $Process.Kill() }' \
