@@ -51,6 +51,16 @@ fn tile_is_selected(tile_ix: u32) -> bool {
     let word = words[(tile_ix >> 5u) & 3u];
     return (word & (1u << (tile_ix & 31u))) != 0u;
 }
+
+#ifdef active_bins
+// The active-bin list is packed after the used tile-selector words in the
+// fixed 8 KiB uniform. Access it as scalar words without changing the bind
+// group layout or the selector storage used by `tile_is_selected`.
+fn selected_tile_word(word_ix: u32) -> u32 {
+    let words = selected_tiles[word_ix >> 2u];
+    return words[word_ix & 3u];
+}
+#endif
 #endif
 
 
@@ -182,6 +192,9 @@ fn main(
     }
     let failed = workgroupUniformLoad(&sh_part_count[0]);
     if failed != 0u {
+        // In the active-bin permutation, wg_id.x is the physical dispatch
+        // index rather than a native x bin. It still identifies the one
+        // workgroup which must forward failure to path_tiling_setup.
         if wg_id.x == 0u && local_id.x == 0u {
             // propagate PATH_COUNT failure to path_tiling_setup so it doesn't need to bind config
             atomicOr(&bump.failed, failed);
@@ -189,17 +202,28 @@ fn main(
         return;
     }
     let width_in_bins = (config.width_in_tiles + N_TILE_X - 1u) / N_TILE_X;
+#ifdef active_bins
+    let tile_count = config.width_in_tiles * config.height_in_tiles;
+    let selector_words = (tile_count + 31u) / 32u;
+    let bin_ix = selected_tile_word(selector_words + wg_id.x);
+    let bin_x = bin_ix % width_in_bins;
+    let bin_y = bin_ix / width_in_bins;
+#else
     let bin_ix = width_in_bins * wg_id.y + wg_id.x;
+    let bin_x = wg_id.x;
+    let bin_y = wg_id.y;
+#endif
     let n_partitions = (config.n_drawobj + N_TILE - 1u) / N_TILE;
 
     // Coordinates of the top left of this bin, in tiles.
-    let bin_tile_x = N_TILE_X * wg_id.x;
-    let bin_tile_y = N_TILE_Y * wg_id.y;
+    let bin_tile_x = N_TILE_X * bin_x;
+    let bin_tile_y = N_TILE_Y * bin_y;
 
     let tile_x = local_id.x % N_TILE_X;
     let tile_y = local_id.x / N_TILE_X;
     let this_tile_ix = (bin_tile_y + tile_y) * config.width_in_tiles + bin_tile_x + tile_x;
 #ifdef sparse
+#ifndef active_bins
     // This is workgroup-uniform, so an empty bin can return without making
     // any later workgroup barrier divergent.
     if local_id.x == 0u {
@@ -216,6 +240,7 @@ fn main(
     if workgroupUniformLoad(&sh_part_count[0]) == 0u {
         return;
     }
+#endif
     let tile_selected = bin_tile_x + tile_x < config.width_in_tiles
         && bin_tile_y + tile_y < config.height_in_tiles
         && tile_is_selected(this_tile_ix);

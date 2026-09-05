@@ -159,6 +159,9 @@ pub struct OffscreenRenderTiming {
     pub damage_setup_us: u128,
     pub damage_target_creations: u32,
     pub sparse_submissions: u32,
+    /// Sparse submissions that actually selected the opt-in native active-bin coarse shader.
+    /// Capability alone is not counted because oversized selectors fall back to legacy coarse.
+    pub sparse_coarse_active_bins_submissions: u32,
     pub sparse_fine_tiles: u64,
     pub sparse_written_pixels: u64,
     pub coarse_prefix_pixels: u64,
@@ -562,6 +565,13 @@ impl OffscreenRenderer {
     #[doc(hidden)]
     pub fn sparse_coarse_supported(&self) -> bool {
         self.renderer.sparse_coarse_supported()
+    }
+
+    /// Whether the opt-in native active-bin coarse shader is available for a small sparse
+    /// recording. Individual oversized selectors can still conservatively use legacy coarse.
+    #[doc(hidden)]
+    pub fn sparse_coarse_active_bins_available(&self) -> bool {
+        self.renderer.sparse_coarse_active_bins_available()
     }
 
     /// Overrides sparse fine recording for differential tests and diagnostics.
@@ -1261,6 +1271,11 @@ impl OffscreenRenderer {
                         .vello_submit_us
                         .saturating_add(start.elapsed().as_micros());
                     profile.sparse_submissions = profile.sparse_submissions.saturating_add(1);
+                    if stats.coarse_active_bins {
+                        profile.sparse_coarse_active_bins_submissions = profile
+                            .sparse_coarse_active_bins_submissions
+                            .saturating_add(1);
+                    }
                     profile.sparse_fine_tiles = profile
                         .sparse_fine_tiles
                         .saturating_add(u64::from(stats.fine_tiles));
@@ -2263,6 +2278,260 @@ mod tests {
                 assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
             }
         }
+    }
+
+    fn active_sparse_coarse_renderer_or_skip(
+        width: u32,
+        height: u32,
+        test_name: &str,
+    ) -> Option<OffscreenRenderer> {
+        let coarse_requested = matches!(std::env::var("VELLO_SPARSE_COARSE").as_deref(), Ok("1"));
+        let active_requested = matches!(
+            std::env::var("VELLO_SPARSE_COARSE_ACTIVE_BINS").as_deref(),
+            Ok("1")
+        );
+        if !coarse_requested || !active_requested {
+            eprintln!(
+                "skipping {test_name}: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required"
+            );
+            return None;
+        }
+        if shared_gpu().is_err() {
+            eprintln!("skipping {test_name}: no shared GPU");
+            return None;
+        }
+        let renderer = OffscreenRenderer::new(width, height);
+        if !renderer.sparse_coarse_active_bins_available() {
+            eprintln!("skipping {test_name}: active native-bin coarse is unavailable");
+            return None;
+        }
+        Some(renderer)
+    }
+
+    fn dense_sparse_coarse_oracle(width: u32, height: u32) -> OffscreenRenderer {
+        let mut oracle = OffscreenRenderer::new(width, height);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_direct_path_dispatch_enabled(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+        oracle.set_cpu_metadata_enabled(false);
+        oracle.set_cpu_pathtag_enabled(false);
+        oracle.set_cpu_draw_prefix_enabled(false);
+        oracle
+    }
+
+    fn assert_exact_fixture_pixels(actual: &[u8], expected: &[u8], fixture: &str, frame: usize) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{fixture} frame {frame} changed the pixel buffer length"
+        );
+        let first_mismatch = actual
+            .iter()
+            .zip(expected)
+            .position(|(actual, expected)| actual != expected);
+        assert_eq!(
+            first_mismatch, None,
+            "{fixture} frame {frame} must be byte-identical to its dense oracle"
+        );
+    }
+
+    fn active_sparse_coarse_257_scene(
+        right: Rect,
+        bottom: Rect,
+        crossing: Rect,
+        corner: Rect,
+    ) -> Scene {
+        const W: u32 = 257;
+        const H: u32 = 257;
+        let mut scene = Scene::new();
+        let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+        let outer_clip = Rect::new(4.0, 5.0, f64::from(W), f64::from(H));
+        let inner_clip = Rect::new(9.0, 11.0, f64::from(W), f64::from(H));
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(17, 27, 43),
+            None,
+            &full,
+        );
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &outer_clip);
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &inner_clip);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(240, 78, 54, 178),
+            None,
+            &right,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(52, 184, 244, 151),
+            None,
+            &bottom,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(160, 84, 236, 133),
+            None,
+            &crossing,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(84, 228, 166, 197),
+            None,
+            &corner,
+        );
+        scene.pop_layer();
+        scene.pop_layer();
+        scene
+    }
+
+    #[test]
+    fn active_sparse_coarse_257_native_edges_clips_and_translucency_match_dense() {
+        const W: u32 = 257;
+        const H: u32 = 257;
+        let Some(mut retained) =
+            active_sparse_coarse_renderer_or_skip(W, H, "active sparse coarse 257 parity")
+        else {
+            return;
+        };
+        let mut oracle = dense_sparse_coarse_oracle(W, H);
+        let right_a = Rect::new(229.25, 17.5, 245.75, 37.25);
+        let bottom_a = Rect::new(17.0, 226.5, 43.0, 242.0);
+        let crossing_a = Rect::new(111.5, 113.25, 130.75, 130.5);
+        let corner_a = Rect::new(244.0, 244.0, 250.0, 250.0);
+        retained.render_rgba_resilient(&active_sparse_coarse_257_scene(
+            right_a, bottom_a, crossing_a, corner_a,
+        ));
+
+        let right_b = Rect::new(242.25, 17.5, 257.0, 41.75);
+        let bottom_b = Rect::new(16.5, 241.25, 47.75, 257.0);
+        let crossing_b = Rect::new(121.5, 120.5, 139.25, 137.0);
+        let corner_b = Rect::new(252.25, 252.5, 257.0, 257.0);
+        let right_c = Rect::new(236.5, 39.25, 257.0, 58.5);
+        let bottom_c = Rect::new(43.5, 244.0, 66.0, 257.0);
+        let crossing_c = Rect::new(126.25, 109.75, 146.5, 129.25);
+        let corner_c = Rect::new(254.5, 251.0, 257.0, 257.0);
+        let frames = [
+            (
+                active_sparse_coarse_257_scene(right_b, bottom_b, crossing_b, corner_b),
+                vec![
+                    right_a.inflate(1.0, 1.0),
+                    bottom_a.inflate(1.0, 1.0),
+                    crossing_a.inflate(1.0, 1.0),
+                    corner_a.inflate(1.0, 1.0),
+                    right_b.inflate(1.0, 1.0),
+                    bottom_b.inflate(1.0, 1.0),
+                    crossing_b.inflate(1.0, 1.0),
+                    corner_b.inflate(1.0, 1.0),
+                ],
+            ),
+            (
+                active_sparse_coarse_257_scene(right_c, bottom_c, crossing_c, corner_c),
+                vec![
+                    right_b.inflate(1.0, 1.0),
+                    bottom_b.inflate(1.0, 1.0),
+                    crossing_b.inflate(1.0, 1.0),
+                    corner_b.inflate(1.0, 1.0),
+                    right_c.inflate(1.0, 1.0),
+                    bottom_c.inflate(1.0, 1.0),
+                    crossing_c.inflate(1.0, 1.0),
+                    corner_c.inflate(1.0, 1.0),
+                ],
+            ),
+        ];
+        for (frame, (next, damage)) in frames.into_iter().enumerate() {
+            let (raster_pixels, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &next,
+                Color::TRANSPARENT,
+                &damage,
+            );
+            assert!(raster_pixels < u64::from(W).saturating_mul(u64::from(H)));
+            assert_eq!(timing.sparse_submissions, 1);
+            assert_eq!(timing.full_attempts, 0);
+            assert_eq!(
+                timing.sparse_coarse_active_bins_submissions, 1,
+                "frame {frame} must use the active native-bin permutation, not only expose it"
+            );
+            let partial = retained.readback_current();
+            let dense = oracle.render_rgba_resilient(&next);
+            assert_exact_fixture_pixels(&partial, &dense, "active sparse coarse 257", frame);
+            if matches!(
+                std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
+                Ok("1")
+            ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+            {
+                let active_coarse = 1_u32.checked_shl(27).expect("stage id 28 fits mask");
+                assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_sampled_submissions,
+                    timing.gpu_dispatch_timestamp_expected_submissions,
+                );
+                assert_ne!(
+                    timing.gpu_dispatch_timestamp_present_stages & active_coarse,
+                    0
+                );
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn active_sparse_coarse_overflow_recovers_dense_before_publication() {
+        const W: u32 = 384;
+        const H: u32 = 256;
+        let Some(mut retained) =
+            active_sparse_coarse_renderer_or_skip(W, H, "active sparse coarse overflow recovery")
+        else {
+            return;
+        };
+        let mut oracle = dense_sparse_coarse_oracle(W, H);
+        let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+        // This 16×16 bin-1 accent keeps the copied damage small while its native-origin prefix
+        // is 368×240. The 512 same-blue full-target fills therefore exceed Vello's initial tile
+        // reservation before the accent can be published.
+        let accent = Rect::new(352.0, 224.0, 368.0, 240.0);
+        let blue = Color::from_rgb8(24, 96, 188);
+        let mut seed = Scene::new();
+        seed.fill(Fill::NonZero, Affine::IDENTITY, blue, None, &full);
+        retained.render_rgba_resilient(&seed);
+
+        let mut overflowing = Scene::new();
+        for _ in 0..512_u32 {
+            overflowing.fill(Fill::NonZero, Affine::IDENTITY, blue, None, &full);
+        }
+        overflowing.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(230, 76, 48),
+            None,
+            &accent,
+        );
+        let (raster_pixels, timing) = retained.render_damage_regions_gpu_wait_profiled(
+            &overflowing,
+            Color::TRANSPARENT,
+            &[accent],
+        );
+        assert!(raster_pixels >= u64::from(W).saturating_mul(u64::from(H)));
+        assert_eq!(timing.sparse_submissions, 1);
+        assert_eq!(timing.sparse_coarse_active_bins_submissions, 1);
+        assert!(
+            timing.full_attempts >= 1,
+            "the actual sparse active-bin submission must overflow and recover densely"
+        );
+        let partial = retained.readback_current();
+        let dense = oracle.render_rgba_resilient(&overflowing);
+        assert_exact_fixture_pixels(
+            &partial,
+            &dense,
+            "active sparse coarse overflow recovery",
+            0,
+        );
     }
 
     #[test]

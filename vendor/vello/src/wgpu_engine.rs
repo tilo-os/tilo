@@ -77,6 +77,7 @@ pub(crate) struct WgpuEngine {
     sparse_fine_enabled: bool,
     sparse_fine_available: bool,
     sparse_coarse_enabled: bool,
+    sparse_coarse_active_bins_enabled: bool,
 }
 
 const GPU_TIMESTAMP_PASS_LIMIT: u32 = 64;
@@ -126,6 +127,10 @@ fn direct_path_workgroups_from_value(value: Option<&OsStr>) -> u32 {
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|&workgroups| (1..=DIRECT_PATH_WORKGROUPS_DEFAULT).contains(&workgroups))
         .unwrap_or(DIRECT_PATH_WORKGROUPS_DEFAULT)
+}
+
+fn sparse_coarse_active_bins_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
 }
 
 #[derive(Default)]
@@ -402,6 +407,7 @@ fn gpu_dispatch_stage_id(label: &str) -> u16 {
         "vello.draw_leaf_prefix" => 25,
         "vello.path_count_direct" => 26,
         "vello.path_tiling_direct" => 27,
+        "vello.coarse_sparse_active" => 28,
         _ => 0,
     }
 }
@@ -1099,6 +1105,10 @@ impl WgpuEngine {
         let sparse_fine_enabled = default_enabled_from_env("VELLO_SPARSE_FINE");
         let sparse_coarse_enabled =
             std::env::var_os("VELLO_SPARSE_COARSE").is_some_and(|value| value == "1");
+        let sparse_coarse_active_bins_enabled = sparse_coarse_enabled
+            && sparse_coarse_active_bins_from_value(
+                std::env::var_os("VELLO_SPARSE_COARSE_ACTIVE_BINS").as_deref(),
+            );
         if compute_batch_log {
             let state = if compute_batch == 0 {
                 "disabled (set VELLO_COMPUTE_BATCH=1 or 2 to enable)"
@@ -1141,6 +1151,7 @@ impl WgpuEngine {
             sparse_fine_enabled,
             sparse_fine_available: sparse_fine_enabled,
             sparse_coarse_enabled,
+            sparse_coarse_active_bins_enabled,
             ..Default::default()
         }
     }
@@ -1391,6 +1402,10 @@ impl WgpuEngine {
 
     pub fn sparse_coarse_enabled(&self) -> bool {
         self.sparse_coarse_enabled
+    }
+
+    pub fn sparse_coarse_active_bins_enabled(&self) -> bool {
+        self.sparse_coarse_active_bins_enabled
     }
 
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
@@ -3395,6 +3410,18 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coarse_active_bins_requires_exact_opt_in() {
+        assert!(!sparse_coarse_active_bins_from_value(None));
+        assert!(sparse_coarse_active_bins_from_value(Some(OsStr::new("1"))));
+        for disabled in ["0", "01", "true", "unexpected"] {
+            assert!(
+                !sparse_coarse_active_bins_from_value(Some(OsStr::new(disabled))),
+                "only exact 1 enables the diagnostic permutation"
+            );
+        }
+    }
+
+    #[test]
     fn promoted_gpu_paths_retain_full_cpu_and_profiler_fallbacks() {
         let cpu_engine = WgpuEngine {
             compute_batch: 2,
@@ -3439,6 +3466,7 @@ mod tests {
     fn direct_path_dispatch_timestamp_labels_are_exact() {
         assert_eq!(gpu_dispatch_stage_id("vello.path_count_direct"), 26);
         assert_eq!(gpu_dispatch_stage_id("vello.path_tiling_direct"), 27);
+        assert_eq!(gpu_dispatch_stage_id("vello.coarse_sparse_active"), 28);
         assert_eq!(gpu_dispatch_stage_id("vello.path_count"), 15);
         assert_eq!(gpu_dispatch_stage_id("vello.path_tiling"), 19);
         assert_eq!(gpu_dispatch_stage_id("vello.path_count_directly"), 0);

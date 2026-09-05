@@ -1,0 +1,68 @@
+Command: timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/xaver/qos/target/ui-perf-comparison/ui-perf-final-stable-damage-bindings dashboard_perf_bench
+Exit: 2
+
+mode: animated (header contains spinners + indeterminate progress)
+output target: 3840x2160 (native; 1:1 damage raster, no upscale)
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+dashboard widget tree: 518 widgets
+after warm-up: root.needs_redraw()=true root.is_layout_dirty()=false
+dirty culprits after warmup: 13 widgets
+  Scrollable (depth 0)
+  Column (depth 1)
+  Row (depth 2)
+  ProgressBar (depth 3)
+  ProgressBar (depth 3)
+  Spinner (depth 3)
+  Spinner (depth 3)
+  Spinner (depth 3)
+after warm-up: measure-cache hits=1444 misses=538 hit-rate=72.9%
+
+=== Dashboard bench (1000 events, canvas 3840×2160) ===
+redrawn events:  1000  (100.0%)
+skipped events:  0  (no widget signalled dirty)
+
+phase                 mean us   p95 us   p99 us
+handle_event               13       20       44
+layout (gated)              5        8       18
+draw_to_scene              70      104      140
+vello render            19680    35221    65810
+TOTAL/event             19789    35374    65914
+
+throughput (mean across mixed events):        50 Hz   (19.8 ms / event)
+throughput (redrawing events only):           50 Hz   (19.8 ms / redraw)
+native pixels rasterized per redraw:      237760
+measure-cache final: hits=1594 misses=538 hit-rate=74.8%
+known GPU bytes: 62373288 (output=33177600 damage=122880 vello_pool=24878504 vello_live=0 images=4194304; policy_budget=20774912)
+CPU readback bytes: 0 (must be 0 in timing-only runs)
+process memory: rss=327744 KiB peak=363500 KiB
+known GPU growth after warm-up: -401408 bytes (before=62774696 after=62373288)
+RSS growth after harness preallocation: +8172 KiB (before=319508 after=327680)
+
+frame-budget: FAIL budget=30000us mean=19789us p99=65914us max=101429us samples=1000
+Command exited with non-zero status 2
+	Command being timed: "env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/xaver/qos/target/ui-perf-comparison/ui-perf-final-stable-damage-bindings dashboard_perf_bench"
+	User time (seconds): 28.03
+	System time (seconds): 9.30
+	Percent of CPU this job got: 184%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:20.27
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 363500
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 106702
+	Voluntary context switches: 277392
+	Involuntary context switches: 5270
+	Swaps: 0
+	File system inputs: 248
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 2

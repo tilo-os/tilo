@@ -2237,3 +2237,57 @@ not percentages to compound with this diagnostic checkpoint. Active native
 coarse bins and the remaining sparse-fine cost are the next measured priorities;
 neither this checkpoint nor the software adapter qualifies constant 60 FPS on
 physical 2010 hardware or KMS scanout.
+
+## 2026-09-05: active native bins and the historical 20 ms question
+
+Protocol, exact commands, preserved hashes, all validation results and every
+trial are in [the active-bin record](benchmarks/2026-09-05-active-coarse-bins/README.md).
+Both examples use unchanged ordinary release settings and native 3840×2160.
+No animation, action, sample count, AA tolerance, fence limit or acceptance
+gate was relaxed. Builds/tests did not overlap any measured process.
+
+The original **20.176 ms UI mean was real**: its preserved executable reruns
+at 19.789 ms mean / 65.914 ms p99. That was the UI workload, not the separate
+shell render/readback/XRGB workload. The exact unchanged previous UI binary
+that later reported 67.203 / 332.911 ms now reports 8.304 / 27.942 ms. This
+demonstrates a large repeatability change not explained solely by source
+revisions; a specific historical environment/driver/scheduling cause remains
+unproven. Earlier slow results are retained, not erased by the new passes.
+
+The new opt-in path packs a deduplicated native-bin list after tile bits in
+the existing sparse-coarse 8 KiB uniform, then dispatches only those bins.
+It preserves native tile coordinates/order, forwards failures when native
+bin zero is inactive, and falls back to legacy sparse coarse when its bounded
+list cannot fit. The public legacy low-level coarse API remains intact.
+
+| Median of three serial unprofiled 1,000-redraw trials | Current defaults | Combined sparse-coarse + active-bin candidate | Change |
+| --- | ---: | ---: | ---: |
+| Shell mean | 38.812 ms | 29.218 ms | -24.72% |
+| Shell p99 | 82.523 ms | 70.040 ms | -15.13% |
+| UI mean | 8.209 ms | 8.330 ms | +1.47% |
+| UI p99 | 23.063 ms | 26.803 ms | +16.22% |
+
+The candidate stays **off by default**: UI regresses and the predeclared
+promotion criterion fails. Active UI round 2 fails at 41.179 ms p99; all
+three default UI trials pass the 30 ms p99 gate. Every shell trial fails
+the unchanged 8 ms mean / 30 ms p99 gates, with 999 sparse / one full attempt,
+no recovery, and all 1,000 actions retained. This is not goal completion.
+
+The isolated instrumented coarse-stage comparison is legacy sparse coarse
+3.145 ms versus active bins 2.350 ms, with all 1,000 GPU samples matched and
+stage 28 present on 999 sparse frames. That does not attribute the entire
+unprofiled 24.72% gain to the new list; enabling pre-existing sparse coarse
+is also part of the candidate-versus-default comparison.
+
+There is no lighter-memory claim: UI tracked GPU memory rises by 8,192 bytes;
+median peak process RSS rises from 377,260 to 385,664 KiB for UI and 545,200
+to 551,020 KiB for shell. Copy policy is unchanged: diagnostic GPU readback
+payload remains about 0.81 MB/action and full CPU destination writes remain
+33,177,600 bytes/action. Physical bus traffic and KMS scanout are not measured.
+
+Validation passes: 50 Vello tests, both actual active-bin exact-byte GPU
+fixtures (including real overflow recovery), legacy/active resource parity,
+and all 13 shell tests in active and default configurations, including the
+exact native-4K action oracle. Strict affected runtime/example clippy passes;
+the final test-inclusive changed-line/compiler diagnostic count is zero.
+Initial warnings and their fixes are recorded. Formatting checks pass.

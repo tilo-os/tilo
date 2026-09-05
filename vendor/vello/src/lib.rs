@@ -470,6 +470,7 @@ pub fn gpu_dispatch_timestamp_stage_name(stage_id: u16) -> Option<&'static str> 
         25 => "draw_leaf_prefix",
         26 => "path_count_direct",
         27 => "path_tiling_direct",
+        28 => "coarse_sparse_active",
         _ => return None,
     })
 }
@@ -492,6 +493,8 @@ pub struct SparseRenderStats {
     pub fine_pixels: u64,
     pub written_pixels: u64,
     pub coarse_pixels: u64,
+    /// Whether this submission used the opt-in native active-bin coarse shader.
+    pub coarse_active_bins: bool,
 }
 // This is not `Send` (or `Sync`) on WebAssembly as the
 // underlying wgpu types are not. This can be enabled with the
@@ -682,6 +685,7 @@ fn sparse_tile_records(
         fine_pixels,
         written_pixels,
         coarse_pixels: u64::from(width).saturating_mul(u64::from(height)),
+        coarse_active_bins: false,
     })
 }
 
@@ -716,6 +720,74 @@ pub(crate) fn sparse_coarse_tile_bits(
         bits[word] |= 1u32 << (tile & 31);
     }
     true
+}
+
+/// Pack a unique native-bin list after the used selector words.
+///
+/// The fixed selector supports at most 65,536 tiles. The existing binning
+/// stage supports at most 256 native bins, and this helper deliberately
+/// retains that renderer bound. The bitmap is indexed by native bin id:
+/// sparse records are row-major tile ids, whose bin ids repeat across each of
+/// the sixteen rows in a bin band.
+#[cfg(feature = "wgpu")]
+pub(crate) fn sparse_coarse_active_bin_list(
+    bits: &mut Vec<u32>,
+    records: &[u32],
+    width: u32,
+    height: u32,
+) -> Option<u32> {
+    const SELECTOR_WORDS: usize = 2_048;
+    const MAX_NATIVE_BINS: usize = 256;
+    const TILE: u32 = 16;
+
+    if !sparse_coarse_tile_bits(bits, records, width, height) {
+        return None;
+    }
+    let tiles_x = width.div_ceil(TILE);
+    let tiles_y = height.div_ceil(TILE);
+    let tile_count = tiles_x.checked_mul(tiles_y)?;
+    let selector_words = usize::try_from(tile_count.div_ceil(32)).ok()?;
+    let width_in_bins = tiles_x.div_ceil(TILE);
+    let height_in_bins = tiles_y.div_ceil(TILE);
+    let native_bin_count = usize::try_from(width_in_bins.checked_mul(height_in_bins)?).ok()?;
+    if native_bin_count > MAX_NATIVE_BINS || selector_words >= SELECTOR_WORDS {
+        return None;
+    }
+
+    let mut native_bins = [0u64; MAX_NATIVE_BINS / 64];
+    for record in records.chunks_exact(9) {
+        let tile = record[0];
+        if tile >= tile_count {
+            return None;
+        }
+        let tile_x = tile % tiles_x;
+        let tile_y = tile / tiles_x;
+        let bin = (tile_y / TILE)
+            .checked_mul(width_in_bins)?
+            .checked_add(tile_x / TILE)?;
+        let bin = usize::try_from(bin).ok()?;
+        if bin >= native_bin_count {
+            return None;
+        }
+        native_bins[bin / 64] |= 1u64 << (bin % 64);
+    }
+
+    let active_count = native_bins
+        .iter()
+        .map(|word| word.count_ones())
+        .sum::<u32>();
+    let active_count = usize::try_from(active_count).ok()?;
+    if active_count == 0 || active_count > SELECTOR_WORDS - selector_words {
+        return None;
+    }
+    let mut next = selector_words;
+    for bin in 0..native_bin_count {
+        if native_bins[bin / 64] & (1u64 << (bin % 64)) != 0 {
+            bits[next] = u32::try_from(bin).ok()?;
+            next += 1;
+        }
+    }
+    u32::try_from(active_count).ok()
 }
 
 #[cfg(feature = "wgpu")]
@@ -902,6 +974,15 @@ impl Renderer {
     #[doc(hidden)]
     pub fn sparse_coarse_supported(&self) -> bool {
         self.sparse_fine_supported() && self.shaders.coarse_sparse.is_some()
+    }
+
+    /// Whether the opt-in active native-bin sparse-coarse permutation is available.
+    ///
+    /// A particular frame can still use the legacy sparse-coarse shader when
+    /// its unique native-bin list cannot fit the fixed selector uniform.
+    #[doc(hidden)]
+    pub fn sparse_coarse_active_bins_available(&self) -> bool {
+        self.sparse_coarse_supported() && self.shaders.coarse_sparse_active.is_some()
     }
 
     /// Whether selective CPU path-tag processing is active (not full CPU rendering).
@@ -1206,7 +1287,7 @@ impl Renderer {
         if !self.sparse_fine_supported() || params.antialiasing_method != AaConfig::Area {
             return Ok(None);
         }
-        let Some(stats) = sparse_tile_records(
+        let Some(mut stats) = sparse_tile_records(
             &mut self.sparse_masks,
             &mut self.sparse_records,
             params.width,
@@ -1230,18 +1311,39 @@ impl Renderer {
             None
         };
         let external_damage_tiles = self.prepare_sparse_upload(device, queue);
-        let coarse_tiles = self
-            .sparse_coarse_supported()
-            .then(|| {
-                sparse_coarse_tile_bits(
-                    &mut self.sparse_coarse_tiles,
-                    &self.sparse_records,
-                    params.width,
-                    params.height,
-                )
-            })
-            .filter(|valid| *valid)
-            .map(|_| self.sparse_coarse_tiles.as_slice());
+        let coarse_tiles = if self.sparse_coarse_supported() {
+            let active_workgroups = self
+                .sparse_coarse_active_bins_available()
+                .then(|| {
+                    sparse_coarse_active_bin_list(
+                        &mut self.sparse_coarse_tiles,
+                        &self.sparse_records,
+                        params.width,
+                        params.height,
+                    )
+                })
+                .flatten();
+            if let Some(workgroups) = active_workgroups {
+                stats.coarse_active_bins = true;
+                Some(render::SparseCoarseDispatch::Active {
+                    selector: self.sparse_coarse_tiles.as_slice(),
+                    workgroups,
+                })
+            } else if sparse_coarse_tile_bits(
+                &mut self.sparse_coarse_tiles,
+                &self.sparse_records,
+                params.width,
+                params.height,
+            ) {
+                Some(render::SparseCoarseDispatch::Legacy(
+                    self.sparse_coarse_tiles.as_slice(),
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let (target, bump_buf) = render::render_encoding_sparse_fine(
             scene.encoding(),
             &mut self.resolver,
@@ -2257,5 +2359,70 @@ mod tests {
         assert!(!sparse_coarse_tile_bits(&mut bits, &[0; 9], 0, 32));
         assert!(!sparse_coarse_tile_bits(&mut bits, &[0; 9], 32, 0));
         assert!(!sparse_coarse_tile_bits(&mut bits, &[0; 9], 8_192, 8_192));
+    }
+
+    #[test]
+    fn sparse_coarse_active_bins_deduplicate_repeated_row_major_bin_ids() {
+        // A 32 by 32 tile target contains four native 16 by 16 tile bins.
+        // Tile 0 and tile 32 are in separate rows but the same native bin.
+        let mut records = vec![0; 45];
+        for (record, tile) in records.chunks_exact_mut(9).zip([0, 32, 16, 512, 528]) {
+            record[0] = tile;
+        }
+        let mut bits = Vec::new();
+        assert_eq!(
+            sparse_coarse_active_bin_list(&mut bits, &records, 512, 512),
+            Some(4)
+        );
+        let selector_words = 32;
+        assert_eq!(&bits[selector_words..selector_words + 4], &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn sparse_coarse_active_bins_fall_back_when_selector_has_insufficient_list_space() {
+        // This target stays within the existing 256-native-bin renderer
+        // bound. Its 65,280 tiles use 2,040 selector words, leaving eight
+        // list words; these nine selected bins must retain legacy coarse.
+        let mut records = vec![0; 81];
+        for (record, tile) in records.chunks_exact_mut(9).zip((0..9).map(|bin| bin * 16)) {
+            record[0] = tile;
+        }
+        let mut bits = Vec::new();
+        assert!(sparse_coarse_active_bin_list(&mut bits, &records, 4_080, 4_096).is_none());
+        assert_eq!(bits.len(), 2_048);
+        assert_eq!(bits[0], 0x0001_0001);
+    }
+
+    #[test]
+    fn sparse_coarse_active_bins_preserve_the_final_partial_selector_word() {
+        // 33 native tiles consume two selector words; tile 32 occupies the
+        // first bit of that final partial word. The native-bin list must
+        // begin at word two rather than overwrite it.
+        let mut records = [0; 9];
+        records[0] = 32;
+        let mut bits = Vec::new();
+        assert_eq!(
+            sparse_coarse_active_bin_list(&mut bits, &records, 528, 16),
+            Some(1)
+        );
+        assert_eq!(&bits[..3], &[0, 1, 2]);
+    }
+
+    #[test]
+    fn sparse_coarse_active_bins_reject_existing_over_256_native_bin_limit() {
+        // The selector itself can represent this tall target, but upstream
+        // binning has only 256 native-bin workgroup slots.
+        let mut bits = Vec::new();
+        assert!(sparse_coarse_active_bin_list(&mut bits, &[0; 9], 16, 65_792).is_none());
+        assert_eq!(bits.len(), 2_048);
+        assert_eq!(bits[0], 1);
+    }
+
+    #[test]
+    fn active_sparse_coarse_timestamp_stage_name_is_stable() {
+        assert_eq!(
+            gpu_dispatch_timestamp_stage_name(28),
+            Some("coarse_sparse_active")
+        );
     }
 }
