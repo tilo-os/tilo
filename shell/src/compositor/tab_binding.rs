@@ -338,11 +338,21 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         .tabs
         .len()
         == 1;
+    let process_local_foreign = tree
+        .workspaces
+        .get(ws_idx)
+        .and_then(|workspace| workspace.strips.get(strip_idx))
+        .and_then(|strip| strip.window_groups.get(group_idx))
+        .and_then(|group| group.tabs.get(tab_idx))
+        .is_some_and(|tab| matches!(&tab.tile, TileContent::Foreign { .. }));
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
-    // insertion and resurrect it.
-    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) {
+    // insertion and resurrect it. A newly adopted `Foreign` surface is
+    // deliberately process-local and may never have entered the replicated
+    // document; absence there is therefore already the desired durable
+    // state, not a failed close.
+    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !process_local_foreign {
         return false;
     }
 
