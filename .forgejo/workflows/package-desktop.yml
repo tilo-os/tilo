@@ -18,14 +18,18 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "apps/**"
+      - "crates/**"
+      - "fs/**"
       - "shell/**"
-      - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
+      - "ui/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+      - "tools/ci_select.py"
+      - "tools/desktop_release.py"
   push:
-    branches: ["main", "codex/package-desktop-release"]
+    branches: ["main"]
     tags: ["desktop-v*"]
     paths:
       - "dist/**"
@@ -35,12 +39,16 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "apps/**"
+      - "crates/**"
+      - "fs/**"
       - "shell/**"
-      - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
+      - "ui/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+      - "tools/ci_select.py"
+      - "tools/desktop_release.py"
   workflow_dispatch:
     inputs:
       full_native:
@@ -58,7 +66,41 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  plan:
+    runs-on: runner
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      affected: ${{ steps.affected.outputs.affected }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Select the desktop component from the changed dependency graph
+        id: affected
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF == refs/tags/desktop-v* || $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            echo 'affected=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::explicit desktop release/rehearsal selected the native lane'
+          else
+            base=${BASE_SHA:-}
+            if [[ -z $base || $base == null || $base == 0000000000000000000000000000000000000000 ]]; then
+              base=$(git rev-parse HEAD^)
+            fi
+            python3 tools/desktop_release.py --base "$base" \
+              --github-output "$GITHUB_OUTPUT"
+          fi
+
   validate:
+    needs: plan
+    if: needs.plan.outputs.affected == 'true'
     runs-on: runner
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
@@ -124,7 +166,8 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   package:
-    needs: validate
+    needs: [plan, validate]
+    if: needs.plan.outputs.affected == 'true'
     name: package lane / ${{ matrix.arch }}
     # The amd64 matrix entry uses the measured optimized package class; native
     # ARM64 tags and explicit full-native runs retain their ARM runner.
@@ -299,9 +342,9 @@ jobs:
             curl --fail --silent --show-error --request POST \
               --header "Authorization: Bearer $jwt" \
               --header 'Content-Type: application/json' \
-              --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true"}}' \
+              --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true","continuous":"true"}}' \
               "$dispatch_api"
-            echo '::notice::requested continuous desktop/OS integration release'
+            echo '::notice::requested coordinated desktop/OS release'
           fi
 
   release-guard:

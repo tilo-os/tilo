@@ -19,9 +19,12 @@ consumes their immutable digests.
 Pull requests use the cheapest lane that proves the affected boundary:
 
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
-- Desktop packaging runs only when desktop/package inputs change. Its sccache
-  namespace is shared by architecture; compiler identity and native headers are
-  part of each cache key, so ABI-incompatible objects cannot collide.
+- A cheap dependency-graph plan starts desktop packaging only when `shell`,
+  `launcher`, or `qos-unlock-helper` is affected. Shared-crate changes therefore
+  rebuild the desktop when required, while an unrelated app change skips every
+  native package lane. Its sccache namespace is shared by architecture;
+  compiler identity and native headers are part of each cache key, so
+  ABI-incompatible objects cannot collide.
 - OS pull requests build without WPE WebKit. WPE has its own signed snapshot
   gate, while tagged OS releases require and include it.
 - Imager pull requests build and launch the Linux x86_64 package. A tag (or a
@@ -110,9 +113,16 @@ non-exportable `COSIGN_KEY_REF` is configured, setting
 `QOS_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
 reproducibility, installed-VM, signing, SBOM, provenance, freshness, and
 channel-promotion path used by explicit releases. It does not introduce a
-weaker fast-publish path. A successful desktop payload publication requests
-that OS integration run only when the switch is enabled; standalone app
-updates continue to publish only their qpkg/collection boundary.
+weaker fast-publish path. Successful default app-collection and desktop-payload
+publications both request a coordinated OS release when the switch is enabled.
+Those callbacks share the OS generation lock. Before allocating the expensive
+builder, the coordinator verifies that both immutable channels cover the
+current `main` commit; an early callback exits cheaply while the other component
+is still publishing. The later callback performs one release, and any duplicate
+callback exits when it finds that commit's immutable `main-<sha>` image tag.
+Consequently app-only and desktop-only changes each release once, combined
+changes wait for both artifacts, and OS-only changes run directly without
+rebuilding either component.
 
 A manual **Release / OS** dispatch is also build-only by default. Enable its
 `publish` input only from `main` to allocate and promote a signed generation.

@@ -16,6 +16,19 @@ SPEC.loader.exec_module(ci_select)
 
 
 class SelectorTests(unittest.TestCase):
+    def test_package_maps_use_cargo_workspace_root(self) -> None:
+        metadata = {
+            "workspace_root": "/canonical/run/host/repo",
+            "packages": [
+                {
+                    "name": "notes",
+                    "manifest_path": "/canonical/run/host/repo/apps/notes/Cargo.toml",
+                }
+            ],
+        }
+        _packages, by_dir = ci_select.package_maps(metadata, Path("/different/repo"))
+        self.assertEqual(by_dir, {Path("apps/notes"): "notes"})
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

@@ -21,6 +21,7 @@ on:
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
+      - "tools/release_readiness.py"
       - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
@@ -29,6 +30,7 @@ on:
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
+      - "tools/release_readiness.py"
       - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
@@ -61,6 +63,11 @@ on:
         description: "SHA-256 of desktop_payload_url; empty uses the architecture channel variable."
         required: false
         default: ""
+      continuous:
+        description: "Internal component-publication callback; coordinate immutable channels before building."
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   # Generations are a single dense security series. This workflow can publish
@@ -71,8 +78,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-push:
+  coordinate:
     runs-on: runner
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Wait for immutable component channels and deduplicate releases
+        id: gate
+        shell: bash
+        env:
+          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          COMPONENT_CALLBACK: ${{ github.event.inputs.continuous }}
+          APP_URL: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 || vars.QOS_APP_COLLECTION_URL }}
+          DESKTOP_URL: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_X86_64 || vars.QOS_DESKTOP_PAYLOAD_URL }}
+        run: |
+          set -euo pipefail
+          coordinated=false
+          if [[ $GITHUB_REF == refs/heads/main ]] \
+             && { [[ $GITHUB_EVENT_NAME == push && ${CONTINUOUS_RELEASE:-0} == 1 ]] \
+                  || [[ $GITHUB_EVENT_NAME == workflow_dispatch && ${COMPONENT_CALLBACK:-false} == true ]]; }; then
+            coordinated=true
+          fi
+          if [[ $coordinated != true ]]; then
+            echo 'coordinated=false' >> "$GITHUB_OUTPUT"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::direct OS validation/release request; component coordination is not required'
+            exit 0
+          fi
+          echo 'coordinated=true' >> "$GITHUB_OUTPUT"
+
+          if [[ -z ${APP_URL:-} || -z ${DESKTOP_URL:-} ]]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::OS release deferred until both immutable component channels exist'
+            exit 0
+          fi
+          for url in "$APP_URL" "$DESKTOP_URL"; do
+            if [[ $url =~ /0\.0\.0-([0-9a-f]{40})/ ]]; then
+              source_sha=${BASH_REMATCH[1]}
+            else
+              echo '::error::component channel URL is not an immutable commit version'
+              exit 1
+            fi
+            git cat-file -e "$source_sha^{commit}" 2>/dev/null \
+              || git fetch --no-tags --depth=1 origin "$source_sha"
+          done
+          readiness="$RUNNER_TEMP/qos-release-readiness.json"
+          python3 tools/release_readiness.py \
+            --app-url "$APP_URL" --desktop-url "$DESKTOP_URL" \
+            --github-output "$GITHUB_OUTPUT" | tee "$readiness"
+          if [[ $(jq -r .ready "$readiness") != true ]]; then
+            echo '::notice::OS release deferred until app and desktop publishers cover this commit'
+            exit 0
+          fi
+
+      - name: Check whether another callback already published this commit
+        id: duplicate
+        if: steps.gate.outputs.coordinated == 'true' && steps.gate.outputs.ready == 'true'
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Every published main image carries this immutable source tag. OS
+          # workflow concurrency serializes callbacks, so a later callback sees
+          # the tag promoted by the first and exits before allocating BuildKit.
+          image="code.podesta.ai/qos/qos:main-${GITHUB_SHA::7}"
+          cleanup_registry_login() { docker logout code.podesta.ai >/dev/null 2>&1 || true; }
+          trap cleanup_registry_login EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker login code.podesta.ai \
+            --username "$GITHUB_ACTOR" --password-stdin >/dev/null
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::$image already passed and was published; duplicate callback skipped"
+          else
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::immutable app and desktop channels are ready for this OS release'
+          fi
+      - name: Select the expensive OS lane
+        id: decide
+        if: always()
+        shell: bash
+        env:
+          COORDINATED: ${{ steps.gate.outputs.coordinated }}
+          READY: ${{ steps.gate.outputs.ready }}
+          PUBLISHED: ${{ steps.duplicate.outputs.published }}
+        run: |
+          if [[ ${COORDINATED:-false} != true ]]; then
+            run=true
+          elif [[ ${READY:-false} != true || ${PUBLISHED:-false} == true ]]; then
+            run=false
+          else
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: coordinate
+    if: ${{ needs.coordinate.outputs.run == 'true' }}
+    runs-on: runner
+    # A wedged linker or BuildKit daemon must eventually release the serialized
+    # OS generation lock. Cold browser-enabled builds fit comfortably inside
+    # this bound; individual VM validation retains its tighter timeout below.
+    timeout-minutes: 360
     enable-openid-connect: true
     steps:
       - name: Checkout the monorepo

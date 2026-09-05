@@ -49,16 +49,19 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
-grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
+grep -Fq 'branches: ["main"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
+  && [ "$(grep -c '      - "apps/\*\*"' "$desktop")" -eq 2 ] \
+  && grep -Fq 'python3 tools/desktop_release.py --base "$base"' "$desktop" \
+  && grep -Fq "if: needs.plan.outputs.affected == 'true'" "$desktop" \
   && grep -Fq 'runner:"runner-arm64"' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" amd64,arm64' "$desktop" \
-  && ok 'desktop push and pull-request triggers are path-scoped' \
+  && ok 'desktop triggers use dependency-aware native-lane selection' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'QOS_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
-  && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
+  && grep -Fq '"with_browser":"1","publish":"true","continuous":"true"' "$desktop" \
   && grep -Fq 'QOS_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
@@ -67,6 +70,7 @@ grep -Fq 'publish-os-payload:' "$desktop" \
 
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
+  && grep -Fq 'timeout-minutes: 360' "$os" \
   && grep -Fq 'max-parallelism = 2' "$os" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
   && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
@@ -102,6 +106,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
+  && grep -Fq 'requested coordinated app/OS release' "$apps" \
   && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
   && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
   || bad 'app release artifacts cannot be consumed by later component releases'
@@ -120,6 +125,9 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'cp -a /build/os/app-runtime/qos-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
+  && grep -Fq 'python3 tools/release_readiness.py' "$os" \
+  && grep -Fq 'docker manifest inspect "$image"' "$os" \
+  && grep -Fq "if: \${{ needs.coordinate.outputs.run == 'true' }}" "$os" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 

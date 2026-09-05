@@ -5,9 +5,7 @@ name: CI / affected packages
 # mandatory in nightly.yml; this job is the short feedback path.
 on:
   push:
-    # Temporary branch trigger while the desktop packaging matrix is being
-    # proven without making unfinished work visible on main.
-    branches: ["main", "codex/package-desktop-release"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -70,21 +68,14 @@ jobs:
       - name: Fetch comparison base
         shell: bash
         run: |
-          if [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
-            # Refresh main explicitly so the release gate always compares the
-            # complete branch diff against the current integration branch.
-            git fetch origin \
-              +refs/heads/main:refs/remotes/origin/main
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [ -z "$base" ] || [ "$base" = "null" ]; then
-              base='${{ github.event.before }}'
-            fi
-            if [ -n "$base" ] &&
-               [ "$base" != "0000000000000000000000000000000000000000" ] &&
-               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git fetch origin "$base"
-            fi
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ -n "$base" ] &&
+             [ "$base" != "0000000000000000000000000000000000000000" ] &&
+             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git fetch origin "$base"
           fi
 
       - name: Workspace membership guard
@@ -133,12 +124,7 @@ jobs:
         shell: bash
         run: |
           base='${{ github.event.pull_request.base.sha }}'
-          if [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
-            # Every iteration must cover the complete release diff. Comparing
-            # only with github.event.before would forget changes from earlier
-            # branch pushes and could produce a misleading exact-SHA receipt.
-            base=origin/main
-          elif [ -z "$base" ] || [ "$base" = "null" ]; then
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
           fi
           if [ "$base" = "0000000000000000000000000000000000000000" ]; then
@@ -259,10 +245,7 @@ jobs:
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
   report-check-result:
-    if: >-
-      always() &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/codex/package-desktop-release')
+    if: always() && github.ref == 'refs/heads/main'
     needs: [select, affected]
     runs-on: runner
     env:

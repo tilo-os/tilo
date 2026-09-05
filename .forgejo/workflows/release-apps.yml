@@ -268,6 +268,7 @@ jobs:
           PRIOR_X86_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 || vars.QOS_APP_COLLECTION_SHA256 }}
           PRIOR_ARM64_URL: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
           PRIOR_ARM64_SHA256: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
+          CONTINUOUS_OS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -438,4 +439,13 @@ jobs:
               update_variable QOS_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
             fi
             echo '::notice::advanced the default OS app-collection channel'
+            if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
+              dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
+              curl --fail --silent --show-error --request POST \
+                --header "Authorization: Bearer $jwt" \
+                --header 'Content-Type: application/json' \
+                --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true","continuous":"true"}}' \
+                "$dispatch_api"
+              echo '::notice::requested coordinated app/OS release'
+            fi
           fi
