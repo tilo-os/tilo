@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, ButtonState, GestureBeginEvent, GestureEndEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, GestureBeginEvent, GestureEndEvent,
     GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState, KeyboardKeyEvent,
     PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
 };
@@ -30,7 +30,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{
     ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{
+    Key, KeyLocation, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
+};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use super::devices::{ModeInfo, filter_kms_nodes, order_by_connected_connectors};
@@ -1011,9 +1013,16 @@ impl DrmDispatchState {
             InputEvent::PointerAxis { event } => {
                 let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
                 let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
-                if dx != 0.0 || dy != 0.0 {
-                    self.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
-                }
+                // Keep finger/continuous scrolling in pixel units. Converting
+                // it to line deltas quantises short touchpad movements and
+                // makes kinetic scrolling look laggy; only a wheel has a
+                // discrete line interpretation. Zero-valued finger events
+                // are retained as the terminating scroll frame.
+                self.push(BackendEvent::Input(mouse_wheel_event(
+                    event.source(),
+                    dx,
+                    dy,
+                )));
             }
             _ => {}
         }
@@ -1806,28 +1815,43 @@ fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
-/// Build a `WindowEvent::MouseWheel` from libinput axis amounts. libinput's `amount` is ~15/notch with `+y`=down; winit's `LineDelta` uses `+y`=up, so negate and scale to lines.
-fn mouse_wheel_event(dx: f64, dy: f64) -> WindowEvent {
-    // Scroll deltas in wheel "lines," not device pixels — f32 precision is
-    // ample, and winit's own `LineDelta` is `f32`.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "scroll delta in wheel lines; f32 precision is ample and matches winit's LineDelta type"
-    )]
-    let (lines_x, lines_y) = (-(dx / 15.0) as f32, -(dy / 15.0) as f32);
+/// Build a `WindowEvent::MouseWheel` from libinput axis amounts. libinput's
+/// positive axis direction is down/right while winit's positive direction is
+/// up/left. Preserve the source: a wheel amount is in degrees (~15/click),
+/// while finger and continuous amounts are pixels.
+fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
+    let delta = match source {
+        AxisSource::Wheel | AxisSource::WheelTilt => {
+            // Scroll deltas in wheel "lines," not device pixels — f32
+            // precision is ample and matches winit's LineDelta type.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "scroll delta in wheel lines; f32 precision is ample and matches winit's LineDelta type"
+            )]
+            MouseScrollDelta::LineDelta(-(dx / 15.0) as f32, -(dy / 15.0) as f32)
+        }
+        AxisSource::Finger | AxisSource::Continuous => {
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-dx, -dy))
+        }
+    };
     WindowEvent::MouseWheel {
         device_id: unsafe { std::mem::zeroed() },
-        delta: MouseScrollDelta::LineDelta(lines_x, lines_y),
+        delta,
         phase: TouchPhase::Moved,
     }
 }
 
-/// Map a raw Linux input button code (`input-event-codes.h`) to winit's `MouseButton`. Side/extra buttons are dropped.
+/// Map a raw Linux input button code (`input-event-codes.h`) to winit's
+/// `MouseButton`. Preserve the browser navigation buttons: dropping them in
+/// the DRM adapter made a real mouse behave differently from the hosted
+/// backend and prevented Wayland clients from receiving back/forward clicks.
 fn map_mouse_button(code: u32) -> Option<MouseButton> {
     match code {
         0x110 => Some(MouseButton::Left),
         0x111 => Some(MouseButton::Right),
         0x112 => Some(MouseButton::Middle),
+        0x115 => Some(MouseButton::Forward),
+        0x116 => Some(MouseButton::Back),
         _ => None,
     }
 }
@@ -1962,6 +1986,38 @@ impl KeyboardXkb {
 /// Map an xkb keysym to a winit logical [`Key`]: special keys become
 /// `Key::Named`, printable Unicode becomes `Key::Character`; bare modifiers and unmapped keys return `None` (carried by `ModifiersChanged` instead).
 fn keysym_to_winit_key(raw: u32) -> Option<Key> {
+    // Keep the function row intact. These are not printable keysyms, so they
+    // must be named explicitly rather than falling through to `key_char()`.
+    let function = match raw {
+        keysyms::KEY_F1 => Some(NamedKey::F1),
+        keysyms::KEY_F2 => Some(NamedKey::F2),
+        keysyms::KEY_F3 => Some(NamedKey::F3),
+        keysyms::KEY_F4 => Some(NamedKey::F4),
+        keysyms::KEY_F5 => Some(NamedKey::F5),
+        keysyms::KEY_F6 => Some(NamedKey::F6),
+        keysyms::KEY_F7 => Some(NamedKey::F7),
+        keysyms::KEY_F8 => Some(NamedKey::F8),
+        keysyms::KEY_F9 => Some(NamedKey::F9),
+        keysyms::KEY_F10 => Some(NamedKey::F10),
+        keysyms::KEY_F11 => Some(NamedKey::F11),
+        keysyms::KEY_F12 => Some(NamedKey::F12),
+        keysyms::KEY_F13 => Some(NamedKey::F13),
+        keysyms::KEY_F14 => Some(NamedKey::F14),
+        keysyms::KEY_F15 => Some(NamedKey::F15),
+        keysyms::KEY_F16 => Some(NamedKey::F16),
+        keysyms::KEY_F17 => Some(NamedKey::F17),
+        keysyms::KEY_F18 => Some(NamedKey::F18),
+        keysyms::KEY_F19 => Some(NamedKey::F19),
+        keysyms::KEY_F20 => Some(NamedKey::F20),
+        keysyms::KEY_F21 => Some(NamedKey::F21),
+        keysyms::KEY_F22 => Some(NamedKey::F22),
+        keysyms::KEY_F23 => Some(NamedKey::F23),
+        keysyms::KEY_F24 => Some(NamedKey::F24),
+        _ => None,
+    };
+    if let Some(function) = function {
+        return Some(Key::Named(function));
+    }
     let named = match raw {
         keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(NamedKey::Enter),
         keysyms::KEY_Escape => Some(NamedKey::Escape),
@@ -1977,6 +2033,17 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         keysyms::KEY_Page_Up | keysyms::KEY_KP_Page_Up => Some(NamedKey::PageUp),
         keysyms::KEY_Page_Down | keysyms::KEY_KP_Page_Down => Some(NamedKey::PageDown),
         keysyms::KEY_space => Some(NamedKey::Space),
+        keysyms::KEY_Caps_Lock => Some(NamedKey::CapsLock),
+        keysyms::KEY_Num_Lock => Some(NamedKey::NumLock),
+        keysyms::KEY_Scroll_Lock => Some(NamedKey::ScrollLock),
+        keysyms::KEY_Insert => Some(NamedKey::Insert),
+        keysyms::KEY_Menu => Some(NamedKey::ContextMenu),
+        keysyms::KEY_Multi_key => Some(NamedKey::Compose),
+        keysyms::KEY_ISO_Level3_Shift => Some(NamedKey::AltGraph),
+        keysyms::KEY_ISO_Next_Group => Some(NamedKey::GroupNext),
+        keysyms::KEY_ISO_Prev_Group => Some(NamedKey::GroupPrevious),
+        keysyms::KEY_Pause => Some(NamedKey::Pause),
+        keysyms::KEY_Help => Some(NamedKey::Help),
         keysyms::KEY_Print => Some(NamedKey::PrintScreen),
         keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => Some(NamedKey::Shift),
         keysyms::KEY_Control_L | keysyms::KEY_Control_R => Some(NamedKey::Control),
@@ -2000,10 +2067,18 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         return Some(Key::Named(n));
     }
     // Printable character (handles layout + shift + caps via the keysym).
-    match Keysym::new(raw).key_char() {
-        Some(c) if !c.is_control() => Some(Key::Character(SmolStr::new(c.to_string()))),
-        _ => None,
+    if let Some(c) = Keysym::new(raw).key_char()
+        && !c.is_control()
+    {
+        return Some(Key::Character(SmolStr::new(c.to_string())));
     }
+    // Never drop an otherwise valid physical key merely because this adapter
+    // does not have a named-key spelling for its keysym. The seat still must
+    // receive the raw keycode (IME/vendor keys included), and clients can
+    // interpret the xkb keymap they were sent. Returning an unidentified
+    // logical key preserves that protocol event while keeping it out of shell
+    // chord matching.
+    Some(Key::Unidentified(NativeKey::Xkb(raw)))
 }
 
 /// The typed text for a key event, or `None`. Suppressed under Ctrl/Super (chords, not text) and for control characters — matching winit, keeping control bytes out of text inputs.
@@ -2371,6 +2446,26 @@ mod tests {
             keysym_to_winit_key(ks::KEY_Shift_L),
             Some(Key::Named(NamedKey::Shift))
         );
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_F11),
+            Some(Key::Named(NamedKey::F11))
+        );
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_Caps_Lock),
+            Some(Key::Named(NamedKey::CapsLock))
+        );
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_Multi_key),
+            Some(Key::Named(NamedKey::Compose))
+        );
+        assert_eq!(
+            keysym_to_winit_key(ks::KEY_ISO_Level3_Shift),
+            Some(Key::Named(NamedKey::AltGraph))
+        );
+        assert!(matches!(
+            keysym_to_winit_key(0xffff_0bad),
+            Some(Key::Unidentified(NativeKey::Xkb(0xffff_0bad)))
+        ));
     }
 
     /// The function row has to survive the keysym translation — these keysyms have no character, so anything not in this table falls through `key_char()` and is dropped before a handler runs.
@@ -2581,6 +2676,52 @@ mod tests {
             panic!("expected keyboard input")
         };
         assert_eq!(event.logical_key, Key::Character("z".into()));
+    }
+
+    #[test]
+    fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["de:nodeadkeys".into()],
+            layouts: "de".into(),
+            variants: "nodeadkeys".into(),
+            options: None,
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // Hold the physical left Shift (evdev 42, xkb 50), then use the
+        // physical German `#` key (evdev 43) for apostrophe and the `ß` key
+        // (evdev 12) for question mark. These are the symbols that exposed
+        // the old logical-US fallback in Electron clients.
+        let _ = keyboard.process(xkb::Keycode::new(50), true);
+        let apostrophe = keyboard
+            .process(xkb::Keycode::new(51), true)
+            .input
+            .expect("German apostrophe key should produce input");
+        let question = keyboard
+            .process(xkb::Keycode::new(20), true)
+            .input
+            .expect("German question-mark key should produce input");
+        let logical_text = |event: WindowEvent| {
+            let WindowEvent::KeyboardInput { event, .. } = event else {
+                panic!("expected a keyboard input")
+            };
+            (
+                event.logical_key,
+                event.text,
+                event.physical_key.to_scancode(),
+            )
+        };
+        assert_eq!(
+            logical_text(apostrophe),
+            (Key::Character("'".into()), Some("'".into()), Some(43))
+        );
+        assert_eq!(
+            logical_text(question),
+            (Key::Character("?".into()), Some("?".into()), Some(12))
+        );
     }
 
     #[test]
@@ -2968,6 +3109,39 @@ mod tests {
             )),
             "the same preference that inverts scrolling inverts gestures"
         );
+    }
+
+    #[test]
+    fn drm_button_mapping_preserves_back_and_forward() {
+        assert_eq!(map_mouse_button(0x110), Some(MouseButton::Left));
+        assert_eq!(map_mouse_button(0x111), Some(MouseButton::Right));
+        assert_eq!(map_mouse_button(0x112), Some(MouseButton::Middle));
+        assert_eq!(map_mouse_button(0x115), Some(MouseButton::Forward));
+        assert_eq!(map_mouse_button(0x116), Some(MouseButton::Back));
+        assert_eq!(map_mouse_button(0x113), None);
+    }
+
+    #[test]
+    fn touchpad_scroll_keeps_pixel_precision_and_sign() {
+        let WindowEvent::MouseWheel { delta, .. } =
+            mouse_wheel_event(AxisSource::Finger, 1.25, -2.5)
+        else {
+            panic!("expected a mouse-wheel event")
+        };
+        assert_eq!(
+            delta,
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-1.25, 2.5))
+        );
+    }
+
+    #[test]
+    fn wheel_scroll_uses_line_units_without_losing_high_resolution_steps() {
+        let WindowEvent::MouseWheel { delta, .. } =
+            mouse_wheel_event(AxisSource::Wheel, 7.5, -30.0)
+        else {
+            panic!("expected a mouse-wheel event")
+        };
+        assert_eq!(delta, MouseScrollDelta::LineDelta(-0.5, 2.0));
     }
 
     #[test]
