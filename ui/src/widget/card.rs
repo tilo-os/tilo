@@ -230,6 +230,10 @@ impl Widget for Card {
         vec![self.inner.as_mut() as &mut (dyn Widget + '_)]
     }
 
+    fn mark_drawn(&mut self) {
+        self.inner.mark_drawn();
+    }
+
     fn get_rect(&self) -> Rect {
         self.inner.get_rect()
     }
@@ -535,6 +539,12 @@ impl Widget for CardGrid {
             .iter_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
+    }
+
+    fn mark_drawn(&mut self) {
+        for card in &mut self.cards {
+            card.mark_drawn();
+        }
     }
 
     fn get_rect(&self) -> Rect {

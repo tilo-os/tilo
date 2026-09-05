@@ -26,6 +26,8 @@ pub struct FullShaders {
     pub flatten: ShaderId,
     pub draw_reduce: ShaderId,
     pub draw_leaf: ShaderId,
+    pub draw_prefix: ShaderId,
+    pub draw_leaf_prefix: ShaderId,
     pub clip_reduce: ShaderId,
     pub clip_leaf: ShaderId,
     pub binning: ShaderId,
@@ -33,15 +35,25 @@ pub struct FullShaders {
     pub backdrop: ShaderId,
     pub path_count_setup: ShaderId,
     pub path_count: ShaderId,
+    pub path_count_direct: ShaderId,
     pub coarse: ShaderId,
+    pub coarse_sparse: Option<ShaderId>,
     pub path_tiling_setup: ShaderId,
     pub path_tiling: ShaderId,
+    pub path_tiling_direct: ShaderId,
     pub fine_area: Option<ShaderId>,
     pub fine_msaa8: Option<ShaderId>,
     pub fine_msaa16: Option<ShaderId>,
+    pub fine_sparse_area: Option<ShaderId>,
     // 2-level dispatch works for CPU pathtag scan even for large
     // inputs, 3-level is not yet implemented.
     pub pathtag_is_cpu: bool,
+    /// Selective CPU bbox/draw metadata must run before GPU flatten.
+    pub cpu_metadata_enabled: bool,
+    /// Bounded selective CPU draw-prefix with a GPU leaf permutation.
+    pub cpu_draw_prefix_enabled: bool,
+    /// Fixed-grid GPU path-count/tiling replaces indirect setup when enabled.
+    pub direct_path_dispatch_enabled: bool,
 }
 
 #[cfg(feature = "wgpu")]
@@ -138,6 +150,12 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let draw_prefix = engine.add_cpu_shader("vello.draw_prefix", vello_shaders::cpu::draw_prefix);
+    let draw_leaf_prefix = add_shader!(
+        draw_leaf_prefix,
+        [Uniform, BufReadOnly, BufReadOnly, Buffer, Buffer, Buffer,],
+        CpuShaderType::Missing
+    );
     let clip_reduce = add_shader!(clip_reduce, [BufReadOnly, BufReadOnly, Buffer, Buffer]);
     let clip_leaf = add_shader!(
         clip_leaf,
@@ -173,6 +191,11 @@ pub(crate) fn full_shaders(
         path_count,
         [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer]
     );
+    let path_count_direct = add_shader!(
+        path_count_direct,
+        [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer],
+        CpuShaderType::Missing
+    );
     let backdrop = add_shader!(
         backdrop_dyn,
         [Uniform, Buffer, BufReadOnly, Buffer],
@@ -192,6 +215,30 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let coarse_sparse = if engine.sparse_fine_enabled()
+        && engine.sparse_coarse_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area
+    {
+        Some(add_shader!(
+            coarse_sparse,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+                Uniform,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
     let path_tiling_setup = add_shader!(path_tiling_setup, [Buffer, Buffer, Buffer]);
     let path_tiling = add_shader!(
         path_tiling,
@@ -203,6 +250,19 @@ pub(crate) fn full_shaders(
             BufReadOnly,
             Buffer,
         ]
+    );
+    let path_tiling_direct = add_shader!(
+        path_tiling_direct,
+        [
+            Buffer,
+            BufReadOnly,
+            BufReadOnly,
+            BufReadOnly,
+            BufReadOnly,
+            Buffer,
+            Buffer
+        ],
+        CpuShaderType::Missing
     );
     let fine_resources = [
         Uniform,
@@ -245,6 +305,25 @@ pub(crate) fn full_shaders(
     } else {
         None
     };
+    let fine_sparse_area = if engine.sparse_fine_enabled() && !options.use_cpu && aa_support.area {
+        Some(add_shader!(
+            fine_sparse_area,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
 
     Ok(FullShaders {
         pathtag_reduce,
@@ -256,19 +335,28 @@ pub(crate) fn full_shaders(
         flatten,
         draw_reduce,
         draw_leaf,
+        draw_prefix,
+        draw_leaf_prefix,
         clip_reduce,
         clip_leaf,
         binning,
         tile_alloc,
         path_count_setup,
         path_count,
+        path_count_direct,
         backdrop,
         coarse,
+        coarse_sparse,
         path_tiling_setup,
         path_tiling,
+        path_tiling_direct,
         fine_area,
         fine_msaa8,
         fine_msaa16,
-        pathtag_is_cpu: options.use_cpu,
+        fine_sparse_area,
+        pathtag_is_cpu: options.use_cpu || engine.cpu_pathtag_enabled(),
+        cpu_metadata_enabled: !options.use_cpu && engine.cpu_metadata_enabled(),
+        cpu_draw_prefix_enabled: !options.use_cpu && engine.cpu_draw_prefix_enabled(),
+        direct_path_dispatch_enabled: !options.use_cpu && engine.direct_path_dispatch_enabled(),
     })
 }
