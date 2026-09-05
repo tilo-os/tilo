@@ -53,9 +53,15 @@ assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
 assert "Select native release lanes" in session_workflow
+assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
+assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"qos-package-optimized",targets:$targets}' in session_workflow
+assert '{arch:"amd64",runner:"runner",targets:$targets}' in session_workflow
 assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
+assert "release_arches=amd64,arm64" in session_workflow
+assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
+assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow
+assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
 assert "QOS_LANE_TARGETS" in session_workflow
 assert "while IFS='|' read -r distro image revision" in session_workflow
 
