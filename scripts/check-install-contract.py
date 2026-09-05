@@ -56,7 +56,7 @@ assert "Select native release lanes" in session_workflow
 assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
 assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"qos-package-optimized",targets:$targets}' in session_workflow
+assert '{arch:"amd64",runner:"runner",targets:$targets}' in session_workflow
 assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
 assert "release_arches=amd64,arm64" in session_workflow
 assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
