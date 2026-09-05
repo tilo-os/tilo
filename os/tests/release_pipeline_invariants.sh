@@ -49,6 +49,12 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
+grep -Fq 'repackage-deb-without-native-rebuild' "$repo/dist/ci/run-package-job.sh" \
+  && grep -Fq 'dist/debian/revise-debs.sh' "$repo/dist/ci/run-package-job.sh" \
+  && grep -Fq 'Build four native ABI payloads and install-test five userspaces' "$desktop" \
+  && ok 'Ubuntu and Debian share one compatible native build but retain separate install tests' \
+  || bad 'Debian-family packaging still repeats the same native build'
+
 grep -Fq 'branches: ["main"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
   && [ "$(grep -c '      - "apps/\*\*"' "$desktop")" -eq 2 ] \
