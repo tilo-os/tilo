@@ -208,10 +208,10 @@ for artifact in \
     && ok "$artifact is carried into the release" \
     || bad "$artifact is absent from the release workflow"
 done
-grep -Fq 'runner: runner-arm64' "$workflow" \
-  && grep -Fq 'runner: macos-x64' "$workflow" \
-  && grep -Fq 'runner: macos-arm64' "$workflow" \
-  && grep -Fq 'runs-on: windows' "$workflow" \
+grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
+  && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
+  && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
+  && grep -Fq 'runs-on: imager-windows-x86_64' "$workflow" \
   && ok 'Linux ARM64, Windows x64, and both macOS architectures have native lanes' \
   || bad 'the requested native release architecture matrix is incomplete'
 grep -Fq 'Require the complete native release matrix' "$workflow" \
@@ -278,7 +278,7 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
 cycle="$repo/os/dev/test-installer-cycle.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
-  && grep -Fq "if: github.event_name != 'pull_request'" "$workflow" \
+  && grep -Fq 'needs: plan' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -348,14 +348,16 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
   || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
-[ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "shell/**"' "$workflow")" -eq 2 ] \
+[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
+  && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
+  && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
+  && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
   && ! grep -Fq 'QOS_REGISTRY_CREDS:' "$workflow" \
-  && ok 'installer-medium changes trigger native, short-lived-authenticated architecture-matched builds' \
-  || bad 'installer-medium trigger, architecture, or registry-auth boundary is incomplete'
+  && ok 'installer media runs only on explicit, architecture-matched native release hosts' \
+  || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
   && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \

@@ -82,7 +82,28 @@ private_metadata_file() {
 }
 
 process_group_has_live_members() {
-  ps -eo pgid=,stat= | awk -v pgid="$1" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'
+  local proc_stat stat_line stat_tail state parent process_group
+  # A container without an init process can leave an orphaned descendant as a
+  # zombie indefinitely.  `kill -0` still reports that process, even though it
+  # cannot execute and has already released its resources.  On Linux, inspect
+  # procfs with Bash built-ins so cleanup verifies live members without taking
+  # a dependency on the host-specific `ps` utility or its output format.
+  if [ -r /proc/self/stat ]; then
+    for proc_stat in /proc/[0-9]*/stat; do
+      IFS= read -r stat_line 2>/dev/null < "$proc_stat" || continue
+      stat_tail="${stat_line##*) }"
+      [ "$stat_tail" != "$stat_line" ] || continue
+      read -r state parent process_group _ <<< "$stat_tail"
+      if [ "$process_group" = "$1" ] && [ "$state" != Z ]; then
+        return 0
+      fi
+    done
+    return 1
+  fi
+  # Bash's job-control mode below starts each background job in a process
+  # group whose ID is its leader PID.  Probe that group with the shell builtin
+  # on platforms without procfs.
+  kill -0 -- "-$1" 2>/dev/null
 }
 
 private_metadata_file "$uuid_file" 'runner UUID file'
@@ -156,7 +177,7 @@ case "$host_arch" in
   *) printf 'unsupported native runner architecture: %s\n' "$host_arch" >&2; exit 1 ;;
 esac
 case "$label:$host_os:$host_arch" in
-  runner:Linux:x86_64|runner-arm64:Linux:aarch64|macos-x64:Darwin:x86_64|macos-arm64:Darwin:aarch64) ;;
+  imager-linux-x86_64:Linux:x86_64|imager-linux-aarch64:Linux:aarch64|imager-macos-x86_64:Darwin:x86_64|imager-macos-aarch64:Darwin:aarch64) ;;
   *) printf 'runner label %s does not match native host %s/%s\n' "$label" "$host_os" "$host_arch" >&2; exit 1 ;;
 esac
 trusted_program "$runner"
@@ -199,31 +220,9 @@ set -m
   --label "$label:host" \
   --wait &
 runner_pid=$!
-if ! runner_pgid="$(ps -o pgid= -p "$runner_pid" 2>/dev/null | tr -d '[:space:]')"; then
-  # A one-job runner may finish before its process group can be sampled (for
-  # example when Forgejo has already assigned the queued job). Reap that
-  # completed child normally instead of turning the harmless ps race into a
-  # launcher failure under `set -e`.
-  # With monitor mode enabled, the background pipeline's leader PID is also
-  # its process-group ID. Preserve it so cleanup can still terminate children
-  # that outlived an already-reaped runner.
-  runner_pgid="$runner_pid"
-  set +e
-  wait "$runner_pid"
-  status=$?
-  set -e
-  runner_reaped=1
-  if [ "$status" -ne 0 ]; then
-    printf 'ephemeral Forgejo runner exited unsuccessfully (%s)\n' "$status" >&2
-    exit "$status"
-  fi
-  printf 'one-job runner completed; destroy this VM now\n'
-  exit 0
-fi
-if [ "$runner_pgid" != "$runner_pid" ]; then
-  printf 'could not isolate ephemeral runner in its own process group\n' >&2
-  exit 1
-fi
+# `set -m` gives this background job its own group, led by `$!`.  This remains
+# valid even when a very short one-job runner exits before the next statement.
+runner_pgid="$runner_pid"
 (
   sleep "$max_wait"
   kill -TERM -- "-$runner_pgid" 2>/dev/null || exit 0
@@ -231,11 +230,7 @@ fi
   kill -KILL -- "-$runner_pgid" 2>/dev/null || true
 ) &
 watcher_pid=$!
-watcher_pgid="$(ps -o pgid= -p "$watcher_pid" | tr -d '[:space:]')"
-if [ "$watcher_pgid" != "$watcher_pid" ]; then
-  printf 'could not isolate runner timeout watchdog in its own process group\n' >&2
-  exit 1
-fi
+watcher_pgid="$watcher_pid"
 
 set +e
 wait "$runner_pid"
