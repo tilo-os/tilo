@@ -628,6 +628,11 @@ pub struct LaunchCommand {
     /// Compositor-owned service authority registered only after this exact
     /// launcher process exists. Never serialised into the child environment.
     pub service_identity: Option<ServiceLaunchIdentity>,
+    /// Workspace used only to attribute standard desktop-portal requests from
+    /// an unconfined host/Flatpak process.  This is deliberately separate
+    /// from `service_identity`: it grants no qOS service authority and never
+    /// enters the child environment.
+    pub portal_workspace_id: Option<String>,
     /// Correlates launch events to one delegated agent without putting that
     /// identifier in ambient environment state.
     pub managed_agent_id: Option<String>,
@@ -1374,6 +1379,7 @@ fn build_launch_command_for(
             },
             compat_entry_generation: windows_compat_entry_generation(),
         }),
+        portal_workspace_id: None,
         managed_agent_id: None,
     }
 }
@@ -1753,7 +1759,8 @@ pub fn spawn_launch(
         let workspace_id = command
             .service_identity
             .as_ref()
-            .map(|identity| identity.workspace_id.as_str());
+            .map(|identity| identity.workspace_id.as_str())
+            .or(command.portal_workspace_id.as_deref());
         register_launched_process(child.id(), &app.package_id, workspace_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
@@ -2914,6 +2921,55 @@ mod tests {
         assert_eq!(verified_package_for_descendant(child.id()), None);
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    #[serial_test::serial(host_portal_launch)]
+    fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
+        let _ = drain_events();
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: Vec::new(),
+            service_identity: None,
+            portal_workspace_id: Some("host-room".into()),
+            managed_agent_id: None,
+        };
+        spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
+            .expect("launch worker");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let launcher_pid = loop {
+            let started = drain_events().into_iter().find_map(|event| {
+                (event.package_id == "org.example.Flatpak")
+                    .then_some(event.kind)
+                    .and_then(|kind| match kind {
+                        LaunchEventKind::Started { pid } => Some(pid),
+                        _ => None,
+                    })
+            });
+            if let Some(pid) = started {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "launch never became attributable"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            verified_workspaces_for_app("org.example.Flatpak"),
+            ["host-room".to_string()]
+        );
+        assert!(
+            consume_trusted_service_launch_for_pid(
+                launcher_pid,
+                "org.example.Flatpak",
+                "host-room"
+            )
+            .is_none(),
+            "portal attribution must not mint service authority"
+        );
     }
 
     #[test]
