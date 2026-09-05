@@ -321,11 +321,12 @@ impl ApplicationsProvider {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open App Store for {display_name}"),
-                                launcher::LaunchError::NoWorkspace.user_message(),
+                                launcher::launch_failure_title(&display_name),
+                                launcher::LaunchError::NoWorkspace.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
-                            .with_app_name("Applications"),
+                            .with_app_name("Applications")
+                            .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                         );
                         st.bump();
                         // The notification is how the person at the machine
@@ -520,6 +521,13 @@ pub(crate) fn launch_installed_app(
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     if let Err(err) = outcome {
         let message = err.user_message();
+        tracing::error!(
+            target: "qos::app_launch",
+            package_id,
+            display_name,
+            detail = %message,
+            "application launch was refused before spawn"
+        );
         {
             let mut st = chrome.borrow_mut();
             // Claimed back rather than left to expire, or the next window
@@ -528,9 +536,13 @@ pub(crate) fn launch_installed_app(
                 st.dismiss_notification(id);
             }
             st.push_notification_full(
-                Notification::new(format!("Couldn't open {display_name}"), message.clone())
-                    .with_severity(NotificationSeverity::Error)
-                    .with_app_name("Applications"),
+                Notification::new(
+                    launcher::launch_failure_title(display_name),
+                    err.notification_message(),
+                )
+                .with_severity(NotificationSeverity::Error)
+                .with_app_name("Applications")
+                .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
         }
@@ -1151,7 +1163,7 @@ mod tests {
         assert_eq!(n.severity, NotificationSeverity::Error);
         assert_eq!(
             n.body,
-            launcher::LaunchError::NoWorkspace.user_message(),
+            launcher::LaunchError::NoWorkspace.notification_message(),
             "the same failure gets the same words whichever list the app \
              came from"
         );

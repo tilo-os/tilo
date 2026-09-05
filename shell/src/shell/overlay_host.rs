@@ -4070,32 +4070,24 @@ impl ShellOverlayHost {
                 st.bump();
                 posted = true;
             }
-            let (title, body) = match event.kind {
+            match &event.kind {
                 LaunchEventKind::Started { pid } => {
                     eprintln!("shell: launched {} (pid {pid})", event.package_id);
                     continue;
                 }
                 LaunchEventKind::Exited => continue,
-                LaunchEventKind::SpawnFailed { detail } => {
-                    (format!("Couldn't open {}", event.display_name), detail)
-                }
-                LaunchEventKind::Failed { code, stderr_tail } => {
-                    let reason = if stderr_tail.trim().is_empty() {
-                        match code {
-                            Some(c) => format!("the launcher exited with status {c}"),
-                            None => "the launcher was killed by a signal".to_string(),
-                        }
-                    } else {
-                        stderr_tail
-                    };
-                    (format!("{} stopped", event.display_name), reason)
-                }
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
+            }
+            event.log_failure();
+            let Some(notice) = event.failure_notice() else {
+                continue;
             };
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
-                crate::shell::notification::Notification::new(title, body)
+                crate::shell::notification::Notification::new(notice.title, notice.body)
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Applications"),
+                    .with_app_name("Applications")
+                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
             posted = true;
