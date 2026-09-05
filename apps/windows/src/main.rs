@@ -93,8 +93,12 @@ mod tests {
                     && matches!(action.input, ActionInput::Immediate(_))
             })
             .expect("Windows publishes a replayable route action");
+        assert!(
+            matches!(published.input, ActionInput::Immediate(_)),
+            "the selected route action is immediate"
+        );
         let ActionInput::Immediate(encoded) = &published.input else {
-            unreachable!("the selected action is immediate");
+            return;
         };
         assert_eq!(encoded.type_id, windows::actions::WINDOWS_ACTION_TYPE);
 
