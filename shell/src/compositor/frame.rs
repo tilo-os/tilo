@@ -2008,18 +2008,6 @@ impl FrameBuilder {
     ) -> bool {
         self.reconcile_native_focus(focus);
 
-        // Match `ui::App`: unmodified Tab owns the global DFS focus order.
-        // Ctrl+Tab and other modified chords remain shell shortcuts and must
-        // continue through `ShellOverlayHost`.
-        if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == winit::event::ElementState::Pressed
-            && matches!(event.logical_key, Key::Named(NamedKey::Tab))
-            && !modifiers.state().control_key()
-            && !modifiers.state().alt_key()
-            && !modifiers.state().super_key()
-        {
-            return self.focus_tab(focus, modifiers.state().shift_key());
-        }
         let Some(child) = self.host_node() else {
             // No layout tree yet (see `host_node`'s doc) — nothing to
             // dispatch into.
@@ -2060,6 +2048,21 @@ impl FrameBuilder {
         if self.host.take_focus_reset() {
             self.relayout();
             self.focus_first(focus);
+        }
+        // Match `ui::App`: unmodified Tab advances the global DFS focus order
+        // only when the focused widget did not claim it. A terminal and a
+        // multiline editor legitimately consume Tab as input; intercepting it
+        // before dispatch made completion/indentation impossible. Ctrl+Tab and
+        // other modified chords remain shell shortcuts.
+        if !handled
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+            && matches!(event.logical_key, Key::Named(NamedKey::Tab))
+            && !modifiers.state().control_key()
+            && !modifiers.state().alt_key()
+            && !modifiers.state().super_key()
+        {
+            return self.focus_tab(focus, modifiers.state().shift_key());
         }
         handled
     }
@@ -2444,6 +2447,35 @@ mod tests {
         let shift = Modifiers::from(ModifiersState::SHIFT);
         assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
         assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+    }
+
+    #[test]
+    fn focused_terminal_gets_plain_tab_before_focus_traversal() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let terminal = fb.node_map.iter().find_map(|(id, widget)| {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid until the next structural rebuild.
+            (unsafe { (**widget).name() } == "Terminal").then_some(*id)
+        });
+        let Some(terminal) = terminal else {
+            // Environments without a PTY deliberately mount the terminal
+            // fallback instead; the routing rule remains covered by OOBE's
+            // unclaimed-Tab traversal test above.
+            return;
+        };
+        let mut focus = None;
+        fb.set_native_focus(&mut focus, Some(terminal));
+        let mut doc = AutoCommit::new();
+
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Tab)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(focus, Some(terminal), "terminal Tab must not move focus");
     }
 
     #[test]
