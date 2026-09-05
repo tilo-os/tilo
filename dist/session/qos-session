@@ -12,8 +12,10 @@ set -eu
 
 QOS_SHELL=/usr/bin/qos-shell
 SYSTEMCTL=/usr/bin/systemctl
+SYSTEMD_CAT=/usr/bin/systemd-cat
 SESSION_TARGET=qos-graphical-session.target
 target_started=0
+environment_imported=0
 shell_pid=
 
 # `DesktopNames=nirios` in the .desktop entry selects nirios-portals.conf;
@@ -33,12 +35,25 @@ if [ ! -x "$SYSTEMCTL" ]; then
     exit 1
 fi
 
+if [ ! -x "$SYSTEMD_CAT" ]; then
+    echo "qos-session: $SYSTEMD_CAT is missing or not executable" >&2
+    exit 1
+fi
+
 stop_target() {
     if [ "$target_started" = 1 ]; then
         "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
-        "$SYSTEMCTL" --user unset-environment \
-            XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1 || true
         target_started=0
+    fi
+    if [ "$environment_imported" = 1 ]; then
+        # The user manager survives desktop switches.  Leave no qOS identity
+        # or display selector behind even when starting the session target
+        # failed part-way through.
+        "$SYSTEMCTL" --user unset-environment \
+            DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+            XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+            >/dev/null 2>&1 || true
+        environment_imported=0
     fi
 }
 
@@ -68,6 +83,7 @@ trap 'forward_signal TERM 143' TERM
     XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
 "$SYSTEMCTL" --user import-environment \
     XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+environment_imported=1
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1
 
@@ -89,7 +105,14 @@ target_started=1
 # Keep the wrapper alive so normal logout stops the session target and a
 # display-manager termination signal reaches the compositor before cleanup.
 set +e
-"$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
+# GDM does not provide a portable per-session log file.  Route both streams
+# directly to journald under one stable identifier so a grey screen or early
+# crash remains diagnosable with `journalctl --user -t qos-session` after the
+# user returns to another desktop.  systemd-cat execs the command and relays
+# its exit status/signals; disabling level-prefix parsing prevents app output
+# from forging journal priorities.
+"$SYSTEMD_CAT" --identifier=qos-session --level-prefix=false \
+    "$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
 shell_pid=$!
 wait "$shell_pid"
 status=$?

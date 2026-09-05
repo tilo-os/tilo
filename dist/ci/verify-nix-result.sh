@@ -27,6 +27,8 @@ grep -q '^DesktopNames=nirios$' "$entry"
 grep -q '^UseIn=nirios$' "$portal"
 grep -q '^default=qos$' "$result/share/xdg-desktop-portal/nirios-portals.conf"
 grep -Fqx "QOS_SHELL=$result/bin/qos-shell" "$wrapper"
+grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$wrapper"
+grep -Fq -- '--identifier=qos-session --level-prefix=false' "$wrapper"
 grep -q -- '--firstboot' "$wrapper"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
     "$result/share/systemd/user/qos-graphical-session.target"

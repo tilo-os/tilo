@@ -77,6 +77,8 @@ install -m644 "$repo_root/os/usr/lib/systemd/user/qos-graphical-session.target" 
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/qos-session/LICENSE"
 sed -i \
     -e "s#QOS_SHELL=/usr/bin/qos-shell#QOS_SHELL=$nix/bin/qos-shell#" \
+    -e 's#SYSTEMCTL=/usr/bin/systemctl#SYSTEMCTL=/nix/store/fixture-systemd/bin/systemctl#' \
+    -e 's#SYSTEMD_CAT=/usr/bin/systemd-cat#SYSTEMD_CAT=/nix/store/fixture-systemd/bin/systemd-cat#' \
     "$nix/libexec/qos-session"
 sed -i \
     -e "s#Exec=/usr/libexec/qos-session#Exec=$nix/libexec/qos-session#" \

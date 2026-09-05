@@ -12,6 +12,9 @@ log=$work/log
 cat >"$work/systemctl" <<'SH'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+if [ "${QOS_SESSION_TEST_FAIL_START:-0}" = 1 ] && [ "${2:-}" = start ]; then
+    exit 1
+fi
 exit 0
 SH
 cat >"$work/shell" <<'SH'
@@ -23,27 +26,37 @@ if [ "${QOS_SESSION_TEST_HOLD:-0}" = 1 ]; then
 fi
 exit "${QOS_SESSION_TEST_STATUS:-0}"
 SH
-chmod 0755 "$work/systemctl" "$work/shell"
+cat >"$work/systemd-cat" <<'SH'
+#!/bin/sh
+printf 'systemd-cat %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+shift 2
+exec "$@"
+SH
+chmod 0755 "$work/systemctl" "$work/systemd-cat" "$work/shell"
 sed \
     -e "s|QOS_SHELL=/usr/bin/qos-shell|QOS_SHELL=$work/shell|" \
     -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$work/systemctl|" \
+    -e "s|SYSTEMD_CAT=/usr/bin/systemd-cat|SYSTEMD_CAT=$work/systemd-cat|" \
     "$repo_root/dist/session/qos-session" >"$work/qos-session"
 chmod 0755 "$work/qos-session"
 
 set +e
-QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_STATUS=7 "$work/qos-session"
+QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_STATUS=7 \
+    QOS_SESSION_TEST_SECRET='must-not-be-logged' "$work/qos-session"
 status=$?
 set -e
 [[ $status == 7 ]]
-cat >"$work/expected" <<'EOF'
+cat >"$work/expected" <<EOF
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start qos-graphical-session.target
+systemd-cat --identifier=qos-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
 shell --host-desktop-session --firstboot --backend drm
 systemctl --user stop qos-graphical-session.target
-systemctl --user unset-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$work/expected" "$log"
+! grep -Fq 'must-not-be-logged' "$log"
 
 : >"$log"
 QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_HOLD=1 "$work/qos-session" &
@@ -57,5 +70,14 @@ kill -TERM "$wrapper_pid"
 wait "$wrapper_pid" || [[ $? == 143 ]]
 grep -Fqx 'shell-term' "$log"
 [[ $(grep -Fc 'systemctl --user stop qos-graphical-session.target' "$log") == 1 ]]
+
+: >"$log"
+set +e
+QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_FAIL_START=1 "$work/qos-session"
+status=$?
+set -e
+[[ $status == 1 ]]
+grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
+! grep -Fq 'systemd-cat ' "$log"
 
 echo 'host session lifecycle: PASS'

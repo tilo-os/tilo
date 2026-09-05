@@ -35,6 +35,9 @@ grep -q '^DesktopNames=nirios$' "$(path /usr/share/wayland-sessions/qos.desktop)
 grep -q '^UseIn=nirios$' "$(path /usr/share/xdg-desktop-portal/portals/qos.portal)"
 grep -q '^default=qos$' "$(path /usr/share/xdg-desktop-portal/nirios-portals.conf)"
 grep -q '^QOS_SHELL=/usr/bin/qos-shell$' "$(path "$libexec_dir/qos-session")"
+grep -q '^SYSTEMD_CAT=/usr/bin/systemd-cat$' "$(path "$libexec_dir/qos-session")"
+grep -Fq -- '--identifier=qos-session --level-prefix=false' \
+    "$(path "$libexec_dir/qos-session")"
 grep -q -- '--firstboot' "$(path "$libexec_dir/qos-session")"
 grep -Fq '"$SYSTEMCTL" --user start "$SESSION_TARGET"' "$(path "$libexec_dir/qos-session")"
 grep -Fq '"$SYSTEMCTL" --user stop "$SESSION_TARGET"' "$(path "$libexec_dir/qos-session")"
