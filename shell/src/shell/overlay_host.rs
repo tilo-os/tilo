@@ -3573,6 +3573,11 @@ impl ShellOverlayHost {
                 if !removed {
                     return false;
                 }
+                // Commit the close to the atomic state file before the tab
+                // starts fading out.  Otherwise a compositor crash in the
+                // animation/protocol-close window can load the pre-close
+                // topology and visibly resurrect the window next session.
+                st.tree().flush_to_disk();
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -19345,6 +19350,9 @@ mod resync_strips_tests {
     #[test]
     fn close_then_revision_resync_does_not_restore_the_window_group() {
         let (mut tree, strip_id, group_id) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
         tree.seed_doc_from_cache();
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
@@ -19364,6 +19372,78 @@ mod resync_strips_tests {
             host.group_at_for_tests(strip_id, 0).is_none(),
             "resync after another revision must keep the closed group absent"
         );
+
+        // A fresh compositor must observe the same close. This catches the
+        // crash window between the visual animation and a later incidental
+        // state write; the close itself has to create the durable file.
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("the close flushes valid state");
+        assert!(
+            restarted.workspaces[0].strips[0].window_groups.is_empty(),
+            "a fresh load must not restore the group closed before restart"
+        );
+
+        // Then drive an unrelated revision through a fresh widget tree. The
+        // disk round trip and later resync are independent resurrection
+        // hazards, and both must preserve the absence.
+        let (mut restarted_host, restarted_chrome) =
+            build_nirios_overlay_host_with_chrome(&restarted);
+        restarted_chrome.borrow_mut().bump();
+        let _ = restarted_host.take_structure_dirty();
+        assert!(
+            restarted_host.group_at_for_tests(strip_id, 0).is_none(),
+            "an unrelated post-restart revision must not recreate the closed group"
+        );
+    }
+
+    #[test]
+    fn closing_one_of_two_same_app_windows_targets_only_its_surface() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![
+            Tab {
+                id: 1,
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "com.openai.chatgpt".into(),
+                    surface_id: 41,
+                },
+            },
+            Tab {
+                id: 2,
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "com.openai.chatgpt".into(),
+                    surface_id: 42,
+                },
+            },
+        ];
+        group.active_tab = 1;
+        tree.seed_doc_from_cache();
+
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(group_id, Some(1)));
+        assert_eq!(
+            chrome.borrow_mut().take_surface_close_requests(),
+            vec![41],
+            "close requests are keyed by surface, never by shared app id"
+        );
+        let remaining = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab.tile {
+                TileContent::Foreign { surface_id, .. } => Some(surface_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec![42]);
+
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        let group = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("the sibling window group remains");
+        assert_eq!(group.active_tab_id(), 2);
     }
 
     #[test]
