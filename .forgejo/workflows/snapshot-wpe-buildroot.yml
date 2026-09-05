@@ -20,10 +20,8 @@ on:
 
 concurrency:
   group: snapshot-wpe-buildroot
-  # Only the newest immutable snapshot is useful. In particular, do not let an
-  # older run waiting for future runner-arm64 capacity serialize newer amd64
-  # work behind it.
-  cancel-in-progress: true
+  # Every agent push must reach a terminal result for session feedback.
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -153,6 +151,19 @@ jobs:
       - name: Revoke local registry credentials
         if: always()
         run: docker logout code.podesta.ai || true
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [build, promote]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh
 
   promote:
     needs: build

@@ -171,3 +171,16 @@ jobs:
           bash tools/ci-measure.sh "sccache warm canary" -- \
             cargo build -p atomic-file --locked
           bash tools/ci-sccache-canary.sh warm
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [build, cache-cold, cache-warm]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh

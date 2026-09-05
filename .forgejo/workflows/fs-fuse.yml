@@ -63,7 +63,7 @@ on:
 
 concurrency:
   group: fs-fuse-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_HOME: /cargo-home
@@ -180,3 +180,16 @@ jobs:
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [real-fuse]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh

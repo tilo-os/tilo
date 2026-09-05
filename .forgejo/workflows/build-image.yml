@@ -799,3 +799,16 @@ jobs:
           ${{ steps.meta.outputs.tags }}
           TAGS
           echo "::notice::promoted signed, attested generation $QOS_GENERATION"
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh

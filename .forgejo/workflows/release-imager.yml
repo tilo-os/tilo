@@ -89,7 +89,7 @@ concurrency:
   # to its ref and superseded by the next push; an unavailable native runner
   # must not leave stale validations queued ahead of the current commit.
   group: release-imager-${{ startsWith(github.ref, 'refs/tags/imager-v') && 'promotion' || github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
+  cancel-in-progress: false
 
 jobs:
   medium:
@@ -907,3 +907,16 @@ jobs:
           fi
           QOS_SITE_GIT_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-site-release.sh
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [medium, catalog, linux, windows, macos, publish, homebrew, homebrew-install-test, winget, site-downloads]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh

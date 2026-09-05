@@ -38,7 +38,7 @@ on:
 
 concurrency:
   group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
+  cancel-in-progress: false
 
 jobs:
   build-and-push-kernel:
@@ -164,3 +164,16 @@ jobs:
             echo "KERNEL_RPMS_REF=$ref"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [build-and-push-kernel]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh

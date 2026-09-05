@@ -10,10 +10,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # A branch push and its pull_request synchronization describe the same head.
-  # Normalize both event shapes so the later event cancels duplicate work.
+  # Every agent push must reach a terminal result so Omnigent can inject it.
   group: lint-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   quality:
@@ -81,3 +80,18 @@ jobs:
 
       - name: cargo machete
         run: cargo machete --with-metadata
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [quality]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test agent callback payload
+        run: scripts/tests/test-report-agent-ci.sh
+      - run: scripts/report-agent-ci.sh

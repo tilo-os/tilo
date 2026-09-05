@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: check-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_HOME: /cargo-home
@@ -282,3 +282,16 @@ jobs:
             -m "select=$SELECT_RESULT affected=$AFFECTED_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
             "$GITHUB_SHA"
           git push origin refs/notes/qos-check-ci
+
+  agent-feedback:
+    name: Report result to agent
+    if: always()
+    needs: [select, affected, report-check-result]
+    runs-on: ubuntu-latest
+    env:
+      OMNIGENT_CI_URL: https://agents.podesta.ai
+      OMNIGENT_CI_INGEST_TOKEN: ${{ secrets.OMNIGENT_CI_INGEST_TOKEN }}
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/report-agent-ci.sh
