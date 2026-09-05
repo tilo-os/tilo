@@ -798,6 +798,10 @@ impl ShellDriver {
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
             "quick-settings" => self.scene_quick_settings(),
+            "qs-edit" => self.scene_qs_edit(false),
+            "qs-edit-drag" => self.scene_qs_edit(true),
+            "qs-hardware-wired" => self.scene_qs_hardware_wired(),
+            "qs-compact" => self.scene_qs_compact(),
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
             "ws-settings-general" => self.scene_ws_settings_general(),
@@ -924,7 +928,42 @@ impl ShellDriver {
     }
 
     fn scene_quick_settings(&mut self) {
-        self.with_chrome(|st| st.overlays.quick_settings = true);
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.quick_settings.bluetooth_available = true;
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_edit(&mut self, dragging: bool) {
+        self.scene_quick_settings();
+        self.fb
+            .host_mut()
+            .force_quick_settings_edit_for_visual_test(dragging);
+    }
+
+    fn scene_qs_hardware_wired(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = false;
+            st.quick_settings.bluetooth_available = false;
+            st.quick_settings.wired = Some(shell::shell::qs_actions::WiredInfo {
+                connected: true,
+                device: Some("enp0s31f6".into()),
+                ..Default::default()
+            });
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_compact(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = false;
+            st.quick_settings.bluetooth_available = false;
+            st.quick_settings.wired = None;
+        });
         self.fb.host_mut().force_quick_settings_settled();
     }
 
@@ -1516,6 +1555,10 @@ impl ShellDriver {
         "palette_records",
         "palette_no_results",
         "quick-settings",
+        "qs-edit",
+        "qs-edit-drag",
+        "qs-hardware-wired",
+        "qs-compact",
         "qs-wifi-drillin",
         "qs-bt-drillin",
         "ws-settings-general",
