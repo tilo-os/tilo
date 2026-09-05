@@ -1421,6 +1421,10 @@ impl Namespace {
     /// Minimal live record graph used by the content store to resolve manifest
     /// chunks. Kept crate-private so callers cannot accidentally disclose
     /// another record's roots while checking one requested blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bound is invalid or a live record lacks identity.
     pub fn live_record_blob_roots(
         &self,
         max_live_records: usize,

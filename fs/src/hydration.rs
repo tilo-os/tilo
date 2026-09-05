@@ -206,6 +206,7 @@ impl Hydrator {
                 peer.addr.id,
             )
         });
+        drop(peers);
         ranked.into_iter().map(|peer| peer.addr).collect()
     }
 
@@ -216,18 +217,27 @@ impl Hydrator {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == id) else {
+            drop(peers);
             return;
         };
         if success {
             peer.last_seen = now;
             peer.consecutive_failures = 0;
             peer.retry_after = now;
-            peer.latency = Some(peer.latency.map_or(elapsed, |old| (old * 3 + elapsed) / 4));
+            peer.latency = Some(peer.latency.map_or(elapsed, |old| {
+                old.saturating_mul(3)
+                    .saturating_add(elapsed)
+                    .checked_div(4)
+                    .unwrap_or(Duration::ZERO)
+            }));
         } else {
             peer.consecutive_failures = peer.consecutive_failures.saturating_add(1);
             let exponent = peer.consecutive_failures.min(6);
-            peer.retry_after = now + Duration::from_millis(250 * (1u64 << exponent));
+            let delay =
+                250_u64.saturating_mul(1_u64.checked_shl(u32::from(exponent)).unwrap_or(u64::MAX));
+            peer.retry_after = now.checked_add(Duration::from_millis(delay)).unwrap_or(now);
         }
+        drop(peers);
     }
 
     /// Local residency and the exact physical blobs that comprise one file.
@@ -327,7 +337,9 @@ impl Hydrator {
                 for (index, peer) in peers.into_iter().enumerate() {
                     attempts.push(async move {
                         if index > 0 {
-                            tokio::time::sleep(HEDGE_DELAY.saturating_mul(index as u32)).await;
+                            let delay = u32::try_from(index)
+                                .map_or(Duration::MAX, |index| HEDGE_DELAY.saturating_mul(index));
+                            tokio::time::sleep(delay).await;
                         }
                         self.fetch_from(hash, peer).await
                     });
@@ -439,6 +451,10 @@ impl Hydrator {
     /// progress. The callback is deliberately synchronous and cheap: callers
     /// can atomically project progress without holding a namespace lock across
     /// network I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required manifest or chunk cannot be hydrated.
     pub async fn prefetch_with_progress(
         &self,
         manifest_hash: Hash,
@@ -754,7 +770,9 @@ mod tests {
             .unwrap()
             .first_mut()
             .unwrap()
-            .last_seen = Instant::now() - PEER_STALE_AFTER - Duration::from_secs(1);
+            .last_seen = Instant::now()
+            .checked_sub(PEER_STALE_AFTER.saturating_add(Duration::from_secs(1)))
+            .expect("test monotonic clock has sufficient range");
         assert!(hydrator.known_peers().is_empty());
     }
 

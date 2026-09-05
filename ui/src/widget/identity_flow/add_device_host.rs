@@ -178,6 +178,11 @@ impl AddDeviceHostScreen {
     /// ceremony and regenerate the QR. This must happen before the QR is
     /// shown; the endpoint and exact certificate become part of every frame's
     /// authenticated transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if pairing has not begun, the broker endpoint or
+    /// certificate is invalid, or the refreshed QR payload cannot be encoded.
     pub fn attach_broker(
         &mut self,
         endpoint: impl Into<String>,
