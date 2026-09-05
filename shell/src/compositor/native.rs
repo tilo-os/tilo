@@ -5452,6 +5452,10 @@ pub fn run() -> ! {
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
+        // Off-thread foreign-buffer reads release Smithay commit barriers;
+        // transaction application must return to the compositor-owning thread.
+        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
         if let Err(err) = display.dispatch_clients(&mut state) {
