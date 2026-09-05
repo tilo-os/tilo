@@ -158,6 +158,12 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn system_fonts_shape_the_startup_probe() {
+        let mut font_system = FontSystem::new();
+        assert!(shape_canonical_strings(&mut font_system) > 0);
+    }
+
     /// The default is on — an unset env var must not silently skip the
     /// win. Relies on the `OnceLock`-cached value, so this must be the
     /// first test to read `QOS_STARTUP_WARM` in the process.
