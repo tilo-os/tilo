@@ -1687,7 +1687,10 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
-            qs_root: QuickSettingsRoot::default(),
+            // User intent is durable, while the root filters it against the
+            // live hardware snapshot when it paints.  Tests that construct a
+            // root directly still receive deterministic defaults.
+            qs_root: QuickSettingsRoot::load_persisted(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
@@ -5745,6 +5748,19 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::capture_open_at(permille);
     }
 
+    /// Screenshot-driver hook for the real Quick Settings edit surface.
+    pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
+        if !self.overlay_flags().quick_settings {
+            return;
+        }
+        if dragging {
+            let rect = self.quick_settings_rect();
+            self.qs_root.start_edit_drag_for_visual_test(rect);
+        } else {
+            self.qs_root.set_edit_mode_for_visual_test(true);
+        }
+    }
+
     /// Folds every reading the quick-settings workers delivered into
     /// chrome state. Never blocks — the reads happen on a worker, since
     /// a shell-out on the paint path froze the desktop. Each field
@@ -5778,6 +5794,7 @@ impl ShellOverlayHost {
             volume,
             wifi,
             bluetooth,
+            bluetooth_available,
             power,
             wired,
             battery,
@@ -5791,6 +5808,7 @@ impl ShellOverlayHost {
         if let Some(vpns) = vpns {
             st.quick_settings.vpns = vpns;
         }
+        st.quick_settings.bluetooth_available = bluetooth_available;
         st.quick_settings.privacy = privacy;
         (
             brightness,
@@ -5981,15 +5999,31 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
-    /// Mirror of the geometry in `draw_quick_settings` — the popover rect
-    /// anchored under the top-right tray pill. Width matches the concept's
-    /// `w-80` (320px); height sums the section bands in
-    /// [`Self::draw_quick_settings`], including three rows of system tiles.
+    /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
+    /// from the controls actually visible on this device, not a fixed grid of
+    /// unavailable radios.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = 320.0_f64;
-        let popover_h = 552.0_f64;
+        let popover_w = if self.rect.width() >= 720.0 {
+            400.0
+        } else {
+            320.0
+        };
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
+        let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
+            let quick_settings = &chrome.borrow().quick_settings;
+            if matches!(
+                quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ) {
+                self.qs_root.preferred_height(quick_settings)
+            } else {
+                // Discovery/detail lists have their own variable content;
+                // never shrink them to the compact root's height.
+                552.0
+            }
+        });
+        let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -6768,6 +6802,7 @@ impl ShellOverlayHost {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                let finishing_layout_drag = self.qs_root.edit_mode();
                 let commit = self
                     .chrome
                     .as_ref()
@@ -6786,6 +6821,11 @@ impl ShellOverlayHost {
                         );
                     }
                     None => {}
+                }
+                if finishing_layout_drag && let Some(chrome) = self.chrome.as_ref() {
+                    // `finish_drag` commits the shared reorder controller on
+                    // release; publish that one durable layout change.
+                    chrome.borrow_mut().bump();
                 }
                 *handled = true;
                 true
@@ -7365,7 +7405,12 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
+        if self.handle_quick_settings_keyboard(
+            logical_key,
+            shift_down,
+            mstate.control_key(),
+            handled,
+        ) {
             return true;
         }
         let shortcut_config = settings_store::hardware::ShortcutConfig::load();
@@ -8663,6 +8708,7 @@ impl ShellOverlayHost {
         &mut self,
         logical_key: &Key,
         backwards: bool,
+        control_down: bool,
         handled: &mut bool,
     ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
@@ -8678,6 +8724,32 @@ impl ShellOverlayHost {
         };
         if !at_root {
             return false;
+        }
+
+        // Edit mode shares the same keyboard contract as every reorderable
+        // qOS list: Ctrl+Up/Down moves the focused control, while ordinary
+        // arrows retain their range-adjustment meaning outside edit mode.
+        if control_down
+            && matches!(
+                logical_key,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
+            )
+        {
+            let direction = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
+                -1
+            } else {
+                1
+            };
+            let changed = {
+                let state = chrome.borrow();
+                self.qs_root
+                    .reorder_focused(&state.quick_settings, direction)
+            };
+            if changed {
+                chrome.borrow_mut().bump();
+            }
+            *handled = changed;
+            return changed;
         }
 
         if matches!(logical_key, Key::Named(NamedKey::Tab)) {
@@ -8760,14 +8832,6 @@ impl ShellOverlayHost {
                     .push_level(crate::shell::quick_settings::QsLevel::Notifications);
                 st.bump();
             }
-            RootAction::DisplayNotice => {
-                let mut st = chrome.borrow_mut();
-                st.push_notification(
-                    "Displays",
-                    "Display switching is available in Settings → Displays.",
-                );
-                st.bump();
-            }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
                 self.dispatch_quick_settings_toggle_actions(
@@ -8780,6 +8844,9 @@ impl ShellOverlayHost {
                     pending.night_light,
                     pending.power,
                 );
+            }
+            RootAction::LayoutChanged => {
+                chrome.borrow_mut().bump();
             }
             RootAction::OpenSettings | RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
@@ -11324,7 +11391,19 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        self.draw_strip_chrome(scene, transform, theme);
+        // Both drawn under the popovers, hidden under the overview since
+        // it isn't showing strips.
+        if !flags.overview {
+            // The window strip shares the panel's visual edge and looked
+            // like an inexplicable scrollbar beneath Quick Settings. Hide it
+            // throughout the close transition as well as while open.
+            if !flags.quick_settings && !self.qs_transition.is_visible(Instant::now()) {
+                let ribbon = self.strip_ribbon();
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            }
+            let rail = self.strip_rail();
+            rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
+        }
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme, flags);
 
@@ -13954,7 +14033,7 @@ impl ShellOverlayHost {
                         theme,
                         panel,
                         cursor,
-                        &qs.wifi_networks,
+                        qs,
                     );
                 }
                 true
