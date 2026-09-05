@@ -51,8 +51,13 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
+  && grep -Fq 'QOS_DESKTOP_ARM64_RELEASES: "0"' "$desktop" \
+  && grep -Fq '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'runner:"runner-arm64"' "$desktop" \
-  && grep -Fq 'verify-release-artifacts.sh release "$version" amd64,arm64' "$desktop" \
+  && grep -Fq 'release_arches=amd64,arm64' "$desktop" \
+  && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
+  && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
+  && grep -Fq 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' "$desktop" \
   && ok 'desktop push and pull-request triggers are path-scoped' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
