@@ -771,6 +771,7 @@ impl Default for QuickSettingsConfig {
 }
 
 impl QuickSettingsConfig {
+    #[must_use]
     pub fn normalised(mut self) -> Self {
         let mut seen = BTreeSet::new();
         self.controls.retain(|control| seen.insert(*control));
