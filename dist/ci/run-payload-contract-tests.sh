@@ -8,6 +8,17 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 true_bin=$(type -P true)
 
+# Minimal distro images need not install Git merely to make the reusable OS
+# payload reproducible. The outer runner resolves both source values and passes
+# them through the packaging boundary.
+package_job="$repo_root/dist/ci/run-package-job.sh"
+grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
+grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
+if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]'; then
+    echo "Fedora payload assembly still requires Git inside the target image" >&2
+    exit 1
+fi
+
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 
 # Host packages ship only the compositor from the shell crate. Keep every FHS
