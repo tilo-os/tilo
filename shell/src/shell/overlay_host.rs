@@ -7539,17 +7539,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // The configurable Super+Arrow bindings remain useful for spatial
-        // navigation, but people arriving from another Linux desktop should
-        // not have to discover them before they can switch windows. Walk the
-        // same flat strip sequence as keyboard, wheel, and touchpad focus.
-        if alt_down && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            let _ = self.step_focus_along_strip(if shift_down { -1 } else { 1 });
-            // Own the edge case too: Alt+Tab must never leak into the focused
-            // application merely because the strip has only one window.
-            *handled = true;
-            return true;
-        }
         // Captured ahead of the modifier-only branch so Character('K')
         // further down can't also fire.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
