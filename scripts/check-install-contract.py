@@ -54,8 +54,11 @@ assert "smithay-clipboard" in linux_ui_dependencies
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
 assert "Select native release lanes" in session_workflow
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"qos-package-optimized",targets:$targets}' in session_workflow
-assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
+assert '{"arch":"amd64","runner":"qos-package-optimized"}' in session_workflow
+assert '{"arch":"arm64","runner":"runner-arm64"}' in session_workflow
+assert "architectures[] as $architecture" in session_workflow
+assert "($targets | split(\"\\n\")[]" in session_workflow
+assert "distro:$target[0]" in session_workflow
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]
