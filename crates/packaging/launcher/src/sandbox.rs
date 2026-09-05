@@ -343,6 +343,87 @@ pub fn build_bwrap_argv(
     )
 }
 
+fn push_continuity_environment(argv: &mut Vec<String>) {
+    for key in [
+        "QOS_CONTINUITY_INSTANCE",
+        "QOS_CONTINUITY_RESUME_SCHEMA",
+        "QOS_CONTINUITY_RESUME_HEX",
+    ] {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+        let allowed =
+            !value.is_empty() && value.len() <= 64 * 1024 && !value.contains(['\0', '\n', '\r']);
+        if allowed
+            && (key != "QOS_CONTINUITY_INSTANCE"
+                || (value.len() <= 32 && value.bytes().all(|byte| byte.is_ascii_digit())))
+            && (key != "QOS_CONTINUITY_RESUME_SCHEMA"
+                || (value.len() <= 5
+                    && value.bytes().all(|byte| byte.is_ascii_digit())
+                    && value.parse::<u16>().is_ok_and(|version| version > 0)))
+            && (key != "QOS_CONTINUITY_RESUME_HEX"
+                || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        {
+            argv.extend(["--setenv".to_string(), key.to_string(), value]);
+        }
+    }
+}
+
+fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
+    if let Some(name) = manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            "QOS_APP_NAME".to_string(),
+            name.to_string(),
+        ]);
+    }
+    if let Some(icon) = manifest
+        .icon
+        .as_deref()
+        .map(str::trim)
+        .filter(|icon| !icon.is_empty())
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            "QOS_APP_ICON".to_string(),
+            payload_mount
+                .join(icon.trim_start_matches('/'))
+                .display()
+                .to_string(),
+        ]);
+    }
+}
+
+fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+    let Some((runtime_root, runtime_version)) = runtime else {
+        return;
+    };
+    let runtime_mount = runtime_mount_for(runtime_version);
+    push_bind(argv, "--ro-bind", runtime_root, &runtime_mount);
+    argv.extend([
+        "--setenv".to_string(),
+        "LD_LIBRARY_PATH".to_string(),
+        runtime_mount.join("lib").display().to_string(),
+    ]);
+    for canonical in CANONICAL_LOADER_PATHS {
+        let in_bundle = runtime_root
+            .join("lib")
+            .join(canonical.trim_start_matches('/'));
+        if in_bundle.exists() {
+            argv.extend([
+                "--ro-bind".to_string(),
+                in_bundle.display().to_string(),
+                (*canonical).to_string(),
+            ]);
+        }
+    }
+}
+
 /// `build_bwrap_argv` variant for `run-installed`'s CLI entrypoint.
 #[allow(
     clippy::too_many_arguments,
@@ -390,58 +471,11 @@ pub fn build_bwrap_argv_for_entry(
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
     // after rejecting control characters and an oversized resume blob.
-    for key in [
-        "QOS_CONTINUITY_INSTANCE",
-        "QOS_CONTINUITY_RESUME_SCHEMA",
-        "QOS_CONTINUITY_RESUME_HEX",
-    ] {
-        let Ok(value) = std::env::var(key) else {
-            continue;
-        };
-        let allowed =
-            !value.is_empty() && value.len() <= 64 * 1024 && !value.contains(['\0', '\n', '\r']);
-        if allowed
-            && (key != "QOS_CONTINUITY_INSTANCE"
-                || (value.len() <= 32 && value.bytes().all(|byte| byte.is_ascii_digit())))
-            && (key != "QOS_CONTINUITY_RESUME_SCHEMA"
-                || (value.len() <= 5
-                    && value.bytes().all(|byte| byte.is_ascii_digit())
-                    && value.parse::<u16>().is_ok_and(|version| version > 0)))
-            && (key != "QOS_CONTINUITY_RESUME_HEX"
-                || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
-        {
-            argv.push("--setenv".to_string());
-            argv.push(key.to_string());
-            argv.push(value);
-        }
-    }
+    push_continuity_environment(&mut argv);
 
     // The human-readable app name from `[package].name`; omitted when
     // unset, and the toolkit derives one from the package id.
-    if let Some(name) = manifest
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        argv.push("--setenv".to_string());
-        argv.push("QOS_APP_NAME".to_string());
-        argv.push(name.to_string());
-    }
-
-    // The app's window icon, resolved relative to the payload mount;
-    // omitted when unset, and the toolkit draws a generated default.
-    if let Some(icon_rel) = manifest
-        .icon
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let in_sandbox = payload_mount.join(icon_rel.trim_start_matches('/'));
-        argv.push("--setenv".to_string());
-        argv.push("QOS_APP_ICON".to_string());
-        argv.push(in_sandbox.display().to_string());
-    }
+    push_app_metadata(&mut argv, manifest, &payload_mount);
 
     // Hardened allocator + shadow stacks for packages the image lists as
     // handling untrusted bytes — decided against an image-owned policy,
@@ -454,25 +488,7 @@ pub fn build_bwrap_argv_for_entry(
     // Runtime bind + LD_LIBRARY_PATH, plus re-binding loader/libc at their
     // canonical absolute paths: ELFs hard-code `INTERP` and the kernel
     // refuses to exec if unreachable, even with LD_LIBRARY_PATH set.
-    if let Some((rt_root, rt_version)) = runtime {
-        let rt_mount = runtime_mount_for(rt_version);
-        push_bind(&mut argv, "--ro-bind", rt_root, &rt_mount);
-        argv.push("--setenv".to_string());
-        argv.push("LD_LIBRARY_PATH".to_string());
-        argv.push(rt_mount.join("lib").display().to_string());
-
-        // Re-bind each host loader/libc path at its canonical absolute
-        // location; silently skips files the bundle doesn't contain.
-        for canonical in CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            let in_bundle = rt_root.join("lib").join(no_slash);
-            if in_bundle.exists() {
-                argv.push("--ro-bind".to_string());
-                argv.push(in_bundle.display().to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
+    push_runtime_bundle(&mut argv, runtime);
 
     // Standard mounts, before the system profile so its device entries
     // land on top of the `--dev` tmpfs instead of under it.
