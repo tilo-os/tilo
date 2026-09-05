@@ -27,8 +27,9 @@ Pull requests use the cheapest lane that proves the affected boundary:
   ABI-incompatible objects cannot collide.
 - OS pull requests build without WPE WebKit. WPE has its own signed snapshot
   gate, while tagged OS releases require and include it.
-- Imager pull requests build and launch the Linux x86_64 package. A tag (or a
-  manual run with `full_native`) expands to Linux ARM64, Windows and both macOS
+- Ordinary imager changes run package and release-policy checks in the normal
+  affected-package CI. A manual rehearsal builds and launches Linux x86_64;
+  `full_native` or a tag expands to Linux ARM64, Windows and both macOS
   architectures before publication.
 
 Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
@@ -49,6 +50,12 @@ its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Pull requests receive only a short-lived, workflow-
 restricted package-read token, so they exercise the same immutable integration
 boundary without a reusable registry credential.
+
+Desktop ARM64 packaging remains defined but is dormant while no native runner
+is registered. Set the repository variable `QOS_DESKTOP_ARM64_RELEASES=1` when
+`runner-arm64` is available; tags then require ARM64 artifacts as well as
+amd64. Until then, the ARM tag job resolves as a quick no-op on a generic
+runner instead of leaving the entire release permanently queued.
 
 Each architecture collection also contains the signed `qos-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
@@ -133,6 +140,10 @@ rehearsal while the production signing key is unavailable.
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
+- Keep planner outputs out of job-level conditions, runner selection, and
+  dynamic matrices. This Forgejo deployment resolves those scheduler-time
+  dependencies unreliably, so affected-package checks and native release lanes
+  use explicit jobs and consume planner outputs only after a runner starts.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and pushes/manual dispatches from `main`. Their
   audiences are stored in `QOS_APP_RELEASE_TAG_AUDIENCE` and

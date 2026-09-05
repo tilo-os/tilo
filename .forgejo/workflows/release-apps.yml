@@ -19,6 +19,7 @@ on:
       - "rust-toolchain.toml"
       - "release/app-collections.toml"
       - "dist/apps/**"
+      - ".forgejo/actions/build-app-release/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
       - "tools/assemble_app_collection.py"
@@ -37,6 +38,7 @@ on:
       - "rust-toolchain.toml"
       - "release/app-collections.toml"
       - "dist/apps/**"
+      - ".forgejo/actions/build-app-release/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
       - "tools/assemble_app_collection.py"
@@ -71,10 +73,7 @@ jobs:
     runs-on: runner
     outputs:
       apps: ${{ steps.plan.outputs.apps }}
-      packages: ${{ steps.plan.outputs.packages }}
-      features: ${{ steps.plan.outputs.features }}
       count: ${{ steps.plan.outputs.count }}
-      matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
       collection: ${{ steps.plan.outputs.collection }}
@@ -129,11 +128,10 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
                 || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            matrix=$(python3 tools/app_release.py --architecture-matrix \
+            python3 tools/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \
-              --main-architectures "$MAIN_ARCHITECTURES")
-            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+              --main-architectures "$MAIN_ARCHITECTURES" >/dev/null
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main ]]; then
               printf 'manual app publication is restricted to main\n' >&2
               exit 1
@@ -144,7 +142,6 @@ jobs:
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
             echo 'publish=false' >> "$GITHUB_OUTPUT"
           fi
           case "$GITHUB_REF" in
@@ -154,11 +151,17 @@ jobs:
           [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  build:
-    if: needs.plan.outputs.count != '0'
+  build-x86_64:
     needs: plan
-    name: apps / ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    if: >-
+      github.event_name == 'pull_request' ||
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+       (vars.QOS_APP_MAIN_ARCHITECTURES == '' || contains(vars.QOS_APP_MAIN_ARCHITECTURES, 'x86_64'))) ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.architectures == '' || contains(github.event.inputs.architectures, 'x86_64')))
+    name: apps / x86_64
+    runs-on: runner
     timeout-minutes: 240
     # App feature sets include native media, graphics and portal bindings.
     # Keep those system headers in the versioned CI builder image instead of
@@ -168,100 +171,92 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # v2 retires a malformed archive written by the original app namespace.
-      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v2/${{ matrix.arch }}
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v2/x86_64
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+      RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Validate native architecture
-        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Restore Cargo downloads
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        continue-on-error: true
+      - uses: ./.forgejo/actions/build-app-release
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-deps-
-      - name: Prepare compiler cache
-        run: bash tools/ci-sccache.sh prepare
-      - name: Build and verify selected qpkgs once for this architecture
-        env:
-          QOS_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
-          QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
-          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
-        run: |
-          if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
-            identity="$RUNNER_TEMP/qos-app-publisher.json"
-            (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
-            export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
-          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
-            printf 'QPKG_PUBLISHER_IDENTITY is required for publication\n' >&2
-            exit 1
-          fi
-          if [[ -n ${RUNTIME_BUNDLE_SIGNING_KEY:-} ]]; then
-            runtime_identity="$RUNNER_TEMP/qos-runtime-publisher.json"
-            (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
-            export RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
-          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
-            printf 'RUNTIME_BUNDLE_SIGNING_KEY is required for publication\n' >&2
-            exit 1
-          fi
-          cleanup_identities() {
-            [[ -z ${identity:-} ]] || rm -f "$identity"
-            [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
-          }
-          trap cleanup_identities EXIT
-          build_log=$(mktemp "$RUNNER_TEMP/qos-app-build.XXXXXX")
-          if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
-            if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
-              exit 1
-            fi
-            echo '::warning::discarding malformed compiler-cache output and rebuilding it once'
-            find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
-            SCCACHE_RECACHE=1 dist/apps/package-apps.sh
-          fi
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        with:
-          name: qos-apps-${{ matrix.arch }}
-          path: |
-            dist/app-release/qpkg/*.qpkg
-            dist/app-release/runtime/**
-            dist/app-release/SHA256SUMS
-            dist/app-release/index.json
-          if-no-files-found: error
-      - name: Report compiler-cache effectiveness
-        if: always()
-        run: bash tools/ci-sccache.sh report || true
+          architecture: x86_64
+          apps: ${{ needs.plan.outputs.apps }}
+          publish: ${{ needs.plan.outputs.publish }}
 
-  publish:
-    needs: [plan, build]
-    # Resolve the completed dependencies before deciding whether this is a
-    # publishing run. Without `always()`, Forgejo can leave the intentionally
-    # disabled PR publisher in `blocked` instead of `skipped`.
-    if: always() && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
-    runs-on: runner
-    enable-openid-connect: true
+  build-aarch64:
+    needs: plan
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+       contains(vars.QOS_APP_MAIN_ARCHITECTURES, 'aarch64')) ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.event.inputs.architectures == '' || contains(github.event.inputs.architectures, 'aarch64')))
+    name: apps / aarch64
+    runs-on: runner-arm64
+    timeout-minutes: 240
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/apps/v2/aarch64
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+      RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.forgejo/actions/build-app-release
+        with:
+          architecture: aarch64
+          apps: ${{ needs.plan.outputs.apps }}
+          publish: ${{ needs.plan.outputs.publish }}
+
+  publish:
+    needs: [plan, build-x86_64, build-aarch64]
+    if: always()
+    runs-on: runner
+    enable-openid-connect: true
+    env:
+      QOS_X86_BUILD_RESULT: ${{ needs.build-x86_64.result }}
+      QOS_ARM64_BUILD_RESULT: ${{ needs.build-aarch64.result }}
+    steps:
+      - name: Enforce app build results before publication
+        if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
+        run: |
+          if [[ $QOS_X86_BUILD_RESULT != success \
+                || ( $QOS_ARM64_BUILD_RESULT != success && $QOS_ARM64_BUILD_RESULT != skipped ) ]]; then
+            printf 'required app release lane failed: x86_64=%s aarch64=%s\n' \
+              "$QOS_X86_BUILD_RESULT" "$QOS_ARM64_BUILD_RESULT" >&2
+            exit 1
+          fi
+      - name: No publication requested
+        if: needs.plan.outputs.publish != 'true' || needs.plan.outputs.count == '0'
+        run: echo 'App packages were tested; publication was not requested.'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.build-x86_64.result == 'success' && (needs.build-aarch64.result == 'success' || needs.build-aarch64.result == 'skipped')
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.build-x86_64.result == 'success' && (needs.build-aarch64.result == 'success' || needs.build-aarch64.result == 'skipped')
         with:
           path: release
       - name: Publish reusable qpkgs and assemble immutable collections
+        if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.build-x86_64.result == 'success' && (needs.build-aarch64.result == 'success' || needs.build-aarch64.result == 'skipped')
         env:
           MAIN_AUDIENCE: ${{ vars.QOS_APP_RELEASE_MAIN_AUDIENCE }}
           TAG_AUDIENCE: ${{ vars.QOS_APP_RELEASE_TAG_AUDIENCE }}

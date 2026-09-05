@@ -52,12 +52,17 @@ linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["depen
 assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
-assert "Select native release lanes" in session_workflow
-assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"qos-package-optimized",targets:$targets}' in session_workflow
-assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
-assert "QOS_LANE_TARGETS" in session_workflow
-assert "while IFS='|' read -r distro image revision" in session_workflow
+session_lane = (ROOT / ".forgejo/actions/package-desktop-lane/action.yml").read_text()
+assert "  package-amd64:" in session_workflow
+assert "  package-arm64:" in session_workflow
+assert "runs-on: runner" in session_workflow
+assert "QOS_DESKTOP_ARM64_RELEASES == '1'" in session_workflow
+assert "'runner-arm64' || 'runner'" in session_workflow
+assert "github.event.inputs.full_native == 'true'" in session_workflow
+assert "uses: ./.forgejo/actions/package-desktop-lane" in session_workflow
+assert "QOS_LANE_TARGETS" in session_lane
+assert "while IFS='|' read -r distro image revision" in session_lane
+assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]

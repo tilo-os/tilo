@@ -16,10 +16,18 @@ else
   ok 'workflows use Forgejo authorization/OIDC controls without ignored permissions keys'
 fi
 
+if grep -R -n -E '^    (if|runs-on):.*needs\.[^.]+\.outputs|^[[:space:]]+matrix:.*needs\.[^.]+\.outputs' "$workflows"; then
+  bad 'a workflow still relies on Forgejo scheduler-time prerequisite outputs'
+else
+  ok 'workflow scheduling does not depend on prerequisite job outputs'
+fi
+
 desktop="$workflows/package-desktop.yml"
 apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
+app_lane="$repo/.forgejo/actions/build-app-release/action.yml"
+desktop_lane="$repo/.forgejo/actions/package-desktop-lane/action.yml"
 
 cache_driver_ok=1
 for workflow in build-builder-image.yml build-image.yml build-kernel.yml qos-relay.yaml snapshot-rpms.yml; do
@@ -51,7 +59,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 grep -Fq 'repackage-deb-without-native-rebuild' "$repo/dist/ci/run-package-job.sh" \
   && grep -Fq 'dist/debian/revise-debs.sh' "$repo/dist/ci/run-package-job.sh" \
-  && grep -Fq 'Build four native ABI payloads and install-test five userspaces' "$desktop" \
+  && grep -Fq 'Build four native ABI payloads and install-test five userspaces' "$desktop_lane" \
   && ok 'Ubuntu and Debian share one compatible native build but retain separate install tests' \
   || bad 'Debian-family packaging still repeats the same native build'
 
@@ -59,9 +67,13 @@ grep -Fq 'branches: ["main"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
   && [ "$(grep -c '      - "apps/\*\*"' "$desktop")" -eq 2 ] \
   && grep -Fq 'python3 tools/desktop_release.py --base "$base"' "$desktop" \
-  && grep -Fq "if: needs.plan.outputs.affected == 'true'" "$desktop" \
-  && grep -Fq 'runner:"runner-arm64"' "$desktop" \
-  && grep -Fq 'verify-release-artifacts.sh release "$version" amd64,arm64' "$desktop" \
+  && grep -Fq 'package-amd64:' "$desktop" \
+  && grep -Fq 'package-arm64:' "$desktop" \
+  && grep -Fq 'uses: ./.forgejo/actions/package-desktop-lane' "$desktop" \
+  && grep -Fq "if: inputs.active == 'true'" "$desktop_lane" \
+  && grep -Fq "runs-on: \${{ vars.QOS_DESKTOP_ARM64_RELEASES == '1' && 'runner-arm64' || 'runner' }}" "$desktop" \
+  && grep -Fq "active: \${{ vars.QOS_DESKTOP_ARM64_RELEASES == '1' && needs.plan.outputs.affected || 'false' }}" "$desktop" \
+  && grep -Fq 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' "$desktop" \
   && ok 'desktop triggers use dependency-aware native-lane selection' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
@@ -82,16 +94,17 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
-  && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
+  && grep -Fq "if: env.QOS_BUILD_OS == 'true' && steps.release-mode.outputs.validate == 'true'" "$os" \
   && grep -Fq 'installed OS, desktop, and app integration passed; publication was not requested' "$os" \
-  && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
+  && grep -Fq "if: env.QOS_BUILD_OS == 'true' && steps.release-mode.outputs.publish == 'true'" "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
+grep -Fq "matrix: \${{ fromJSON((startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')" "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
+  && grep -Fq '"runner":"imager-linux-x86_64"' "$imager" \
+  && grep -Fq '"runner":"imager-linux-aarch64"' "$imager" \
+  && ! grep -Fq 'needs.catalog.outputs.linux-matrix' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
   && ! grep -Fq 'branches: ["main"]' "$imager" \
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
@@ -102,18 +115,19 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
-  && grep -Fq 'dist/app-release/runtime/**' "$apps" \
+  && grep -Fq 'dist/app-release/runtime/**' "$app_lane" \
   && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
   && grep -Fq 'image: code.podesta.ai/qos/qos-builder:latest' "$apps" \
-  && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
+  && grep -Fq 'uses: ./.forgejo/actions/build-app-release' "$apps" \
+  && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$app_lane" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
   && grep -Fq 'requested coordinated app/OS release' "$apps" \
-  && grep -Fq "if: always() && needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'" "$apps" \
+  && grep -Fq 'needs: [plan, build-x86_64, build-aarch64]' "$apps" \
   && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
   && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
   || bad 'app release artifacts cannot be consumed by later component releases'
@@ -138,7 +152,8 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && grep -Fq 'python3 tools/release_readiness.py' "$os" \
   && grep -Fq 'docker manifest inspect "$image"' "$os" \
-  && grep -Fq "if: always() && needs.coordinate.outputs.build == 'true'" "$os" \
+  && grep -Fq 'QOS_BUILD_OS: ${{ needs.coordinate.outputs.build }}' "$os" \
+  && grep -Fq "if: env.QOS_BUILD_OS == 'true'" "$os" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 

@@ -14,6 +14,7 @@ import ci_select
 ROOT = Path(__file__).resolve().parents[1]
 DESKTOP_PACKAGES = {"launcher", "qos-unlock-helper", "shell"}
 DIRECT_INPUTS = {
+    ".forgejo/actions/package-desktop-lane/action.yml",
     ".forgejo/workflows/package-desktop.yml",
     "Cargo.lock",
     "Cargo.toml",

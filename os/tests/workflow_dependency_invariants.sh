@@ -5,16 +5,17 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
+actions="$repo/.forgejo/actions"
 fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
+package_action="$actions/package-desktop-lane/action.yml"
 containerfile="$repo/os/Containerfile"
 nightly_workflow="$workflows/nightly.yml"
 visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
 github_cache_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
-  "$workflows/package-desktop.yml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
 )
@@ -37,7 +38,7 @@ while IFS=: read -r file line match; do
     printf 'mutable workflow action: %s:%s: %s\n' "$file" "$line" "$ref" >&2
     fail=1
   fi
-done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
+done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows" "$actions")
 
 if [ "$fail" = 0 ]; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
@@ -166,11 +167,11 @@ for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
   fi
 done
 if ! grep -Fq 'key: desktop-external-inputs-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
-    "$package_workflow" \
+    "$package_action" \
   || ! grep -Fq 'github-assets-all-v1-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
-    "$package_workflow" \
+    "$package_action" \
   || ! grep -Fq 'os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"' \
-    "$package_workflow" \
+    "$package_action" \
   || ! grep -Fq 'cached_archive="$repo_root/os/external-assets/cache/${name}.tar.gz"' \
     "$repo/dist/ci/install-sccache.sh"; then
   printf 'desktop package CI bypasses the verified GitHub input cache\n' >&2

@@ -83,6 +83,12 @@ class AppReleaseTests(unittest.TestCase):
             app_release.apps_from_changes(["Cargo.lock"], CATALOG),
             sorted(CATALOG),
         )
+        self.assertEqual(
+            app_release.apps_from_changes(
+                [".forgejo/actions/build-app-release/action.yml"], CATALOG
+            ),
+            sorted(CATALOG),
+        )
 
     def test_global_change_excludes_os_integrated_apps(self) -> None:
         catalog = {**CATALOG, "browser": {}}

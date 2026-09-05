@@ -27,6 +27,7 @@ GLOBAL_INPUTS = {
     "dist/apps/assemble-collection.sh",
     "tools/assemble_app_collection.py",
     "os/scripts/build-thin-apps.sh",
+    ".forgejo/actions/build-app-release/action.yml",
     ".forgejo/workflows/release-apps.yml",
 }
 GLOBAL_PREFIXES = (".cargo/",)

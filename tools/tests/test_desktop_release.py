@@ -55,6 +55,11 @@ class DesktopReleaseTests(unittest.TestCase):
 
     def test_direct_packaging_input_advances_desktop_without_metadata(self) -> None:
         self.assertTrue(desktop_release.desktop_changed(["dist/rpm/qos-session.spec"]))
+        self.assertTrue(
+            desktop_release.desktop_changed(
+                [".forgejo/actions/package-desktop-lane/action.yml"]
+            )
+        )
 
     def test_global_cargo_input_advances_desktop(self) -> None:
         self.assertTrue(

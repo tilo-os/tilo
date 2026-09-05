@@ -33,6 +33,11 @@ sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
 | Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
 | NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
 
+ARM64 package definitions remain part of the release contract. While no native
+`runner-arm64` is registered, tagged publication is limited to x86-64. Setting
+the repository variable `QOS_DESKTOP_ARM64_RELEASES=1` restores the native
+ARM64 lane and makes its artifacts mandatory for the release.
+
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
 checking its ownership, directory permissions, and embedded development marker.
@@ -158,8 +163,9 @@ Nix can build or substitute the package declaratively.
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
 that touch packaging or the packaged binaries execute the current x86-64 matrix.
-`desktop-v*` tags execute it regardless of changed paths, wait for every x86-64 and ARM64 install
-test, download the artifacts, require the complete current output set, and only then
+`desktop-v*` tags execute it regardless of changed paths, wait for every enabled
+native-architecture install test, download the artifacts, require the complete
+current output set, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. The five target userspaces run sequentially in one
 capacity-bounded lane.

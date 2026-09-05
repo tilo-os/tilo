@@ -1,0 +1,98 @@
+name: Build qOS app release lane
+description: Build, verify, and upload the selected qpkgs for one native architecture.
+
+inputs:
+  architecture:
+    description: Native qpkg architecture.
+    required: true
+  apps:
+    description: Space-separated app directory names selected by the planner.
+    required: false
+    default: ""
+  publish:
+    description: Whether release signing identities are mandatory.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: No affected apps
+      if: inputs.apps == ''
+      shell: bash
+      run: echo 'No independently packaged apps were affected.'
+
+    - name: Validate native architecture
+      if: inputs.apps != ''
+      shell: bash
+      run: ./os/dev/assert-native-arch.sh "${{ inputs.architecture }}"
+
+    - name: Restore Cargo downloads
+      if: inputs.apps != ''
+      uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      continue-on-error: true
+      with:
+        path: |
+          /cargo-home/registry/index
+          /cargo-home/registry/cache
+          /cargo-home/git/db
+        key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+        restore-keys: cargo-deps-
+
+    - name: Prepare compiler cache
+      if: inputs.apps != ''
+      shell: bash
+      run: bash tools/ci-sccache.sh prepare
+
+    - name: Build and verify selected qpkgs once for this architecture
+      if: inputs.apps != ''
+      shell: bash
+      env:
+        QOS_RELEASE_APPS: ${{ inputs.apps }}
+      run: |
+        if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
+          identity="$RUNNER_TEMP/qos-app-publisher.json"
+          (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
+          export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
+        elif [[ '${{ inputs.publish }}' == true ]]; then
+          printf 'QPKG_PUBLISHER_IDENTITY is required for publication\n' >&2
+          exit 1
+        fi
+        if [[ -n ${RUNTIME_BUNDLE_SIGNING_KEY:-} ]]; then
+          runtime_identity="$RUNNER_TEMP/qos-runtime-publisher.json"
+          (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
+          export RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
+        elif [[ '${{ inputs.publish }}' == true ]]; then
+          printf 'RUNTIME_BUNDLE_SIGNING_KEY is required for publication\n' >&2
+          exit 1
+        fi
+        cleanup_identities() {
+          [[ -z ${identity:-} ]] || rm -f "$identity"
+          [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"
+        }
+        trap cleanup_identities EXIT
+        build_log=$(mktemp "$RUNNER_TEMP/qos-app-build.XXXXXX")
+        if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
+          if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
+            exit 1
+          fi
+          echo '::warning::discarding malformed compiler-cache output and rebuilding it once'
+          find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
+          SCCACHE_RECACHE=1 dist/apps/package-apps.sh
+        fi
+
+    - name: Upload app packages
+      if: inputs.apps != ''
+      uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      with:
+        name: qos-apps-${{ inputs.architecture }}
+        path: |
+          dist/app-release/qpkg/*.qpkg
+          dist/app-release/runtime/**
+          dist/app-release/SHA256SUMS
+          dist/app-release/index.json
+        if-no-files-found: error
+
+    - name: Report compiler-cache effectiveness
+      if: always() && inputs.apps != ''
+      shell: bash
+      run: bash tools/ci-sccache.sh report || true

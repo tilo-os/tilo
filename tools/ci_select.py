@@ -2,10 +2,10 @@
 """Select and balance the workspace packages affected by a git change.
 
 The selector works from Cargo metadata rather than a hand-maintained package
-list.  A package is selected when its own files change, or when it transitively
-depends on a changed workspace package.  Repository-wide build inputs fall back
-to the complete workspace.  The emitted two-shard matrix is consumed directly
-by Forgejo Actions.
+list. A package is selected when its own files change, or when it transitively
+depends on a changed workspace package. Repository-wide build inputs fall back
+to the complete workspace. Callers may consume either its selected package list
+or its balanced matrix.
 """
 
 from __future__ import annotations
