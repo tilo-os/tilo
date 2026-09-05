@@ -108,8 +108,8 @@ try {
     }
     if (-not [Environment]::Is64BitOperatingSystem -or
         [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64 -or
-        $Label -cne "windows") {
-        throw "runner label windows requires native Windows x86-64"
+        $Label -cne "imager-windows-x86_64") {
+        throw "runner label imager-windows-x86_64 requires native Windows x86-64"
     }
 
     $UuidBytes = [IO.File]::ReadAllBytes($UuidItem.FullName)
@@ -139,7 +139,7 @@ try {
     $TokenUrl = [Uri]::new($TokenItem.FullName).AbsoluteUri
     $Arguments = @(
         "one-job", "--url", $Server.TrimEnd('/'), "--uuid", $Uuid,
-        "--token-url", $TokenUrl, "--label", "windows:host", "--wait"
+        "--token-url", $TokenUrl, "--label", "imager-windows-x86_64:host", "--wait"
     )
     $Process = Start-Process -FilePath $TrustedRunner -ArgumentList $Arguments -NoNewWindow -PassThru
     if (-not $Process.WaitForExit($MaxWait * 1000)) {
