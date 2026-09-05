@@ -908,6 +908,37 @@ mod tests {
             Some(&serde_json::json!(0.2))
         );
     }
+
+    #[test]
+    fn host_keyboard_import_is_complete_and_never_overwrites_qos_choices() {
+        let empty = serde_json::Map::new();
+        let imported = host_keyboard_updates(&empty, |_, key| match key {
+            "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
+            "xkb-options" => Some("['compose:rwin']".into()),
+            _ => None,
+        });
+        assert_eq!(
+            imported.get("keyboard_layout"),
+            Some(&serde_json::json!("de:nodeadkeys"))
+        );
+        assert_eq!(
+            imported.get("keyboard_layouts"),
+            Some(&serde_json::json!(["de:nodeadkeys", "us"]))
+        );
+        assert_eq!(
+            imported.get("compose_key"),
+            Some(&serde_json::json!("rwin"))
+        );
+
+        let existing = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            ("compose_key".into(), serde_json::json!("caps")),
+        ]);
+        assert!(
+            host_keyboard_updates(&existing, |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
+            "an existing qOS keyboard selection must win as one coherent preference"
+        );
+    }
     use std::ffi::OsString;
     use std::sync::{Arc, Barrier};
 
