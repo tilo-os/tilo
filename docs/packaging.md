@@ -76,13 +76,33 @@ sudo apt install qos-session
 ```
 
 Use `trixie` instead of `noble` on Debian 13. Fedora 44 users can add the RPM
-registry and install directly with `dnf`:
+registry and install directly with `dnf` on a traditional mutable system:
 
 ```bash
 sudo dnf config-manager addrepo \
   --from-repofile=https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo
 sudo dnf install qos-session
 ```
+
+On Fedora Atomic desktops such as Silverblue, Kinoite, or an rpm-ostree-based
+derivative, add the same repository and layer the package into the next
+deployment instead:
+
+```bash
+sudo curl --fail --location \
+  --output /etc/yum.repos.d/qos.repo \
+  https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo
+sudo rpm-ostree install qos-session
+```
+
+Save your work and reboot into the prepared deployment. GDM will continue to
+offer the existing desktop and will also offer qOS in its session menu. The
+layering transaction preserves other requested and locally installed packages;
+applications installed system-wide or for your user, including Flatpaks, remain
+installed and discoverable from qOS under **Host Apps**. Select the existing
+desktop in GDM whenever you want to switch back. Removing qOS later uses
+`sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
+development subpackage for an ordinary installation.
 
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
