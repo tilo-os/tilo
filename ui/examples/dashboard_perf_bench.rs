@@ -27,6 +27,17 @@
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
 //! Override the render target: `QUICK_UI_DASH_WIDTH=3840
 //! QUICK_UI_DASH_HEIGHT=2160`.
+//! Set `QUICK_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
+//! parity preflight. It compares 40 (configurable: 20..=100) already-built
+//! native scenes to a persistent full-render reference; it does not produce
+//! performance measurements or accept benchmark budget gates.
+//! Set `VELLO_SPARSE_FINE=1` to opt into direct native masked sparse fine
+//! shading when the renderer supports it. The raster-pixel metric remains the
+//! actual fine-shaded native pixels; profile output separately accounts for
+//! the coarse prefix work, so sparse mode is not described as eliminating it.
+//! Set `VELLO_GPU_DISPATCH_TIMESTAMPS=1` together with
+//! `VELLO_GPU_TIMESTAMPS=1` for an opt-in, profile-only per-dispatch GPU
+//! timing breakdown. It rejects acceptance budgets.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -35,7 +46,7 @@ use std::time::Instant;
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::i18n::I18nManager;
-use ui::offscreen::OffscreenRenderer;
+use ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -78,6 +89,77 @@ fn env_u32(name: &str, fallback: u32) -> u32 {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(fallback)
+}
+
+#[allow(
+    clippy::exit,
+    reason = "an invalid verifier frame count is a command-line configuration error"
+)]
+fn verification_frame_count() -> usize {
+    const DEFAULT: usize = 40;
+    const MIN: usize = 20;
+    const MAX: usize = 100;
+    let Ok(raw) = std::env::var("QUICK_UI_DASH_VERIFY_FRAMES") else {
+        return DEFAULT;
+    };
+    if let Ok(value @ MIN..=MAX) = raw.parse::<usize>() {
+        value
+    } else {
+        eprintln!(
+            "damage-verify: QUICK_UI_DASH_VERIFY_FRAMES must be in {MIN}..={MAX}, got {raw:?}"
+        );
+        std::process::exit(2);
+    }
+}
+
+/// Diagnostics can add work outside the normal acceptance workload, so reject
+/// budget flags rather than reporting incomparable gate results.
+#[allow(
+    clippy::exit,
+    reason = "mixing verifier readbacks with benchmark gates is a command-line configuration error"
+)]
+fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
+    const ACCEPTANCE_BUDGETS: &[&str] = &[
+        "QUICK_UI_DASH_FRAME_BUDGET_US",
+        "QUICK_UI_DASH_EVENT_BUDGET_US",
+        "QUICK_UI_DASH_RASTER_PIXEL_BUDGET",
+        "QUICK_UI_DASH_ALLOC_BUDGET_PER_1000",
+        "QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW",
+        "QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW",
+        "QUICK_UI_DASH_RSS_BUDGET_KIB",
+        "QUICK_UI_DASH_GPU_BUDGET_BYTES",
+        "QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB",
+        "QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
+    ];
+    // Verification intentionally suppresses every profile report, whereas
+    // timestamp diagnostics compose with the frame/host profile reports.
+    const VERIFICATION_ONLY_PROFILE_FLAGS: &[&str] = &[
+        "QUICK_UI_DASH_ALLOC_PROFILE",
+        "QUICK_UI_DASH_ALLOC_BREAKDOWN",
+        "QUICK_UI_DASH_FRAME_BREAKDOWN",
+        "QUICK_UI_DASH_RENDER_PROFILE",
+    ];
+    let names = if reject_profile_flags {
+        ACCEPTANCE_BUDGETS
+            .iter()
+            .chain(VERIFICATION_ONLY_PROFILE_FLAGS)
+            .copied()
+            .collect::<Vec<_>>()
+    } else {
+        ACCEPTANCE_BUDGETS.to_vec()
+    };
+    let supplied = names
+        .iter()
+        .copied()
+        .filter(|name| std::env::var_os(name).is_some())
+        .collect::<Vec<_>>();
+    if !supplied.is_empty() {
+        eprintln!(
+            "{mode}: benchmark budget flags are incompatible with this diagnostic mode: {}",
+            supplied.join(", "),
+        );
+        std::process::exit(2);
+    }
 }
 
 /// One panel of the dashboard: header + a column of mixed widgets.
@@ -245,8 +327,298 @@ struct BenchRun {
     total_skipped: usize,
     allocations: Option<crate::AllocationSnapshot>,
     allocation_breakdown: Option<AllocationBreakdown>,
+    render_timings: Option<Vec<OffscreenRenderTiming>>,
     resources_before: ResourceSnapshot,
     resources_after: ResourceSnapshot,
+}
+
+/// Pixel-parity preflight for the retained damage renderer. This deliberately
+/// owns a second, persistent target only in verification mode: creating it in
+/// the normal benchmark would add a native-size target and readbacks to the
+/// workload whose timings this example reports.
+struct DamageVerifier {
+    reference: OffscreenRenderer,
+    requested_frames: usize,
+    checked_frames: usize,
+    differing_frames: usize,
+    worst_differing_pixels: usize,
+}
+
+fn pixel_differs_beyond_aa(actual: &[u8], expected: &[u8]) -> bool {
+    actual
+        .iter()
+        .zip(expected.iter())
+        .any(|(a, b)| a.abs_diff(*b) > 1)
+}
+
+fn native_pixel_coordinates(pixel: usize, width: usize) -> (u32, u32) {
+    (
+        u32::try_from(pixel.checked_rem(width).unwrap_or(0)).unwrap_or(u32::MAX),
+        u32::try_from(pixel.checked_div(width).unwrap_or(0)).unwrap_or(u32::MAX),
+    )
+}
+
+impl DamageVerifier {
+    fn new(width: u32, height: u32, requested_frames: usize) -> Self {
+        // Keep the full-frame oracle independent from the retained path's
+        // optional compute-pass batching or sparse fine path, so either error
+        // cannot agree with itself in both targets.
+        let mut reference = OffscreenRenderer::new(width, height);
+        reference.set_compute_pass_batching(false);
+        reference.set_direct_path_dispatch_enabled(false);
+        reference.set_defer_bump_readback_enabled(false);
+        reference.set_sparse_fine_enabled(false);
+        reference.set_cpu_pathtag_enabled(false);
+        reference.set_cpu_draw_prefix_enabled(false);
+        Self {
+            reference,
+            requested_frames,
+            checked_frames: 0,
+            differing_frames: 0,
+            worst_differing_pixels: 0,
+        }
+    }
+
+    fn needs_frame(&self) -> bool {
+        self.checked_frames < self.requested_frames
+    }
+
+    fn compare(&mut self, state: &mut BenchState<'_>) {
+        // `full_draw` has already submitted and waited for this exact Scene's
+        // retained-damage update. Read it back without submitting another
+        // retained frame, then render that same Scene into the independent
+        // full-size reference target until its bump budget has settled.
+        let retained = state.renderer.readback_current();
+        let full = self
+            .reference
+            .render_resilient(state.scene, state.theme.tokens.colors.surfaces.base);
+        let differing = OffscreenRenderer::pixels_differing_beyond_aa(&retained, &full);
+        self.checked_frames = self.checked_frames.saturating_add(1);
+        self.worst_differing_pixels = self.worst_differing_pixels.max(differing);
+        if differing != 0 {
+            if self.differing_frames == 0 {
+                Self::report_first_mismatch(state, &retained, &full);
+            }
+            self.differing_frames = self.differing_frames.saturating_add(1);
+            eprintln!(
+                "damage-verify: FAIL frame {}/{}: {} pixels differ by more than 1 channel value",
+                self.checked_frames, self.requested_frames, differing,
+            );
+        }
+    }
+
+    /// Print enough detail to locate a retained-damage discrepancy without
+    /// emitting a native-4K image or allocating diagnostics on passing frames.
+    fn report_first_mismatch(state: &BenchState<'_>, retained: &[u8], full: &[u8]) {
+        let width = usize::try_from(state.canvas_w).unwrap_or(usize::MAX).max(1);
+        let mut min_x = u32::MAX;
+        let mut min_y = u32::MAX;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+        let mut samples = Vec::with_capacity(8);
+        for (pixel, (actual, expected)) in retained
+            .chunks_exact(4)
+            .zip(full.chunks_exact(4))
+            .enumerate()
+        {
+            if pixel_differs_beyond_aa(actual, expected) {
+                let (x, y) = native_pixel_coordinates(pixel, width);
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+                if samples.len() < 8 {
+                    samples.push(format!(
+                        "({x},{y}) retained={actual:?} reference={expected:?}"
+                    ));
+                }
+            }
+        }
+        eprintln!(
+            "damage-verify: first mismatch bbox=({min_x},{min_y})..=({max_x},{max_y}) \\
+             damage_regions={:?} samples={samples:?}",
+            state.damage_regions,
+        );
+    }
+
+    fn finish(&self) -> bool {
+        let complete = self.checked_frames == self.requested_frames;
+        let passed = complete && self.differing_frames == 0;
+        println!(
+            "damage-verify: {} checked={}/{} differing_frames={} worst_differing_pixels={}",
+            if passed { "PASS" } else { "FAIL" },
+            self.checked_frames,
+            self.requested_frames,
+            self.differing_frames,
+            self.worst_differing_pixels,
+        );
+        passed
+    }
+}
+
+#[cfg(test)]
+mod damage_verifier_tests {
+    use super::{
+        OffscreenRenderTiming, Phase, allocator_traffic_bytes, ceil_bytes_per_redraw,
+        complete_dispatch_unknown_totals, dispatch_timestamp_configuration_is_valid,
+        gpu_timestamp_sample_label, has_complete_gpu_dispatch_timestamp,
+        has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, native_pixel_coordinates,
+        p99_values, pixel_differs_beyond_aa, traffic_byte_redraw_budget_passes,
+        unaccounted_render_us,
+    };
+
+    #[test]
+    fn reports_only_an_8_bit_difference_beyond_aa_at_its_native_coordinate() {
+        assert!(!pixel_differs_beyond_aa(
+            &[10, 20, 30, 40],
+            &[11, 19, 31, 39]
+        ));
+        assert!(pixel_differs_beyond_aa(
+            &[10, 20, 30, 40],
+            &[12, 20, 30, 40]
+        ));
+        assert_eq!(native_pixel_coordinates(13, 5), (3, 2));
+    }
+
+    #[test]
+    fn timing_helpers_match_the_benchmark_p99_rank_and_saturate_unaccounted_time() {
+        let values = (0_u128..100).collect::<Vec<_>>();
+        assert_eq!(p99_values(&values), 98);
+
+        let phase = Phase {
+            render_us: 100,
+            ..Phase::default()
+        };
+        let timing = OffscreenRenderTiming {
+            vello_submit_us: 20,
+            copy_submit_us: 3,
+            settle_wait_us: 70,
+            full_attempts: 0,
+            damage_setup_us: 5,
+            damage_target_creations: 0,
+            ..OffscreenRenderTiming::default()
+        };
+        assert_eq!(unaccounted_render_us(&phase, &timing), 2);
+        assert_eq!(
+            unaccounted_render_us(
+                &Phase {
+                    render_us: 1,
+                    ..Phase::default()
+                },
+                &timing,
+            ),
+            0,
+        );
+
+        let complete = OffscreenRenderTiming {
+            gpu_timestamp_span_ns: 100,
+            gpu_timestamp_last_pass_ns: 40,
+            gpu_timestamp_other_pass_ns: 30,
+            sparse_submissions: 2,
+            sparse_fine_tiles: 12,
+            sparse_written_pixels: 384,
+            coarse_prefix_pixels: 768,
+            gpu_timestamp_expected_submissions: 1,
+            gpu_timestamp_sampled_submissions: 1,
+            ..timing
+        };
+        let partial = OffscreenRenderTiming {
+            gpu_timestamp_expected_submissions: 1,
+            gpu_timestamp_missing_submissions: 1,
+            ..timing
+        };
+        let complete_dispatch = OffscreenRenderTiming {
+            gpu_dispatch_timestamp_expected_submissions: 1,
+            gpu_dispatch_timestamp_sampled_submissions: 1,
+            gpu_dispatch_timestamp_present_stages: 1,
+            gpu_dispatch_timestamp_stage_duration_ns: [40; 32],
+            gpu_dispatch_timestamp_stage_dispatch_count: [2; 32],
+            gpu_dispatch_timestamp_unknown_duration_ns: 7,
+            gpu_dispatch_timestamp_unknown_dispatch_count: 2,
+            ..timing
+        };
+        let missing_dispatch = OffscreenRenderTiming {
+            gpu_dispatch_timestamp_expected_submissions: 1,
+            gpu_dispatch_timestamp_missing_submissions: 1,
+            gpu_dispatch_timestamp_unknown_duration_ns: 99,
+            gpu_dispatch_timestamp_unknown_dispatch_count: 99,
+            ..timing
+        };
+        let stale_dispatch = OffscreenRenderTiming {
+            gpu_dispatch_timestamp_expected_submissions: 1,
+            gpu_dispatch_timestamp_sampled_submissions: 1,
+            gpu_dispatch_timestamp_stale_submissions: 1,
+            ..timing
+        };
+        let complete_spans = [complete, partial]
+            .into_iter()
+            .filter(has_complete_gpu_timestamp)
+            .map(|sample| sample.gpu_timestamp_span_ns)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            complete_spans,
+            vec![100],
+            "a missing timestamp frame must be omitted, not averaged as a zero span"
+        );
+        let complete_compute_parts = [complete, partial]
+            .into_iter()
+            .filter(has_complete_gpu_timestamp)
+            .map(|sample| {
+                (
+                    sample.gpu_timestamp_last_pass_ns,
+                    sample.gpu_timestamp_other_pass_ns,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(complete_compute_parts, vec![(40, 30)]);
+        let complete_sparse_accounting = [complete, partial]
+            .into_iter()
+            .filter(has_complete_gpu_timestamp)
+            .map(|sample| {
+                (
+                    sample.sparse_submissions,
+                    sample.sparse_fine_tiles,
+                    sample.sparse_written_pixels,
+                    sample.coarse_prefix_pixels,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(complete_sparse_accounting, vec![(2, 12, 384, 768)]);
+        assert_eq!(gpu_timestamp_sample_label(&complete, false), "off");
+        assert!(gpu_timestamp_sample_label(&complete, true).starts_with("span=100ns"));
+        assert!(gpu_timestamp_sample_label(&partial, true).starts_with("incomplete"));
+        assert!(dispatch_timestamp_configuration_is_valid(true, true));
+        assert!(!dispatch_timestamp_configuration_is_valid(true, false));
+        assert!(dispatch_timestamp_configuration_is_valid(false, false));
+        assert!(has_complete_gpu_dispatch_timestamp(&complete_dispatch));
+        assert!(!has_complete_gpu_dispatch_timestamp(&missing_dispatch));
+        assert!(!has_complete_gpu_dispatch_timestamp(&stale_dispatch));
+        assert!(has_gpu_dispatch_timestamp_stage(&complete_dispatch, 0));
+        assert!(!has_gpu_dispatch_timestamp_stage(&complete_dispatch, 1));
+        assert_eq!(
+            [complete_dispatch, missing_dispatch, stale_dispatch]
+                .into_iter()
+                .filter(has_complete_gpu_dispatch_timestamp)
+                .count(),
+            1
+        );
+        assert_eq!(vello::gpu_dispatch_timestamp_stage_name(0), Some("unknown"));
+        assert_eq!(
+            complete_dispatch_unknown_totals([complete_dispatch, missing_dispatch].iter()),
+            (7, 2),
+            "unknown stage totals must not include incomplete dispatch samples"
+        );
+    }
+
+    #[test]
+    fn allocation_traffic_budget_includes_reallocations_and_requires_redraws() {
+        let traffic = allocator_traffic_bytes(10, 5);
+        assert_eq!(traffic, 15);
+        assert_eq!(ceil_bytes_per_redraw(traffic, 2), 8);
+        assert!(traffic_byte_redraw_budget_passes(traffic, 2, 8));
+        assert!(!traffic_byte_redraw_budget_passes(traffic, 2, 7));
+        assert!(!traffic_byte_redraw_budget_passes(traffic, 0, u64::MAX));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -259,6 +631,7 @@ struct BenchLoopOptions {
     frozen: bool,
     profile_allocations: bool,
     profile_allocation_breakdown: bool,
+    profile_render_timing: bool,
 }
 
 /// Everything one bench frame needs to lay out, dispatch events to, and
@@ -288,6 +661,7 @@ fn full_draw(
     state: &mut BenchState<'_>,
     phase: &mut Phase,
     mut allocation_breakdown: Option<&mut AllocationBreakdown>,
+    render_timing: Option<&mut OffscreenRenderTiming>,
 ) {
     let allocation_before_layout = allocation_breakdown
         .as_ref()
@@ -394,11 +768,23 @@ fn full_draw(
     ) {
         add_allocations(&mut breakdown.damage, allocation_delta(after, before));
     }
-    phase.raster_pixels = state.renderer.render_damage_regions_gpu_wait(
-        state.scene,
-        state.theme.tokens.colors.surfaces.base,
-        state.damage_regions,
-    );
+    if let Some(render_timing) = render_timing {
+        let (pixels, timing) = state.renderer.render_damage_regions_gpu_wait_profiled(
+            state.scene,
+            state.theme.tokens.colors.surfaces.base,
+            state.damage_regions,
+        );
+        // This is actual native fine-shaded pixel coverage, including dense
+        // recovery; sparse mode does not turn coarse-prefix work into zero.
+        phase.raster_pixels = pixels;
+        *render_timing = timing;
+    } else {
+        phase.raster_pixels = state.renderer.render_damage_regions_gpu_wait(
+            state.scene,
+            state.theme.tokens.colors.surfaces.base,
+            state.damage_regions,
+        );
+    }
     phase.render_us = t_render.elapsed().as_micros();
     if let (Some(before), Some(breakdown)) = (allocation_before_render, allocation_breakdown) {
         add_allocations(
@@ -595,14 +981,14 @@ fn prime_frozen_cursor(state: &mut BenchState<'_>, doc: &mut AutoCommit) {
     let p = frozen_cursor_pos(state);
     dispatch(state, doc, &make_cursor(p.0, p.1));
     let mut warm = Phase::default();
-    full_draw(state, &mut warm, None);
+    full_draw(state, &mut warm, None, None);
 }
 
 /// Two warm-up frames: first `compute_layout`, second post-cache.
 fn warm_up(state: &mut BenchState<'_>) {
     for _ in 0..2 {
         let mut warm = Phase::default();
-        full_draw(state, &mut warm, None);
+        full_draw(state, &mut warm, None, None);
     }
 }
 
@@ -627,6 +1013,18 @@ fn print_warmup_report(state: &BenchState<'_>) {
             usize::try_from(warm_hits).unwrap_or(usize::MAX),
             usize::try_from(warm_hits.saturating_add(warm_misses)).unwrap_or(usize::MAX),
         ),
+    );
+    println!(
+        "after warm-up: CPU path-tag retained host pool={}B (excluded from known GPU bytes)",
+        state.renderer.cpu_pathtag_pool_retained_bytes(),
+    );
+    println!(
+        "after warm-up: CPU metadata retained host pool={}B (excluded from known GPU bytes)",
+        state.renderer.cpu_metadata_pool_retained_bytes(),
+    );
+    println!(
+        "after warm-up: CPU draw-prefix retained host pool={}B (excluded from known GPU bytes)",
+        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
     );
 }
 
@@ -691,6 +1089,7 @@ fn run_bench_loop(
     doc: &mut AutoCommit,
     iters: usize,
     options: BenchLoopOptions,
+    mut verifier: Option<&mut DamageVerifier>,
 ) -> BenchRun {
     let positions = [
         (400.0, 300.0),
@@ -705,6 +1104,9 @@ fn run_bench_loop(
     // Materialize and touch the histogram before the resource baseline. This
     // keeps harness-owned pages out of the measured heap-growth delta.
     let mut histo = vec![Phase::default(); iters];
+    let mut render_timings = options
+        .profile_render_timing
+        .then(|| vec![OffscreenRenderTiming::default(); iters]);
     let resources_before = resource_snapshot(state.renderer);
     if options.profile_allocations {
         // The timing histogram is harness storage, not framework work.
@@ -741,13 +1143,31 @@ fn run_bench_loop(
         }
 
         // App-style gate: only draw if the tree signals dirty.
-        if state.root.needs_redraw() {
+        let redrew = state.root.needs_redraw();
+        if redrew {
             total_redraws = total_redraws.saturating_add(1);
-            full_draw(state, &mut phase, allocation_breakdown.as_mut());
+            let render_timing = render_timings
+                .as_mut()
+                .and_then(|timings| timings.get_mut(i));
+            full_draw(
+                state,
+                &mut phase,
+                allocation_breakdown.as_mut(),
+                render_timing,
+            );
         } else {
             total_skipped = total_skipped.saturating_add(1);
         }
         phase.total_us = t_total.elapsed().as_micros();
+        if redrew
+            && let Some(verifier) = verifier.as_deref_mut()
+            && verifier.needs_frame()
+        {
+            // Keep this out of `phase`: it performs target readback plus a
+            // full reference render, and verify mode suppresses all timing
+            // and budget output below.
+            verifier.compare(state);
+        }
         *sample = phase;
     }
 
@@ -761,6 +1181,7 @@ fn run_bench_loop(
         total_skipped,
         allocations,
         allocation_breakdown,
+        render_timings,
         resources_before,
         resources_after,
     }
@@ -846,8 +1267,415 @@ fn print_throughput_report(histo: &[Phase], total_redraws: usize) {
             us_to_ms(mean_redraw_only),
         );
         let raster_pixels = native_pixels_per_redraw(histo, total_redraws);
-        println!("native pixels rasterized per redraw:      {raster_pixels}");
+        println!("native fine-shaded pixels per redraw:    {raster_pixels}");
     }
+}
+
+fn print_frame_breakdown_group(label: &str, samples: &[Phase]) {
+    if samples.is_empty() {
+        println!("{label:<18} {:>8}", "0 samples");
+        return;
+    }
+    println!(
+        "{label:<18} {:>8} {:>10} {:>10} {:>10} {:>10}",
+        samples.len(),
+        mean(samples, |phase| phase.total_us),
+        pct(samples, 99.0, |phase| phase.total_us),
+        mean(samples, |phase| phase.render_us),
+        pct(samples, 99.0, |phase| phase.render_us),
+    );
+}
+
+/// Reports existing frame samples after the timed loop. This does not alter
+/// the workload, gate population, or resource snapshots; it only classifies
+/// the `raster_pixels` that were already recorded for each redraw.
+fn print_frame_breakdown(histo: &[Phase], full_pixels: u64) {
+    let redrawn = histo
+        .iter()
+        .enumerate()
+        .filter(|(_, phase)| phase.draw_us > 0 || phase.render_us > 0)
+        .collect::<Vec<_>>();
+    let full_or_recovery = redrawn
+        .iter()
+        .filter(|(_, phase)| phase.raster_pixels >= full_pixels)
+        .map(|(_, phase)| (**phase).clone())
+        .collect::<Vec<_>>();
+    let partial = redrawn
+        .iter()
+        .filter(|(_, phase)| phase.raster_pixels > 0 && phase.raster_pixels < full_pixels)
+        .map(|(_, phase)| (**phase).clone())
+        .collect::<Vec<_>>();
+
+    println!();
+    println!("frame breakdown (post-timing; all gate samples remain unchanged):");
+    println!(
+        "{:<18} {:>8} {:>10} {:>10} {:>10} {:>10}",
+        "kind", "samples", "mean total", "p99 total", "mean render", "p99 render"
+    );
+    print_frame_breakdown_group("full/recovery", &full_or_recovery);
+    print_frame_breakdown_group("partial", &partial);
+
+    let mut slowest = redrawn;
+    slowest.sort_unstable_by_key(|(_, phase)| std::cmp::Reverse(phase.total_us));
+    println!("slowest redrawn samples (event index: total_us, raster_pixels):");
+    for (index, phase) in slowest.into_iter().take(10) {
+        println!("  {index}: {}, {}", phase.total_us, phase.raster_pixels);
+    }
+}
+
+fn unaccounted_render_us(phase: &Phase, timing: &OffscreenRenderTiming) -> u128 {
+    phase.render_us.saturating_sub(
+        timing
+            .vello_submit_us
+            .saturating_add(timing.copy_submit_us)
+            .saturating_add(timing.damage_setup_us)
+            .saturating_add(timing.settle_wait_us),
+    )
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the rank is the same bounded p99 index used by pct above"
+)]
+fn p99_values(values: &[u128]) -> u128 {
+    let index = ((len_f64(values.len()) - 1.0) * 99.0 / 100.0).round() as usize;
+    values.get(index).copied().unwrap_or(0)
+}
+
+fn has_complete_gpu_timestamp(timing: &OffscreenRenderTiming) -> bool {
+    timing.gpu_timestamp_expected_submissions != 0
+        && timing.gpu_timestamp_missing_submissions == 0
+        && timing.gpu_timestamp_sampled_submissions == timing.gpu_timestamp_expected_submissions
+}
+
+fn has_complete_gpu_dispatch_timestamp(timing: &OffscreenRenderTiming) -> bool {
+    timing.gpu_dispatch_timestamp_expected_submissions != 0
+        && timing.gpu_dispatch_timestamp_missing_submissions == 0
+        && timing.gpu_dispatch_timestamp_stale_submissions == 0
+        && timing.gpu_dispatch_timestamp_sampled_submissions
+            == timing.gpu_dispatch_timestamp_expected_submissions
+}
+
+fn has_gpu_dispatch_timestamp_stage(timing: &OffscreenRenderTiming, stage_index: usize) -> bool {
+    let shift = u32::try_from(stage_index).unwrap_or(u32::MAX);
+    let Some(stage_bit) = 1_u32.checked_shl(shift) else {
+        return false;
+    };
+    timing.gpu_dispatch_timestamp_present_stages & stage_bit != 0
+}
+
+fn complete_dispatch_unknown_totals<'a>(
+    timings: impl IntoIterator<Item = &'a OffscreenRenderTiming>,
+) -> (u128, u128) {
+    timings
+        .into_iter()
+        .filter(|timing| has_complete_gpu_dispatch_timestamp(timing))
+        .fold((0, 0), |(duration, dispatches), timing| {
+            (
+                duration.saturating_add(timing.gpu_dispatch_timestamp_unknown_duration_ns),
+                dispatches.saturating_add(u128::from(
+                    timing.gpu_dispatch_timestamp_unknown_dispatch_count,
+                )),
+            )
+        })
+}
+
+fn gpu_timestamp_sample_label(timing: &OffscreenRenderTiming, enabled: bool) -> String {
+    if !enabled {
+        return "off".to_owned();
+    }
+    if has_complete_gpu_timestamp(timing) {
+        return format!(
+            "span={}ns last-compute={}ns other-compute={}ns complete ({}/{}/{} received/expected/missing)",
+            timing.gpu_timestamp_span_ns,
+            timing.gpu_timestamp_last_pass_ns,
+            timing.gpu_timestamp_other_pass_ns,
+            timing.gpu_timestamp_sampled_submissions,
+            timing.gpu_timestamp_expected_submissions,
+            timing.gpu_timestamp_missing_submissions,
+        );
+    }
+    format!(
+        "incomplete ({}/{}/{} received/expected/missing)",
+        timing.gpu_timestamp_sampled_submissions,
+        timing.gpu_timestamp_expected_submissions,
+        timing.gpu_timestamp_missing_submissions,
+    )
+}
+
+fn dispatch_timestamp_configuration_is_valid(
+    requested: bool,
+    gpu_timestamps_enabled: bool,
+) -> bool {
+    !requested || gpu_timestamps_enabled
+}
+
+type RenderTimingSample<'a> = (usize, (&'a Phase, &'a OffscreenRenderTiming));
+
+fn report_timing_values(label: &str, values: &mut [u128], unit: &str) {
+    if values.is_empty() {
+        println!("  {label:<14} no samples");
+        return;
+    }
+    values.sort_unstable();
+    println!(
+        "  {label:<14} mean={}{} p99={}{}",
+        values
+            .iter()
+            .sum::<u128>()
+            .checked_div(u128::try_from(values.len()).unwrap_or(1))
+            .unwrap_or(0),
+        unit,
+        p99_values(values),
+        unit,
+    );
+}
+
+fn print_gpu_timestamp_profile(
+    samples: &[RenderTimingSample<'_>],
+    gpu_timestamp_buffer_bytes: u64,
+) {
+    let complete_samples = samples
+        .iter()
+        .copied()
+        .filter(|(_, (_, timing))| has_complete_gpu_timestamp(timing))
+        .collect::<Vec<_>>();
+    let values = |f: fn(&OffscreenRenderTiming) -> u128| {
+        complete_samples
+            .iter()
+            .map(|(_, (_, timing))| f(timing))
+            .collect::<Vec<_>>()
+    };
+    let expected = samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+        total.saturating_add(u128::from(timing.gpu_timestamp_expected_submissions))
+    });
+    let received = samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+        total.saturating_add(u128::from(timing.gpu_timestamp_sampled_submissions))
+    });
+    let missing = samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+        total.saturating_add(u128::from(timing.gpu_timestamp_missing_submissions))
+    });
+    println!(
+        "  GPU timestamps are Vello compute-pass device intervals, not host encode/resolve/map/settle time; queue scheduling or device preemption can still affect the measured span."
+    );
+    println!(
+        "  gpu samples: complete={}/{} omitted={}; submissions expected={expected} received={received} missing={missing}; diagnostic buffers={gpu_timestamp_buffer_bytes}B",
+        complete_samples.len(),
+        samples.len(),
+        samples.len().saturating_sub(complete_samples.len()),
+    );
+    let mut span = values(|timing| timing.gpu_timestamp_span_ns);
+    report_timing_values("gpu-span", &mut span, "ns");
+    let mut pass = values(|timing| timing.gpu_timestamp_pass_ns);
+    report_timing_values("gpu-pass-time", &mut pass, "ns");
+    let mut last_compute = values(|timing| timing.gpu_timestamp_last_pass_ns);
+    report_timing_values("last-compute", &mut last_compute, "ns");
+    let mut other_compute = values(|timing| timing.gpu_timestamp_other_pass_ns);
+    report_timing_values("other-compute", &mut other_compute, "ns");
+    let mut pass_count = values(|timing| u128::from(timing.gpu_timestamp_pass_count));
+    report_timing_values("gpu-pass-count", &mut pass_count, "count");
+    println!(
+        "  last-compute is the final Vello compute pass in the current full-render pipeline; this diagnostic mapping is not a general pipeline guarantee."
+    );
+}
+
+fn print_gpu_dispatch_timestamp_profile(
+    samples: &[RenderTimingSample<'_>],
+    status: vello::GpuDispatchTimestampStatus,
+    dispatch_timestamp_buffer_bytes: u64,
+) {
+    let complete_samples = samples
+        .iter()
+        .copied()
+        .filter(|(_, (_, timing))| has_complete_gpu_dispatch_timestamp(timing))
+        .collect::<Vec<_>>();
+    let total = |f: fn(&OffscreenRenderTiming) -> u128| {
+        samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+            total.saturating_add(f(timing))
+        })
+    };
+    let expected = total(|timing| u128::from(timing.gpu_dispatch_timestamp_expected_submissions));
+    let received = total(|timing| u128::from(timing.gpu_dispatch_timestamp_sampled_submissions));
+    let missing = total(|timing| u128::from(timing.gpu_dispatch_timestamp_missing_submissions));
+    let stale = total(|timing| u128::from(timing.gpu_dispatch_timestamp_stale_submissions));
+    println!(
+        "  gpu dispatch timestamps: status={status:?}; complete={}/{} omitted={}; submissions expected={expected} received={received} missing={missing} stale={stale}; diagnostic buffers={dispatch_timestamp_buffer_bytes}B",
+        complete_samples.len(),
+        samples.len(),
+        samples.len().saturating_sub(complete_samples.len()),
+    );
+    for stage_index in 0..32 {
+        let stage_samples = complete_samples
+            .iter()
+            .filter(|(_, (_, timing))| has_gpu_dispatch_timestamp_stage(timing, stage_index))
+            .map(|(_, (_, timing))| *timing)
+            .collect::<Vec<_>>();
+        if stage_samples.is_empty() {
+            continue;
+        }
+        let mut duration = stage_samples
+            .iter()
+            .map(|timing| {
+                timing
+                    .gpu_dispatch_timestamp_stage_duration_ns
+                    .get(stage_index)
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .collect::<Vec<_>>();
+        let mut dispatches = stage_samples
+            .iter()
+            .map(|timing| {
+                u128::from(
+                    timing
+                        .gpu_dispatch_timestamp_stage_dispatch_count
+                        .get(stage_index)
+                        .copied()
+                        .unwrap_or(0),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stage_id = u16::try_from(stage_index.saturating_add(1)).unwrap_or(u16::MAX);
+        let stage_name = vello::gpu_dispatch_timestamp_stage_name(stage_id).unwrap_or("unknown");
+        let total_dispatches = dispatches
+            .iter()
+            .copied()
+            .fold(0_u128, u128::saturating_add);
+        println!(
+            "  dispatch-stage-{stage_name} (id={stage_id}): complete_samples={} total_dispatches={total_dispatches}",
+            stage_samples.len(),
+        );
+        report_timing_values("duration", &mut duration, "ns");
+        report_timing_values("dispatches", &mut dispatches, "count");
+    }
+    let (unknown_duration, unknown_dispatches) =
+        complete_dispatch_unknown_totals(complete_samples.iter().map(|(_, (_, timing))| *timing));
+    if unknown_duration != 0 || unknown_dispatches != 0 {
+        println!(
+            "  dispatch-stage-unknown: total_duration={unknown_duration}ns total_dispatches={unknown_dispatches}"
+        );
+    }
+}
+
+/// Sparse fine measurements include every render attempt. They describe the
+/// selected fine coverage alongside the coarse prefix that still ran.
+fn print_sparse_fine_profile(samples: &[RenderTimingSample<'_>]) {
+    let total = |f: fn(&OffscreenRenderTiming) -> u128| {
+        samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+            total.saturating_add(f(timing))
+        })
+    };
+    let values = |f: fn(&OffscreenRenderTiming) -> u128| {
+        samples
+            .iter()
+            .map(|(_, (_, timing))| f(timing))
+            .collect::<Vec<_>>()
+    };
+    let sparse_submissions = total(|timing| u128::from(timing.sparse_submissions));
+    let sparse_fine_tiles = total(|timing| u128::from(timing.sparse_fine_tiles));
+    let sparse_written_pixels = total(|timing| u128::from(timing.sparse_written_pixels));
+    let coarse_prefix_pixels = total(|timing| u128::from(timing.coarse_prefix_pixels));
+    println!(
+        "  sparse fine accounting (all render attempts): submissions={sparse_submissions} fine_tiles={sparse_fine_tiles} written_pixels={sparse_written_pixels} coarse_prefix_pixels={coarse_prefix_pixels}"
+    );
+    let mut sparse_submission_values = values(|timing| u128::from(timing.sparse_submissions));
+    report_timing_values("sparse-submits", &mut sparse_submission_values, "count");
+    let mut sparse_tile_values = values(|timing| u128::from(timing.sparse_fine_tiles));
+    report_timing_values("sparse-fine-tiles", &mut sparse_tile_values, "count");
+    let mut sparse_written_values = values(|timing| u128::from(timing.sparse_written_pixels));
+    report_timing_values("sparse-written", &mut sparse_written_values, "px");
+    let mut coarse_prefix_values = values(|timing| u128::from(timing.coarse_prefix_pixels));
+    report_timing_values("coarse-prefix", &mut coarse_prefix_values, "px");
+}
+
+fn print_render_timing_profile(
+    histo: &[Phase],
+    timings: &[OffscreenRenderTiming],
+    gpu_timestamp_buffer_bytes: u64,
+    gpu_dispatch_timestamp_status: vello::GpuDispatchTimestampStatus,
+    gpu_dispatch_timestamp_buffer_bytes: u64,
+) {
+    let gpu_timestamp_enabled =
+        std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
+    let samples = histo
+        .iter()
+        .zip(timings)
+        .enumerate()
+        .filter(|(_, (phase, _))| phase.draw_us > 0 || phase.render_us > 0)
+        .collect::<Vec<_>>();
+    let values = |f: fn(&Phase, &OffscreenRenderTiming) -> u128| {
+        samples
+            .iter()
+            .map(|(_, (phase, timing))| f(phase, timing))
+            .collect::<Vec<_>>()
+    };
+    println!();
+    println!(
+        "render timing profile (opt-in host boundaries; dirty-copy encoding joins Vello's render submission only when a copy is required):"
+    );
+    let mut vello = values(|_, timing| timing.vello_submit_us);
+    report_timing_values("vello-submit*", &mut vello, "us");
+    let mut copy = values(|_, timing| timing.copy_submit_us);
+    report_timing_values("copy-encode", &mut copy, "us");
+    let mut damage_setup = values(|_, timing| timing.damage_setup_us);
+    report_timing_values("damage-setup", &mut damage_setup, "us");
+    let mut scratch_creations = values(|_, timing| u128::from(timing.damage_target_creations));
+    report_timing_values("scratch-create", &mut scratch_creations, "count");
+    let scratch_creation_total = samples.iter().fold(0_u128, |total, (_, (_, timing))| {
+        total.saturating_add(u128::from(timing.damage_target_creations))
+    });
+    let scratch_creation_frames = samples
+        .iter()
+        .filter(|(_, (_, timing))| timing.damage_target_creations != 0)
+        .count();
+    println!(
+        "  scratch creation churn: total={scratch_creation_total} frames_with_creations={scratch_creation_frames}/{}",
+        samples.len()
+    );
+    print_sparse_fine_profile(&samples);
+    if gpu_timestamp_enabled {
+        print_gpu_timestamp_profile(&samples, gpu_timestamp_buffer_bytes);
+    }
+    if std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").is_ok_and(|value| value == "1") {
+        print_gpu_dispatch_timestamp_profile(
+            &samples,
+            gpu_dispatch_timestamp_status,
+            gpu_dispatch_timestamp_buffer_bytes,
+        );
+    }
+    let mut settle = values(|_, timing| timing.settle_wait_us);
+    report_timing_values("settle-wait", &mut settle, "us");
+    let mut unaccounted = values(unaccounted_render_us);
+    report_timing_values("unaccounted", &mut unaccounted, "us");
+
+    let mut slowest = samples;
+    slowest.sort_unstable_by_key(|(_, (phase, _))| std::cmp::Reverse(phase.render_us));
+    println!(
+        "slowest render samples (event: render/vello/copy/setup/creates/settle/unaccounted us; sparse submits/fine tiles/written/coarse-prefix; complete GPU timestamps show span/last-compute/other-compute; full attempts, fine-shaded pixels):"
+    );
+    for (index, (phase, timing)) in slowest.into_iter().take(10) {
+        let gpu_sample = gpu_timestamp_sample_label(timing, gpu_timestamp_enabled);
+        println!(
+            "  {index}: {}/{}/{}/{}/{}/{}/{}; sparse={}/{}/{}/{}; gpu={gpu_sample}; {}, {}",
+            phase.render_us,
+            timing.vello_submit_us,
+            timing.copy_submit_us,
+            timing.damage_setup_us,
+            timing.damage_target_creations,
+            timing.settle_wait_us,
+            unaccounted_render_us(phase, timing),
+            timing.sparse_submissions,
+            timing.sparse_fine_tiles,
+            timing.sparse_written_pixels,
+            timing.coarse_prefix_pixels,
+            timing.full_attempts,
+            phase.raster_pixels,
+        );
+    }
+    println!(
+        "  * Vello submit excludes caller dirty-copy command encoding; the two values sum to the combined submit interval."
+    );
 }
 
 fn print_final_report(
@@ -885,18 +1713,31 @@ fn print_final_report(
     );
     let memory = state.renderer.memory_stats();
     println!(
-        "known GPU bytes: {} (output={} damage={} vello_pool={} vello_live={} images={}; policy_budget={})",
+        "known GPU bytes: {} (output={} damage={} vello_pool={} vello_live={} images={} sparse_upload={}; policy_budget={})",
         memory.known_gpu_bytes(),
         memory.output_target_bytes,
         memory.damage_target_bytes,
         memory.vello.pooled_buffer_bytes,
         memory.vello.live_buffer_bytes,
         memory.vello.image_bytes,
+        memory.vello.sparse_upload_bytes,
         memory.vello.bump_budget_bytes,
     );
     println!(
         "CPU readback bytes: {} (must be 0 in timing-only runs)",
         memory.readback_bytes,
+    );
+    println!(
+        "CPU path-tag retained host pool: {}B (excluded from known GPU bytes)",
+        state.renderer.cpu_pathtag_pool_retained_bytes(),
+    );
+    println!(
+        "CPU metadata retained host pool: {}B (excluded from known GPU bytes)",
+        state.renderer.cpu_metadata_pool_retained_bytes(),
+    );
+    println!(
+        "CPU draw-prefix retained host pool: {}B (excluded from known GPU bytes)",
+        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
     );
     if let Some((rss, peak)) = process_memory_kib() {
         println!("process memory: rss={rss} KiB peak={peak} KiB");
@@ -1132,10 +1973,12 @@ fn report_and_enforce_allocations(
         }
     }
     let calls_per_redraw = snapshot.calls.checked_div(redraw_denominator).unwrap_or(0);
-    let bytes_per_redraw = snapshot.bytes.checked_div(redraw_denominator).unwrap_or(0);
+    let traffic_bytes = allocator_traffic_bytes(snapshot.bytes, snapshot.realloc_bytes);
+    let traffic_bytes_per_redraw = ceil_bytes_per_redraw(traffic_bytes, total_redraws);
     if total_redraws > 0 {
         println!(
-            "allocation redraw rate: calls_per_redraw={calls_per_redraw} bytes_per_redraw={bytes_per_redraw}"
+            "allocation redraw rate: calls_per_redraw={calls_per_redraw} allocator_traffic_bytes_per_redraw={traffic_bytes_per_redraw} (new_alloc_bytes={} realloc_bytes={})",
+            snapshot.bytes, snapshot.realloc_bytes,
         );
     }
     if let Some(budget) = budget_per_1000 {
@@ -1167,12 +2010,13 @@ fn report_and_enforce_allocations(
         }
     }
     if let Some(budget) = byte_budget_per_redraw {
-        let passed = total_redraws > 0 && bytes_per_redraw <= budget;
+        let passed = traffic_byte_redraw_budget_passes(traffic_bytes, total_redraws, budget);
         println!(
-            "allocation-byte-redraw-budget: {} budget={}B/redraw observed={}B/redraw redraws={}",
+            "allocation-traffic-byte-redraw-budget: {} budget={}B/redraw observed_ceiling={}B/redraw total_traffic={}B redraws={}",
             if passed { "PASS" } else { "FAIL" },
             budget,
-            bytes_per_redraw,
+            traffic_bytes_per_redraw,
+            traffic_bytes,
             total_redraws,
         );
         if !passed {
@@ -1181,12 +2025,80 @@ fn report_and_enforce_allocations(
     }
 }
 
+fn allocator_traffic_bytes(new_allocation_bytes: u64, reallocation_bytes: u64) -> u128 {
+    u128::from(new_allocation_bytes).saturating_add(u128::from(reallocation_bytes))
+}
+
+fn ceil_bytes_per_redraw(total_bytes: u128, total_redraws: usize) -> u128 {
+    let redraws = u128::try_from(total_redraws).unwrap_or(u128::MAX);
+    if redraws == 0 {
+        return 0;
+    }
+    total_bytes
+        .saturating_add(redraws.saturating_sub(1))
+        .checked_div(redraws)
+        .unwrap_or(0)
+}
+
+fn traffic_byte_redraw_budget_passes(
+    total_traffic_bytes: u128,
+    total_redraws: usize,
+    budget_per_redraw: u64,
+) -> bool {
+    let redraws = u128::try_from(total_redraws).unwrap_or(u128::MAX);
+    redraws > 0 && total_traffic_bytes <= u128::from(budget_per_redraw).saturating_mul(redraws)
+}
+
 #[allow(
+    clippy::exit,
     clippy::too_many_lines,
-    reason = "scenario setup intentionally remains linear so every acceptance setting is visible in one place"
+    reason = "scenario setup intentionally remains linear so every acceptance setting is visible in one place; a failed verifier must return a nonzero benchmark status"
 )]
 pub fn run(_args: &[String]) {
     init_i18n_resources();
+
+    let verify_damage = std::env::var("QUICK_UI_DASH_VERIFY").is_ok_and(|value| value == "1");
+    let gpu_timestamp_profile =
+        std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
+    let gpu_dispatch_timestamp_profile =
+        std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").is_ok_and(|value| value == "1");
+    let sparse_fine_configured = std::env::var("VELLO_SPARSE_FINE").is_ok_and(|value| value == "1");
+    let sparse_coarse_configured =
+        std::env::var("VELLO_SPARSE_COARSE").is_ok_and(|value| value == "1");
+    let cpu_pathtag_configured = std::env::var("VELLO_CPU_PATHTAG").is_ok_and(|value| value == "1");
+    let cpu_pathtag_reuse_configured =
+        std::env::var("VELLO_CPU_PATHTAG_REUSE").is_ok_and(|value| value == "1");
+    let cpu_metadata_configured =
+        std::env::var("VELLO_CPU_METADATA").is_ok_and(|value| value == "1");
+    let cpu_draw_prefix_configured =
+        std::env::var("VELLO_CPU_DRAW_PREFIX").is_ok_and(|value| value == "1");
+    let sparse_upload_reuse_configured =
+        std::env::var("VELLO_SPARSE_UPLOAD_REUSE").is_ok_and(|value| value == "1");
+    let direct_path_dispatch_configured =
+        std::env::var("VELLO_DIRECT_PATH_DISPATCH").is_ok_and(|value| value == "1");
+    let defer_bump_readback_configured =
+        std::env::var("VELLO_DEFER_BUMP_READBACK").is_ok_and(|value| value == "1");
+    if !dispatch_timestamp_configuration_is_valid(
+        gpu_dispatch_timestamp_profile,
+        gpu_timestamp_profile,
+    ) {
+        eprintln!("VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1");
+        std::process::exit(2);
+    }
+    if verify_damage {
+        reject_budgets_in_diagnostic_mode("damage-verify", true);
+        if gpu_timestamp_profile {
+            eprintln!(
+                "damage-verify: VELLO_GPU_TIMESTAMPS=1 is incompatible with image verification mode"
+            );
+            std::process::exit(2);
+        }
+    }
+    if gpu_timestamp_profile {
+        reject_budgets_in_diagnostic_mode("gpu-timestamp-profile", false);
+    }
+    let profile_render_timing = gpu_timestamp_profile
+        || std::env::var_os("QUICK_UI_DASH_RENDER_PROFILE").is_some_and(|raw| !raw.is_empty());
 
     let iters: usize = std::env::var("QUICK_UI_DASH_ITERS")
         .ok()
@@ -1204,9 +2116,67 @@ pub fn run(_args: &[String]) {
             "animated (header contains spinners + indeterminate progress)"
         }
     );
+    if verify_damage {
+        println!(
+            "damage-verify mode: retained/full pixel parity preflight only; \
+             reference is unbatched, sparse-disabled, and GPU-only for path tags; timing/budget reports are suppressed"
+        );
+    } else if gpu_timestamp_profile {
+        println!(
+            "GPU timestamp profile enabled (profile-only query buffers and resolve/readback overhead; acceptance budgets are rejected)"
+        );
+    }
 
     println!("output target: {canvas_w}x{canvas_h} (native; 1:1 damage raster, no upscale)");
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
+    let gpu_dispatch_timestamp_status = renderer.gpu_dispatch_timestamp_status();
+    println!(
+        "sparse fine: configured={} supported={} (raster metric is actual fine-shaded native pixels; profile retains coarse-prefix accounting)",
+        sparse_fine_configured,
+        renderer.sparse_fine_supported(),
+    );
+    println!(
+        "sparse coarse: configured={sparse_coarse_configured} supported={} (only coarse selection changes; path-count, backdrop, and earlier prefix stages remain dense; coarse-prefix coverage remains accounted)",
+        renderer.sparse_coarse_supported(),
+    );
+    println!(
+        "CPU path tags: configured={cpu_pathtag_configured} active={} (only path-tag reduce/scan use CPU; flatten and later stages remain GPU, with CPU tag-monoid upload retained)",
+        renderer.cpu_pathtag_enabled(),
+    );
+    println!(
+        "CPU path-tag reuse: configured={cpu_pathtag_reuse_configured} active={} retained_host_pool={}B (excluded from known GPU bytes)",
+        renderer.cpu_pathtag_reuse_enabled(),
+        renderer.cpu_pathtag_pool_retained_bytes(),
+    );
+    println!(
+        "CPU metadata: configured={cpu_metadata_configured} active={} retained_host_pool={}B (bbox-clear and draw-reduce only; flatten and later stages remain GPU)",
+        renderer.cpu_metadata_enabled(),
+        renderer.cpu_metadata_pool_retained_bytes(),
+    );
+    println!(
+        "CPU draw prefix: configured={cpu_draw_prefix_configured} active={} retained_host_pool={}B (bounded draw-prefix only; GPU draw leaf consumes the same GPU monoid table)",
+        renderer.cpu_draw_prefix_enabled(),
+        renderer.cpu_draw_prefix_pool_retained_bytes(),
+    );
+    println!(
+        "sparse upload reuse: configured={} active={} persistent_gpu_bytes={} (before the first sparse upload)",
+        sparse_upload_reuse_configured,
+        renderer.sparse_upload_reuse_enabled(),
+        renderer.memory_stats().vello.sparse_upload_bytes,
+    );
+    println!(
+        "deferred bump readback: configured={defer_bump_readback_configured} active={} (moves the same synchronous bump download after fine; it does not eliminate measurement, recovery, or waits)",
+        renderer.defer_bump_readback_enabled(),
+    );
+    println!(
+        "direct path dispatch: configured={direct_path_dispatch_configured} active={} (replaces GPU indirect path-count/path-tiling setup; it does not remove CPU readback)",
+        renderer.direct_path_dispatch_enabled(),
+    );
+    println!(
+        "gpu dispatch timestamps: requested={gpu_dispatch_timestamp_profile} status={gpu_dispatch_timestamp_status:?} (requires VELLO_GPU_TIMESTAMPS=1; diagnostic-only)",
+    );
+    let mut verifier =
+        verify_damage.then(|| DamageVerifier::new(canvas_w, canvas_h, verification_frame_count()));
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
@@ -1270,6 +2240,8 @@ pub fn run(_args: &[String]) {
     let profile_allocations = allocation_budget.is_some()
         || profile_allocation_breakdown
         || std::env::var_os("QUICK_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
+    let frame_breakdown =
+        std::env::var_os("QUICK_UI_DASH_FRAME_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
     let run = run_bench_loop(
         &mut state,
         &mut doc,
@@ -1279,8 +2251,20 @@ pub fn run(_args: &[String]) {
             frozen,
             profile_allocations,
             profile_allocation_breakdown,
+            profile_render_timing,
         },
+        verifier.as_mut(),
     );
+
+    if let Some(verifier) = verifier.as_ref() {
+        println!(
+            "damage-verify mode completed; no benchmark timings or acceptance budgets are reported"
+        );
+        if !verifier.finish() {
+            std::process::exit(2);
+        }
+        return;
+    }
 
     print_final_report(
         &state,
@@ -1291,6 +2275,19 @@ pub fn run(_args: &[String]) {
         run.resources_before,
         run.resources_after,
     );
+    if frame_breakdown {
+        let full_pixels = u64::from(canvas_w).saturating_mul(u64::from(canvas_h));
+        print_frame_breakdown(&run.histo, full_pixels);
+    }
+    if let Some(timings) = run.render_timings.as_deref() {
+        print_render_timing_profile(
+            &run.histo,
+            timings,
+            state.renderer.gpu_timestamp_buffer_bytes(),
+            gpu_dispatch_timestamp_status,
+            state.renderer.gpu_dispatch_timestamp_buffer_bytes(),
+        );
+    }
     if let Some(snapshot) = run.allocations {
         report_and_enforce_allocations(
             snapshot,

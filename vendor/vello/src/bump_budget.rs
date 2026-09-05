@@ -221,6 +221,7 @@ impl BudgetTracker {
         let before = self.effective();
         let mut changed = false;
         let mut overflowed = false;
+        let mut mapped_and_unmapped = false;
         if ok && let Some(buf) = engine.get_download(pending.proxy) {
             let used: BumpAllocators = {
                 let view = buf.slice(..).get_mapped_range();
@@ -228,6 +229,7 @@ impl BudgetTracker {
             };
             overflowed = used.failed != 0;
             buf.unmap();
+            mapped_and_unmapped = true;
             let in_effect = self.effective();
             let budget_changed = !self.pinned && self.budget.observe(&used);
             changed = before != self.effective();
@@ -250,7 +252,13 @@ impl BudgetTracker {
                 );
             }
         }
-        engine.free_download(pending.proxy);
+        if mapped_and_unmapped {
+            engine.recycle_bump_download(pending.proxy);
+        } else {
+            // A failed map was never mapped, so it must be dropped rather
+            // than passed to the pool's known-unmapped recycling path.
+            engine.free_download(pending.proxy);
+        }
         (changed, overflowed)
     }
 

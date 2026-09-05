@@ -143,6 +143,15 @@ pub struct Scrollable {
     /// Visual-only dirty flag (bar fade/hover): triggers a redraw but,
     /// unlike [`Self::scroll_dirty`], no `apply_layout`.
     bar_dirty: bool,
+    /// Whether the last submitted scene contained a visible overlay bar.
+    /// This keeps one terminal frame alive to erase a fully faded bar.
+    bar_visible_last_draw: Cell<bool>,
+    /// Set by the frame that first omits a previously visible bar, then
+    /// consumed by `mark_drawn` after its track damage is submitted.
+    terminal_fade_damage: Cell<bool>,
+    /// Theme setting sampled by the latest draw. It prevents a reduced-motion
+    /// bar (which intentionally remains visible) from requesting fade ticks.
+    reduce_motion_active: bool,
     /// Survives this widget being dropped and rebuilt — needed by apps that
     /// recreate their whole widget subtree every frame. Every offset
     /// mutation writes back through `clamp`. See
@@ -185,6 +194,9 @@ impl Scrollable {
             focused: false,
             hold: None,
             bar_dirty: false,
+            bar_visible_last_draw: Cell::new(false),
+            terminal_fade_damage: Cell::new(false),
+            reduce_motion_active: false,
             persisted_offset: None,
             content_gutter: 0.0,
         }
@@ -522,13 +534,25 @@ impl Scrollable {
     }
 
     fn fade_in_progress(&self) -> bool {
-        if !self.overlay || self.bar_pinned() {
+        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
             return false;
         }
         match self.last_activity {
             None => false,
             Some(t) => t.elapsed() < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS),
         }
+    }
+
+    /// Once the fade deadline passes, the compositor still needs one frame to
+    /// replace the last visible thumb with the transparent scene.
+    fn needs_terminal_fade_frame(&self) -> bool {
+        self.terminal_fade_damage.get()
+            || (self.bar_visible_last_draw.get()
+                && self.overlay
+                && !self.reduce_motion_active
+                && !self.bar_pinned()
+                && self.last_activity.is_some()
+                && !self.fade_in_progress())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -576,11 +600,12 @@ impl Scrollable {
     }
 
     fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.show_scrollbar {
-            return;
-        }
         let opacity = self.bar_opacity(theme);
-        if opacity <= 0.003 {
+        let visible = self.show_scrollbar && opacity > 0.003;
+        if self.bar_visible_last_draw.replace(visible) && !visible {
+            self.terminal_fade_damage.set(true);
+        }
+        if !visible {
             return;
         }
         let radius = BAR_THICKNESS / 2.0;
@@ -929,6 +954,7 @@ impl Widget for Scrollable {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion_active = theme.reduce_motion;
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -955,6 +981,7 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        self.reduce_motion_active = theme.reduce_motion;
         if presence.should_cull(self.get_rect()) {
             return;
         }
@@ -1114,6 +1141,7 @@ impl Widget for Scrollable {
     fn needs_animation_frame(&self) -> bool {
         self.hold.is_some()
             || self.fade_in_progress()
+            || self.needs_terminal_fade_frame()
             || self
                 .child
                 .as_ref()
@@ -1127,6 +1155,7 @@ impl Widget for Scrollable {
         self.scroll_dirty
             || self.bar_dirty
             || self.fade_in_progress()
+            || self.needs_terminal_fade_frame()
             || self.child.as_ref().is_some_and(|c| c.needs_redraw())
     }
 
@@ -1145,7 +1174,7 @@ impl Widget for Scrollable {
                 }
             }
         }
-        if self.bar_dirty || self.fade_in_progress() {
+        if self.bar_dirty || self.fade_in_progress() || self.needs_terminal_fade_frame() {
             for bar in [self.vertical_track(), self.horizontal_track()]
                 .into_iter()
                 .flatten()
@@ -1172,6 +1201,7 @@ impl Widget for Scrollable {
     fn mark_drawn(&mut self) {
         self.scroll_dirty = false;
         self.bar_dirty = false;
+        self.terminal_fade_damage.set(false);
         if let Some(c) = &mut self.child {
             c.mark_drawn();
         }
@@ -1944,6 +1974,34 @@ mod tests {
             ),
             0.0,
             "fully faded out once idle",
+        );
+    }
+
+    #[test]
+    fn terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb() {
+        let mut s = vertical(1200.0);
+        s.last_activity =
+            Some(Instant::now() - Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1));
+        // Model the preceding submitted frame, where the thumb was visible.
+        s.bar_visible_last_draw.set(true);
+        let mut scene = Scene::new();
+        s.draw_scrollbars(&mut scene, Affine::IDENTITY, &Theme::dark());
+
+        assert!(
+            s.needs_terminal_fade_frame(),
+            "the first transparent frame must be submitted"
+        );
+        let mut regions = Vec::new();
+        s.collect_damage(&mut regions);
+        assert!(
+            !regions.is_empty(),
+            "the transparent terminal frame must repaint the former track"
+        );
+
+        s.mark_drawn();
+        assert!(
+            !s.needs_terminal_fade_frame(),
+            "the terminal repaint is a one-frame latch"
         );
     }
 

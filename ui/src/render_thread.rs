@@ -22,12 +22,17 @@
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
+use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
-use crate::offscreen::{damage_texture_extent, damage_texture_needs_replacement};
-use vello::kurbo::{Affine, Rect};
+use crate::offscreen::{
+    damage_geometric_capacity_enabled, damage_texture_extent,
+    damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
+    damage_texture_height_extent, damage_texture_needs_replacement,
+};
+use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::util::RenderSurface;
-use vello::{RenderParams, Renderer, Scene};
+use vello::{FineDamageRect, RenderParams, Renderer, Scene};
 
 /// A hook run on the render thread *after* vello encodes the frame into its
 /// intermediate texture and *before* that texture is blit to the surface.
@@ -133,8 +138,9 @@ struct DamageTarget {
 #[derive(Default)]
 struct DamageCache {
     targets: Vec<DamageTarget>,
-    translated_scene: Scene,
     last_region_count: Option<usize>,
+    geometric_capacity: bool,
+    coarse_pool_high_water_pixels: u64,
 }
 
 impl RenderThreadHandle {
@@ -187,7 +193,11 @@ pub fn spawn_render_thread(
             // present, invisible to offscreen benches. Off by default.
             let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
             let mut frame_ix: u64 = 0;
-            let mut damage_cache = DamageCache::default();
+            let geometric_capacity = damage_geometric_capacity_enabled();
+            let mut damage_cache = DamageCache {
+                geometric_capacity,
+                ..DamageCache::default()
+            };
             let mut target_valid = false;
             while let Ok(msg) = rx.recv() {
                 let (mut scene, width, height, base_color, mut damage_regions, full_redraw) =
@@ -224,7 +234,10 @@ pub fn spawn_render_thread(
                         break;
                     }
                     target_valid = false;
-                    damage_cache = DamageCache::default();
+                    damage_cache = DamageCache {
+                        geometric_capacity,
+                        ..DamageCache::default()
+                    };
                     renderer.trim_pooled_buffers();
                 }
 
@@ -369,8 +382,11 @@ fn rasterize_damage(
         {
             renderer.trim_pooled_buffers();
         }
-        damage_cache.targets.clear();
+        while let Some(target) = damage_cache.targets.pop() {
+            renderer.invalidate_texture_bindings(&target.view);
+        }
         damage_cache.last_region_count = Some(0);
+        damage_cache.coarse_pool_high_water_pixels = full_pixels;
         render_full(renderer)?;
         return Ok(full_pixels);
     }
@@ -401,123 +417,218 @@ fn rasterize_damage(
         {
             renderer.trim_pooled_buffers();
         }
-        damage_cache.targets.clear();
+        while let Some(target) = damage_cache.targets.pop() {
+            renderer.invalidate_texture_bindings(&target.view);
+        }
         damage_cache.last_region_count = Some(0);
+        damage_cache.coarse_pool_high_water_pixels = full_pixels;
         render_full(renderer)?;
         return Ok(full_pixels);
     }
 
-    if damage_cache
-        .last_region_count
-        .is_some_and(|previous| previous != damage_region_count)
-    {
+    let regions = coalesce_regions(
+        damage_regions
+            .iter()
+            .filter_map(|rect| {
+                let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
+                let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
+                let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
+                let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
+                let region_width = x1.saturating_sub(x0);
+                let region_height = y1.saturating_sub(y0);
+                (region_width != 0 && region_height != 0).then_some(Region {
+                    x: x0,
+                    y: y0,
+                    width: region_width,
+                    height: region_height,
+                })
+            })
+            .collect(),
+    );
+    let prefix_width = regions
+        .iter()
+        .map(|r| r.x.saturating_add(r.width))
+        .max()
+        .unwrap_or(0);
+    let prefix_height = regions
+        .iter()
+        .map(|r| r.y.saturating_add(r.height))
+        .max()
+        .unwrap_or(0);
+    let raster_pixels = u64::from(prefix_width).saturating_mul(u64::from(prefix_height));
+    if renderer.sparse_fine_supported() {
+        if damage_cache.coarse_pool_high_water_pixels >= full_pixels.saturating_div(2)
+            && raster_pixels.saturating_mul(4) <= damage_cache.coarse_pool_high_water_pixels
+        {
+            renderer.trim_pooled_buffers();
+            damage_cache.coarse_pool_high_water_pixels = 0;
+        }
+        let fine_damage: Vec<FineDamageRect> = regions
+            .iter()
+            .map(|region| FineDamageRect {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+            })
+            .collect();
+        if let Some(stats) = renderer.render_to_texture_with_damage(
+            device,
+            queue,
+            scene,
+            &surface.target_view,
+            &RenderParams {
+                base_color,
+                width: prefix_width,
+                height: prefix_height,
+                antialiasing_method: vello::AaConfig::Area,
+            },
+            &fine_damage,
+        )? {
+            while let Some(target) = damage_cache.targets.pop() {
+                renderer.invalidate_texture_bindings(&target.view);
+            }
+            damage_cache.last_region_count = Some(damage_region_count);
+            damage_cache.coarse_pool_high_water_pixels = damage_cache
+                .coarse_pool_high_water_pixels
+                .max(stats.coarse_pixels);
+            return Ok(stats.fine_pixels);
+        }
+    }
+    if raster_pixels >= full_pixels.saturating_div(2) {
+        if damage_cache
+            .last_region_count
+            .is_some_and(|previous| previous != 0)
+        {
+            renderer.trim_pooled_buffers();
+        }
+        while let Some(target) = damage_cache.targets.pop() {
+            renderer.invalidate_texture_bindings(&target.view);
+        }
+        damage_cache.last_region_count = Some(0);
+        damage_cache.coarse_pool_high_water_pixels = full_pixels;
+        render_full(renderer)?;
+        return Ok(full_pixels);
+    }
+    // Damage topology is volatile; preserve warm partial pools, but discard
+    // full-target scratch before switching to the smaller prefix target.
+    if damage_cache.last_region_count == Some(0) {
         renderer.trim_pooled_buffers();
     }
     damage_cache.last_region_count = Some(damage_region_count);
-
+    damage_cache.coarse_pool_high_water_pixels = damage_cache
+        .coarse_pool_high_water_pixels
+        .max(raster_pixels);
     let texture_limit = device.limits().max_texture_dimension_2d;
-
-    let mut target_index = 0usize;
-    for rect in damage_regions {
-        let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-        let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-        let region_width = x1.saturating_sub(x0);
-        let region_height = y1.saturating_sub(y0);
-        if region_width == 0 || region_height == 0 {
-            continue;
-        }
-        let recreate = damage_cache.targets.get(target_index).is_none_or(|target| {
+    let allocated_width = if damage_cache.geometric_capacity {
+        damage_texture_geometric_width_extent(prefix_width, width, texture_limit)
+    } else {
+        damage_texture_extent(prefix_width, texture_limit)
+    };
+    let allocated_height = damage_texture_height_extent(prefix_height, texture_limit);
+    let recreate = damage_cache.targets.first().is_none_or(|target| {
+        if damage_cache.geometric_capacity {
+            damage_texture_geometric_needs_replacement(
+                target.width,
+                target.height,
+                prefix_width,
+                prefix_height,
+                allocated_width,
+                allocated_height,
+            )
+        } else {
             damage_texture_needs_replacement(
                 target.width,
                 target.height,
-                region_width,
-                region_height,
+                prefix_width,
+                prefix_height,
             )
-        });
-        if recreate {
-            if let Some(target) = damage_cache.targets.get(target_index) {
-                renderer.invalidate_texture_bindings(&target.view);
-            }
-            let allocated_width = damage_texture_extent(region_width, texture_limit);
-            let allocated_height = damage_texture_extent(region_height, texture_limit);
-            let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
-                label: Some("ui-native-damage-target"),
-                size: vello::wgpu::Extent3d {
-                    width: allocated_width,
-                    height: allocated_height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: vello::wgpu::TextureDimension::D2,
-                format: vello::wgpu::TextureFormat::Rgba8Unorm,
-                usage: vello::wgpu::TextureUsages::STORAGE_BINDING
-                    | vello::wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
-            let replacement = DamageTarget {
+        }
+    });
+    if recreate {
+        if let Some(target) = damage_cache.targets.first() {
+            renderer.invalidate_texture_bindings(&target.view);
+        }
+        let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
+            label: Some("ui-native-damage-target"),
+            size: vello::wgpu::Extent3d {
                 width: allocated_width,
                 height: allocated_height,
-                texture,
-                view,
-            };
-            if let Some(target) = damage_cache.targets.get_mut(target_index) {
-                *target = replacement;
-            } else {
-                damage_cache.targets.push(replacement);
-            }
-        }
-        let target = damage_cache
-            .targets
-            .get(target_index)
-            .expect("damage target was inserted above");
-        damage_cache.translated_scene.reset();
-        damage_cache.translated_scene.append(
-            scene,
-            Some(Affine::translate((-(f64::from(x0)), -(f64::from(y0))))),
-        );
-        renderer.render_to_texture(
-            device,
-            queue,
-            &damage_cache.translated_scene,
-            &target.view,
-            &RenderParams {
-                base_color,
-                width: region_width,
-                height: region_height,
-                antialiasing_method: vello::AaConfig::Area,
-            },
-        )?;
-        let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
-            label: Some("ui-copy-native-damage"),
-        });
-        encoder.copy_texture_to_texture(
-            vello::wgpu::TexelCopyTextureInfo {
-                texture: &target.texture,
-                mip_level: 0,
-                origin: vello::wgpu::Origin3d::ZERO,
-                aspect: vello::wgpu::TextureAspect::All,
-            },
-            vello::wgpu::TexelCopyTextureInfo {
-                texture: &surface.target_texture,
-                mip_level: 0,
-                origin: vello::wgpu::Origin3d { x: x0, y: y0, z: 0 },
-                aspect: vello::wgpu::TextureAspect::All,
-            },
-            vello::wgpu::Extent3d {
-                width: region_width,
-                height: region_height,
                 depth_or_array_layers: 1,
             },
-        );
-        queue.submit([encoder.finish()]);
-        target_index = target_index.saturating_add(1);
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: vello::wgpu::TextureDimension::D2,
+            format: vello::wgpu::TextureFormat::Rgba8Unorm,
+            usage: vello::wgpu::TextureUsages::STORAGE_BINDING
+                | vello::wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
+        let replacement = DamageTarget {
+            width: allocated_width,
+            height: allocated_height,
+            texture,
+            view,
+        };
+        if let Some(target) = damage_cache.targets.first_mut() {
+            *target = replacement;
+        } else {
+            damage_cache.targets.push(replacement);
+        }
     }
-    damage_cache.targets.truncate(target_index);
-    Ok(damage_pixels)
+    let target = damage_cache
+        .targets
+        .first()
+        .expect("damage target was inserted above");
+    renderer.render_to_texture_with_post_render(
+        device,
+        queue,
+        scene,
+        &target.view,
+        &RenderParams {
+            base_color,
+            width: prefix_width,
+            height: prefix_height,
+            antialiasing_method: vello::AaConfig::Area,
+        },
+        |encoder| {
+            for region in &regions {
+                encoder.copy_texture_to_texture(
+                    vello::wgpu::TexelCopyTextureInfo {
+                        texture: &target.texture,
+                        mip_level: 0,
+                        origin: vello::wgpu::Origin3d {
+                            x: region.x,
+                            y: region.y,
+                            z: 0,
+                        },
+                        aspect: vello::wgpu::TextureAspect::All,
+                    },
+                    vello::wgpu::TexelCopyTextureInfo {
+                        texture: &surface.target_texture,
+                        mip_level: 0,
+                        origin: vello::wgpu::Origin3d {
+                            x: region.x,
+                            y: region.y,
+                            z: 0,
+                        },
+                        aspect: vello::wgpu::TextureAspect::All,
+                    },
+                    vello::wgpu::Extent3d {
+                        width: region.width,
+                        height: region.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        },
+    )?;
+    while damage_cache.targets.len() > 1 {
+        let target = damage_cache.targets.pop().expect("length checked above");
+        renderer.invalidate_texture_bindings(&target.view);
+    }
+    Ok(raster_pixels)
 }
 
 // One call site: this is the whole worker's per-frame encode+present step,

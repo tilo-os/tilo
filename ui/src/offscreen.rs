@@ -22,12 +22,14 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
+use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
 use pollster::FutureExt;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use vello::peniko::Color;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, RendererOptions, Scene};
 
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
@@ -47,6 +49,14 @@ const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 /// slightly different progress-bar segment while wasting at most 31 pixels
 /// per dimension.
 const DAMAGE_TEXTURE_GRANULARITY: u32 = 32;
+const DAMAGE_TEXTURE_HEIGHT_GRANULARITY: u32 = 16;
+
+pub(crate) fn damage_geometric_capacity_enabled() -> bool {
+    matches!(
+        std::env::var("QUICK_UI_DAMAGE_GEOMETRIC").as_deref(),
+        Ok("1")
+    )
+}
 
 pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
     required
@@ -54,6 +64,49 @@ pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
         .saturating_mul(DAMAGE_TEXTURE_GRANULARITY)
         .min(device_limit)
         .max(required)
+}
+
+/// Prefix targets are sampled/copied on Vello's 16px vertical tile grid, so
+/// their height can use the smaller quantum without changing rendered pixels.
+pub(crate) fn damage_texture_height_extent(required: u32, device_limit: u32) -> u32 {
+    required
+        .div_ceil(DAMAGE_TEXTURE_HEIGHT_GRANULARITY)
+        .saturating_mul(DAMAGE_TEXTURE_HEIGHT_GRANULARITY)
+        .min(device_limit)
+        .max(required)
+}
+
+pub(crate) fn damage_texture_geometric_width_extent(
+    required: u32,
+    viewport_width: u32,
+    device_limit: u32,
+) -> u32 {
+    let cap = viewport_width.min(device_limit).max(required);
+    required
+        .max(DAMAGE_TEXTURE_GRANULARITY)
+        .checked_next_power_of_two()
+        .unwrap_or(u32::MAX)
+        .min(cap)
+        .max(required)
+}
+
+pub(crate) fn damage_texture_geometric_needs_replacement(
+    allocated_width: u32,
+    allocated_height: u32,
+    required_width: u32,
+    required_height: u32,
+    desired_width: u32,
+    desired_height: u32,
+) -> bool {
+    if allocated_width < required_width || allocated_height < required_height {
+        return true;
+    }
+    // Do not recreate a target merely because the raw area crossed half: its
+    // quantized/geometric capacity may be identical. Shrink only after
+    // fourfold capacity slack, providing hysteresis around growth edges.
+    (desired_width < allocated_width && desired_width.saturating_mul(4) <= allocated_width)
+        || (desired_height < allocated_height
+            && desired_height.saturating_mul(4) <= allocated_height)
 }
 
 pub(crate) fn damage_texture_needs_replacement(
@@ -88,6 +141,94 @@ pub struct OffscreenMemoryStats {
     pub vello: vello::RendererMemoryStats,
 }
 
+/// Host-side phases of one completed offscreen render, populated only by
+/// [`OffscreenRenderer::render_damage_regions_gpu_wait_profiled`].
+///
+/// `vello_submit_us` includes scene resolution, uploads, and Vello's shared
+/// queue submission, excluding separately measured copy encoding.
+/// `copy_submit_us` covers only dirty-copy command encoding in Vello's
+/// post-render callback. `settle_wait_us` is the blocking GPU-complete wait
+/// while collecting Vello's bump counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OffscreenRenderTiming {
+    pub vello_submit_us: u128,
+    pub copy_submit_us: u128,
+    pub settle_wait_us: u128,
+    pub full_attempts: u32,
+    pub damage_setup_us: u128,
+    pub damage_target_creations: u32,
+    pub sparse_submissions: u32,
+    pub sparse_fine_tiles: u64,
+    pub sparse_written_pixels: u64,
+    pub coarse_prefix_pixels: u64,
+    /// Rounded GPU timestamp span across verified submissions.
+    pub gpu_timestamp_span_ns: u128,
+    /// Rounded sum of individual GPU pass durations across verified submissions.
+    pub gpu_timestamp_pass_ns: u128,
+    /// Rounded duration of the final recorded compute pass in verified submissions.
+    pub gpu_timestamp_last_pass_ns: u128,
+    /// Rounded duration of all earlier recorded compute passes in verified submissions.
+    pub gpu_timestamp_other_pass_ns: u128,
+    pub gpu_timestamp_pass_count: u32,
+    pub gpu_timestamp_expected_submissions: u32,
+    pub gpu_timestamp_sampled_submissions: u32,
+    /// Submissions for which timestamp data was disabled, unavailable, stale, or failed.
+    pub gpu_timestamp_missing_submissions: u32,
+    /// Matched submissions expected to have an opt-in per-dispatch sample.
+    pub gpu_dispatch_timestamp_expected_submissions: u32,
+    pub gpu_dispatch_timestamp_sampled_submissions: u32,
+    /// Missing dispatch samples are not treated as zero GPU time.
+    pub gpu_dispatch_timestamp_missing_submissions: u32,
+    /// A completed sample belonging to an older submission was discarded.
+    pub gpu_dispatch_timestamp_stale_submissions: u32,
+    /// Bit `stage_id - 1` is set when that stable stage was present.
+    pub gpu_dispatch_timestamp_present_stages: u32,
+    pub gpu_dispatch_timestamp_stage_duration_ns: [u128; 32],
+    pub gpu_dispatch_timestamp_stage_dispatch_count: [u32; 32],
+    pub gpu_dispatch_timestamp_unknown_duration_ns: u128,
+    pub gpu_dispatch_timestamp_unknown_dispatch_count: u32,
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "validated non-negative timestamp durations are rounded down for compact benchmark aggregates"
+)]
+fn timestamp_last_and_other_pass_ns(sample: &vello::GpuTimestampSample) -> Option<(u128, u128)> {
+    if sample.pass_count == 0
+        || !sample.timestamp_period_ns.is_finite()
+        || sample.timestamp_period_ns <= 0.0
+        || !sample.summed_pass_ns.is_finite()
+        || sample.summed_pass_ns < 0.0
+    {
+        return None;
+    }
+    let byte_len = usize::try_from(sample.pass_count).ok()?.checked_mul(16)?;
+    if sample.timestamp_bytes.len() != byte_len {
+        return None;
+    }
+    let mut final_pair = None;
+    for pair in sample.timestamp_bytes.chunks_exact(16) {
+        let beginning = u64::from_le_bytes(pair.get(..8)?.try_into().ok()?);
+        let end = u64::from_le_bytes(pair.get(8..)?.try_into().ok()?);
+        // Do not accept a valid final pair from an otherwise malformed raw
+        // sample: the split is meaningful only for a complete submission.
+        end.checked_sub(beginning)?;
+        final_pair = Some(pair);
+    }
+    let final_pair = final_pair?;
+    let beginning = u64::from_le_bytes(final_pair.get(..8)?.try_into().ok()?);
+    let end = u64::from_le_bytes(final_pair.get(8..)?.try_into().ok()?);
+    let last_ns = end.checked_sub(beginning)? as f64 * f64::from(sample.timestamp_period_ns);
+    if !last_ns.is_finite() || last_ns < 0.0 {
+        return None;
+    }
+    let total_ns = sample.summed_pass_ns as u128;
+    let last_ns = last_ns as u128;
+    Some((last_ns, total_ns.checked_sub(last_ns)?))
+}
+
 impl OffscreenMemoryStats {
     pub fn known_gpu_bytes(self) -> u64 {
         self.output_target_bytes
@@ -95,6 +236,7 @@ impl OffscreenMemoryStats {
             .saturating_add(self.vello.pooled_buffer_bytes)
             .saturating_add(self.vello.live_buffer_bytes)
             .saturating_add(self.vello.image_bytes)
+            .saturating_add(self.vello.sparse_upload_bytes)
     }
 }
 
@@ -202,15 +344,303 @@ pub struct OffscreenRenderer {
     padded_bytes_per_row: u32,
     renderer: Renderer,
     damage_textures: Vec<DamageTexture>,
-    damage_scene: Scene,
+    damage_geometric_capacity: bool,
     /// Zero means the retained target was last updated by a full render;
     /// non-zero values are the number of active damage passes. Exact animated
     /// dimensions are deliberately excluded so they cannot flush GPU caches.
     last_damage_region_count: Option<usize>,
+    coarse_pool_high_water_pixels: u64,
     target_valid: bool,
 }
 
 impl OffscreenRenderer {
+    /// Current opt-in per-dispatch timestamp diagnostic availability.
+    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
+        self.renderer.gpu_dispatch_timestamp_status()
+    }
+
+    fn timestamp_submission_id(&self, profiled: bool) -> Option<u64> {
+        if !profiled {
+            return None;
+        }
+        self.renderer.gpu_timestamp_latest_submission_id()
+    }
+
+    fn dispatch_timestamp_submission_id(&self, profiled: bool) -> Option<u64> {
+        profiled.then(|| self.renderer.gpu_dispatch_timestamp_latest_submission_id())?
+    }
+
+    fn record_dispatch_timestamp(
+        &mut self,
+        expected_submission: Option<u64>,
+        timing: &mut Option<OffscreenRenderTiming>,
+    ) {
+        let Some(timing) = timing.as_mut() else {
+            return;
+        };
+        if matches!(
+            self.renderer.gpu_dispatch_timestamp_status(),
+            vello::GpuDispatchTimestampStatus::Disabled
+                | vello::GpuDispatchTimestampStatus::Unsupported
+        ) {
+            return;
+        }
+        timing.gpu_dispatch_timestamp_expected_submissions = timing
+            .gpu_dispatch_timestamp_expected_submissions
+            .saturating_add(1);
+        let Some(sample) = self.renderer.take_gpu_dispatch_timestamp_sample() else {
+            timing.gpu_dispatch_timestamp_missing_submissions = timing
+                .gpu_dispatch_timestamp_missing_submissions
+                .saturating_add(1);
+            return;
+        };
+        if Some(sample.submission_id) != expected_submission {
+            timing.gpu_dispatch_timestamp_stale_submissions = timing
+                .gpu_dispatch_timestamp_stale_submissions
+                .saturating_add(1);
+            timing.gpu_dispatch_timestamp_missing_submissions = timing
+                .gpu_dispatch_timestamp_missing_submissions
+                .saturating_add(1);
+            return;
+        }
+        timing.gpu_dispatch_timestamp_sampled_submissions = timing
+            .gpu_dispatch_timestamp_sampled_submissions
+            .saturating_add(1);
+        let stage_count = usize::try_from(sample.stage_count)
+            .unwrap_or(sample.stages.len())
+            .min(sample.stages.len());
+        for stage in sample.stages.into_iter().take(stage_count) {
+            if stage.dispatch_count == 0 {
+                continue;
+            }
+            if stage.stage_id == 0 || stage.stage_id > 32 {
+                timing.gpu_dispatch_timestamp_unknown_duration_ns = timing
+                    .gpu_dispatch_timestamp_unknown_duration_ns
+                    .saturating_add(stage.duration_ns);
+                timing.gpu_dispatch_timestamp_unknown_dispatch_count = timing
+                    .gpu_dispatch_timestamp_unknown_dispatch_count
+                    .saturating_add(stage.dispatch_count);
+                continue;
+            }
+            let Some(index) = usize::from(stage.stage_id).checked_sub(1) else {
+                timing.gpu_dispatch_timestamp_unknown_duration_ns = timing
+                    .gpu_dispatch_timestamp_unknown_duration_ns
+                    .saturating_add(stage.duration_ns);
+                timing.gpu_dispatch_timestamp_unknown_dispatch_count = timing
+                    .gpu_dispatch_timestamp_unknown_dispatch_count
+                    .saturating_add(stage.dispatch_count);
+                continue;
+            };
+            let (Some(duration), Some(dispatch_count)) = (
+                timing
+                    .gpu_dispatch_timestamp_stage_duration_ns
+                    .get_mut(index),
+                timing
+                    .gpu_dispatch_timestamp_stage_dispatch_count
+                    .get_mut(index),
+            ) else {
+                timing.gpu_dispatch_timestamp_unknown_duration_ns = timing
+                    .gpu_dispatch_timestamp_unknown_duration_ns
+                    .saturating_add(stage.duration_ns);
+                timing.gpu_dispatch_timestamp_unknown_dispatch_count = timing
+                    .gpu_dispatch_timestamp_unknown_dispatch_count
+                    .saturating_add(stage.dispatch_count);
+                continue;
+            };
+            let stage_bit = 1u32
+                .checked_shl(u32::try_from(index).unwrap_or(u32::BITS))
+                .unwrap_or(0);
+            timing.gpu_dispatch_timestamp_present_stages |= stage_bit;
+            *duration = duration.saturating_add(stage.duration_ns);
+            *dispatch_count = dispatch_count.saturating_add(stage.dispatch_count);
+        }
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "timestamp nanoseconds are non-negative finite GPU durations rounded down for compact benchmark aggregates"
+    )]
+    fn record_timestamp(
+        &mut self,
+        expected_submission: Option<u64>,
+        timing: &mut Option<OffscreenRenderTiming>,
+    ) {
+        let Some(timing) = timing.as_mut() else {
+            return;
+        };
+        timing.gpu_timestamp_expected_submissions =
+            timing.gpu_timestamp_expected_submissions.saturating_add(1);
+        let Some(sample) = self.renderer.take_gpu_timestamp_sample() else {
+            timing.gpu_timestamp_missing_submissions =
+                timing.gpu_timestamp_missing_submissions.saturating_add(1);
+            return;
+        };
+        if Some(sample.submission_id) != expected_submission {
+            timing.gpu_timestamp_missing_submissions =
+                timing.gpu_timestamp_missing_submissions.saturating_add(1);
+            return;
+        }
+        let Some((last_pass_ns, other_pass_ns)) = timestamp_last_and_other_pass_ns(&sample) else {
+            // A Vello sample should already have validated this layout. If it
+            // ever does not, keep the complete-frame accounting truthful
+            // rather than silently reporting a partial duration breakdown.
+            timing.gpu_timestamp_missing_submissions =
+                timing.gpu_timestamp_missing_submissions.saturating_add(1);
+            return;
+        };
+        timing.gpu_timestamp_span_ns = timing
+            .gpu_timestamp_span_ns
+            .saturating_add(sample.span_ns.max(0.0) as u128);
+        timing.gpu_timestamp_pass_ns = timing
+            .gpu_timestamp_pass_ns
+            .saturating_add(sample.summed_pass_ns.max(0.0) as u128);
+        timing.gpu_timestamp_last_pass_ns = timing
+            .gpu_timestamp_last_pass_ns
+            .saturating_add(last_pass_ns);
+        timing.gpu_timestamp_other_pass_ns = timing
+            .gpu_timestamp_other_pass_ns
+            .saturating_add(other_pass_ns);
+        timing.gpu_timestamp_pass_count = timing
+            .gpu_timestamp_pass_count
+            .saturating_add(sample.pass_count);
+        timing.gpu_timestamp_sampled_submissions =
+            timing.gpu_timestamp_sampled_submissions.saturating_add(1);
+    }
+
+    /// Overrides Vello's compute-pass batching for a differential reference.
+    #[doc(hidden)]
+    pub fn set_compute_pass_batching(&mut self, enabled: bool) {
+        self.renderer.set_compute_pass_batching(enabled);
+    }
+
+    /// Whether direct GPU path count/tiling dispatch is active.
+    #[doc(hidden)]
+    pub fn direct_path_dispatch_enabled(&self) -> bool {
+        self.renderer.direct_path_dispatch_enabled()
+    }
+
+    /// Overrides direct GPU path count/tiling dispatch for a differential oracle.
+    #[doc(hidden)]
+    pub fn set_direct_path_dispatch_enabled(&mut self, enabled: bool) {
+        self.renderer.set_direct_path_dispatch_enabled(enabled);
+    }
+
+    /// Whether the synchronous GPU renderer defers its existing bump readback
+    /// until after fine rasterization for the compute-batching A/B.
+    #[doc(hidden)]
+    pub fn defer_bump_readback_enabled(&self) -> bool {
+        self.renderer.defer_bump_readback_enabled()
+    }
+
+    /// Overrides deferred bump-readback ordering for an independent oracle.
+    #[doc(hidden)]
+    pub fn set_defer_bump_readback_enabled(&mut self, enabled: bool) {
+        self.renderer.set_defer_bump_readback_enabled(enabled);
+    }
+
+    /// Whether this renderer can use Vello's opt-in sparse Area-AA fine pass.
+    #[doc(hidden)]
+    pub fn sparse_fine_supported(&self) -> bool {
+        self.renderer.sparse_fine_supported()
+    }
+
+    /// Whether this renderer can select Vello's opt-in sparse coarse pass.
+    #[doc(hidden)]
+    pub fn sparse_coarse_supported(&self) -> bool {
+        self.renderer.sparse_coarse_supported()
+    }
+
+    /// Overrides sparse fine recording for differential tests and diagnostics.
+    #[doc(hidden)]
+    pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
+        self.renderer.set_sparse_fine_enabled(enabled);
+    }
+
+    /// Whether only Vello's path-tag reduce/scan stages use their opt-in CPU path.
+    #[doc(hidden)]
+    pub fn cpu_pathtag_enabled(&self) -> bool {
+        self.renderer.cpu_pathtag_enabled()
+    }
+
+    /// Overrides the opt-in CPU path-tag reduce/scan path for differential tests.
+    #[doc(hidden)]
+    pub fn set_cpu_pathtag_enabled(&mut self, enabled: bool) {
+        self.renderer.set_cpu_pathtag_enabled(enabled);
+    }
+
+    /// Whether selective CPU path-tag host-buffer reuse was configured.
+    #[doc(hidden)]
+    pub fn cpu_pathtag_reuse_enabled(&self) -> bool {
+        self.renderer.cpu_pathtag_reuse_enabled()
+    }
+
+    /// Retained selective CPU path-tag host capacity, excluded from GPU stats.
+    #[doc(hidden)]
+    pub fn cpu_pathtag_pool_retained_bytes(&self) -> u64 {
+        self.renderer.cpu_pathtag_pool_retained_bytes()
+    }
+
+    /// Whether selective CPU bbox-clear and draw-reduce metadata is active.
+    #[doc(hidden)]
+    pub fn cpu_metadata_enabled(&self) -> bool {
+        self.renderer.cpu_metadata_enabled()
+    }
+
+    /// Overrides selective CPU metadata for differential tests.
+    #[doc(hidden)]
+    pub fn set_cpu_metadata_enabled(&mut self, enabled: bool) {
+        self.renderer.set_cpu_metadata_enabled(enabled);
+    }
+
+    /// Retained selective CPU metadata host capacity, excluded from GPU stats.
+    #[doc(hidden)]
+    pub fn cpu_metadata_pool_retained_bytes(&self) -> u64 {
+        self.renderer.cpu_metadata_pool_retained_bytes()
+    }
+
+    /// Whether bounded selective CPU draw-prefix processing is active.
+    #[doc(hidden)]
+    pub fn cpu_draw_prefix_enabled(&self) -> bool {
+        self.renderer.cpu_draw_prefix_enabled()
+    }
+
+    /// Overrides bounded selective CPU draw-prefix processing for differential tests.
+    #[doc(hidden)]
+    pub fn set_cpu_draw_prefix_enabled(&mut self, enabled: bool) {
+        self.renderer.set_cpu_draw_prefix_enabled(enabled);
+    }
+
+    /// Retained selective CPU draw-prefix host capacity, excluded from GPU stats.
+    #[doc(hidden)]
+    pub fn cpu_draw_prefix_pool_retained_bytes(&self) -> u64 {
+        self.renderer.cpu_draw_prefix_pool_retained_bytes()
+    }
+
+    /// Whether a draw-prefix table fits the bounded selective CPU path.
+    #[doc(hidden)]
+    pub fn cpu_draw_prefix_supported(&self, bytes: u64) -> bool {
+        self.renderer.cpu_draw_prefix_supported(bytes)
+    }
+
+    /// Whether this renderer was constructed with sparse tile-upload reuse.
+    #[doc(hidden)]
+    pub fn sparse_upload_reuse_enabled(&self) -> bool {
+        self.renderer.sparse_upload_reuse_enabled()
+    }
+
+    /// GPU timestamp resolve/readback buffers only (not opaque query metadata).
+    #[doc(hidden)]
+    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
+        self.renderer.gpu_timestamp_buffer_bytes()
+    }
+
+    /// Per-dispatch GPU timestamp resolve/readback buffers only.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
+        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
+    }
+
     pub fn memory_stats(&self) -> OffscreenMemoryStats {
         let rgba_bytes = |width: u32, height: u32| {
             u64::from(width)
@@ -335,8 +765,9 @@ impl OffscreenRenderer {
             padded_bytes_per_row,
             renderer,
             damage_textures: Vec::with_capacity(4),
-            damage_scene: Scene::new(),
+            damage_geometric_capacity: damage_geometric_capacity_enabled(),
             last_damage_region_count: None,
+            coarse_pool_high_water_pixels: 0,
             target_valid: false,
         })
     }
@@ -465,7 +896,9 @@ impl OffscreenRenderer {
         {
             self.renderer.trim_pooled_buffers();
         }
-        self.damage_textures.clear();
+        while let Some(target) = self.damage_textures.pop() {
+            self.renderer.invalidate_texture_bindings(&target.view);
+        }
         self.last_damage_region_count = Some(0);
 
         let tight = self.read_target(&device, &queue);
@@ -515,6 +948,23 @@ impl OffscreenRenderer {
         reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
+        let mut timing = None;
+        let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
+    }
+
+    /// The same completed full render as [`Self::render_gpu_wait`], returning
+    /// every full-target pass issued while Vello grows a bump allocation.
+    #[allow(
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    fn render_gpu_wait_count(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        timing: &mut Option<OffscreenRenderTiming>,
+    ) -> u64 {
         let (device, queue) = {
             let ctx = self.context.lock().expect("shared RenderContext poisoned");
             let handle = ctx
@@ -524,20 +974,75 @@ impl OffscreenRenderer {
             (handle.device.clone(), handle.queue.clone())
         };
 
-        self.renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                scene,
-                &self.view,
-                &RenderParams {
-                    base_color: bg,
-                    width: self.width,
-                    height: self.height,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .expect("render_to_texture");
+        let mut overflowed = true;
+        let mut attempts = 0u64;
+        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+            attempts = attempts.saturating_add(1);
+            if timing.is_some() {
+                let start = Instant::now();
+                self.renderer
+                    .render_to_texture(
+                        &device,
+                        &queue,
+                        scene,
+                        &self.view,
+                        &RenderParams {
+                            base_color: bg,
+                            width: self.width,
+                            height: self.height,
+                            antialiasing_method: AaConfig::Area,
+                        },
+                    )
+                    .expect("render_to_texture");
+                if let Some(profile) = timing.as_mut() {
+                    profile.vello_submit_us = profile
+                        .vello_submit_us
+                        .saturating_add(start.elapsed().as_micros());
+                    profile.full_attempts = profile.full_attempts.saturating_add(1);
+                    profile.coarse_prefix_pixels = profile.coarse_prefix_pixels.saturating_add(
+                        u64::from(self.width).saturating_mul(u64::from(self.height)),
+                    );
+                }
+            } else {
+                self.renderer
+                    .render_to_texture(
+                        &device,
+                        &queue,
+                        scene,
+                        &self.view,
+                        &RenderParams {
+                            base_color: bg,
+                            width: self.width,
+                            height: self.height,
+                            antialiasing_method: AaConfig::Area,
+                        },
+                    )
+                    .expect("render_to_texture");
+            }
+            let timestamp_submission = self.timestamp_submission_id(timing.is_some());
+            let dispatch_timestamp_submission =
+                self.dispatch_timestamp_submission_id(timing.is_some());
+            if timing.is_some() {
+                let start = Instant::now();
+                overflowed = self.renderer.settle_bump_budget(&device);
+                if let Some(profile) = timing.as_mut() {
+                    profile.settle_wait_us = profile
+                        .settle_wait_us
+                        .saturating_add(start.elapsed().as_micros());
+                }
+                self.record_timestamp(timestamp_submission, timing);
+                self.record_dispatch_timestamp(dispatch_timestamp_submission, timing);
+            } else {
+                overflowed = self.renderer.settle_bump_budget(&device);
+            }
+            if !overflowed {
+                break;
+            }
+        }
+        assert!(
+            !overflowed,
+            "Vello still overflowed after {RESILIENT_RENDER_ATTEMPTS} full render attempts"
+        );
         self.target_valid = true;
         if self
             .last_damage_region_count
@@ -545,13 +1050,15 @@ impl OffscreenRenderer {
         {
             self.renderer.trim_pooled_buffers();
         }
-        self.damage_textures.clear();
+        while let Some(target) = self.damage_textures.pop() {
+            self.renderer.invalidate_texture_bindings(&target.view);
+        }
         self.last_damage_region_count = Some(0);
-
-        // `settle_bump_budget` waits for the submitted work and consumes the
-        // tiny allocator-counter readback when Vello requested one. It never
-        // reads the rendered target image back to the host.
-        let _ = self.renderer.settle_bump_budget(&device);
+        self.coarse_pool_high_water_pixels =
+            u64::from(self.width).saturating_mul(u64::from(self.height));
+        u64::from(self.width)
+            .saturating_mul(u64::from(self.height))
+            .saturating_mul(attempts)
     }
 
     /// Update one native-resolution rectangle in the retained target and
@@ -575,10 +1082,13 @@ impl OffscreenRenderer {
         self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
     }
 
-    /// Batched form of [`Self::render_damage_gpu_wait`]. Disconnected regions
-    /// remain separate, but all submissions are completed by one final wait.
-    /// Damage covering at least half the output falls back to one full render
-    /// to bound pass count and scratch-texture memory.
+    /// Batched form of [`Self::render_damage_gpu_wait`]. Render the scene once
+    /// at its original coordinates into a scratch target extending from the
+    /// native origin through the damage bounds, then copy only dirty regions.
+    /// Keeping native coordinates preserves full-render text coverage. If
+    /// either the damage or this scratch extent covers at least half the
+    /// output, use a full render to bound scratch memory. The final wait and
+    /// reported raster work include any overflow-recovery passes.
     ///
     /// # Panics
     ///
@@ -596,6 +1106,39 @@ impl OffscreenRenderer {
         scene: &Scene,
         bg: Color,
         damage: &[Rect],
+    ) -> u64 {
+        let mut timing = None;
+        self.render_damage_regions_gpu_wait_inner(scene, bg, damage, &mut timing)
+    }
+
+    /// Profile the existing damage render without adding GPU work or readback.
+    /// This opt-in path alone reads host clocks around submission and the
+    /// existing final settle wait.
+    pub fn render_damage_regions_gpu_wait_profiled(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        damage: &[Rect],
+    ) -> (u64, OffscreenRenderTiming) {
+        let mut timing = Some(OffscreenRenderTiming::default());
+        let pixels = self.render_damage_regions_gpu_wait_inner(scene, bg, damage, &mut timing);
+        (pixels, timing.unwrap_or_default())
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::expect_used,
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
+    )]
+    fn render_damage_regions_gpu_wait_inner(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        damage: &[Rect],
+        timing: &mut Option<OffscreenRenderTiming>,
     ) -> u64 {
         let full_pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
         let mut damage_pixels = 0u64;
@@ -616,8 +1159,7 @@ impl OffscreenRenderer {
             || damage_pixels == 0
             || damage_pixels >= full_pixels.saturating_div(2)
         {
-            self.render_gpu_wait(scene, bg);
-            return full_pixels;
+            return self.render_gpu_wait_count(scene, bg, timing);
         }
 
         let (device, queue) = {
@@ -628,115 +1170,282 @@ impl OffscreenRenderer {
                 .expect("this renderer's device entry is missing from the shared RenderContext");
             (handle.device.clone(), handle.queue.clone())
         };
-        if self
-            .last_damage_region_count
-            .is_some_and(|previous| previous != damage_region_count)
-        {
+        let setup_start = timing.is_some().then(Instant::now);
+        let texture_limit = device.limits().max_texture_dimension_2d;
+        let regions = coalesce_regions(
+            damage
+                .iter()
+                .filter_map(|rect| {
+                    let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
+                    let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
+                    let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
+                    let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
+                    let width = x1.saturating_sub(x0);
+                    let height = y1.saturating_sub(y0);
+                    (width != 0 && height != 0).then_some(Region {
+                        x: x0,
+                        y: y0,
+                        width,
+                        height,
+                    })
+                })
+                .collect(),
+        );
+        let prefix_width = regions
+            .iter()
+            .map(|r| r.x.saturating_add(r.width))
+            .max()
+            .unwrap_or(0);
+        let prefix_height = regions
+            .iter()
+            .map(|r| r.y.saturating_add(r.height))
+            .max()
+            .unwrap_or(0);
+        let raster_pixels = u64::from(prefix_width).saturating_mul(u64::from(prefix_height));
+        if self.renderer.sparse_fine_supported() {
+            if self.coarse_pool_high_water_pixels >= full_pixels.saturating_div(2)
+                && raster_pixels.saturating_mul(4) <= self.coarse_pool_high_water_pixels
+            {
+                self.renderer.trim_pooled_buffers();
+                self.coarse_pool_high_water_pixels = 0;
+            }
+            let fine_damage: Vec<FineDamageRect> = regions
+                .iter()
+                .map(|region| FineDamageRect {
+                    x: region.x,
+                    y: region.y,
+                    width: region.width,
+                    height: region.height,
+                })
+                .collect();
+            let sparse_setup_us = setup_start.map(|start| start.elapsed().as_micros());
+            let sparse_start = timing.is_some().then(Instant::now);
+            if let Some(stats) = self
+                .renderer
+                .render_to_texture_with_damage(
+                    &device,
+                    &queue,
+                    scene,
+                    &self.view,
+                    &RenderParams {
+                        base_color: bg,
+                        width: prefix_width,
+                        height: prefix_height,
+                        antialiasing_method: AaConfig::Area,
+                    },
+                    &fine_damage,
+                )
+                .expect("render_to_texture_with_damage")
+            {
+                if let (Some(profile), Some(setup_us)) = (timing.as_mut(), sparse_setup_us) {
+                    profile.damage_setup_us = profile.damage_setup_us.saturating_add(setup_us);
+                }
+                let timestamp_submission = self.timestamp_submission_id(timing.is_some());
+                let dispatch_timestamp_submission =
+                    self.dispatch_timestamp_submission_id(timing.is_some());
+                if let (Some(profile), Some(start)) = (timing.as_mut(), sparse_start) {
+                    profile.vello_submit_us = profile
+                        .vello_submit_us
+                        .saturating_add(start.elapsed().as_micros());
+                    profile.sparse_submissions = profile.sparse_submissions.saturating_add(1);
+                    profile.sparse_fine_tiles = profile
+                        .sparse_fine_tiles
+                        .saturating_add(u64::from(stats.fine_tiles));
+                    profile.sparse_written_pixels = profile
+                        .sparse_written_pixels
+                        .saturating_add(stats.written_pixels);
+                    profile.coarse_prefix_pixels = profile
+                        .coarse_prefix_pixels
+                        .saturating_add(stats.coarse_pixels);
+                }
+                let overflowed = if let Some(profile) = timing.as_mut() {
+                    let start = Instant::now();
+                    let overflowed = self.renderer.settle_bump_budget(&device);
+                    profile.settle_wait_us = profile
+                        .settle_wait_us
+                        .saturating_add(start.elapsed().as_micros());
+                    overflowed
+                } else {
+                    self.renderer.settle_bump_budget(&device)
+                };
+                self.record_timestamp(timestamp_submission, timing);
+                self.record_dispatch_timestamp(dispatch_timestamp_submission, timing);
+                while let Some(target) = self.damage_textures.pop() {
+                    self.renderer.invalidate_texture_bindings(&target.view);
+                }
+                self.last_damage_region_count = Some(damage_region_count);
+                self.coarse_pool_high_water_pixels =
+                    self.coarse_pool_high_water_pixels.max(stats.coarse_pixels);
+                if overflowed {
+                    return stats
+                        .fine_pixels
+                        .saturating_add(self.render_gpu_wait_count(scene, bg, timing));
+                }
+                return stats.fine_pixels;
+            }
+        }
+        if raster_pixels >= full_pixels.saturating_div(2) {
+            return self.render_gpu_wait_count(scene, bg, timing);
+        }
+        // Region topology changes every animation tick. Vello's pools are
+        // kept warm across partial frames, but a full target's scratch pool
+        // is released before entering the smaller prefix path.
+        if self.last_damage_region_count == Some(0) {
             self.renderer.trim_pooled_buffers();
         }
         self.last_damage_region_count = Some(damage_region_count);
-
-        let texture_limit = device.limits().max_texture_dimension_2d;
-
-        let mut target_index = 0usize;
-        for rect in damage {
-            let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
-            let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
-            let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
-            let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
-            let width = x1.saturating_sub(x0);
-            let height = y1.saturating_sub(y0);
-            if width == 0 || height == 0 {
-                continue;
+        let allocated_width = if self.damage_geometric_capacity {
+            damage_texture_geometric_width_extent(prefix_width, self.width, texture_limit)
+        } else {
+            damage_texture_extent(prefix_width, texture_limit)
+        };
+        let allocated_height = damage_texture_height_extent(prefix_height, texture_limit);
+        let recreate = self.damage_textures.first().is_none_or(|target| {
+            if self.damage_geometric_capacity {
+                damage_texture_geometric_needs_replacement(
+                    target.width,
+                    target.height,
+                    prefix_width,
+                    prefix_height,
+                    allocated_width,
+                    allocated_height,
+                )
+            } else {
+                damage_texture_needs_replacement(
+                    target.width,
+                    target.height,
+                    prefix_width,
+                    prefix_height,
+                )
             }
-            let recreate = self.damage_textures.get(target_index).is_none_or(|target| {
-                damage_texture_needs_replacement(target.width, target.height, width, height)
-            });
-            if recreate {
-                if let Some(target) = self.damage_textures.get(target_index) {
-                    self.renderer.invalidate_texture_bindings(&target.view);
-                }
-                let allocated_width = damage_texture_extent(width, texture_limit);
-                let allocated_height = damage_texture_extent(height, texture_limit);
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("quick-ui-native-damage-target"),
-                    size: wgpu::Extent3d {
-                        width: allocated_width,
-                        height: allocated_height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                });
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let replacement = DamageTexture {
+        });
+        if recreate {
+            if let Some(target) = self.damage_textures.first() {
+                self.renderer.invalidate_texture_bindings(&target.view);
+            }
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("quick-ui-native-damage-target"),
+                size: wgpu::Extent3d {
                     width: allocated_width,
                     height: allocated_height,
-                    texture,
-                    view,
-                };
-                if let Some(target) = self.damage_textures.get_mut(target_index) {
-                    *target = replacement;
-                } else {
-                    self.damage_textures.push(replacement);
-                }
-            }
-            let target = self
-                .damage_textures
-                .get(target_index)
-                .expect("damage target was inserted above");
-            self.damage_scene.reset();
-            self.damage_scene.append(
-                scene,
-                Some(Affine::translate((-(f64::from(x0)), -(f64::from(y0))))),
-            );
-            self.renderer
-                .render_to_texture(
-                    &device,
-                    &queue,
-                    &self.damage_scene,
-                    &target.view,
-                    &RenderParams {
-                        base_color: bg,
-                        width,
-                        height,
-                        antialiasing_method: AaConfig::Area,
-                    },
-                )
-                .expect("render_to_texture");
-
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("quick-ui-copy-native-damage"),
-            });
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &target.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
                     depth_or_array_layers: 1,
                 },
-            );
-            queue.submit([encoder.finish()]);
-            target_index = target_index.saturating_add(1);
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let replacement = DamageTexture {
+                width: allocated_width,
+                height: allocated_height,
+                texture,
+                view,
+            };
+            if let Some(target) = self.damage_textures.first_mut() {
+                *target = replacement;
+            } else {
+                self.damage_textures.push(replacement);
+            }
+            if let Some(timing) = timing.as_mut() {
+                timing.damage_target_creations = timing.damage_target_creations.saturating_add(1);
+            }
         }
-        self.damage_textures.truncate(target_index);
-        let _ = self.renderer.settle_bump_budget(&device);
-        damage_pixels
+        let target = self
+            .damage_textures
+            .first()
+            .expect("damage target was inserted above");
+        if let (Some(timing), Some(setup_start)) = (timing.as_mut(), setup_start) {
+            timing.damage_setup_us = timing
+                .damage_setup_us
+                .saturating_add(setup_start.elapsed().as_micros());
+        }
+        let render_start = timing.is_some().then(Instant::now);
+        let mut copy_encode_us = 0u128;
+        self.renderer
+            .render_to_texture_with_post_render(
+                &device,
+                &queue,
+                scene,
+                &target.view,
+                &RenderParams {
+                    base_color: bg,
+                    width: prefix_width,
+                    height: prefix_height,
+                    antialiasing_method: AaConfig::Area,
+                },
+                |encoder| {
+                    let copy_start = timing.is_some().then(Instant::now);
+                    for region in &regions {
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &target.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d {
+                                    x: region.x,
+                                    y: region.y,
+                                    z: 0,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &self.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d {
+                                    x: region.x,
+                                    y: region.y,
+                                    z: 0,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::Extent3d {
+                                width: region.width,
+                                height: region.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
+                    if let Some(copy_start) = copy_start {
+                        copy_encode_us = copy_start.elapsed().as_micros();
+                    }
+                },
+            )
+            .expect("render_to_texture");
+        let timestamp_submission = self.timestamp_submission_id(timing.is_some());
+        let dispatch_timestamp_submission = self.dispatch_timestamp_submission_id(timing.is_some());
+        if let (Some(timing), Some(render_start)) = (timing.as_mut(), render_start) {
+            let combined_us = render_start.elapsed().as_micros();
+            timing.vello_submit_us = timing
+                .vello_submit_us
+                .saturating_add(combined_us.saturating_sub(copy_encode_us));
+            timing.copy_submit_us = timing.copy_submit_us.saturating_add(copy_encode_us);
+            timing.coarse_prefix_pixels = timing.coarse_prefix_pixels.saturating_add(raster_pixels);
+        }
+        while self.damage_textures.len() > 1 {
+            let target = self.damage_textures.pop().expect("length checked above");
+            self.renderer.invalidate_texture_bindings(&target.view);
+        }
+        self.coarse_pool_high_water_pixels = self.coarse_pool_high_water_pixels.max(raster_pixels);
+        let overflowed = if let Some(timing) = timing.as_mut() {
+            let start = Instant::now();
+            let overflowed = self.renderer.settle_bump_budget(&device);
+            timing.settle_wait_us = timing
+                .settle_wait_us
+                .saturating_add(start.elapsed().as_micros());
+            overflowed
+        } else {
+            self.renderer.settle_bump_budget(&device)
+        };
+        self.record_timestamp(timestamp_submission, timing);
+        self.record_dispatch_timestamp(dispatch_timestamp_submission, timing);
+        if overflowed {
+            // Account for Vello bump growth before claiming completion.
+            // The full retry is conservative and restores every target pixel.
+            return raster_pixels.saturating_add(self.render_gpu_wait_count(scene, bg, timing));
+        }
+        raster_pixels
     }
 
     /// [`render`](Self::render) with a transparent background.
@@ -849,10 +1558,16 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{OffscreenRenderer, damage_texture_extent, damage_texture_needs_replacement};
+    use std::sync::Arc;
+
+    use super::{
+        OffscreenRenderer, damage_texture_extent, damage_texture_geometric_needs_replacement,
+        damage_texture_geometric_width_extent, damage_texture_height_extent,
+        damage_texture_needs_replacement, shared_gpu, timestamp_last_and_other_pass_ns,
+    };
     use vello::Scene;
-    use vello::kurbo::{Affine, Rect};
-    use vello::peniko::{Color, Fill};
+    use vello::kurbo::{Affine, BezPath, Rect};
+    use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
     /// A `static Mutex<Option<OffscreenRenderer>>` (see the module docs)
     /// only compiles while this holds, so a field that quietly gave up
@@ -868,6 +1583,8 @@ mod tests {
         assert_eq!(damage_texture_extent(1, 8_192), 32);
         assert_eq!(damage_texture_extent(801, 8_192), 832);
         assert_eq!(damage_texture_extent(8_191, 8_192), 8_192);
+        assert_eq!(damage_texture_height_extent(172, 8_192), 176);
+        assert_eq!(damage_texture_height_extent(8_191, 8_192), 8_192);
     }
 
     #[test]
@@ -876,6 +1593,107 @@ mod tests {
         assert!(damage_texture_needs_replacement(832, 128, 400, 96));
         assert!(damage_texture_needs_replacement(832, 128, 833, 96));
         assert!(damage_texture_needs_replacement(1_024, 1_024, 128, 128));
+    }
+
+    #[test]
+    fn geometric_width_capacity_grows_in_bounded_buckets() {
+        assert_eq!(damage_texture_geometric_width_extent(33, 3_840, 8_192), 64);
+        assert_eq!(
+            damage_texture_geometric_width_extent(1_025, 3_840, 8_192),
+            2_048
+        );
+        assert_eq!(
+            damage_texture_geometric_width_extent(2_049, 3_840, 8_192),
+            3_840
+        );
+        assert_eq!(
+            damage_texture_geometric_width_extent(8_191, 8_192, 8_192),
+            8_192
+        );
+        assert_eq!(damage_texture_geometric_width_extent(16, 16, 8_192), 16);
+        assert_eq!(
+            damage_texture_geometric_width_extent(4_095, 8_192, 4_096),
+            4_096
+        );
+    }
+
+    #[test]
+    fn geometric_capacity_uses_hysteresis_and_never_recreates_identical_size() {
+        assert!(!damage_texture_geometric_needs_replacement(
+            2_048, 176, 1_026, 172, 2_048, 176,
+        ));
+        assert!(!damage_texture_geometric_needs_replacement(
+            2_048, 176, 1_024, 172, 1_024, 176,
+        ));
+        assert!(damage_texture_geometric_needs_replacement(
+            2_048, 176, 2_049, 172, 3_840, 176,
+        ));
+        assert!(damage_texture_geometric_needs_replacement(
+            2_048, 176, 512, 44, 512, 48,
+        ));
+    }
+
+    #[test]
+    fn geometric_capacity_avoids_forward_animation_recreation_churn() {
+        let mut baseline_capacity = 0;
+        let mut geometric_capacity = 0;
+        let mut baseline_creations = 0u32;
+        let mut geometric_creations = 0u32;
+        for required in (1_025..=2_048).step_by(32) {
+            if baseline_capacity < required {
+                baseline_capacity = damage_texture_extent(required, 3_840);
+                baseline_creations = baseline_creations.saturating_add(1);
+            }
+            let desired = damage_texture_geometric_width_extent(required, 3_840, 8_192);
+            if geometric_capacity < required {
+                geometric_capacity = desired;
+                geometric_creations = geometric_creations.saturating_add(1);
+            }
+        }
+        assert!(baseline_creations > geometric_creations);
+        assert_eq!(geometric_creations, 1);
+    }
+
+    fn timestamp_sample(
+        timestamps: &[u64],
+        pass_count: u32,
+        period_ns: f32,
+        summed_ns: f64,
+    ) -> vello::GpuTimestampSample {
+        vello::GpuTimestampSample {
+            submission_id: 1,
+            pass_count,
+            span_ticks: 0,
+            summed_pass_ticks: 0,
+            timestamp_period_ns: period_ns,
+            span_ns: 0.0,
+            summed_pass_ns: summed_ns,
+            timestamp_bytes: timestamps
+                .iter()
+                .flat_map(|tick| tick.to_le_bytes())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn timestamp_last_pass_split_handles_one_and_many_passes() {
+        let single = timestamp_sample(&[10, 16], 1, 0.5, 3.0);
+        assert_eq!(timestamp_last_and_other_pass_ns(&single), Some((3, 0)));
+
+        // (16 - 10) * .5 = 3 and (29 - 20) * .5 = 4.5, rounded down.
+        let multiple = timestamp_sample(&[10, 16, 20, 29], 2, 0.5, 7.5);
+        assert_eq!(timestamp_last_and_other_pass_ns(&multiple), Some((4, 3)));
+    }
+
+    #[test]
+    fn timestamp_last_pass_split_rejects_incomplete_or_backwards_pairs() {
+        let incomplete = timestamp_sample(&[10, 16], 2, 1.0, 6.0);
+        assert_eq!(timestamp_last_and_other_pass_ns(&incomplete), None);
+
+        // Even a good final pair cannot make an earlier backwards pair a
+        // complete measurement.
+        let backwards = timestamp_sample(&[16, 10, 20, 24], 2, 1.0, 4.0);
+        assert_eq!(timestamp_last_and_other_pass_ns(&backwards), None);
     }
 
     /// Without this guard the tolerance could be widened later — turning
@@ -919,8 +1737,8 @@ mod tests {
 
     #[test]
     fn native_damage_matches_a_full_render_and_preserves_untouched_pixels() {
-        const W: u32 = 96;
-        const H: u32 = 64;
+        const W: u32 = 192;
+        const H: u32 = 128;
         let mut initial = Scene::new();
         initial.fill(
             Fill::NonZero,
@@ -937,16 +1755,32 @@ mod tests {
             None,
             &Rect::new(28.0, 20.0, 68.0, 44.0),
         );
+        // Deliberately disconnected from the progress-like centre update:
+        // this exercises one native-origin prefix target with two independent
+        // dirty-region copies.
+        updated.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(230, 100, 40),
+            None,
+            &Rect::new(4.0, 4.0, 16.0, 14.0),
+        );
 
         let mut retained = OffscreenRenderer::new(W, H);
+        retained.set_sparse_fine_enabled(false);
         let before = retained.render(&initial, Color::BLACK);
-        assert_eq!(
-            retained.render_damage_gpu_wait(
-                &updated,
-                Color::BLACK,
+        let (raster_pixels, timing) = retained.render_damage_regions_gpu_wait_profiled(
+            &updated,
+            Color::BLACK,
+            &[
                 Rect::new(26.0, 18.0, 70.0, 46.0),
-            ),
-            44 * 28,
+                Rect::new(2.0, 2.0, 18.0, 16.0),
+            ],
+        );
+        assert_eq!(raster_pixels, 70 * 46);
+        assert_eq!(
+            timing.full_attempts, 0,
+            "small damage must avoid full recovery"
         );
         let partial = retained.readback_current();
 
@@ -957,10 +1791,1330 @@ mod tests {
             0,
             "native damage composition must match a complete frame",
         );
+        // (80, 12) is outside both [26,70)×[18,46) and [2,18)×[2,16).
         assert_eq!(
-            OffscreenRenderer::sample(&before, W, 12, 12),
-            OffscreenRenderer::sample(&partial, W, 12, 12),
+            OffscreenRenderer::sample(&before, W, 80, 12),
+            OffscreenRenderer::sample(&partial, W, 80, 12),
             "pixels outside damage stay byte-identical",
         );
+    }
+
+    #[test]
+    fn native_damage_tracks_disconnected_transparent_clipped_motion_and_resize() {
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let scene_for = |left: Rect, right: Rect| {
+            let mut scene = Scene::new();
+            let outer = Rect::new(12.0, 10.0, 116.0, 86.0);
+            let inner = Rect::new(22.0, 18.0, 106.0, 80.0);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &outer);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &inner);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(70, 150, 250, 170),
+                None,
+                &left,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(250, 110, 60, 145),
+                None,
+                &right,
+            );
+            scene.pop_layer();
+            scene.pop_layer();
+            scene
+        };
+        let first_left = Rect::new(26.0, 26.0, 42.0, 38.0);
+        let first_right = Rect::new(88.0, 64.0, 101.0, 76.0);
+        let second_left = Rect::new(34.0, 24.0, 56.0, 42.0);
+        let second_right = Rect::new(78.0, 61.0, 104.0, 78.0);
+        let third_left = Rect::new(24.0, 30.0, 62.0, 48.0);
+        let third_right = Rect::new(91.0, 52.0, 103.0, 79.0);
+
+        let mut retained = OffscreenRenderer::new(W, H);
+        retained.render(&scene_for(first_left, first_right), Color::TRANSPARENT);
+        for (previous_left, previous_right, next_left, next_right) in [
+            (first_left, first_right, second_left, second_right),
+            (second_left, second_right, third_left, third_right),
+        ] {
+            let next = scene_for(next_left, next_right);
+            // Old and new bounds are separate regions: clearing transparent
+            // old pixels is as important as painting the moved pixels.
+            retained.render_damage_regions_gpu_wait(
+                &next,
+                Color::TRANSPARENT,
+                &[
+                    previous_left.inflate(1.0, 1.0),
+                    previous_right.inflate(1.0, 1.0),
+                    next_left.inflate(1.0, 1.0),
+                    next_right.inflate(1.0, 1.0),
+                ],
+            );
+            let partial = retained.readback_current();
+            let mut reference = OffscreenRenderer::new(W, H);
+            let full = reference.render(&next, Color::TRANSPARENT);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&partial, &full),
+                0,
+                "clipped transparent native-damage frame must equal a full render",
+            );
+            assert_eq!(
+                OffscreenRenderer::sample(&partial, W, 4, 4).3,
+                0,
+                "transparent pixels outside nested clips must remain transparent",
+            );
+        }
+    }
+
+    #[test]
+    fn retained_damage_matches_full_with_clips_overlaps_and_image_updates() {
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let image = |rgba: [u8; 4]| ImageData {
+            data: Blob::new(Arc::new(
+                rgba.into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<u8>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let blue = image([20, 120, 255, 190]);
+        let orange = image([255, 100, 30, 170]);
+        let scene_for = |image: &ImageData, image_rect: Rect, overlap: Rect| {
+            let mut scene = Scene::new();
+            let clip = Rect::new(16.0, 12.0, 132.0, 104.0);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(100, 40, 220, 120),
+                None,
+                &overlap,
+            );
+            let brush = ImageBrush::new(image.clone());
+            let scale = Affine::translate((image_rect.x0, image_rect.y0))
+                * Affine::scale(image_rect.width() / 4.0);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &brush,
+                Some(scale),
+                &image_rect,
+            );
+            scene.pop_layer();
+            scene
+        };
+        let old = Rect::new(28.0, 26.0, 52.0, 50.0);
+        let moved = Rect::new(64.0, 34.0, 92.0, 62.0);
+        let replaced = Rect::new(44.0, 56.0, 78.0, 90.0);
+        let overlap_a = Rect::new(42.0, 30.0, 76.0, 64.0);
+        let overlap_b = Rect::new(54.0, 50.0, 88.0, 84.0);
+        let first = scene_for(&blue, old, overlap_a);
+        let second = scene_for(&blue, moved, overlap_a);
+        let third = scene_for(&orange, replaced, overlap_b);
+        let mut retained = OffscreenRenderer::new(W, H);
+        retained.render_rgba_resilient(&first);
+        let sparse_supported = retained.sparse_fine_supported();
+        let mut reference = OffscreenRenderer::new(W, H);
+        reference.set_compute_pass_batching(false);
+        reference.set_direct_path_dispatch_enabled(false);
+        reference.set_defer_bump_readback_enabled(false);
+        reference.set_sparse_fine_enabled(false);
+        for (frame, (next, dirty)) in [
+            (
+                &second,
+                vec![
+                    old.inflate(1.0, 1.0),
+                    moved.inflate(1.0, 1.0),
+                    old.inflate(1.0, 1.0),
+                ],
+            ),
+            (
+                &third,
+                vec![
+                    moved.inflate(1.0, 1.0),
+                    replaced.inflate(1.0, 1.0),
+                    overlap_a.inflate(1.0, 1.0),
+                    overlap_b.inflate(1.0, 1.0),
+                ],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = retained.readback_current();
+            let (raster_pixels, timing) =
+                retained.render_damage_regions_gpu_wait_profiled(next, Color::TRANSPARENT, &dirty);
+            assert!(raster_pixels < u64::from(W).saturating_mul(u64::from(H)));
+            if sparse_supported {
+                assert_eq!(timing.sparse_submissions, 1);
+                assert!(timing.sparse_fine_tiles > 0);
+                assert!(timing.sparse_written_pixels > 0);
+            }
+            let partial = retained.readback_current();
+            let full = reference.render_rgba_resilient(next);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&partial, &full),
+                0
+            );
+            assert_eq!(
+                OffscreenRenderer::sample(&before, W, 8, 8),
+                OffscreenRenderer::sample(&partial, W, 8, 8)
+            );
+            let image_only = if frame == 0 {
+                OffscreenRenderer::sample(&partial, W, 82, 40)
+            } else {
+                OffscreenRenderer::sample(&partial, W, 48, 86)
+            };
+            assert!(image_only.3 > 0, "image-only pixel must not be transparent");
+            if frame == 0 {
+                assert!(
+                    image_only.2 > image_only.0,
+                    "reused blue image must remain blue"
+                );
+            } else {
+                assert!(
+                    image_only.0 > image_only.2,
+                    "replacement image must be orange"
+                );
+            }
+            // Exercise the next partial update after a full retained-target refresh.
+            if frame == 0 {
+                retained.render_damage_regions_gpu_wait(
+                    &second,
+                    Color::TRANSPARENT,
+                    &[Rect::new(0.0, 0.0, f64::from(W), f64::from(H))],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_damage_masks_same_tile_and_handles_a_tall_native_prefix() {
+        let mut retained = OffscreenRenderer::new(64, 64);
+        if !retained.sparse_fine_supported() {
+            let requested = matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+            assert!(
+                !requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                "VELLO_SPARSE_FINE=1 must be available unless the explicit CPU fallback is selected",
+            );
+            eprintln!("skipping sparse GPU mask test: sparse fine is unavailable");
+            return;
+        }
+        let full_rect = Rect::new(0.0, 0.0, 64.0, 64.0);
+        let mut blue = Scene::new();
+        blue.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(20, 60, 220),
+            None,
+            &full_rect,
+        );
+        retained.render_rgba_resilient(&blue);
+        let mut red = Scene::new();
+        red.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(230, 40, 30),
+            None,
+            &full_rect,
+        );
+        let dirty = Rect::new(5.0, 7.0, 7.0, 9.0);
+        let (pixels, timing) =
+            retained.render_damage_regions_gpu_wait_profiled(&red, Color::TRANSPARENT, &[dirty]);
+        assert!(pixels < 64 * 64);
+        assert_eq!(timing.sparse_submissions, 1);
+        assert!(timing.sparse_fine_tiles > 0);
+        assert_eq!(timing.sparse_written_pixels, 4);
+        assert!(retained.damage_textures.is_empty());
+        let bytes = retained.readback_current();
+        for y in 0..64 {
+            for x in 0..64 {
+                let pixel = OffscreenRenderer::sample(&bytes, 64, x, y);
+                if (5..7).contains(&x) && (7..9).contains(&y) {
+                    assert!(pixel.0 > pixel.2, "masked pixel must be red");
+                } else {
+                    assert!(pixel.2 > pixel.0, "same-tile untouched pixel changed");
+                }
+            }
+        }
+
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let far = Rect::new(238.0, 174.0, 250.0, 186.0);
+        let mut sparse = OffscreenRenderer::new(W, H);
+        assert!(sparse.sparse_fine_supported());
+        sparse.render_rgba_resilient(&Scene::new());
+        let mut changed = Scene::new();
+        changed.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(80, 210, 120, 190),
+            None,
+            &far,
+        );
+        let (pixels, timing) =
+            sparse.render_damage_regions_gpu_wait_profiled(&changed, Color::TRANSPARENT, &[far]);
+        assert!(pixels < u64::from(W).saturating_mul(u64::from(H)).saturating_div(2));
+        assert!(
+            timing.coarse_prefix_pixels
+                >= u64::from(W).saturating_mul(u64::from(H)).saturating_div(2)
+        );
+        assert_eq!(timing.sparse_submissions, 1);
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+        let full = oracle.render_rgba_resilient(&changed);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&sparse.readback_current(), &full),
+            0
+        );
+    }
+
+    #[test]
+    fn sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames() {
+        if !matches!(std::env::var("VELLO_SPARSE_COARSE").as_deref(), Ok("1")) {
+            eprintln!("skipping sparse coarse test: coarse selection is not requested");
+            return;
+        }
+        let Ok(_gpu) = shared_gpu() else {
+            eprintln!("skipping sparse coarse test: no shared GPU");
+            return;
+        };
+        const W: u32 = 544;
+        const H: u32 = 528;
+        let mut retained = OffscreenRenderer::new(W, H);
+        if !retained.sparse_coarse_supported() {
+            let sparse_fine_requested =
+                matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+            assert!(
+                !sparse_fine_requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                "coarse support is required only for the requested GPU sparse-fine path"
+            );
+            return;
+        }
+        assert!(retained.sparse_coarse_supported());
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+
+        let image = ImageData {
+            data: Blob::new(Arc::new(
+                [30_u8, 180, 250, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<_>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let scene_for = |accent: Rect, image_rect: Rect| {
+            let mut scene = Scene::new();
+            let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+            let clip = Rect::new(12.0, 12.0, 532.0, 516.0);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(18, 28, 48),
+                None,
+                &full,
+            );
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(240, 70, 50, 180),
+                None,
+                &accent,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &ImageBrush::new(image.clone()),
+                Some(
+                    Affine::translate((image_rect.x0, image_rect.y0))
+                        * Affine::scale(image_rect.width() / 4.0),
+                ),
+                &image_rect,
+            );
+            scene.pop_layer();
+            scene
+        };
+        let base = scene_for(
+            Rect::new(20.0, 20.0, 20.0, 20.0),
+            Rect::new(24.0, 24.0, 24.0, 24.0),
+        );
+        retained.render_rgba_resilient(&base);
+        for (frame, (next, dirty)) in [
+            (
+                scene_for(
+                    Rect::new(28.0, 28.0, 52.0, 54.0),
+                    Rect::new(34.0, 30.0, 46.0, 42.0),
+                ),
+                vec![
+                    Rect::new(28.0, 28.0, 52.0, 54.0),
+                    Rect::new(34.0, 30.0, 46.0, 42.0),
+                ],
+            ),
+            (
+                scene_for(
+                    Rect::new(492.0, 490.0, 520.0, 518.0),
+                    Rect::new(450.0, 450.0, 478.0, 478.0),
+                ),
+                vec![
+                    Rect::new(28.0, 28.0, 52.0, 54.0),
+                    Rect::new(34.0, 30.0, 46.0, 42.0),
+                    Rect::new(492.0, 490.0, 520.0, 518.0),
+                    Rect::new(450.0, 450.0, 478.0, 478.0),
+                ],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = retained.readback_current();
+            let (_, timing) =
+                retained.render_damage_regions_gpu_wait_profiled(&next, Color::TRANSPARENT, &dirty);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&next),
+                ),
+                0,
+                "sparse coarse output must equal the unbatched sparse-disabled oracle"
+            );
+            assert_eq!(
+                OffscreenRenderer::sample(&before, W, 150, 150),
+                OffscreenRenderer::sample(&retained.readback_current(), W, 150, 150),
+                "an untouched sample in the same coarse bin must remain unchanged"
+            );
+            if frame == 1 {
+                assert_eq!(
+                    OffscreenRenderer::sample(&before, W, 150, 300),
+                    OffscreenRenderer::sample(&retained.readback_current(), W, 150, 300),
+                    "an empty coarse bin inside the far native prefix must remain untouched"
+                );
+            }
+            if matches!(
+                std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
+                Ok("1")
+            ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+            {
+                let coarse_sparse_bit = 1_u32.checked_shl(23).unwrap_or(0);
+                let dense_coarse_bit = 1_u32.checked_shl(16).unwrap_or(0);
+                assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_sampled_submissions,
+                    timing.gpu_dispatch_timestamp_expected_submissions,
+                );
+                assert_ne!(
+                    timing.gpu_dispatch_timestamp_present_stages & coarse_sparse_bit,
+                    0
+                );
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_present_stages & dense_coarse_bit,
+                    0
+                );
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            }
+            let batched_reuse_profile =
+                matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
+                    && matches!(
+                        std::env::var("VELLO_SPARSE_UPLOAD_REUSE").as_deref(),
+                        Ok("1")
+                    );
+            if batched_reuse_profile && retained.gpu_timestamp_buffer_bytes() != 0 {
+                assert_eq!(timing.sparse_submissions, 1);
+                assert_eq!(timing.full_attempts, 0);
+                assert!(timing.gpu_timestamp_pass_count > 0);
+                assert!(
+                    timing.gpu_timestamp_pass_count <= 3,
+                    "the sparse upload must be recorded before the batched compute passes"
+                );
+                assert_eq!(
+                    timing.gpu_timestamp_sampled_submissions,
+                    timing.gpu_timestamp_expected_submissions,
+                );
+                assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled() {
+        if !matches!(std::env::var("VELLO_CPU_PATHTAG").as_deref(), Ok("1")) {
+            eprintln!("skipping CPU path-tag test: selective path tags are not requested");
+            return;
+        }
+        let Ok(_gpu) = shared_gpu() else {
+            eprintln!("skipping CPU path-tag test: no shared GPU");
+            return;
+        };
+        const W: u32 = 384;
+        const H: u32 = 256;
+        let mut retained = OffscreenRenderer::new(W, H);
+        if !retained.cpu_pathtag_enabled() {
+            assert!(
+                std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                "VELLO_CPU_PATHTAG=1 must activate selective CPU path tags on a GPU renderer"
+            );
+            return;
+        }
+        let draw_prefix_requested =
+            matches!(std::env::var("VELLO_CPU_DRAW_PREFIX").as_deref(), Ok("1"));
+        let direct_path_requested = matches!(
+            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
+            Ok("1")
+        );
+        if direct_path_requested {
+            assert!(
+                retained.direct_path_dispatch_enabled(),
+                "VELLO_DIRECT_PATH_DISPATCH=1 must activate direct GPU path dispatch"
+            );
+        }
+        if draw_prefix_requested {
+            assert!(retained.cpu_draw_prefix_enabled());
+            assert!(retained.cpu_draw_prefix_supported(16));
+            assert!(retained.cpu_draw_prefix_supported(1024 * 1024));
+            assert!(!retained.cpu_draw_prefix_supported(1024 * 1024 + 16));
+        }
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_direct_path_dispatch_enabled(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+        oracle.set_cpu_metadata_enabled(false);
+        oracle.set_cpu_pathtag_enabled(false);
+        oracle.set_cpu_draw_prefix_enabled(false);
+        let image = ImageData {
+            data: Blob::new(Arc::new(
+                [30_u8, 170, 240, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(64)
+                    .collect::<Vec<_>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let scene_for = |offset: f64, add_tag: bool| {
+            let mut scene = Scene::new();
+            let clip = Rect::new(12.0, 10.0, 180.0, 150.0);
+            let mut curve = BezPath::new();
+            curve.move_to((20.0, 118.0));
+            curve.curve_to((42.0, 12.0), (118.0, 150.0), (158.0, 34.0));
+            curve.line_to((132.0, 132.0));
+            curve.close_path();
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+            scene.fill(
+                Fill::NonZero,
+                Affine::translate((offset, 0.0)),
+                Color::from_rgba8(235, 70, 45, 185),
+                None,
+                &curve,
+            );
+            if add_tag {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgba8(80, 220, 120, 170),
+                    None,
+                    &Rect::new(48.0, 64.0, 82.0, 96.0),
+                );
+            }
+            let image_rect = Rect::new(96.0 + offset, 46.0, 124.0 + offset, 74.0);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &ImageBrush::new(image.clone()),
+                Some(
+                    Affine::translate((image_rect.x0, image_rect.y0))
+                        * Affine::scale(image_rect.width() / 4.0),
+                ),
+                &image_rect,
+            );
+            scene.pop_layer();
+            scene
+        };
+        let initial = scene_for(0.0, false);
+        retained.render_rgba_resilient(&initial);
+        let bounded_damage = Rect::new(12.0, 12.0, 184.0, 150.0);
+        let reuse_requested =
+            matches!(std::env::var("VELLO_CPU_PATHTAG_REUSE").as_deref(), Ok("1"));
+        let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
+            && !retained.sparse_fine_supported()
+            && retained.gpu_timestamp_buffer_bytes() != 0;
+        let mut retained_pool_bytes = 0;
+        for next in [scene_for(9.0, false), scene_for(9.0, true)] {
+            let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &next,
+                Color::TRANSPARENT,
+                &[bounded_damage],
+            );
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&next),
+                ),
+                0
+            );
+            if reuse_requested {
+                assert!(retained.cpu_pathtag_reuse_enabled());
+                let current_pool_bytes = retained.cpu_pathtag_pool_retained_bytes();
+                assert!(current_pool_bytes > 0);
+                assert!(current_pool_bytes >= retained_pool_bytes);
+                retained_pool_bytes = current_pool_bytes;
+            }
+            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_sampled_submissions,
+                    timing.gpu_dispatch_timestamp_expected_submissions,
+                );
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+                let reduce = 1_u32.checked_shl(0).unwrap_or(0);
+                let scan_small = 1_u32.checked_shl(3).unwrap_or(0);
+                let flatten = 1_u32.checked_shl(6).unwrap_or(0);
+                let sparse_fine_requested =
+                    matches!(std::env::var("VELLO_SPARSE_FINE").as_deref(), Ok("1"));
+                let fine = 1_u32
+                    .checked_shl(if sparse_fine_requested { 22 } else { 19 })
+                    .unwrap_or(0);
+                assert_eq!(timing.gpu_dispatch_timestamp_present_stages & reduce, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_present_stages & scan_small, 0);
+                if retained.cpu_metadata_enabled() {
+                    let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
+                    let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
+                    assert_eq!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
+                    assert_eq!(
+                        timing.gpu_dispatch_timestamp_present_stages & draw_reduce,
+                        0
+                    );
+                }
+                if retained.cpu_draw_prefix_enabled() {
+                    let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
+                    let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
+                    assert_ne!(
+                        timing.gpu_dispatch_timestamp_present_stages & prefix_leaf,
+                        0
+                    );
+                    assert_eq!(timing.gpu_dispatch_timestamp_present_stages & draw_leaf, 0);
+                }
+                assert_ne!(timing.gpu_dispatch_timestamp_present_stages & flatten, 0);
+                assert_ne!(timing.gpu_dispatch_timestamp_present_stages & fine, 0);
+                let path_count_direct = 1_u32.checked_shl(25).unwrap_or(0);
+                let path_tiling_direct = 1_u32.checked_shl(26).unwrap_or(0);
+                let path_count_setup = 1_u32.checked_shl(13).unwrap_or(0);
+                let path_count = 1_u32.checked_shl(14).unwrap_or(0);
+                let path_tiling_setup = 1_u32.checked_shl(17).unwrap_or(0);
+                let path_tiling = 1_u32.checked_shl(18).unwrap_or(0);
+                if retained.direct_path_dispatch_enabled() {
+                    assert_ne!(
+                        timing.gpu_dispatch_timestamp_present_stages & path_count_direct,
+                        0
+                    );
+                    assert_ne!(
+                        timing.gpu_dispatch_timestamp_present_stages & path_tiling_direct,
+                        0
+                    );
+                    assert_eq!(
+                        timing.gpu_dispatch_timestamp_present_stages
+                            & (path_count_setup | path_count | path_tiling_setup | path_tiling),
+                        0
+                    );
+                }
+            }
+            if deferred_bump_profile {
+                let expected_pass_count = if retained.cpu_metadata_enabled() {
+                    1
+                } else {
+                    // GPU bbox-clear precedes the bump clear and remains
+                    // a separate pass when CPU metadata is disabled.
+                    2
+                };
+                assert_eq!(
+                    timing.gpu_timestamp_pass_count, expected_pass_count,
+                    "the deferred synchronous bump copy must not add a compute-pass split"
+                );
+                assert_eq!(
+                    timing.gpu_timestamp_sampled_submissions,
+                    timing.gpu_timestamp_expected_submissions,
+                );
+                assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
+            }
+        }
+        if direct_path_requested {
+            retained.set_direct_path_dispatch_enabled(false);
+            let indirect_scene = scene_for(10.5, true);
+            let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &indirect_scene,
+                Color::TRANSPARENT,
+                &[bounded_damage],
+            );
+            assert!(!retained.direct_path_dispatch_enabled());
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&indirect_scene),
+                ),
+                0
+            );
+            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                let path_count_direct = 1_u32.checked_shl(25).unwrap_or(0);
+                let path_tiling_direct = 1_u32.checked_shl(26).unwrap_or(0);
+                let path_count_setup = 1_u32.checked_shl(13).unwrap_or(0);
+                let path_count = 1_u32.checked_shl(14).unwrap_or(0);
+                let path_tiling_setup = 1_u32.checked_shl(17).unwrap_or(0);
+                let path_tiling = 1_u32.checked_shl(18).unwrap_or(0);
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_present_stages
+                        & (path_count_direct | path_tiling_direct),
+                    0
+                );
+                assert_ne!(
+                    timing.gpu_dispatch_timestamp_present_stages
+                        & (path_count_setup | path_count | path_tiling_setup | path_tiling),
+                    0
+                );
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            }
+            retained.set_direct_path_dispatch_enabled(true);
+        }
+        if deferred_bump_profile {
+            retained.set_defer_bump_readback_enabled(false);
+            let restored_scene = scene_for(10.0, true);
+            let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &restored_scene,
+                Color::TRANSPARENT,
+                &[bounded_damage],
+            );
+            assert!(!retained.defer_bump_readback_enabled());
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&restored_scene),
+                ),
+                0
+            );
+            assert!(
+                timing.gpu_timestamp_pass_count >= 2,
+                "the original synchronous bump copy must restore its compute-pass boundary"
+            );
+            assert_eq!(
+                timing.gpu_timestamp_sampled_submissions,
+                timing.gpu_timestamp_expected_submissions,
+            );
+            assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
+            retained.set_defer_bump_readback_enabled(true);
+        }
+        if draw_prefix_requested {
+            let prefix_pool = retained.cpu_draw_prefix_pool_retained_bytes();
+            assert!(prefix_pool > 0 && retained.cpu_draw_prefix_supported(prefix_pool));
+            retained.set_cpu_draw_prefix_enabled(false);
+            let prefix_gpu_scene = scene_for(11.0, true);
+            let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &prefix_gpu_scene,
+                Color::TRANSPARENT,
+                &[bounded_damage],
+            );
+            assert!(retained.cpu_pathtag_enabled());
+            assert!(!retained.cpu_draw_prefix_enabled());
+            assert_eq!(retained.cpu_draw_prefix_pool_retained_bytes(), 0);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&prefix_gpu_scene),
+                ),
+                0
+            );
+            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
+                let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
+                assert_eq!(
+                    timing.gpu_dispatch_timestamp_present_stages & prefix_leaf,
+                    0
+                );
+                assert_ne!(timing.gpu_dispatch_timestamp_present_stages & draw_leaf, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            }
+        }
+        if matches!(std::env::var("VELLO_CPU_METADATA").as_deref(), Ok("1")) {
+            assert!(retained.cpu_metadata_enabled());
+            retained.set_cpu_metadata_enabled(false);
+            let metadata_gpu_scene = scene_for(12.0, true);
+            let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+                &metadata_gpu_scene,
+                Color::TRANSPARENT,
+                &[bounded_damage],
+            );
+            assert!(retained.cpu_pathtag_enabled());
+            assert!(!retained.cpu_metadata_enabled());
+            assert_eq!(retained.cpu_metadata_pool_retained_bytes(), 0);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(
+                    &retained.readback_current(),
+                    &oracle.render_rgba_resilient(&metadata_gpu_scene),
+                ),
+                0
+            );
+            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
+                let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
+                assert_ne!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
+                assert_ne!(
+                    timing.gpu_dispatch_timestamp_present_stages & draw_reduce,
+                    0
+                );
+                assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+                assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            }
+        }
+        retained.set_cpu_pathtag_enabled(false);
+        let gpu_scene = scene_for(14.0, true);
+        let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+            &gpu_scene,
+            Color::TRANSPARENT,
+            &[bounded_damage],
+        );
+        assert!(!retained.cpu_pathtag_enabled());
+        if reuse_requested {
+            assert_eq!(retained.cpu_pathtag_pool_retained_bytes(), 0);
+        }
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&gpu_scene),
+            ),
+            0
+        );
+        if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+            assert_eq!(
+                timing.gpu_dispatch_timestamp_sampled_submissions,
+                timing.gpu_dispatch_timestamp_expected_submissions,
+            );
+            assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+            assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            let reduce = 1_u32.checked_shl(0).unwrap_or(0);
+            let scan_small = 1_u32.checked_shl(3).unwrap_or(0);
+            assert_ne!(timing.gpu_dispatch_timestamp_present_stages & reduce, 0);
+            assert_ne!(timing.gpu_dispatch_timestamp_present_stages & scan_small, 0);
+        }
+    }
+
+    #[test]
+    fn direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages() {
+        if !matches!(
+            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
+            Ok("1")
+        ) {
+            eprintln!("skipping direct path-dispatch test: experiment is not requested");
+            return;
+        }
+        let Ok(_gpu) = shared_gpu() else {
+            eprintln!("skipping direct path-dispatch test: no shared GPU");
+            return;
+        };
+        const W: u32 = 384;
+        const H: u32 = 256;
+        let mut retained = OffscreenRenderer::new(W, H);
+        if !retained.direct_path_dispatch_enabled() {
+            assert!(
+                std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                "VELLO_DIRECT_PATH_DISPATCH=1 must activate direct GPU path dispatch"
+            );
+            return;
+        }
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_direct_path_dispatch_enabled(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+
+        let empty = Scene::new();
+        let empty_pixels = retained.render_rgba_resilient(&empty);
+        assert!(
+            empty_pixels
+                .chunks_exact(4)
+                .all(|pixel| pixel.get(3).copied().unwrap_or_default() == 0),
+            "the fixed direct grid must preserve an empty scene's success sentinel"
+        );
+        let mut stride_scene = Scene::new();
+        // Non-overlapping quarter-pixel rectangles are fully visible and stay
+        // within one 16px tile. Each contributes four lines and segments, so
+        // 8,193 * 4 = 32,772 crosses both direct-grid loops without hidden
+        // later-stride geometry or tile-boundary culling.
+        for i in 0_u32..8_193 {
+            let x = f64::from((i % 128).saturating_mul(2)) + 0.25;
+            let y = f64::from((i / 128).saturating_mul(2)) + 0.25;
+            let color = if i == 8_192 {
+                Color::from_rgb8(250, 220, 35)
+            } else if i % 2 == 0 {
+                Color::from_rgb8(45, 115, 215)
+            } else {
+                Color::from_rgb8(190, 55, 125)
+            };
+            stride_scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                color,
+                None,
+                &Rect::new(x, y, x + 1.0, y + 1.0),
+            );
+        }
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.render_rgba_resilient(&stride_scene),
+                &oracle.render_rgba_resilient(&stride_scene),
+            ),
+            0,
+            "direct path-count/tiling must retain later grid-stride iterations"
+        );
+        let scene_for = |x: f64| {
+            let mut scene = Scene::new();
+            let clip = Rect::new(8.0, 8.0, 180.0, 120.0);
+            let mut curve = BezPath::new();
+            curve.move_to((x, 112.0));
+            curve.curve_to((x + 28.0, 12.0), (x + 90.0, 118.0), (x + 128.0, 28.0));
+            curve.close_path();
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgba8(220, 70, 40, 190),
+                None,
+                &curve,
+            );
+            scene.pop_layer();
+            scene
+        };
+        // The stride fixture deliberately touched the whole retained target;
+        // restore a known full baseline before testing bounded damage.
+        retained.render_rgba_resilient(&scene_for(8.0));
+        let first = scene_for(16.0);
+        let damage = Rect::new(8.0, 8.0, 180.0, 120.0);
+        let (_, timing) =
+            retained.render_damage_regions_gpu_wait_profiled(&first, Color::TRANSPARENT, &[damage]);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&first),
+            ),
+            0
+        );
+        if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            let direct =
+                (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
+            let indirect = (1_u32.checked_shl(13).unwrap_or(0))
+                | (1_u32.checked_shl(14).unwrap_or(0))
+                | (1_u32.checked_shl(17).unwrap_or(0))
+                | (1_u32.checked_shl(18).unwrap_or(0));
+            assert_eq!(
+                timing.gpu_dispatch_timestamp_sampled_submissions,
+                timing.gpu_dispatch_timestamp_expected_submissions,
+            );
+            assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+            assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            assert_eq!(
+                timing.gpu_dispatch_timestamp_present_stages & direct,
+                direct
+            );
+            assert_eq!(timing.gpu_dispatch_timestamp_present_stages & indirect, 0);
+        }
+
+        retained.set_direct_path_dispatch_enabled(false);
+        let second = scene_for(24.0);
+        let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+            &second,
+            Color::TRANSPARENT,
+            &[damage],
+        );
+        assert!(!retained.direct_path_dispatch_enabled());
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&second),
+            ),
+            0
+        );
+        if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            let direct =
+                (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
+            let indirect = (1_u32.checked_shl(13).unwrap_or(0))
+                | (1_u32.checked_shl(14).unwrap_or(0))
+                | (1_u32.checked_shl(17).unwrap_or(0))
+                | (1_u32.checked_shl(18).unwrap_or(0));
+            assert_eq!(timing.gpu_dispatch_timestamp_present_stages & direct, 0);
+            assert_ne!(timing.gpu_dispatch_timestamp_present_stages & indirect, 0);
+            assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+            assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+        }
+    }
+
+    #[test]
+    fn sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle() {
+        if !matches!(
+            std::env::var("VELLO_SPARSE_UPLOAD_REUSE").as_deref(),
+            Ok("1")
+        ) {
+            eprintln!("skipping sparse upload reuse test: reuse is not requested");
+            return;
+        }
+
+        const W: u32 = 128;
+        const H: u32 = 96;
+        let mut retained = OffscreenRenderer::new(W, H);
+        if !retained.sparse_fine_supported() || !retained.sparse_upload_reuse_enabled() {
+            eprintln!("skipping sparse upload reuse test: sparse GPU path is unavailable");
+            return;
+        }
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+
+        let scene_for = |rect: Rect| {
+            let mut scene = Scene::new();
+            let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(20, 60, 220),
+                None,
+                &full,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(230, 40, 30),
+                None,
+                &rect,
+            );
+            scene
+        };
+        let base = scene_for(Rect::new(0.0, 0.0, 0.0, 0.0));
+        retained.render_rgba_resilient(&base);
+
+        let small = Rect::new(5.0, 7.0, 7.0, 9.0);
+        let small_scene = scene_for(small);
+        let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
+            &small_scene,
+            Color::TRANSPARENT,
+            &[small],
+        );
+        let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
+            && retained.cpu_metadata_enabled()
+            && retained.gpu_timestamp_buffer_bytes() != 0;
+        if deferred_bump_profile {
+            assert_eq!(
+                timing.gpu_timestamp_pass_count, 1,
+                "persistent sparse upload plus the deferred bump copy must retain one compute pass"
+            );
+            assert_eq!(
+                timing.gpu_timestamp_sampled_submissions,
+                timing.gpu_timestamp_expected_submissions,
+            );
+            assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
+        }
+        let dispatch_requested = matches!(
+            std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
+            Ok("1")
+        );
+        if dispatch_requested && retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+            assert_eq!(
+                timing.gpu_dispatch_timestamp_sampled_submissions,
+                timing.gpu_dispatch_timestamp_expected_submissions,
+            );
+            assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+            assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
+            let sparse_stage_bit = 1u32 << 22;
+            assert_ne!(
+                timing.gpu_dispatch_timestamp_present_stages & sparse_stage_bit,
+                0
+            );
+            assert!(timing.gpu_dispatch_timestamp_stage_duration_ns[22] > 0);
+            assert!(timing.gpu_dispatch_timestamp_stage_dispatch_count[22] > 0);
+        } else if dispatch_requested {
+            assert!(matches!(
+                retained.gpu_dispatch_timestamp_status(),
+                vello::GpuDispatchTimestampStatus::Unsupported
+                    | vello::GpuDispatchTimestampStatus::Disabled
+            ));
+        }
+        let first_memory = retained.memory_stats();
+        let first_upload = first_memory.vello.sparse_upload_bytes;
+        assert!(
+            first_upload > 0,
+            "reuse must retain the first tile upload buffer"
+        );
+        assert!(first_memory.known_gpu_bytes() >= first_upload);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&small_scene),
+            ),
+            0,
+            "reused sparse upload must equal the unbatched dense reference",
+        );
+
+        retained.render_rgba_resilient(&base);
+        retained.render_damage_regions_gpu_wait(&small_scene, Color::TRANSPARENT, &[small]);
+        assert_eq!(
+            retained.memory_stats().vello.sparse_upload_bytes,
+            first_upload,
+            "same tile list must reuse its persistent allocation",
+        );
+
+        retained.render_rgba_resilient(&base);
+        let grown = Rect::new(40.0, 20.0, 89.0, 69.0);
+        let grown_scene = scene_for(grown);
+        retained.render_damage_regions_gpu_wait(&grown_scene, Color::TRANSPARENT, &[grown]);
+        let grown_memory = retained.memory_stats();
+        assert!(
+            grown_memory.vello.sparse_upload_bytes > first_upload,
+            "a larger tile list must replace the bounded persistent upload",
+        );
+        assert!(grown_memory.known_gpu_bytes() >= grown_memory.vello.sparse_upload_bytes);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&grown_scene),
+            ),
+            0,
+            "grown reused upload must equal the unbatched dense reference",
+        );
+    }
+
+    #[test]
+    fn gpu_path_experiments_keep_overflow_recovery_complete() {
+        let deferred_bump_requested = matches!(
+            std::env::var("VELLO_DEFER_BUMP_READBACK").as_deref(),
+            Ok("1")
+        );
+        let direct_path_requested = matches!(
+            std::env::var("VELLO_DIRECT_PATH_DISPATCH").as_deref(),
+            Ok("1")
+        );
+        if !deferred_bump_requested && !direct_path_requested {
+            eprintln!("skipping GPU path recovery test: no experiment is requested");
+            return;
+        }
+        if shared_gpu().is_err() {
+            eprintln!("skipping deferred bump recovery test: no shared GPU");
+            return;
+        }
+
+        const W: u32 = 384;
+        const H: u32 = 256;
+        let mut retained = OffscreenRenderer::new(W, H);
+        if !retained.defer_bump_readback_enabled() && !retained.direct_path_dispatch_enabled() {
+            assert!(std::env::var_os("QUICK_UI_VELLO_CPU").is_some());
+            eprintln!("skipping GPU path recovery test: global CPU rendering is active");
+            return;
+        }
+        if deferred_bump_requested {
+            assert!(retained.defer_bump_readback_enabled());
+        }
+        if direct_path_requested {
+            assert!(retained.direct_path_dispatch_enabled());
+        }
+        let mut oracle = OffscreenRenderer::new(W, H);
+        oracle.set_compute_pass_batching(false);
+        oracle.set_direct_path_dispatch_enabled(false);
+        oracle.set_defer_bump_readback_enabled(false);
+        oracle.set_sparse_fine_enabled(false);
+
+        let mut scene = Scene::new();
+        let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+        // 512 viewport-covering opaque paths request 196,608 tiles, beyond
+        // the 122,880-tile initial floor. Their final pixels remain simple,
+        // so this specifically exercises bump overflow/retry rather than an
+        // image-comparison edge case.
+        for _ in 0..512 {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(24, 96, 188),
+                None,
+                &full,
+            );
+        }
+        let (_, timing) =
+            retained.render_damage_regions_gpu_wait_profiled(&scene, Color::TRANSPARENT, &[full]);
+        assert!(
+            timing.full_attempts >= 2,
+            "the fixture must overflow the initial tile reservation and retry"
+        );
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &oracle.render_rgba_resilient(&scene),
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn geometric_damage_capacity_grows_and_shrinks_without_changing_native_pixels() {
+        const W: u32 = 512;
+        const H: u32 = 128;
+        let scene_for = |rect: Rect, color: Color| {
+            let mut scene = Scene::new();
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+            scene
+        };
+        // The native prefix widths for these shapes are 40, 104, and 216,
+        // which map to 64, 128, and 256 pixel geometric capacities.
+        let narrow = Rect::new(24.0, 20.0, 40.0, 44.0);
+        let middle = Rect::new(88.0, 20.0, 104.0, 44.0);
+        let wide = Rect::new(200.0, 20.0, 216.0, 44.0);
+        let first = scene_for(narrow, Color::from_rgba8(40, 120, 250, 180));
+        let second = scene_for(middle, Color::from_rgba8(250, 90, 50, 180));
+        let third = scene_for(wide, Color::from_rgba8(70, 220, 130, 180));
+
+        let mut retained = OffscreenRenderer::new(W, H);
+        // Tests do not mutate the process environment. Enable this renderer's
+        // sampled mode explicitly so this covers the opt-in production path.
+        retained.damage_geometric_capacity = true;
+        retained.set_sparse_fine_enabled(false);
+        retained.render_rgba_resilient(&first);
+
+        let mut reference = OffscreenRenderer::new(W, H);
+        reference.set_compute_pass_batching(false);
+        reference.set_defer_bump_readback_enabled(false);
+        let initial_reference = reference.render_rgba_resilient(&first);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &retained.readback_current(),
+                &initial_reference,
+            ),
+            0,
+        );
+
+        let assert_partial = |retained: &mut OffscreenRenderer,
+                              reference: &mut OffscreenRenderer,
+                              scene: &Scene,
+                              dirty: &[Rect],
+                              expected_capacity: u32,
+                              expected_creations: u32| {
+            let (raster_pixels, timing) =
+                retained.render_damage_regions_gpu_wait_profiled(scene, Color::TRANSPARENT, dirty);
+            assert!(
+                raster_pixels < u64::from(W).saturating_mul(u64::from(H)),
+                "these small prefix updates must not take the full fallback",
+            );
+            assert_eq!(timing.damage_target_creations, expected_creations);
+            if retained.gpu_timestamp_buffer_bytes() != 0 {
+                assert!(
+                    timing.gpu_timestamp_expected_submissions > 0,
+                    "timestamp-enabled partial render must record its submission",
+                );
+                assert_eq!(
+                    timing.gpu_timestamp_sampled_submissions,
+                    timing.gpu_timestamp_expected_submissions,
+                    "timestamp-enabled partial render must read every submitted sample",
+                );
+                assert_eq!(timing.gpu_timestamp_missing_submissions, 0);
+                assert!(
+                    timing.gpu_timestamp_pass_count > 0,
+                    "timestamp-enabled partial render must report encoded GPU passes",
+                );
+                let split_ns = timing
+                    .gpu_timestamp_last_pass_ns
+                    .saturating_add(timing.gpu_timestamp_other_pass_ns);
+                assert!(
+                    split_ns.abs_diff(timing.gpu_timestamp_pass_ns)
+                        <= u128::from(timing.gpu_timestamp_sampled_submissions),
+                    "per-sample rounding is the only allowed difference between the split and total GPU pass time",
+                );
+            }
+            assert_eq!(
+                retained.damage_textures.first().map(|target| target.width),
+                Some(expected_capacity),
+            );
+            let full = reference.render_rgba_resilient(scene);
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&retained.readback_current(), &full,),
+                0,
+                "geometric prefix capacity must retain full-render native pixels",
+            );
+        };
+
+        // 64 -> 128 -> 256. The first update deliberately has unchanged
+        // content: it exercises the first native-prefix allocation itself.
+        assert_partial(&mut retained, &mut reference, &first, &[narrow], 64, 1);
+        assert_partial(
+            &mut retained,
+            &mut reference,
+            &second,
+            &[narrow, middle],
+            128,
+            1,
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&retained.readback_current(), W, 30, 30).3,
+            0,
+            "moving off the narrow rect must clear its transparent old pixels",
+        );
+        assert_partial(
+            &mut retained,
+            &mut reference,
+            &third,
+            &[middle, wide],
+            256,
+            1,
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&retained.readback_current(), W, 96, 30).3,
+            0,
+            "moving off the middle rect must clear its transparent old pixels",
+        );
+
+        // 256 remains warm while moved content is cleared. Once only the
+        // narrow prefix remains, fourfold slack permits a real 256 -> 64
+        // shrink without leaving stale transparent pixels behind.
+        assert_partial(
+            &mut retained,
+            &mut reference,
+            &second,
+            &[wide, middle],
+            256,
+            0,
+        );
+        assert_partial(
+            &mut retained,
+            &mut reference,
+            &first,
+            &[middle, narrow],
+            256,
+            0,
+        );
+        assert_eq!(
+            OffscreenRenderer::sample(&retained.readback_current(), W, 96, 30).3,
+            0,
+            "the final narrow frame must not retain stale middle pixels",
+        );
+        assert_partial(&mut retained, &mut reference, &first, &[narrow], 64, 1);
     }
 }

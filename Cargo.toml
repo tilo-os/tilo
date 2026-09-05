@@ -557,12 +557,16 @@ winit = { path = "vendor/winit" }
 # shared by a dozen clients that is the entire memory window, and it froze
 # this machine four times in one evening.
 #
-# The two vendored copies size those buffers from what frames actually
-# use instead: the GPU already writes the counts into `BumpAllocators`,
+# The Vello and encoding vendored copies size those buffers from what frames
+# actually use: the GPU already writes the counts into `BumpAllocators`,
 # so the renderer reads them back and grows a `BumpBudget` to fit. That
 # is upstream's own TODO ("apply logic to determine whether we need to
 # rerun coarse") and is meant to go back to them rather than live here.
-# `vendor/vello/src/bump_budget.rs` is the whole of it; the rest of both
-# crates is upstream 0.9.0 with the call sites threaded through.
+# Buffer sizing lives in `vendor/vello/src/bump_budget.rs`. The renderer also
+# includes retained-damage handling, profiling, and opt-in CPU/GPU scheduling
+# experiments documented in `docs/ui-performance-benchmark.md`.
+# `vello_shaders` is based on upstream 0.9.0 (Apache-2.0 OR MIT), with matching
+# sparse rasterization, CPU draw-prefix, and direct path-dispatch variants.
 vello_encoding = { path = "vendor/vello_encoding" }
+vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
