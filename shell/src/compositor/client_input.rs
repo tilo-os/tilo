@@ -50,8 +50,8 @@ use crate::shell::state::{
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
-const BTN_SIDE: u32 = 0x113;
-const BTN_EXTRA: u32 = 0x114;
+const BTN_FORWARD: u32 = 0x115;
+const BTN_BACK: u32 = 0x116;
 
 /// Scroll distance, in surface-local units, that one notch of a discrete wheel maps to — matches mainstream compositors so clients scaling `wl_pointer.axis` behave consistently.
 const WHEEL_STEP: f64 = 15.0;
@@ -795,8 +795,12 @@ pub fn evdev_button(button: MouseButton) -> Option<u32> {
         MouseButton::Left => BTN_LEFT,
         MouseButton::Right => BTN_RIGHT,
         MouseButton::Middle => BTN_MIDDLE,
-        MouseButton::Back => BTN_SIDE,
-        MouseButton::Forward => BTN_EXTRA,
+        // `MouseButton::Back`/`Forward` are the evdev BTN_BACK/BTN_FORWARD
+        // buttons, not the older BTN_SIDE/BTN_EXTRA aliases. Keeping these
+        // codes exact matters to browsers and Electron clients, which use
+        // the native button number for history navigation.
+        MouseButton::Back => BTN_BACK,
+        MouseButton::Forward => BTN_FORWARD,
         MouseButton::Other(_) => return None,
     })
 }
@@ -2398,6 +2402,8 @@ mod tests {
         assert_eq!(evdev_button(MouseButton::Left), Some(0x110));
         assert_eq!(evdev_button(MouseButton::Right), Some(0x111));
         assert_eq!(evdev_button(MouseButton::Middle), Some(0x112));
+        assert_eq!(evdev_button(MouseButton::Forward), Some(0x115));
+        assert_eq!(evdev_button(MouseButton::Back), Some(0x116));
         assert_eq!(evdev_button(MouseButton::Other(9)), None);
     }
 
