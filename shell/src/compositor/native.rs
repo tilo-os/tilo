@@ -3932,6 +3932,10 @@ pub fn run() -> ! {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
+    // Set by PrepareForSleep and cleared only after a frame containing the
+    // compositor's existing lock UI has been submitted.
+    let mut sleep_lock_frame_pending = false;
+    let mut sleep_lock_presented_at = None;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
@@ -4290,6 +4294,17 @@ pub fn run() -> ! {
                         match power_policy.on_power_key() {
                             Some(qos_power_mgmt::PowerAction::Suspend) => {
                                 tracing::info!(target: "qos::power", "power key: requesting suspend");
+                                for t in session.prepare_for_sleep(Instant::now()) {
+                                    apply_session_transition(
+                                        t,
+                                        backend.as_mut(),
+                                        present_pipe.as_ref(),
+                                    );
+                                }
+                                sleep_lock_frame_pending = true;
+                                sleep_lock_presented_at =
+                                    present_pipe.as_ref().map(|p| p.presented());
+                                session_changed = true;
                                 power_bridge.request_suspend();
                             }
                             Some(qos_power_mgmt::PowerAction::Lock) => {
@@ -4544,6 +4559,15 @@ pub fn run() -> ! {
                     );
                 } else {
                     tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    for transition in session.prepare_for_sleep(Instant::now()) {
+                        apply_session_transition(
+                            transition,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                        );
+                    }
+                    sleep_lock_frame_pending = true;
+                    sleep_lock_presented_at = present_pipe.as_ref().map(|p| p.presented());
                     power_bridge.request_suspend();
                 }
             } else {
@@ -4563,9 +4587,16 @@ pub fn run() -> ! {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
+                qos_power_mgmt::PowerSignal::PreparingForSleep => {
+                    for t in session.prepare_for_sleep(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                    }
+                    sleep_lock_frame_pending = true;
+                    sleep_lock_presented_at = present_pipe.as_ref().map(|p| p.presented());
+                }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
-                    for t in session.note_activity(Instant::now()) {
+                    for t in session.resume_from_sleep(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
@@ -4584,6 +4615,23 @@ pub fn run() -> ! {
                     notif_bridge.push_incoming(inc);
                 }
             }
+        }
+        if sleep_lock_frame_pending && session.is_locked() && session.is_blanked() {
+            // DPMS-off already guarantees no client content is visible. Do
+            // not flash the panel on merely to paint before suspend; the
+            // locked state will be the first full frame after resume.
+            power_bridge.lock_screen_drawn();
+            sleep_lock_frame_pending = false;
+            sleep_lock_presented_at = None;
+        } else if sleep_lock_frame_pending
+            && session.is_locked()
+            && sleep_lock_presented_at
+                .zip(present_pipe.as_ref())
+                .is_some_and(|(before, pipe)| pipe.presented() > before)
+        {
+            power_bridge.lock_screen_drawn();
+            sleep_lock_frame_pending = false;
+            sleep_lock_presented_at = None;
         }
 
         // `ext_session_lock_v1`: fold a protocol client's lock/unlock into the one
@@ -5104,6 +5152,7 @@ pub fn run() -> ! {
                     .map(|o| LockOutput {
                         origin: (f64::from(o.position.0), f64::from(o.position.1)),
                         size: (f64::from(o.size.0), f64::from(o.size.1)),
+                        scale: f64::from(o.scale),
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
@@ -5111,6 +5160,7 @@ pub fn run() -> ! {
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
+                        scale: 1.0,
                     }]
                 } else {
                     lock_outputs
@@ -5390,6 +5440,11 @@ pub fn run() -> ! {
             // Advance the deadline series off the moment the frame was handed to the
             // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
             frame_clock.note_presented(submit_done);
+            if sleep_lock_frame_pending && session.is_locked() && present_pipe.is_none() {
+                power_bridge.lock_screen_drawn();
+                sleep_lock_frame_pending = false;
+                sleep_lock_presented_at = None;
+            }
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass can bump
             // the revision, so capture the post-paint value or the next idle tick sees a phantom change.
