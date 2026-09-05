@@ -385,6 +385,11 @@ pub struct ChromeState {
     /// id, record kind)`. Queued because the room's index lives on
     /// the overlay host, unreachable from an action's `apply`.
     record_requests: Vec<(String, String)>,
+    /// Foreign surfaces whose tab close affordance was activated. The native
+    /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
+    /// here lets the chrome remove its durable tab immediately without owning
+    /// Wayland protocol handles.
+    close_surface_requests: Vec<u64>,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -443,6 +448,7 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             wheel_summon: None,
             record_requests: Vec::new(),
+            close_surface_requests: Vec::new(),
             strip_viewport: None,
             records: RecordStore::in_memory(),
         }))
@@ -486,6 +492,16 @@ impl ChromeState {
 
     pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.record_requests)
+    }
+
+    pub fn request_surface_close(&mut self, surface_id: u64) {
+        if !self.close_surface_requests.contains(&surface_id) {
+            self.close_surface_requests.push(surface_id);
+        }
+    }
+
+    pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.close_surface_requests)
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {

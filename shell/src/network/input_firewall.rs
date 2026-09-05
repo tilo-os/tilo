@@ -44,6 +44,7 @@ pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 mod keycode {
     pub const DELETE: u32 = 111;
     pub const TAB: u32 = 15;
+    pub const PRINT_SCREEN: u32 = 99;
     pub const LEFT_META: u32 = 125;
     pub const RIGHT_META: u32 = 126;
     pub const LEFT_CTRL: u32 = 29;
@@ -524,11 +525,6 @@ impl RemoteInputFirewall {
                 return Err(Denial::SystemChord);
             }
         }
-        // Alt+Tab isn't bound by the shell today, but a guest must still not be able to send it.
-        if mods.alt && keycode == keycode::TAB {
-            return Err(Denial::SystemChord);
-        }
-
         Ok(())
     }
 
@@ -892,6 +888,24 @@ mod tests {
                     modifiers: 0
                 },
                 now
+            ),
+            Err(Denial::SystemChord),
+        );
+    }
+
+    #[test]
+    fn print_screen_is_kept_on_the_host() {
+        let mut fw = firewall();
+        assert_eq!(
+            fw.review(
+                PEER,
+                SHARED,
+                &InputEvent::Key {
+                    keysym: keycode::PRINT_SCREEN,
+                    pressed: true,
+                    modifiers: 0,
+                },
+                Instant::now()
             ),
             Err(Denial::SystemChord),
         );

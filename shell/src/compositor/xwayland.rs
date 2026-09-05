@@ -57,6 +57,7 @@ impl SessionXwayland {
             return Err(error);
         }
         let x_display = format!(":{display_number}");
+        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
 
         let mut command = Command::new(&binary);
         command
@@ -64,6 +65,17 @@ impl SessionXwayland {
             .args(["-auth", authority.to_string_lossy().as_ref()])
             .args(["-nolisten", "tcp"])
             .env("WAYLAND_DISPLAY", wayland_socket)
+            // Xwayland compiles its own XKB map before it receives any input.
+            // In a display-manager session there need not be PAM-provided
+            // XKB_DEFAULT_* variables, so inheriting the process environment
+            // silently gives every legacy host app US regardless of the qOS
+            // seat keymap. Keep both sides on the same validated settings.
+            .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
+            .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
+            .env(
+                "XKB_DEFAULT_OPTIONS",
+                keyboard.options.as_deref().unwrap_or(""),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
@@ -238,6 +250,23 @@ mod tests {
     fn compatibility_is_confined_to_add_on_desktop_sessions() {
         assert!(enabled_for(super::super::InstallMode::HostDesktop));
         assert!(!enabled_for(super::super::InstallMode::FullSystem));
+    }
+
+    #[test]
+    fn keyboard_settings_retain_layout_variant_and_options_for_xwayland() {
+        let section = serde_json::json!({
+            "keyboard_layout": "de:nodeadkeys",
+            "keyboard_layouts": ["de:nodeadkeys"],
+            "compose_key": "rwin"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings =
+            crate::compositor::backend::drm::input_config::KeyboardSettings::from_section(&section);
+        assert_eq!(settings.layouts, "de");
+        assert_eq!(settings.variants, "nodeadkeys");
+        assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
     }
 
     #[test]

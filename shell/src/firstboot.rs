@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
@@ -101,6 +102,66 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
     )
+}
+
+/// Import an existing GNOME user's keyboard sources on the first host-session
+/// login. An existing qOS keyboard choice always wins: desktop switching must
+/// not rewrite a preference the user subsequently changed in qOS.
+pub fn import_host_keyboard_settings() -> Result<(), Box<dyn Error>> {
+    let existing = settings_store::load_section("input");
+    if existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts") {
+        return Ok(());
+    }
+    let sources = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.input-sources", "sources"])
+        .output()?;
+    if !sources.status.success() {
+        return Ok(());
+    }
+    let source_ids = parse_gnome_xkb_sources(&String::from_utf8_lossy(&sources.stdout));
+    let Some(active) = source_ids.first() else {
+        return Ok(());
+    };
+    let options = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.input-sources", "xkb-options"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| parse_gnome_compose_key(&String::from_utf8_lossy(&output.stdout)));
+    let mut input = serde_json::Map::new();
+    input.insert("keyboard_layout".into(), serde_json::json!(active));
+    input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
+    if let Some(compose) = options {
+        input.insert("compose_key".into(), serde_json::json!(compose));
+    }
+    settings_store::update_section("input", input)?;
+    tracing::info!("firstboot: imported host keyboard sources");
+    Ok(())
+}
+
+fn parse_gnome_xkb_sources(value: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("('xkb', '") {
+        rest = &rest[start + 9..];
+        let Some(end) = rest.find('\'') else { break };
+        let id = rest[..end].replacen('+', ":", 1);
+        if settings_store::hardware::KeyboardInputSource::parse(&id).is_some()
+            && !sources.contains(&id)
+            && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+        {
+            sources.push(id);
+        }
+        rest = &rest[end + 1..];
+    }
+    sources
+}
+
+fn parse_gnome_compose_key(value: &str) -> Option<String> {
+    ["ralt", "menu", "caps", "rwin", "lwin"]
+        .into_iter()
+        .find(|key| value.contains(&format!("compose:{key}")))
+        .map(str::to_string)
 }
 
 /// Current wall-clock time as nanoseconds since the epoch, clamped to
@@ -752,6 +813,25 @@ mod tests {
         // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
         // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
         run_with_env(None, None).expect("no-env case is a no-op, not an error");
+    }
+
+    #[test]
+    fn gnome_xkb_sources_keep_order_and_variants() {
+        assert_eq!(
+            parse_gnome_xkb_sources(
+                "[('xkb', 'de+nodeadkeys'), ('ibus', 'typing-booster'), ('xkb', 'us')]"
+            ),
+            ["de:nodeadkeys", "us"]
+        );
+    }
+
+    #[test]
+    fn gnome_compose_option_maps_to_the_shared_settings_schema() {
+        assert_eq!(
+            parse_gnome_compose_key("['grp:alt_shift_toggle', 'compose:rwin']").as_deref(),
+            Some("rwin")
+        );
+        assert_eq!(parse_gnome_compose_key("@as []"), None);
     }
 
     #[test]
