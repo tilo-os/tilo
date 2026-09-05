@@ -21,7 +21,7 @@
 use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
-use shell::compositor::backend::drm::paint::{BridgePhaseTiming, VelloDrmBridge};
+use shell::compositor::backend::drm::paint::{BridgePhaseTiming, SceneDamage, VelloDrmBridge};
 use shell::compositor::frame::FrameBuilder;
 use ui::taffy::NodeId;
 use winit::dpi::PhysicalPosition;
@@ -178,6 +178,10 @@ fn diagnostic_mean(total: u128, count: u128) -> Result<u128, String> {
         .ok_or_else(|| "diagnostic sample count was zero".to_owned())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the benchmark keeps setup, all required samples, and final gate reporting in one auditable linear execution path"
+)]
 fn run() -> Result<(), String> {
     let diagnostic = profiling_requested();
     let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
@@ -207,6 +211,8 @@ fn run() -> Result<(), String> {
     let mut focus: Option<NodeId> = None;
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     let mut total_render_attempts = 0_u64;
+    let mut sparse_render_attempts = 0_u64;
+    let mut full_render_attempts = 0_u64;
     let mut recovery_attempts = 0_u64;
     let mut phase_totals = BenchmarkPhaseTotals::default();
     paint_initial_desktop(&mut frame, &mut bridge, &mut destination, destination_pitch)?;
@@ -246,10 +252,19 @@ fn run() -> Result<(), String> {
         frame.relayout();
         let layout_us = layout_started.map_or(0, |started| started.elapsed().as_micros());
         let scene_started = diagnostic.then(Instant::now);
-        let scene = frame.paint();
+        let frame_paint = frame.paint_with_damage();
         let scene_us = scene_started.map_or(0, |started| started.elapsed().as_micros());
         bridge
-            .paint_into_xrgb8888(&scene, &mut destination, destination_pitch)
+            .paint_damage_into_xrgb8888(
+                &frame_paint.scene,
+                SceneDamage {
+                    revision: frame_paint.revision,
+                    previous_revision: frame_paint.previous_revision,
+                    regions: frame_paint.damage_regions.as_deref(),
+                },
+                &mut destination,
+                destination_pitch,
+            )
             .map_err(|error| format!("sample {sample_index}: {error}"))?;
         if diagnostic {
             let bridge_timing = bridge.last_phase_timing().ok_or_else(|| {
@@ -265,7 +280,13 @@ fn run() -> Result<(), String> {
         }
         let attempts = u64::try_from(bridge.last_render_attempts())
             .map_err(|_| "render attempt count does not fit u64".to_owned())?;
+        let sparse_attempts = u64::try_from(bridge.last_sparse_render_attempts())
+            .map_err(|_| "sparse render attempt count does not fit u64".to_owned())?;
+        let full_attempts = u64::try_from(bridge.last_full_render_attempts())
+            .map_err(|_| "full render attempt count does not fit u64".to_owned())?;
         total_render_attempts = total_render_attempts.saturating_add(attempts);
+        sparse_render_attempts = sparse_render_attempts.saturating_add(sparse_attempts);
+        full_render_attempts = full_render_attempts.saturating_add(full_attempts);
         recovery_attempts = recovery_attempts.saturating_add(attempts.saturating_sub(1));
         samples.push(Some(start.elapsed().as_micros()));
     }
@@ -273,6 +294,8 @@ fn run() -> Result<(), String> {
         &samples,
         diagnostic,
         total_render_attempts,
+        sparse_render_attempts,
+        full_render_attempts,
         recovery_attempts,
         phase_totals,
     )
@@ -285,9 +308,18 @@ fn paint_initial_desktop(
     destination: &mut [u8],
     destination_pitch: usize,
 ) -> Result<(), String> {
-    let initial_scene = frame.paint();
+    let initial = frame.paint_with_damage();
     bridge
-        .paint_into_xrgb8888(&initial_scene, destination, destination_pitch)
+        .paint_damage_into_xrgb8888(
+            &initial.scene,
+            SceneDamage {
+                revision: initial.revision,
+                previous_revision: initial.previous_revision,
+                regions: initial.damage_regions.as_deref(),
+            },
+            destination,
+            destination_pitch,
+        )
         .map_err(|error| format!("initial desktop paint: {error}"))
 }
 
@@ -295,6 +327,8 @@ fn finish_run(
     samples: &[Option<u128>],
     diagnostic: bool,
     total_render_attempts: u64,
+    sparse_render_attempts: u64,
+    full_render_attempts: u64,
     recovery_attempts: u64,
     phase_totals: BenchmarkPhaseTotals,
 ) -> Result<(), String> {
@@ -307,7 +341,7 @@ fn finish_run(
     let gate = gate_outcome(summary, diagnostic);
     println!("gates: mean<={MEAN_LIMIT_US}us p99<={P99_LIMIT_US}us ({gate:?})");
     println!(
-        "Vello full-render attempts: total={total_render_attempts} recovery={recovery_attempts}"
+        "Vello render attempts: total={total_render_attempts} sparse={sparse_render_attempts} full={full_render_attempts} recovery={recovery_attempts}"
     );
     println!(
         "presentation: unavailable in this harness (no DRM/KMS device, dumb-buffer page flip, or display scanout timed)"
@@ -388,9 +422,15 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BenchmarkPhaseTiming, BenchmarkPhaseTotals, BridgePhaseTiming, GateOutcome, MEAN_LIMIT_US,
-        P99_LIMIT_US, SampleError, gate_outcome, meets_gates, summarize_samples,
+        ACTION_TARGETS, BenchmarkPhaseTiming, BenchmarkPhaseTotals, BridgePhaseTiming, GateOutcome,
+        HEIGHT, MEAN_LIMIT_US, P99_LIMIT_US, SampleError, WIDTH, dispatch_click, gate_outcome,
+        meets_gates, summarize_samples,
     };
+    use automerge::AutoCommit;
+    use shell::compositor::backend::drm::paint::{SceneDamage, VelloDrmBridge};
+    use shell::compositor::frame::FrameBuilder;
+    use ui::taffy::NodeId;
+    use winit::event::Modifiers;
 
     #[test]
     fn aggregation_uses_all_samples_and_nearest_rank_p99() {
@@ -496,5 +536,214 @@ mod tests {
         assert_eq!(totals.cpu_copy_swizzle_us, 88);
         assert_eq!(totals.readback_bytes, 99);
         assert_eq!(totals.cpu_output_bytes, 110);
+    }
+
+    #[test]
+    fn benchmark_actions_alternate_quick_settings_open_and_outside_dismissal() {
+        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let _initial_scene = frame.paint();
+        let mut document = AutoCommit::new();
+        let modifiers = Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+
+        // This mirrors the benchmark action path exactly but deliberately stops before the GPU
+        // bridge: it establishes which shell state each sampled redraw actually represents.
+        for sample_index in 0..12 {
+            let target = *ACTION_TARGETS
+                .get(sample_index % ACTION_TARGETS.len())
+                .expect("benchmark action target list is non-empty");
+            let rect = frame
+                .widget_registry()
+                .get(target)
+                .copied()
+                .filter(|rect| rect.area() > 0.0)
+                .expect("benchmark target must be painted");
+            dispatch_click(
+                &mut frame,
+                target,
+                rect.center(),
+                modifiers,
+                &mut document,
+                &mut focus,
+            )
+            .expect("benchmark click must be handled");
+            frame.relayout();
+            let _scene = frame.paint();
+
+            let overlays = frame.chrome().overlays;
+            eprintln!(
+                "redraw_bench action {sample_index} target={target}: quick_settings={} overview={}",
+                overlays.quick_settings, overlays.overview
+            );
+            assert_eq!(overlays.quick_settings, sample_index.is_multiple_of(2));
+            assert!(
+                !overlays.overview,
+                "the overview target dismisses open quick settings before TopBarChrome receives it"
+            );
+        }
+    }
+
+    #[test]
+    fn benchmark_actions_produce_bounded_damage() {
+        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let _initial = frame.paint_with_damage();
+        let mut document = AutoCommit::new();
+        let modifiers = Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        let mut sparse_frames = 0_usize;
+        let mut covered_pixels = 0_u128;
+        let full_pixels = u128::from(WIDTH) * u128::from(HEIGHT);
+
+        for sample_index in 0..12 {
+            let target = ACTION_TARGETS[sample_index % ACTION_TARGETS.len()];
+            let rect = frame
+                .widget_registry()
+                .get(target)
+                .copied()
+                .filter(|rect| rect.area() > 0.0)
+                .expect("benchmark target must be painted");
+            dispatch_click(
+                &mut frame,
+                target,
+                rect.center(),
+                modifiers,
+                &mut document,
+                &mut focus,
+            )
+            .expect("benchmark click must be handled");
+            frame.relayout();
+            let painted = frame.paint_with_damage();
+            if let Some(regions) = painted.damage_regions.as_deref() {
+                sparse_frames = sparse_frames.saturating_add(1);
+                for region in regions {
+                    covered_pixels = covered_pixels.saturating_add(
+                        u128::from(region.width).saturating_mul(u128::from(region.height)),
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "redraw_bench retained classification: sparse_frames={sparse_frames}/12 covered_pixels={covered_pixels} full_pixels/frame={full_pixels}"
+        );
+        assert!(
+            sparse_frames > 0,
+            "the production root should expose bounded changes"
+        );
+        assert!(
+            covered_pixels
+                < full_pixels.saturating_mul(
+                    u128::try_from(sparse_frames).expect("twelve frame count fits u128"),
+                ),
+            "each classified sparse frame must cover less than the native output"
+        );
+    }
+
+    #[test]
+    fn native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions() {
+        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let width = usize::try_from(WIDTH).expect("native width fits usize");
+        let height = usize::try_from(HEIGHT).expect("native height fits usize");
+        let pitch = width.checked_mul(4).expect("native pitch fits usize");
+        let len = pitch.checked_mul(height).expect("native output fits usize");
+        let mut retained = VelloDrmBridge::new(WIDTH, HEIGHT).expect("retained bridge");
+        let mut dense = VelloDrmBridge::new(WIDTH, HEIGHT).expect("dense oracle bridge");
+        retained.set_phase_timing_enabled(true);
+        let mut retained_pixels = vec![0_u8; len];
+        let mut dense_pixels = vec![0_u8; len];
+        let mut document = AutoCommit::new();
+        let modifiers = Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        let mut sparse_attempts = 0_u64;
+        let mut full_attempts = 0_u64;
+        let mut readback_bytes = 0_u128;
+
+        for sample_index in 0..=12 {
+            if sample_index != 0 {
+                let target = ACTION_TARGETS[(sample_index - 1) % ACTION_TARGETS.len()];
+                let rect = frame
+                    .widget_registry()
+                    .get(target)
+                    .copied()
+                    .filter(|rect| rect.area() > 0.0)
+                    .expect("benchmark target must be painted");
+                dispatch_click(
+                    &mut frame,
+                    target,
+                    rect.center(),
+                    modifiers,
+                    &mut document,
+                    &mut focus,
+                )
+                .expect("benchmark click must be handled");
+                frame.relayout();
+            }
+            // Both bridges consume this one candidate scene. The dense bridge is therefore a
+            // same-time pixel oracle rather than a second animation/layout sample.
+            let candidate = frame.paint_with_damage();
+            retained
+                .paint_damage_into_xrgb8888(
+                    &candidate.scene,
+                    SceneDamage {
+                        revision: candidate.revision,
+                        previous_revision: candidate.previous_revision,
+                        regions: candidate.damage_regions.as_deref(),
+                    },
+                    &mut retained_pixels,
+                    pitch,
+                )
+                .expect("retained native paint");
+            dense
+                .paint_into_xrgb8888(&candidate.scene, &mut dense_pixels, pitch)
+                .expect("dense native oracle paint");
+            assert_native_pixels_equal(&retained_pixels, &dense_pixels, WIDTH, sample_index);
+            sparse_attempts = sparse_attempts.saturating_add(
+                u64::try_from(retained.last_sparse_render_attempts())
+                    .expect("sparse attempt count fits u64"),
+            );
+            full_attempts = full_attempts.saturating_add(
+                u64::try_from(retained.last_full_render_attempts())
+                    .expect("full attempt count fits u64"),
+            );
+            readback_bytes = readback_bytes.saturating_add(u128::from(
+                retained
+                    .last_phase_timing()
+                    .expect("profile timing enabled")
+                    .readback_bytes,
+            ));
+        }
+        eprintln!(
+            "redraw_bench native 4K oracle: sparse_attempts={sparse_attempts} full_attempts={full_attempts} readback_payload_bytes={readback_bytes}"
+        );
+        assert!(
+            sparse_attempts > 0,
+            "benchmark candidates must exercise sparse paint"
+        );
+    }
+
+    fn assert_native_pixels_equal(actual: &[u8], expected: &[u8], width: u32, candidate: usize) {
+        let mut mismatches = 0_usize;
+        let mut max_delta = 0_u8;
+        let mut first = None;
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            if actual != expected {
+                mismatches = mismatches.saturating_add(1);
+                max_delta = max_delta.max(actual.abs_diff(expected));
+                first.get_or_insert((index, actual, expected));
+            }
+        }
+        let first = first.map(|(index, actual, expected)| {
+            let pixel = index / 4;
+            (
+                pixel % usize::try_from(width).expect("width fits usize"),
+                pixel / usize::try_from(width).expect("width fits usize"),
+                index % 4,
+                actual,
+                expected,
+            )
+        });
+        assert_eq!(
+            mismatches, 0,
+            "native pixel mismatch after candidate {candidate}: mismatches={mismatches} max_delta={max_delta} first={first:?}"
+        );
     }
 }

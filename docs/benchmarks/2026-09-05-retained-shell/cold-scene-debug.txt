@@ -1,0 +1,60 @@
+# Debug-only cold-scene diagnostics
+
+Build: cargo build -p shell --example retained_scene_probe --locked
+These are single-frame debug runs, not default-release acceptance or before/after latency evidence. No one-second fence deadline was changed.
+
+## legacy-dense
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE timeout --signal=TERM --kill-after=30s 3m target/debug/examples/retained_scene_probe legacy-dense
+Exit: 0
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+retained_scene_probe diagnostic only: mode=LegacyDense adapter name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+scene revision=0 previous=None damage_regions=0 streams path_tags=1635 path_data=4570 draw_tags=369 draw_data=397 transforms=32 styles=53 scalars paths=358 segments=1192 clips=24 open_clips=0 resources patches=19 color_stops=16 glyphs=122 glyph_runs=11 normalized_coords=11
+cpu_scene_build_us=196060 bridge_elapsed_us=586053 result=Ok(())
+bridge_attempts total=1 sparse=0 full=1
+phase_us submit=17389 completion_map=433423 settle=8836 cpu_copy_swizzle=126393 readback_payload_bytes=33177600 cpu_output_bytes=33177600
+diagnostic only: no acceptance gate, no multi-sample claim
+
+## legacy-versioned
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE timeout --signal=TERM --kill-after=30s 3m target/debug/examples/retained_scene_probe legacy-versioned
+Exit: 0
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+retained_scene_probe diagnostic only: mode=LegacyVersioned adapter name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+scene revision=0 previous=None damage_regions=0 streams path_tags=1635 path_data=4570 draw_tags=369 draw_data=397 transforms=32 styles=53 scalars paths=358 segments=1192 clips=24 open_clips=0 resources patches=19 color_stops=16 glyphs=122 glyph_runs=11 normalized_coords=11
+cpu_scene_build_us=168851 bridge_elapsed_us=566841 result=Ok(())
+bridge_attempts total=1 sparse=0 full=1
+phase_us submit=5338 completion_map=423278 settle=4229 cpu_copy_swizzle=133979 readback_payload_bytes=33177600 cpu_output_bytes=33177600
+diagnostic only: no acceptance gate, no multi-sample claim
+
+## segmented-dense
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE timeout --signal=TERM --kill-after=30s 3m target/debug/examples/retained_scene_probe segmented-dense
+Exit: 0
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+retained_scene_probe diagnostic only: mode=SegmentedDense adapter name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+scene revision=1 previous=None damage_regions=0 streams path_tags=1636 path_data=4570 draw_tags=369 draw_data=397 transforms=33 styles=53 scalars paths=358 segments=1192 clips=24 open_clips=0 resources patches=19 color_stops=16 glyphs=122 glyph_runs=11 normalized_coords=11
+cpu_scene_build_us=122868 bridge_elapsed_us=659453 result=Ok(())
+bridge_attempts total=1 sparse=0 full=1
+phase_us submit=5433 completion_map=507470 settle=5111 cpu_copy_swizzle=141426 readback_payload_bytes=33177600 cpu_output_bytes=33177600
+diagnostic only: no acceptance gate, no multi-sample claim
+
+## segmented-versioned
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u QOS_REDRAW_BENCH_PROFILE timeout --signal=TERM --kill-after=30s 3m target/debug/examples/retained_scene_probe segmented-versioned
+Exit: 0
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+retained_scene_probe diagnostic only: mode=SegmentedVersioned adapter name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+scene revision=1 previous=None damage_regions=0 streams path_tags=1636 path_data=4570 draw_tags=369 draw_data=397 transforms=33 styles=53 scalars paths=358 segments=1192 clips=24 open_clips=0 resources patches=19 color_stops=16 glyphs=122 glyph_runs=11 normalized_coords=11
+cpu_scene_build_us=59505 bridge_elapsed_us=542022 result=Ok(())
+bridge_attempts total=1 sparse=0 full=1
+phase_us submit=5346 completion_map=395515 settle=4113 cpu_copy_swizzle=137034 readback_payload_bytes=33177600 cpu_output_bytes=33177600
+diagnostic only: no acceptance gate, no multi-sample claim
