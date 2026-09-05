@@ -12,7 +12,10 @@
 //!
 //! Tests need a wgpu device (`llvmpipe`/`vulkan_lvp` inside the distrobox); no real DRM device is touched.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
 
 use pollster::FutureExt;
 use vello::peniko::Color;
@@ -55,6 +58,45 @@ static WARNED_CPU_FALLBACK: AtomicBool = AtomicBool::new(false);
 /// presenting incomplete geometry as a successful frame.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
+/// Identity of the adapter actually opened by this bridge. This comes from the wgpu adapter
+/// that owns the renderer, rather than from a separate GL probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeAdapterInfo {
+    pub name: String,
+    pub backend: String,
+    pub device_type: String,
+    pub driver: String,
+}
+
+/// Per-paint wall-clock breakdown, available only when explicit profiling is enabled.
+/// Values are accumulated across bounded Vello recovery submissions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BridgePhaseTiming {
+    /// CPU time used to prepare and submit Vello plus the appended texture copy.
+    pub submit_us: u128,
+    /// Blocking completion time for GPU rendering plus the texture copy, followed by map setup;
+    /// this is intentionally not a copy-only duration.
+    pub completed_readback_map_us: u128,
+    /// CPU time to inspect and, if necessary, grow Vello's bump budget after completion.
+    pub settle_us: u128,
+    /// CPU time to strip padding and copy/swizzle mapped pixels into the selected output.
+    pub cpu_copy_swizzle_us: u128,
+    /// Pixel payload bytes copied from the texture, once for every submitted render attempt.
+    /// Row-alignment holes in the mapped staging buffer are deliberately excluded.
+    pub readback_bytes: u64,
+    /// Bytes actually swizzled into the caller's output, after destination truncation.
+    pub cpu_output_bytes: u64,
+}
+
+/// Mapped readback layout needed by the direct XRGB swizzle.
+#[derive(Clone, Copy)]
+struct MappedXrgbSource<'a> {
+    bytes: &'a [u8],
+    padded_bytes_per_row: usize,
+    width: usize,
+    height: usize,
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 pub struct VelloDrmBridge {
@@ -77,6 +119,9 @@ pub struct VelloDrmBridge {
     base_color: Color,
     /// Full Vello submissions used by the latest paint, including bounded bump-budget retries.
     last_render_attempts: usize,
+    /// Profiling is off in production; when on, timings describe only the latest paint.
+    phase_timing_enabled: bool,
+    last_phase_timing: Option<BridgePhaseTiming>,
 }
 
 impl VelloDrmBridge {
@@ -134,12 +179,43 @@ impl VelloDrmBridge {
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             last_render_attempts: 0,
+            phase_timing_enabled: false,
+            last_phase_timing: None,
         })
     }
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
     pub fn set_base_color(&mut self, color: Color) {
         self.base_color = color;
+    }
+
+    /// Enable wall-clock phase collection for diagnostic runs. This deliberately defaults to
+    /// false so normal compositor paints do not take timestamps or retain timing state.
+    pub fn set_phase_timing_enabled(&mut self, enabled: bool) {
+        self.phase_timing_enabled = enabled;
+        self.last_phase_timing = None;
+    }
+
+    /// Adapter opened by this bridge's `RenderContext`.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::InvalidDevice`] if the stored device identifier is invalid.
+    pub fn adapter_info(&self) -> Result<BridgeAdapterInfo, BridgeError> {
+        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+        })?;
+        let info = dev_handle.adapter.get_info();
+        Ok(BridgeAdapterInfo {
+            name: info.name,
+            backend: format!("{:?}", info.backend),
+            device_type: format!("{:?}", info.device_type),
+            driver: info.driver,
+        })
+    }
+
+    /// Latest diagnostic timing. `None` means profiling was not enabled for that paint.
+    pub fn last_phase_timing(&self) -> Option<BridgePhaseTiming> {
+        self.last_phase_timing
     }
 
     /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
@@ -151,6 +227,7 @@ impl VelloDrmBridge {
     /// given `allocate_targets`, but guarded rather than trusted) is logged and truncates the
     /// returned buffer instead of panicking.
     pub fn paint(&mut self, scene: &Scene) -> Result<&[u8], BridgeError> {
+        self.last_phase_timing = None;
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
                 "DRM paint: CPU fallback active — vello → wgpu readback → RGBA bytes; \
@@ -161,6 +238,7 @@ impl VelloDrmBridge {
 
         let (width, height) = self.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
+        let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         let mapped = Self::render_to_readback(
             &mut self.renderer,
             &self.context,
@@ -172,12 +250,14 @@ impl VelloDrmBridge {
             (width, height),
             self.base_color,
             &mut self.last_render_attempts,
+            timing.as_mut(),
             scene,
         )?;
 
         // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
         let tight_row = (width as usize).saturating_mul(4);
         let needed = tight_row.saturating_mul(height as usize);
+        let cpu_copy_started = self.phase_timing_enabled.then(Instant::now);
         self.readback.clear();
         self.readback.reserve(needed);
         for row in 0..height as usize {
@@ -193,6 +273,12 @@ impl VelloDrmBridge {
         }
         drop(mapped);
         self.readback_buf.unmap();
+
+        if let (Some(timing), Some(started)) = (timing.as_mut(), cpu_copy_started) {
+            timing.cpu_copy_swizzle_us = started.elapsed().as_micros();
+            timing.cpu_output_bytes = u64::try_from(self.readback.len()).unwrap_or(u64::MAX);
+        }
+        self.last_phase_timing = timing;
 
         Ok(&self.readback)
     }
@@ -213,6 +299,7 @@ impl VelloDrmBridge {
         dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<(), BridgeError> {
+        self.last_phase_timing = None;
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
                 "DRM paint: CPU fallback active — vello → wgpu readback → XRGB8888 \
@@ -224,6 +311,7 @@ impl VelloDrmBridge {
 
         let (width, height) = self.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
+        let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         let mapped = Self::render_to_readback(
             &mut self.renderer,
             &self.context,
@@ -235,47 +323,109 @@ impl VelloDrmBridge {
             (width, height),
             self.base_color,
             &mut self.last_render_attempts,
+            timing.as_mut(),
             scene,
         )?;
 
-        let tight_row = (width as usize).saturating_mul(4);
+        let cpu_copy_started = self.phase_timing_enabled.then(Instant::now);
         if dst_pitch == 0 {
             drop(mapped);
             self.readback_buf.unmap();
+            if let (Some(timing), Some(started)) = (timing.as_mut(), cpu_copy_started) {
+                timing.cpu_copy_swizzle_us = started.elapsed().as_micros();
+            }
+            self.last_phase_timing = timing;
             return Ok(());
         }
-        let max_rows = dst
-            .len()
-            .checked_div(dst_pitch)
-            .unwrap_or(0)
-            .min(height as usize);
-        let cols = (dst_pitch / 4).min(width as usize);
-        for row in 0..max_rows {
-            let s_start = row.saturating_mul(padded_bytes_per_row as usize);
-            let s_end = s_start.saturating_add(tight_row);
-            let Some(srow) = mapped.get(s_start..s_end) else {
-                tracing::warn!(
-                    "DRM paint: readback row {row} out of the mapped buffer's bounds; stopping swizzle early"
-                );
-                break;
-            };
-            let d_start = row.saturating_mul(dst_pitch);
-            let d_end = d_start.saturating_add(cols.saturating_mul(4));
-            let Some(drow) = dst.get_mut(d_start..d_end) else {
-                break;
-            };
-            for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
-                if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (d, s) {
-                    *db = *sb;
-                    *dg = *sg;
-                    *dr = *sr;
-                    *dx = 0xFF;
-                }
-            }
-        }
+        let cpu_output_bytes = Self::swizzle_mapped_xrgb8888(
+            MappedXrgbSource {
+                bytes: &mapped,
+                padded_bytes_per_row: padded_bytes_per_row as usize,
+                width: width as usize,
+                height: height as usize,
+            },
+            dst,
+            dst_pitch,
+            self.phase_timing_enabled,
+        );
         drop(mapped);
         self.readback_buf.unmap();
+        if let (Some(timing), Some(started)) = (timing.as_mut(), cpu_copy_started) {
+            timing.cpu_copy_swizzle_us = started.elapsed().as_micros();
+            timing.cpu_output_bytes = cpu_output_bytes;
+        }
+        self.last_phase_timing = timing;
         Ok(())
+    }
+
+    /// Swizzle mapped RGBA into XRGB. The ordinary branch deliberately has no per-row
+    /// diagnostics, while the diagnostic branch counts only destination bytes actually written.
+    fn swizzle_mapped_xrgb8888(
+        source: MappedXrgbSource<'_>,
+        dst: &mut [u8],
+        dst_pitch: usize,
+        count_output_bytes: bool,
+    ) -> u64 {
+        let MappedXrgbSource {
+            bytes: mapped,
+            padded_bytes_per_row,
+            width,
+            height,
+        } = source;
+        let tight_row = width.saturating_mul(4);
+        let max_rows = dst.len().checked_div(dst_pitch).unwrap_or(0).min(height);
+        let cols = (dst_pitch / 4).min(width);
+        if count_output_bytes {
+            let mut bytes = 0_u64;
+            for row in 0..max_rows {
+                let s_start = row.saturating_mul(padded_bytes_per_row);
+                let s_end = s_start.saturating_add(tight_row);
+                let Some(srow) = mapped.get(s_start..s_end) else {
+                    tracing::warn!(
+                        "DRM paint: readback row {row} out of the mapped buffer's bounds; stopping swizzle early"
+                    );
+                    break;
+                };
+                let d_start = row.saturating_mul(dst_pitch);
+                let d_end = d_start.saturating_add(cols.saturating_mul(4));
+                let Some(drow) = dst.get_mut(d_start..d_end) else {
+                    break;
+                };
+                Self::swizzle_xrgb_row(drow, srow);
+                bytes = bytes.saturating_add(u64::try_from(drow.len()).unwrap_or(u64::MAX));
+            }
+            bytes
+        } else {
+            for row in 0..max_rows {
+                let s_start = row.saturating_mul(padded_bytes_per_row);
+                let s_end = s_start.saturating_add(tight_row);
+                let Some(srow) = mapped.get(s_start..s_end) else {
+                    tracing::warn!(
+                        "DRM paint: readback row {row} out of the mapped buffer's bounds; stopping swizzle early"
+                    );
+                    break;
+                };
+                let d_start = row.saturating_mul(dst_pitch);
+                let d_end = d_start.saturating_add(cols.saturating_mul(4));
+                let Some(drow) = dst.get_mut(d_start..d_end) else {
+                    break;
+                };
+                Self::swizzle_xrgb_row(drow, srow);
+            }
+            0
+        }
+    }
+
+    #[inline]
+    fn swizzle_xrgb_row(dst: &mut [u8], source: &[u8]) {
+        for (d, s) in dst.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+            if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (d, s) {
+                *db = *sb;
+                *dg = *sg;
+                *dr = *sr;
+                *dx = 0xFF;
+            }
+        }
     }
 
     /// Render `scene`, append the texture→`readback_buf` copy to Vello's own submission, then
@@ -296,6 +446,7 @@ impl VelloDrmBridge {
         size: (u32, u32),
         base_color: Color,
         last_render_attempts: &mut usize,
+        mut phase_timing: Option<&mut BridgePhaseTiming>,
         scene: &Scene,
     ) -> Result<wgpu::BufferView, BridgeError> {
         let (width, height) = size;
@@ -308,6 +459,7 @@ impl VelloDrmBridge {
         *last_render_attempts = 0;
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             *last_render_attempts = (*last_render_attempts).saturating_add(1);
+            let submit_started = phase_timing.as_ref().map(|_| Instant::now());
             renderer
                 .render_to_texture_with_post_render(
                     device,
@@ -346,11 +498,37 @@ impl VelloDrmBridge {
                 )
                 .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
 
+            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), submit_started) {
+                timing.submit_us = timing
+                    .submit_us
+                    .saturating_add(started.elapsed().as_micros());
+            }
+            if let Some(timing) = phase_timing.as_deref_mut() {
+                let copied = u64::from(width)
+                    .saturating_mul(u64::from(height))
+                    .saturating_mul(4);
+                timing.readback_bytes = timing.readback_bytes.saturating_add(copied);
+            }
+
             // `map_readback` is the only blocking wait: its one-second fence deadline covers
-            // both Vello and this appended copy. Only once that work completed do we consume the
+            // Vello rendering and this appended copy, so this is GPU-completion-plus-map time,
+            // not a readback-copy-only measurement. Only once that work completed do we consume the
             // bump counter; its internal poll is then an already-complete, non-serial settle.
+            let map_started = phase_timing.as_ref().map(|_| Instant::now());
             let mapped = Self::map_readback(context, dev_id, readback_buf)?;
-            if !renderer.settle_bump_budget(device) {
+            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), map_started) {
+                timing.completed_readback_map_us = timing
+                    .completed_readback_map_us
+                    .saturating_add(started.elapsed().as_micros());
+            }
+            let settle_started = phase_timing.as_ref().map(|_| Instant::now());
+            let settled = renderer.settle_bump_budget(device);
+            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), settle_started) {
+                timing.settle_us = timing
+                    .settle_us
+                    .saturating_add(started.elapsed().as_micros());
+            }
+            if !settled {
                 return Ok(mapped);
             }
             drop(mapped);
@@ -903,6 +1081,44 @@ mod tests {
             any_non_bg,
             "expected at least one non-background pixel after painting a cyan rect"
         );
+        assert_eq!(bridge.last_phase_timing(), None, "profiling defaults off");
+    }
+
+    #[test]
+    fn diagnostic_zero_pitch_records_readback_but_no_output_bytes() {
+        let Some(mut bridge) = bridge_or_skip(8, 4) else {
+            return;
+        };
+        bridge.set_phase_timing_enabled(true);
+        bridge
+            .paint_into_xrgb8888(&Scene::new(), &mut [], 0)
+            .expect("zero-pitch diagnostic paint");
+        let timing = bridge
+            .last_phase_timing()
+            .expect("enabled diagnostic timing");
+        assert!(timing.readback_bytes > 0, "the GPU copy still completed");
+        assert_eq!(timing.cpu_output_bytes, 0, "no destination was writable");
+    }
+
+    #[test]
+    fn diagnostic_xrgb_counts_written_bytes_without_changing_pixels() {
+        let Some(mut bridge) = bridge_or_skip(8, 4) else {
+            return;
+        };
+        bridge.set_phase_timing_enabled(true);
+        let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
+        let mut destination = vec![0_u8; 8 * 4 * 4];
+        bridge
+            .paint_into_xrgb8888(&scene, &mut destination, 8 * 4)
+            .expect("diagnostic XRGB paint");
+        let timing = bridge
+            .last_phase_timing()
+            .expect("enabled diagnostic timing");
+        assert_eq!(timing.cpu_output_bytes, 8 * 4 * 4);
+        assert_eq!(timing.readback_bytes, 8 * 4 * 4);
+        for pixel in destination.chunks_exact(4) {
+            assert_eq!(pixel, &[0x56, 0x34, 0x12, 0xFF]);
+        }
     }
 
     #[test]
