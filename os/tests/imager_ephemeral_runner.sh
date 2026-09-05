@@ -19,10 +19,10 @@ else
 fi
 
 case "$(uname -s):$(uname -m)" in
-  Linux:x86_64|Linux:amd64) label=runner ;;
-  Linux:aarch64|Linux:arm64) label=runner-arm64 ;;
-  Darwin:x86_64|Darwin:amd64) label=macos-x64 ;;
-  Darwin:aarch64|Darwin:arm64) label=macos-arm64 ;;
+  Linux:x86_64|Linux:amd64) label=imager-linux-x86_64 ;;
+  Linux:aarch64|Linux:arm64) label=imager-linux-aarch64 ;;
+  Darwin:x86_64|Darwin:amd64) label=imager-macos-x86_64 ;;
+  Darwin:aarch64|Darwin:arm64) label=imager-macos-aarch64 ;;
   *) printf 'skip  unsupported test host architecture\n'; exit 0 ;;
 esac
 
@@ -45,7 +45,11 @@ if [ -n "${QOS_TEST_CHILD_PID_FILE:-}" ]; then
   (trap '' TERM; while :; do sleep 1; done) &
   printf '%s\n' "$!" > "$QOS_TEST_CHILD_PID_FILE"
 fi
-[ -z "${QOS_TEST_LOCK_METADATA_DIR:-}" ] || chmod 0500 "$(dirname "${7#file://}")"
+if [ -n "${QOS_TEST_BREAK_METADATA_CLEANUP:-}" ]; then
+  token_path="${7#file://}"
+  rm -f "$token_path"
+  mkdir "$token_path"
+fi
 EOF
 "${root_do[@]}" install -o root -g root -m 0755 "$tmp/forgejo-runner" "$trusted/bin/forgejo-runner"
 
@@ -70,14 +74,14 @@ grep -Fq 'destroy this VM now' "$tmp/stdout"
 
 install_metadata
 if QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_RUNNER_MAX_WAIT_SECONDS=30 \
-    QOS_TEST_LOCK_METADATA_DIR=1 QOS_TEST_ARGUMENTS="$tmp/cleanup-failure" \
+    QOS_TEST_BREAK_METADATA_CLEANUP=1 QOS_TEST_ARGUMENTS="$tmp/cleanup-failure" \
     "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher hid a credential-cleanup failure\n' >&2
   exit 1
 fi
-chmod 0700 "$trusted/metadata"
-rm -f "$trusted/metadata/uuid" "$trusted/metadata/token"
+rm -f "$trusted/metadata/uuid"
+rm -rf "$trusted/metadata/token"
 
 install_metadata
 QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_RUNNER_MAX_WAIT_SECONDS=30 \
@@ -93,8 +97,8 @@ fi
 [ ! -e "$trusted/metadata/uuid" ] && [ ! -e "$trusted/metadata/token" ]
 
 install_metadata
-wrong=runner-arm64
-[ "$label" = runner ] || wrong=runner
+wrong=imager-linux-aarch64
+[ "$label" = imager-linux-x86_64 ] || wrong=imager-linux-x86_64
 if QOS_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" QOS_TEST_ARGUMENTS="$tmp/rejected" \
     "$repo/tools/run-imager-ephemeral-runner.sh" "$wrong" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
