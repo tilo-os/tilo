@@ -52,6 +52,67 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, TouchEvent as QosTouchEvent,
 };
 
+/// One held repeatable key. Kept independent of xkb translation so timing is
+/// deterministic and unit-testable without a seat or keyboard device.
+#[derive(Debug)]
+struct HeldRepeat {
+    keycode: xkb::Keycode,
+    next: std::time::Instant,
+    interval: std::time::Duration,
+}
+
+#[derive(Debug, Default)]
+struct KeyRepeat {
+    held: Option<HeldRepeat>,
+}
+
+impl KeyRepeat {
+    fn press(
+        &mut self,
+        keycode: xkb::Keycode,
+        now: std::time::Instant,
+        delay: std::time::Duration,
+        rate: u32,
+    ) {
+        self.held = Some(HeldRepeat {
+            keycode,
+            next: now.checked_add(delay).unwrap_or(now),
+            interval: std::time::Duration::from_secs_f64(1.0 / f64::from(rate.max(1))),
+        });
+    }
+
+    fn release(&mut self, keycode: xkb::Keycode) {
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|held| held.keycode == keycode)
+        {
+            self.held = None;
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.held = None;
+    }
+
+    /// Return every repeat owed by `now`, capped so resuming from a debugger
+    /// cannot pour seconds of stale Backspaces into the active widget.
+    fn due(&mut self, now: std::time::Instant) -> Vec<xkb::Keycode> {
+        let Some(held) = self.held.as_mut() else {
+            return Vec::new();
+        };
+        let mut due = Vec::new();
+        while now >= held.next && due.len() < 8 {
+            due.push(held.keycode);
+            held.next = held.next.checked_add(held.interval).unwrap_or(now);
+        }
+        if due.len() == 8 && now >= held.next {
+            held.next = now.checked_add(held.interval).unwrap_or(now);
+        }
+        due
+    }
+}
+
 /// Errors a DRM backend can encounter during construction — each variant maps to a clean operator-visible message; the binary `eprintln!`s + exits 1 instead of panicking.
 #[derive(Debug, thiserror::Error)]
 pub enum DrmBackendError {
@@ -108,6 +169,11 @@ pub struct DrmDispatchState {
     /// Sticky modifiers stay logically down through the next non-modifier.
     pub sticky_latched: ModifiersState,
     pub physical_modifiers: ModifiersState,
+    /// Winit synthesises repeat presses for the hosted backend. Bare libinput
+    /// only supplies key edges, so the DRM adapter mirrors that established
+    /// event contract for qOS-native widgets. Wayland clients use the seat's
+    /// `repeat_info` and never receive these synthetic edges.
+    key_repeat: KeyRepeat,
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
@@ -204,6 +270,7 @@ impl DrmDispatchState {
             slow_pending: HashMap::new(),
             sticky_latched: ModifiersState::empty(),
             physical_modifiers: ModifiersState::empty(),
+            key_repeat: KeyRepeat::default(),
             devices: Vec::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
@@ -709,6 +776,31 @@ impl DrmDispatchState {
             self.process_keyboard_key(keycode, true);
         }
         self.process_keyboard_key(keycode, pressed);
+        if pressed {
+            if self
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.key_repeats(keycode))
+            {
+                let (delay, rate) = self.input.key_repeat_params();
+                self.key_repeat
+                    .press(keycode, std::time::Instant::now(), delay, rate);
+            }
+        } else {
+            self.key_repeat.release(keycode);
+        }
+    }
+
+    fn pump_keyboard_repeat(&mut self, now: std::time::Instant) {
+        for keycode in self.key_repeat.due(now) {
+            let input = self
+                .keyboard
+                .as_ref()
+                .and_then(|keyboard| keyboard.repeat_event(keycode));
+            if let Some(input) = input {
+                self.events.push(BackendEvent::Input(input));
+            }
+        }
     }
 
     fn process_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
@@ -771,6 +863,7 @@ impl DrmDispatchState {
             }
             SeatEvent::PauseSession => {
                 tracing::info!("DRM backend: session paused");
+                self.key_repeat.cancel();
                 SeatTick::Pause
             }
         };
@@ -1437,6 +1530,7 @@ impl DrmRuntime {
         let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
         let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
+        self.dispatch.key_repeat.cancel();
         if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
             self.dispatch.keyboard = Some(keyboard);
             self.dispatch.slow_pending.clear();
@@ -1629,6 +1723,8 @@ impl DrmRuntime {
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
         let _ = self.event_loop.dispatch(Duration::ZERO, &mut self.dispatch);
+        self.dispatch
+            .pump_keyboard_repeat(std::time::Instant::now());
     }
 
     /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
@@ -1788,6 +1884,23 @@ impl KeyboardXkb {
             state,
             mods: ModifiersState::empty(),
         })
+    }
+
+    fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
+        self._keymap.key_repeats(keycode)
+    }
+
+    /// Produce the same repeated `KeyboardInput` winit emits without
+    /// mutating xkb's down/up state a second time.
+    fn repeat_event(&self, keycode: xkb::Keycode) -> Option<WindowEvent> {
+        let sym = self.state.key_get_one_sym(keycode);
+        let logical = keysym_to_winit_key(sym.raw())?;
+        let mut input =
+            keyboard_input_event(logical, text_for(sym.key_char(), self.current_mods()), true);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut input {
+            event.repeat = true;
+        }
+        Some(input)
     }
 
     /// Read the current effective Ctrl/Shift/Alt/Super state as a winit `ModifiersState`.
@@ -2780,6 +2893,55 @@ mod tests {
             )),
             "the same preference that inverts scrolling inverts gestures"
         );
+    }
+
+    #[test]
+    fn key_repeat_waits_for_delay_ticks_at_rate_and_stops_on_release() {
+        let start = std::time::Instant::now();
+        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+        let mut repeat = KeyRepeat::default();
+        repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_millis(299))
+                .is_empty()
+        );
+        assert_eq!(
+            repeat.due(start + std::time::Duration::from_millis(300)),
+            [key]
+        );
+        assert_eq!(
+            repeat.due(start + std::time::Duration::from_millis(401)),
+            [key, key]
+        );
+        repeat.release(key);
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_secs(1))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default()) else {
+            return;
+        };
+        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+        assert!(keyboard.key_repeats(key));
+        let _ = keyboard.process(key, true);
+        let WindowEvent::KeyboardInput { event, .. } =
+            keyboard.repeat_event(key).expect("A has a repeat event")
+        else {
+            panic!("repeat must use the keyboard-input wire")
+        };
+        assert_eq!(event.logical_key, Key::Character("a".into()));
+        assert_eq!(event.state, ElementState::Pressed);
+        assert!(
+            event.repeat,
+            "native widgets distinguish the synthetic edge"
+        );
+        let _ = keyboard.process(key, false);
     }
 
     // libinput device configuration, on the production plan

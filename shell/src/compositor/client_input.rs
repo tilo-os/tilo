@@ -487,9 +487,10 @@ impl From<&Modifiers> for ChordMods {
 }
 
 /// The shell's chord table, expressed once: every `Super` chord, `Ctrl+K`/
-/// `Alt+Space`, `Ctrl+Tab`, conventional `Alt+Tab`, `Ctrl+Arrow`, Print Screen,
-/// and `Escape` *only while an overlay is open* — an unconditional Escape grab
-/// would break every modal editor running as a client.
+/// `Alt+Space`, `Alt+Tab`, `Ctrl+Tab`, and `Escape` *only while an overlay is
+/// open* — an unconditional Escape grab would break every modal editor
+/// running as a client. Ctrl+Arrow remains an application chord; desktop
+/// navigation uses Super+Arrow. Print Screen is always compositor-owned.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
         return false;
@@ -501,7 +502,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         ChordKey::Space => mods.alt,
         ChordKey::Tab => mods.ctrl || mods.alt,
         ChordKey::PrintScreen => true,
-        ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::ArrowUp | ChordKey::ArrowDown => false,
         ChordKey::Escape => overlay_open,
         ChordKey::Char(c) => mods.ctrl && c == 'k',
         ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
@@ -1676,6 +1677,14 @@ fn route_keyboard_input(
         return false;
     };
     let pressed = key.state == ElementState::Pressed;
+    // DRM mirrors winit's repeat events for in-process qOS widgets. Native
+    // Wayland clients already synthesize repeats from `wl_keyboard.repeat_info`;
+    // sending another pressed edge would double every held key. Swallow the
+    // adapter repeat when a client owns focus, otherwise let it continue to
+    // `FrameBuilder` like hosted-winit input does.
+    if key.repeat {
+        return !captured && state.client_input.keyboard_focus.is_some();
+    }
     let Some(code) = evdev_keycode(key) else {
         return false;
     };
@@ -2258,6 +2267,11 @@ mod tests {
             false
         ));
         assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::Tab), true),
+            &alt,
+            false
+        ));
+        assert!(!is_shell_chord(
             &key_event(Key::Named(NamedKey::ArrowDown), true),
             &ctrl,
             false
@@ -2286,6 +2300,11 @@ mod tests {
         // Unmodified typing goes to the client.
         assert!(!is_shell_chord(
             &key_event(Key::Character(SmolStr::new("a")), true),
+            &none,
+            false
+        ));
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::Tab), true),
             &none,
             false
         ));
