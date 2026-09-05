@@ -731,6 +731,11 @@ impl WindowGroup {
     }
 
     #[cfg(any(test, debug_assertions))]
+    pub fn active_host_rect_for_tests(&self) -> Option<Rect> {
+        self.active_host().map(Widget::get_rect)
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn bar_for_tests(&self) -> &crate::widget::TabBar {
         &self.bar
     }
@@ -829,7 +834,9 @@ impl WindowGroup {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                self.hover_resize = handle_rect.contains(pt);
+                // A maximized group owns the output; its former tiled-width
+                // grip must neither paint nor remain an active resize target.
+                self.hover_resize = !self.maximized && handle_rect.contains(pt);
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
@@ -878,7 +885,7 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.hover_resize => {
+            } if !self.maximized && self.hover_resize => {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1536,7 +1543,9 @@ impl Widget for WindowGroup {
             h.draw(scene, transform, tr, theme, presence);
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        self.draw_resize_grip(scene, transform, theme);
+        if !self.maximized {
+            self.draw_resize_grip(scene, transform, theme);
+        }
 
         // No outline rings around `self.rect` for drag/search/maximize:
         // per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*.
