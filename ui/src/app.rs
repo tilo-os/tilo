@@ -4345,6 +4345,12 @@ struct ImeWindowState {
     height: u32,
 }
 
+/// Snapshot widget damage while its draw-updated geometry still describes the
+/// scene being submitted. Callers deliberately clear dirty flags afterwards.
+fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboRect>) {
+    widget.collect_damage(regions);
+}
+
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
@@ -4379,9 +4385,6 @@ fn draw_frame_content(
         &app.permission_ctx,
     );
     app.presence_ctx.pop_viewport(prev_vp);
-    // Without this the incremental dirty gate is a no-op.
-    app.root_widget.mark_drawn();
-
     // Widgets whose visual extent escapes their layout box (an open
     // `Dropdown`, a popover) composite above every later-drawn sibling here.
     // No-op by default.
@@ -5349,22 +5352,6 @@ impl AppHandler {
                 .profiler
                 .as_ref()
                 .is_some_and(super::profiling::FrameProfiler::hud_enabled);
-        if !full_redraw_required {
-            app.root_widget.collect_damage(&mut damage_regions);
-            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            let scale = f64::from(scale_factor);
-            for rect in &mut damage_regions {
-                *rect = KurboRect::new(
-                    rect.x0 * scale,
-                    rect.y0 * scale,
-                    rect.x1 * scale,
-                    rect.y1 * scale,
-                )
-                .inflate(16.0 * scale, 16.0 * scale)
-                .intersect(physical_viewport);
-            }
-            damage_regions.retain(|rect| !rect.is_zero_area());
-        }
         // The worker resets scenes before returning them to this pool; the
         // pre-seeded scenes are empty too.
 
@@ -5400,6 +5387,32 @@ impl AppHandler {
         if app.debug_mode {
             draw_debug_outlines(app, &mut scene, transform);
         }
+
+        // Animated widgets update their visual bounds while drawing (for
+        // example, an indeterminate progress segment records its old and new
+        // positions there). Capture damage only after that work, but before
+        // `mark_drawn` clears regular dirty flags. This makes the submitted
+        // scene and its damage describe the same frame rather than trailing
+        // animation by one frame.
+        if !full_redraw_required {
+            collect_submitted_widget_damage(app.root_widget.as_ref(), &mut damage_regions);
+            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let scale = f64::from(scale_factor);
+            for rect in &mut damage_regions {
+                *rect = KurboRect::new(
+                    rect.x0 * scale,
+                    rect.y0 * scale,
+                    rect.x1 * scale,
+                    rect.y1 * scale,
+                )
+                .inflate(16.0 * scale, 16.0 * scale)
+                .intersect(physical_viewport);
+            }
+            damage_regions.retain(|rect| !rect.is_zero_area());
+        }
+        // This must follow damage collection: widget `draw` may update
+        // damage geometry and `mark_drawn` consumes persistent dirty flags.
+        app.root_widget.mark_drawn();
 
         // `update_if_active` only builds + sends when an AT is
         // attached, so this is free on the common no-reader path.
@@ -9620,5 +9633,105 @@ mod semantic_tree_app_tests {
                 .all(|action| action.id != "activate")
         }));
         assert_eq!(presses.get(), 0);
+    }
+}
+
+#[cfg(test)]
+mod damage_lifecycle_tests {
+    use super::*;
+    use crate::widget::TaffyTreeExt;
+    use automerge::{AutoCommit, ObjId};
+    use std::collections::HashMap;
+
+    struct DrawUpdatedDamage {
+        damage: KurboRect,
+        dirty: bool,
+    }
+
+    impl Widget for DrawUpdatedDamage {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(taffy::Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            self.damage = KurboRect::new(80.0, 0.0, 100.0, 8.0);
+        }
+
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+
+        fn name(&self) -> &str {
+            "DrawUpdatedDamage"
+        }
+
+        fn get_rect(&self) -> KurboRect {
+            self.damage
+        }
+
+        fn needs_redraw(&self) -> bool {
+            self.dirty
+        }
+
+        fn collect_damage(&self, regions: &mut Vec<KurboRect>) {
+            regions.push(self.damage);
+        }
+
+        fn mark_drawn(&mut self) {
+            self.dirty = false;
+        }
+    }
+
+    #[test]
+    fn submitted_damage_uses_draw_updated_geometry_before_dirty_clear() {
+        let mut widget = DrawUpdatedDamage {
+            damage: KurboRect::new(0.0, 0.0, 20.0, 8.0),
+            dirty: true,
+        };
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        widget.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+
+        let mut regions = Vec::new();
+        collect_submitted_widget_damage(&widget, &mut regions);
+        assert_eq!(regions, vec![KurboRect::new(80.0, 0.0, 100.0, 8.0)]);
+        assert!(widget.dirty, "collection must not consume the dirty flag");
+
+        widget.mark_drawn();
+        assert!(!widget.dirty);
     }
 }

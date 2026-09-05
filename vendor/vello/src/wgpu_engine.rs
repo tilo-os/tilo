@@ -6,16 +6,18 @@ use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use smallvec::SmallVec;
 use wgpu::{
     BindGroup, BindGroupLayout, Buffer, BufferUsages, CommandEncoder, CommandEncoderDescriptor,
     ComputePassDescriptor, ComputePipeline, Device, PipelineCache, PipelineCompilationOptions,
-    Queue, Texture, TextureAspect, TextureUsages, TextureView, TextureViewDimension,
+    QuerySet, Queue, Texture, TextureAspect, TextureUsages, TextureView, TextureViewDimension,
 };
 
 use crate::{
-    Error, Result,
+    Error, GpuDispatchStageSample, GpuDispatchTimestampSample, GpuDispatchTimestampStatus,
+    GpuTimestampSample, GpuTimestampStatus, Result,
     low_level::{BufferProxy, Command, ImageProxy, Recording, ResourceId, ResourceProxy, ShaderId},
     recording::BindType,
 };
@@ -44,6 +46,350 @@ pub(crate) struct WgpuEngine {
     /// The `Texture` should have the same size as the `Image`.
     pub(crate) image_overrides: HashMap<u64, wgpu::TexelCopyTextureInfoBase<Texture>>,
     pipeline_cache: Option<PipelineCache>,
+    /// Experimental opt-in command encoding path. Kept off by default so a
+    /// release binary can A/B shared compute passes without changing work.
+    compute_batch: u8,
+    /// Logging is deliberately separate from enablement so timed A/B runs do
+    /// not emit one line for every encoded pass.
+    compute_batch_log: bool,
+    gpu_timestamps: GpuTimestampTracker,
+    gpu_dispatch_timestamps: GpuDispatchTimestampTracker,
+    cpu_pathtag: bool,
+    cpu_pathtag_reuse: bool,
+    cpu_pathtag_pool: CpuPathtagPool,
+    cpu_metadata: bool,
+    cpu_metadata_pool: CpuMetadataPool,
+    cpu_draw_prefix: bool,
+    cpu_draw_prefix_pool: CpuDrawPrefixPool,
+    direct_path_dispatch: bool,
+    sparse_fine_enabled: bool,
+    sparse_fine_available: bool,
+    sparse_coarse_enabled: bool,
+}
+
+const GPU_TIMESTAMP_PASS_LIMIT: u32 = 64;
+const GPU_TIMESTAMP_QUERY_COUNT: u32 = GPU_TIMESTAMP_PASS_LIMIT * 2;
+const GPU_TIMESTAMP_BYTES: u64 = GPU_TIMESTAMP_QUERY_COUNT as u64 * 8;
+const CPU_PATHTAG_REUSE_SLOT_BYTES: usize = 1 << 20;
+const CPU_PATHTAG_REDUCED_LABEL: &str = "vello.reduced_buf";
+const CPU_PATHTAG_MONOID_LABEL: &str = "vello.tagmonoid_buf";
+const CPU_METADATA_PATH_BBOX_SLOT_BYTES: usize = 1 << 20;
+const CPU_METADATA_DRAW_REDUCED_SLOT_BYTES: usize = 4096;
+const CPU_METADATA_PATH_BBOX_LABEL: &str = "vello.path_bbox_buf";
+const CPU_METADATA_DRAW_REDUCED_LABEL: &str = "vello.draw_reduced_buf";
+const CPU_DRAW_PREFIX_SLOT_BYTES: usize = 1 << 20;
+const CPU_DRAW_PREFIX_LABEL: &str = "vello.draw_monoid_buf";
+
+#[derive(Default)]
+struct CpuPathtagPool {
+    reduced: Option<Vec<u8>>,
+    monoid: Option<Vec<u8>>,
+}
+
+impl CpuPathtagPool {
+    fn take(&mut self, label: &str, size: usize) -> Option<Vec<u8>> {
+        if size > CPU_PATHTAG_REUSE_SLOT_BYTES {
+            return None;
+        }
+        let slot = match label {
+            CPU_PATHTAG_REDUCED_LABEL => &mut self.reduced,
+            CPU_PATHTAG_MONOID_LABEL => &mut self.monoid,
+            _ => return None,
+        };
+        let mut bytes = slot.take()?;
+        if bytes.capacity() < size {
+            return None;
+        }
+        bytes.clear();
+        bytes.resize(size, 0);
+        Some(bytes)
+    }
+
+    fn put(&mut self, label: &str, bytes: Vec<u8>) {
+        if bytes.capacity() > CPU_PATHTAG_REUSE_SLOT_BYTES {
+            return;
+        }
+        let slot = match label {
+            CPU_PATHTAG_REDUCED_LABEL => &mut self.reduced,
+            CPU_PATHTAG_MONOID_LABEL => &mut self.monoid,
+            _ => return,
+        };
+        if slot.is_none() {
+            *slot = Some(bytes);
+        }
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        [self.reduced.as_ref(), self.monoid.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|bytes| u64::try_from(bytes.capacity()).unwrap_or(u64::MAX))
+            .sum()
+    }
+
+    fn clear(&mut self) {
+        self.reduced = None;
+        self.monoid = None;
+    }
+}
+
+#[derive(Default)]
+struct CpuMetadataPool {
+    path_bbox: Option<Vec<u8>>,
+    draw_reduced: Option<Vec<u8>>,
+}
+
+impl CpuMetadataPool {
+    fn take(&mut self, label: &str, size: usize) -> Option<Vec<u8>> {
+        let (slot, limit) = match label {
+            CPU_METADATA_PATH_BBOX_LABEL => {
+                (&mut self.path_bbox, CPU_METADATA_PATH_BBOX_SLOT_BYTES)
+            }
+            CPU_METADATA_DRAW_REDUCED_LABEL => {
+                (&mut self.draw_reduced, CPU_METADATA_DRAW_REDUCED_SLOT_BYTES)
+            }
+            _ => return None,
+        };
+        if size > limit {
+            return None;
+        }
+        let mut bytes = slot.take()?;
+        if bytes.capacity() < size {
+            return None;
+        }
+        bytes.clear();
+        bytes.resize(size, 0);
+        Some(bytes)
+    }
+
+    fn put(&mut self, label: &str, bytes: Vec<u8>) {
+        let (slot, limit) = match label {
+            CPU_METADATA_PATH_BBOX_LABEL => {
+                (&mut self.path_bbox, CPU_METADATA_PATH_BBOX_SLOT_BYTES)
+            }
+            CPU_METADATA_DRAW_REDUCED_LABEL => {
+                (&mut self.draw_reduced, CPU_METADATA_DRAW_REDUCED_SLOT_BYTES)
+            }
+            _ => return,
+        };
+        if bytes.capacity() <= limit && slot.is_none() {
+            *slot = Some(bytes);
+        }
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        [self.path_bbox.as_ref(), self.draw_reduced.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|bytes| u64::try_from(bytes.capacity()).unwrap_or(u64::MAX))
+            .sum()
+    }
+
+    fn clear(&mut self) {
+        self.path_bbox = None;
+        self.draw_reduced = None;
+    }
+}
+
+#[derive(Default)]
+struct CpuDrawPrefixPool {
+    draw_monoid: Option<Vec<u8>>,
+}
+
+impl CpuDrawPrefixPool {
+    fn take(&mut self, label: &str, size: usize) -> Option<Vec<u8>> {
+        if label != CPU_DRAW_PREFIX_LABEL || size > CPU_DRAW_PREFIX_SLOT_BYTES {
+            return None;
+        }
+        let mut bytes = self.draw_monoid.take()?;
+        if bytes.capacity() < size {
+            return None;
+        }
+        bytes.clear();
+        bytes.resize(size, 0);
+        Some(bytes)
+    }
+
+    fn put(&mut self, label: &str, bytes: Vec<u8>) {
+        if label == CPU_DRAW_PREFIX_LABEL
+            && bytes.capacity() <= CPU_DRAW_PREFIX_SLOT_BYTES
+            && self.draw_monoid.is_none()
+        {
+            self.draw_monoid = Some(bytes);
+        }
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        self.draw_monoid.as_ref().map_or(0, |bytes| {
+            u64::try_from(bytes.capacity()).unwrap_or(u64::MAX)
+        })
+    }
+
+    fn clear(&mut self) {
+        self.draw_monoid = None;
+    }
+}
+
+struct TimestampWrites {
+    query_set: QuerySet,
+    beginning: u32,
+    end: u32,
+}
+
+enum TimestampMapState {
+    Idle,
+    Pending {
+        submission_id: u64,
+        pass_count: u32,
+        receiver: Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
+    },
+    Ready(GpuTimestampSample),
+    MapFailed {
+        submission_id: u64,
+    },
+    Invalid {
+        submission_id: u64,
+    },
+    Overflowed {
+        submission_id: u64,
+        pass_count: u32,
+    },
+}
+
+struct TimestampResources {
+    query_set: QuerySet,
+    resolve: Buffer,
+    read: Buffer,
+    timestamp_period_ns: f32,
+    pass_count: u32,
+    overflowed: bool,
+    next_submission_id: u64,
+    latest_submission_id: Option<u64>,
+    map_state: TimestampMapState,
+}
+
+enum GpuTimestampTracker {
+    Disabled,
+    Requested,
+    Unsupported,
+    Active(TimestampResources),
+}
+
+/// Opt-in timestamps around individual GPU dispatches. This deliberately
+/// wraps the existing bounded timestamp lifecycle so it cannot create a
+/// second in-flight map or an additional submission.
+enum GpuDispatchTimestampTracker {
+    Disabled,
+    Requested,
+    Unsupported,
+    Active(Box<DispatchTimestampResources>),
+}
+
+struct DispatchTimestampResources {
+    inner: GpuTimestampTracker,
+    stage_ids: [u16; GPU_TIMESTAMP_PASS_LIMIT as usize],
+    stage_count: u32,
+}
+
+fn timestamp_slot_available(map_state: &TimestampMapState) -> bool {
+    !matches!(map_state, TimestampMapState::Pending { .. })
+}
+
+impl Default for GpuTimestampTracker {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl Default for GpuDispatchTimestampTracker {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+enum BatchedDispatch {
+    Direct {
+        stage_id: u16,
+        pipeline: ComputePipeline,
+        bind_group: BindGroup,
+        workgroups: (u32, u32, u32),
+    },
+    Indirect {
+        stage_id: u16,
+        pipeline: ComputePipeline,
+        bind_group: BindGroup,
+        buffer: Buffer,
+        offset: u64,
+    },
+}
+
+const COMPUTE_BATCH_LIMIT: usize = 16;
+
+fn gpu_dispatch_stage_id(label: &str) -> u16 {
+    match label {
+        "vello.pathtag_reduce" => 1,
+        "vello.pathtag_reduce2" => 2,
+        "vello.pathtag_scan1" => 3,
+        "vello.pathtag_scan_small" => 4,
+        "vello.pathtag_scan_large" => 5,
+        "vello.bbox_clear" => 6,
+        "vello.flatten" => 7,
+        "vello.draw_reduce" => 8,
+        "vello.draw_leaf" => 9,
+        "vello.clip_reduce" => 10,
+        "vello.clip_leaf" => 11,
+        "vello.binning" => 12,
+        "vello.tile_alloc" => 13,
+        "vello.path_count_setup" => 14,
+        "vello.path_count" => 15,
+        "vello.backdrop_dyn" => 16,
+        "vello.coarse" => 17,
+        "vello.path_tiling_setup" => 18,
+        "vello.path_tiling" => 19,
+        "vello.fine_area" => 20,
+        "vello.fine_msaa8" => 21,
+        "vello.fine_msaa16" => 22,
+        "vello.fine_sparse_area" => 23,
+        "vello.coarse_sparse" => 24,
+        "vello.draw_leaf_prefix" => 25,
+        "vello.path_count_direct" => 26,
+        "vello.path_tiling_direct" => 27,
+        _ => 0,
+    }
+}
+
+fn is_cpu_pathtag_shader(label: &str) -> bool {
+    matches!(label, "vello.pathtag_reduce" | "vello.pathtag_scan_small")
+}
+
+fn is_cpu_metadata_shader(label: &str) -> bool {
+    matches!(label, "vello.bbox_clear" | "vello.draw_reduce")
+}
+
+fn compute_batch_boundary(command: &Command, include_frees: bool) -> bool {
+    match command {
+        Command::Dispatch(..) | Command::DispatchIndirect(..) => false,
+        Command::FreeBuffer(..) | Command::FreeImage(..) => !include_frees,
+        _ => true,
+    }
+}
+
+fn record_deferred_free(
+    command: &Command,
+    free_bufs: &mut HashSet<ResourceId>,
+    free_images: &mut HashSet<ResourceId>,
+) -> bool {
+    match command {
+        Command::FreeBuffer(proxy) => {
+            free_bufs.insert(proxy.id);
+            true
+        }
+        Command::FreeImage(proxy) => {
+            free_images.insert(proxy.id);
+            true
+        }
+        _ => false,
+    }
 }
 
 enum PipelineState {
@@ -90,11 +436,17 @@ struct Shader {
     label: &'static str,
     wgpu: Option<WgpuShader>,
     cpu: Option<CpuShader>,
+    cpu_pathtag: Option<CpuShader>,
+    cpu_metadata: Option<CpuShader>,
 }
 
 impl Shader {
-    fn select(&self) -> ShaderKind<'_> {
+    fn select(&self, cpu_pathtag_enabled: bool, cpu_metadata_enabled: bool) -> ShaderKind<'_> {
         if let Some(cpu) = self.cpu.as_ref() {
+            ShaderKind::Cpu(cpu)
+        } else if cpu_pathtag_enabled && let Some(cpu) = self.cpu_pathtag.as_ref() {
+            ShaderKind::Cpu(cpu)
+        } else if cpu_metadata_enabled && let Some(cpu) = self.cpu_metadata.as_ref() {
             ShaderKind::Cpu(cpu)
         } else if let Some(wgpu) = self.wgpu.as_ref() {
             ShaderKind::Wgpu(wgpu)
@@ -105,7 +457,6 @@ impl Shader {
 }
 
 pub(crate) enum ExternalResource<'a> {
-    #[expect(unused, reason = "No buffers are accepted as arguments currently")]
     Buffer(BufferProxy, &'a Buffer),
     Image(ImageProxy, &'a TextureView),
 }
@@ -157,13 +508,721 @@ enum TransientBuf<'a> {
     Gpu(&'a Buffer),
 }
 
+impl GpuTimestampTracker {
+    fn requested() -> Self {
+        Self::Requested
+    }
+
+    fn initialize(&mut self, device: &Device) {
+        if matches!(self, Self::Requested) {
+            if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+                *self = Self::Unsupported;
+                return;
+            }
+            *self = Self::Active(TimestampResources {
+                query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("vello GPU timestamps"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: GPU_TIMESTAMP_QUERY_COUNT,
+                }),
+                resolve: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("vello GPU timestamp resolve"),
+                    size: GPU_TIMESTAMP_BYTES,
+                    usage: BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }),
+                read: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("vello GPU timestamp readback"),
+                    size: GPU_TIMESTAMP_BYTES,
+                    usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                timestamp_period_ns: 0.0,
+                pass_count: 0,
+                overflowed: false,
+                next_submission_id: 0,
+                latest_submission_id: None,
+                map_state: TimestampMapState::Idle,
+            });
+        }
+    }
+
+    fn begin_recording(&mut self, device: &Device, queue: &Queue) {
+        self.initialize(device);
+        self.poll_ready();
+        if let Self::Active(resources) = self {
+            resources.next_submission_id = resources.next_submission_id.saturating_add(1);
+            resources.latest_submission_id = Some(resources.next_submission_id);
+            // This is a latest-recording diagnostic: a ready sample that the
+            // caller did not consume must not permanently block later samples.
+            // A pending map is the sole state that owns the readback buffer.
+            if timestamp_slot_available(&resources.map_state) {
+                resources.map_state = TimestampMapState::Idle;
+            }
+        }
+        if let Self::Active(resources) = self
+            && matches!(&resources.map_state, TimestampMapState::Idle)
+        {
+            resources.pass_count = 0;
+            resources.overflowed = false;
+            resources.timestamp_period_ns = queue.get_timestamp_period();
+        }
+    }
+
+    fn reserve_pass(&mut self) -> Option<TimestampWrites> {
+        let Self::Active(resources) = self else {
+            return None;
+        };
+        if !matches!(&resources.map_state, TimestampMapState::Idle) {
+            return None;
+        }
+        resources.pass_count = resources.pass_count.saturating_add(1);
+        if resources.pass_count > GPU_TIMESTAMP_PASS_LIMIT {
+            resources.overflowed = true;
+            return None;
+        }
+        let beginning = resources.pass_count.saturating_sub(1).saturating_mul(2);
+        Some(TimestampWrites {
+            query_set: resources.query_set.clone(),
+            beginning,
+            end: beginning.saturating_add(1),
+        })
+    }
+
+    fn finish_recording(&mut self, encoder: &mut CommandEncoder) -> bool {
+        let Self::Active(resources) = self else {
+            return false;
+        };
+        if !matches!(&resources.map_state, TimestampMapState::Idle) || resources.pass_count == 0 {
+            return false;
+        }
+        let submission_id = resources
+            .latest_submission_id
+            .expect("recording has an identity");
+        if resources.overflowed {
+            resources.map_state = TimestampMapState::Overflowed {
+                submission_id,
+                pass_count: resources.pass_count,
+            };
+            return false;
+        }
+        let byte_count = u64::from(resources.pass_count).saturating_mul(16);
+        encoder.resolve_query_set(
+            &resources.query_set,
+            0..resources.pass_count.saturating_mul(2),
+            &resources.resolve,
+            0,
+        );
+        encoder.copy_buffer_to_buffer(&resources.resolve, 0, &resources.read, 0, byte_count);
+        true
+    }
+
+    fn map_after_submit(&mut self) {
+        let Self::Active(resources) = self else {
+            return;
+        };
+        if !matches!(&resources.map_state, TimestampMapState::Idle)
+            || resources.pass_count == 0
+            || resources.overflowed
+        {
+            return;
+        }
+        let submission_id = resources
+            .latest_submission_id
+            .expect("recording has an identity");
+        let pass_count = resources.pass_count;
+        let (sender, receiver) = mpsc::channel();
+        resources
+            .read
+            .slice(..u64::from(pass_count).saturating_mul(16))
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        resources.map_state = TimestampMapState::Pending {
+            submission_id,
+            pass_count,
+            receiver,
+        };
+    }
+
+    fn poll_ready(&mut self) {
+        let Self::Active(resources) = self else {
+            return;
+        };
+        let TimestampMapState::Pending {
+            submission_id,
+            pass_count,
+            ..
+        } = &resources.map_state
+        else {
+            return;
+        };
+        let submission_id = *submission_id;
+        let pass_count = *pass_count;
+        let result = match &resources.map_state {
+            TimestampMapState::Pending { receiver, .. } => receiver.try_recv(),
+            _ => unreachable!(),
+        };
+        match result {
+            Ok(Ok(())) => {
+                let bytes = resources
+                    .read
+                    .slice(..u64::from(pass_count).saturating_mul(16))
+                    .get_mapped_range()
+                    .to_vec();
+                resources.read.unmap();
+                resources.map_state = decode_timestamp_sample(
+                    submission_id,
+                    pass_count,
+                    resources.timestamp_period_ns,
+                    bytes,
+                )
+                .map(TimestampMapState::Ready)
+                .unwrap_or(TimestampMapState::Invalid { submission_id });
+            }
+            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                resources.map_state = TimestampMapState::MapFailed { submission_id };
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    fn status(&mut self) -> GpuTimestampStatus {
+        self.poll_ready();
+        match self {
+            Self::Disabled => GpuTimestampStatus::Disabled,
+            Self::Requested | Self::Unsupported => GpuTimestampStatus::Unsupported,
+            Self::Active(resources) => match &resources.map_state {
+                TimestampMapState::Idle => GpuTimestampStatus::Idle,
+                TimestampMapState::Pending { submission_id, .. } => GpuTimestampStatus::Pending {
+                    submission_id: *submission_id,
+                },
+                TimestampMapState::Ready(sample) => GpuTimestampStatus::Ready {
+                    submission_id: sample.submission_id,
+                    pass_count: sample.pass_count,
+                },
+                TimestampMapState::MapFailed { submission_id } => GpuTimestampStatus::MapFailed {
+                    submission_id: *submission_id,
+                },
+                TimestampMapState::Invalid { submission_id } => GpuTimestampStatus::Invalid {
+                    submission_id: *submission_id,
+                },
+                TimestampMapState::Overflowed {
+                    submission_id,
+                    pass_count,
+                } => GpuTimestampStatus::Overflowed {
+                    submission_id: *submission_id,
+                    pass_count: *pass_count,
+                },
+            },
+        }
+    }
+
+    fn take_sample(&mut self) -> Option<GpuTimestampSample> {
+        self.poll_ready();
+        let Self::Active(resources) = self else {
+            return None;
+        };
+        if !matches!(&resources.map_state, TimestampMapState::Ready(_)) {
+            return None;
+        }
+        let TimestampMapState::Ready(sample) =
+            std::mem::replace(&mut resources.map_state, TimestampMapState::Idle)
+        else {
+            unreachable!();
+        };
+        Some(sample)
+    }
+
+    fn latest_submission_id(&self) -> Option<u64> {
+        match self {
+            Self::Active(resources) => resources.latest_submission_id,
+            _ => None,
+        }
+    }
+
+    fn buffer_bytes(&self) -> u64 {
+        match self {
+            Self::Active(_) => GPU_TIMESTAMP_BYTES.saturating_mul(2),
+            _ => 0,
+        }
+    }
+}
+
+impl GpuDispatchTimestampTracker {
+    fn requested() -> Self {
+        Self::Requested
+    }
+
+    fn initialize(&mut self, device: &Device) {
+        if !matches!(self, Self::Requested) {
+            return;
+        }
+        let required =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        if !device.features().contains(required) {
+            *self = Self::Unsupported;
+            return;
+        }
+        let mut inner = GpuTimestampTracker::requested();
+        inner.initialize(device);
+        if matches!(inner, GpuTimestampTracker::Active(_)) {
+            *self = Self::Active(Box::new(DispatchTimestampResources {
+                inner,
+                stage_ids: [0; GPU_TIMESTAMP_PASS_LIMIT as usize],
+                stage_count: 0,
+            }));
+        } else {
+            *self = Self::Unsupported;
+        }
+    }
+
+    fn begin_recording(&mut self, device: &Device, queue: &Queue) {
+        self.initialize(device);
+        let Self::Active(resources) = self else {
+            return;
+        };
+        resources.inner.begin_recording(device, queue);
+        // A pending map owns both the readback buffer and its stage IDs. The
+        // wrapped tracker leaves it pending; do the same here. Terminal
+        // states are reset by `begin_recording`, so their old IDs may be
+        // discarded under the documented latest-recording policy.
+        if let GpuTimestampTracker::Active(inner) = &resources.inner
+            && matches!(&inner.map_state, TimestampMapState::Idle)
+        {
+            resources.stage_ids.fill(0);
+            resources.stage_count = 0;
+        }
+    }
+
+    fn reserve_dispatch(&mut self, stage_id: u16) -> Option<TimestampWrites> {
+        let Self::Active(resources) = self else {
+            return None;
+        };
+        let writes = resources.inner.reserve_pass()?;
+        let slot = usize::try_from(writes.beginning.saturating_div(2)).ok()?;
+        let stage = resources.stage_ids.get_mut(slot)?;
+        *stage = stage_id;
+        resources.stage_count = resources
+            .stage_count
+            .max(writes.beginning.saturating_div(2).checked_add(1)?);
+        Some(writes)
+    }
+
+    fn stage_id_for_label(&self, label: &str) -> u16 {
+        matches!(self, Self::Active(_))
+            .then(|| gpu_dispatch_stage_id(label))
+            .unwrap_or(0)
+    }
+
+    fn finish_recording(&mut self, encoder: &mut CommandEncoder) -> bool {
+        let Self::Active(resources) = self else {
+            return false;
+        };
+        resources.inner.finish_recording(encoder)
+    }
+
+    fn map_after_submit(&mut self) {
+        if let Self::Active(resources) = self {
+            resources.inner.map_after_submit();
+        }
+    }
+
+    fn status(&mut self) -> GpuDispatchTimestampStatus {
+        match self {
+            Self::Disabled => GpuDispatchTimestampStatus::Disabled,
+            Self::Requested | Self::Unsupported => GpuDispatchTimestampStatus::Unsupported,
+            Self::Active(resources) => match resources.inner.status() {
+                GpuTimestampStatus::Disabled | GpuTimestampStatus::Unsupported => {
+                    GpuDispatchTimestampStatus::Unsupported
+                }
+                GpuTimestampStatus::Idle => GpuDispatchTimestampStatus::Idle,
+                GpuTimestampStatus::Pending { submission_id } => {
+                    GpuDispatchTimestampStatus::Pending { submission_id }
+                }
+                GpuTimestampStatus::Ready { submission_id, .. } => {
+                    GpuDispatchTimestampStatus::Ready {
+                        submission_id,
+                        stage_count: resources.stage_count,
+                    }
+                }
+                GpuTimestampStatus::MapFailed { submission_id } => {
+                    GpuDispatchTimestampStatus::MapFailed { submission_id }
+                }
+                GpuTimestampStatus::Invalid { submission_id } => {
+                    GpuDispatchTimestampStatus::Invalid { submission_id }
+                }
+                GpuTimestampStatus::Overflowed { submission_id, .. } => {
+                    GpuDispatchTimestampStatus::Overflowed {
+                        submission_id,
+                        stage_count: resources.stage_count,
+                    }
+                }
+            },
+        }
+    }
+
+    fn take_sample(&mut self) -> Option<GpuDispatchTimestampSample> {
+        let Self::Active(resources) = self else {
+            return None;
+        };
+        let sample = resources.inner.take_sample()?;
+        let submission_id = sample.submission_id;
+        let decoded =
+            decode_dispatch_timestamp_sample(&sample, &resources.stage_ids, resources.stage_count);
+        if decoded.is_none() {
+            mark_dispatch_timestamp_invalid(resources, submission_id);
+        }
+        decoded
+    }
+
+    fn latest_submission_id(&self) -> Option<u64> {
+        match self {
+            Self::Active(resources) => resources.inner.latest_submission_id(),
+            _ => None,
+        }
+    }
+
+    fn buffer_bytes(&self) -> u64 {
+        match self {
+            Self::Active(resources) => resources.inner.buffer_bytes(),
+            _ => 0,
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite, bounded non-negative timestamp durations are validated before compact diagnostic aggregation"
+)]
+fn decode_dispatch_timestamp_sample(
+    sample: &GpuTimestampSample,
+    stage_ids: &[u16; GPU_TIMESTAMP_PASS_LIMIT as usize],
+    expected_stage_count: u32,
+) -> Option<GpuDispatchTimestampSample> {
+    let expected_bytes = usize::try_from(sample.pass_count)
+        .ok()
+        .and_then(|count| count.checked_mul(16));
+    if sample.pass_count == 0
+        || sample.pass_count > GPU_TIMESTAMP_PASS_LIMIT
+        || sample.pass_count != expected_stage_count
+        || expected_bytes != Some(sample.timestamp_bytes.len())
+        || !sample.timestamp_period_ns.is_finite()
+        || sample.timestamp_period_ns <= 0.0
+    {
+        return None;
+    }
+    let mut by_stage = [GpuDispatchStageSample::default(); 32];
+    for (pair, stage_id) in sample
+        .timestamp_bytes
+        .chunks_exact(16)
+        .zip(stage_ids.iter().copied())
+    {
+        let beginning_bytes: [u8; 8] = pair.get(..8)?.try_into().ok()?;
+        let end_bytes: [u8; 8] = pair.get(8..)?.try_into().ok()?;
+        let beginning = u64::from_le_bytes(beginning_bytes);
+        let end = u64::from_le_bytes(end_bytes);
+        let ticks = end.checked_sub(beginning)?;
+        let ns = ticks as f64 * f64::from(sample.timestamp_period_ns);
+        if !ns.is_finite() || ns < 0.0 || ns >= u128::MAX as f64 {
+            return None;
+        }
+        let bucket = match stage_id {
+            1..=31 => usize::from(stage_id),
+            _ => 0,
+        };
+        let aggregate = &mut by_stage[bucket];
+        aggregate.stage_id = if bucket == 0 { 0 } else { stage_id };
+        let dispatch_count = aggregate.dispatch_count.checked_add(1)?;
+        let duration_ns = aggregate.duration_ns.checked_add(ns as u128)?;
+        aggregate.dispatch_count = dispatch_count;
+        aggregate.duration_ns = duration_ns;
+    }
+    let mut stages = [GpuDispatchStageSample::default(); 32];
+    let mut stage_count = 0usize;
+    for stage in by_stage
+        .into_iter()
+        .filter(|stage| stage.dispatch_count != 0)
+    {
+        let slot = stages.get_mut(stage_count)?;
+        *slot = stage;
+        stage_count = stage_count.checked_add(1)?;
+    }
+    Some(GpuDispatchTimestampSample {
+        submission_id: sample.submission_id,
+        stage_count: u32::try_from(stage_count).ok()?,
+        stages,
+    })
+}
+
+fn mark_dispatch_timestamp_invalid(resources: &mut DispatchTimestampResources, submission_id: u64) {
+    if let GpuTimestampTracker::Active(inner) = &mut resources.inner {
+        inner.map_state = TimestampMapState::Invalid { submission_id };
+    }
+}
+
+fn decode_timestamp_sample(
+    submission_id: u64,
+    pass_count: u32,
+    timestamp_period_ns: f32,
+    timestamp_bytes: Vec<u8>,
+) -> Option<GpuTimestampSample> {
+    if !timestamp_period_ns.is_finite()
+        || timestamp_period_ns <= 0.0
+        || pass_count == 0
+        || pass_count > GPU_TIMESTAMP_PASS_LIMIT
+        || timestamp_bytes.len() != (pass_count as usize).saturating_mul(16)
+    {
+        return None;
+    }
+    let mut pairs = timestamp_bytes.chunks_exact(16);
+    let first_pair = pairs.next()?;
+    let first = u64::from_le_bytes(first_pair[..8].try_into().ok()?);
+    let mut last = 0;
+    let mut summed_pass_ticks = 0u64;
+    for pair in std::iter::once(first_pair).chain(pairs) {
+        let beginning = u64::from_le_bytes(pair[..8].try_into().ok()?);
+        let end = u64::from_le_bytes(pair[8..].try_into().ok()?);
+        summed_pass_ticks = summed_pass_ticks.checked_add(end.checked_sub(beginning)?)?;
+        last = end;
+    }
+    let span_ticks = last.checked_sub(first)?;
+    Some(GpuTimestampSample {
+        submission_id,
+        pass_count,
+        span_ticks,
+        summed_pass_ticks,
+        timestamp_period_ns,
+        span_ns: span_ticks as f64 * f64::from(timestamp_period_ns),
+        summed_pass_ns: summed_pass_ticks as f64 * f64::from(timestamp_period_ns),
+        timestamp_bytes,
+    })
+}
+
 impl WgpuEngine {
+    /// Dispatch timestamps are deliberately unavailable until the opt-in
+    /// inside-pass tracker has reserved a query slot for a recording.
+    pub fn gpu_dispatch_timestamp_status(&mut self) -> GpuDispatchTimestampStatus {
+        self.gpu_dispatch_timestamps.status()
+    }
+
+    pub fn take_gpu_dispatch_timestamp_sample(&mut self) -> Option<GpuDispatchTimestampSample> {
+        self.gpu_dispatch_timestamps.take_sample()
+    }
+
+    pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
+        self.gpu_dispatch_timestamps.latest_submission_id()
+    }
+
+    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
+        self.gpu_dispatch_timestamps.buffer_bytes()
+    }
+    #[expect(
+        clippy::print_stderr,
+        reason = "an explicitly requested A/B diagnostic must work without application logging"
+    )]
     pub fn new(use_cpu: bool, pipeline_cache: Option<PipelineCache>) -> Self {
+        let compute_batch = match std::env::var_os("VELLO_COMPUTE_BATCH").as_deref() {
+            Some(value) if value == "1" => 1,
+            Some(value) if value == "2" => 2,
+            _ => 0,
+        };
+        let compute_batch_log =
+            std::env::var_os("VELLO_COMPUTE_BATCH_LOG").is_some_and(|value| value == "1");
+        let gpu_timestamps = std::env::var_os("VELLO_GPU_TIMESTAMPS")
+            .is_some_and(|value| value == "1")
+            .then(GpuTimestampTracker::requested)
+            .unwrap_or_default();
+        let dispatch_timestamps_requested =
+            std::env::var_os("VELLO_GPU_DISPATCH_TIMESTAMPS").is_some_and(|value| value == "1");
+        let gpu_dispatch_timestamps = if dispatch_timestamps_requested
+            && std::env::var_os("VELLO_GPU_TIMESTAMPS").is_some_and(|value| value == "1")
+            && !use_cpu
+            && !cfg!(feature = "wgpu-profiler")
+        {
+            GpuDispatchTimestampTracker::requested()
+        } else if dispatch_timestamps_requested {
+            GpuDispatchTimestampTracker::Unsupported
+        } else {
+            GpuDispatchTimestampTracker::Disabled
+        };
+        let sparse_fine_enabled =
+            std::env::var_os("VELLO_SPARSE_FINE").is_some_and(|value| value == "1");
+        let sparse_coarse_enabled =
+            std::env::var_os("VELLO_SPARSE_COARSE").is_some_and(|value| value == "1");
+        if compute_batch_log {
+            let state = if compute_batch == 0 {
+                "disabled (set VELLO_COMPUTE_BATCH=1 or 2 to enable)"
+            } else if use_cpu {
+                "requested, but CPU dispatches remain unbatched"
+            } else if cfg!(feature = "wgpu-profiler") {
+                "requested, but profiler builds retain one query per dispatch"
+            } else if compute_batch == 2 {
+                "enabled with deferred free bookkeeping"
+            } else {
+                "enabled conservatively"
+            };
+            eprintln!(
+                "vello: compute dispatch batching {state} (max {COMPUTE_BATCH_LIMIT} per pass)"
+            );
+        }
+        let cpu_pathtag = std::env::var_os("VELLO_CPU_PATHTAG").is_some_and(|value| value == "1");
+        let cpu_pathtag_reuse = !use_cpu
+            && std::env::var_os("VELLO_CPU_PATHTAG_REUSE").is_some_and(|value| value == "1");
+        let cpu_metadata =
+            !use_cpu && std::env::var_os("VELLO_CPU_METADATA").is_some_and(|value| value == "1");
+        let cpu_draw_prefix =
+            !use_cpu && std::env::var_os("VELLO_CPU_DRAW_PREFIX").is_some_and(|value| value == "1");
+        let direct_path_dispatch =
+            std::env::var_os("VELLO_DIRECT_PATH_DISPATCH").is_some_and(|value| value == "1");
         Self {
             use_cpu,
             pipeline_cache,
+            compute_batch,
+            compute_batch_log,
+            gpu_timestamps,
+            gpu_dispatch_timestamps,
+            cpu_pathtag,
+            cpu_pathtag_reuse,
+            cpu_metadata,
+            cpu_draw_prefix,
+            direct_path_dispatch,
+            sparse_fine_enabled,
+            sparse_fine_available: sparse_fine_enabled,
+            sparse_coarse_enabled,
             ..Default::default()
         }
+    }
+
+    pub fn initialize_gpu_timestamps(&mut self, device: &Device) {
+        self.gpu_timestamps.initialize(device);
+        self.gpu_dispatch_timestamps.initialize(device);
+    }
+
+    pub fn gpu_timestamp_status(&mut self) -> GpuTimestampStatus {
+        self.gpu_timestamps.status()
+    }
+
+    pub fn take_gpu_timestamp_sample(&mut self) -> Option<GpuTimestampSample> {
+        self.gpu_timestamps.take_sample()
+    }
+
+    pub fn gpu_timestamp_latest_submission_id(&self) -> Option<u64> {
+        self.gpu_timestamps.latest_submission_id()
+    }
+
+    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
+        self.gpu_timestamps.buffer_bytes()
+    }
+
+    pub fn set_compute_pass_batching(&mut self, enabled: bool) {
+        self.compute_batch = u8::from(enabled);
+    }
+
+    pub fn cpu_pathtag_enabled(&self) -> bool {
+        self.cpu_pathtag
+    }
+
+    pub fn cpu_pathtag_reuse_enabled(&self) -> bool {
+        self.cpu_pathtag_reuse_active()
+    }
+
+    pub(crate) fn cpu_pathtag_pool_retained_bytes(&self) -> u64 {
+        self.cpu_pathtag_pool.retained_bytes()
+    }
+
+    pub fn cpu_metadata_enabled(&self) -> bool {
+        self.cpu_metadata_active()
+    }
+
+    pub(crate) fn cpu_metadata_pool_retained_bytes(&self) -> u64 {
+        self.cpu_metadata_pool.retained_bytes()
+    }
+
+    pub fn set_cpu_metadata_enabled(&mut self, enabled: bool) {
+        self.cpu_metadata = enabled && !self.use_cpu;
+        if !self.cpu_metadata_active() {
+            self.cpu_metadata_pool.clear();
+        }
+    }
+
+    pub fn cpu_draw_prefix_enabled(&self) -> bool {
+        self.cpu_draw_prefix_active()
+    }
+
+    pub(crate) fn cpu_draw_prefix_pool_retained_bytes(&self) -> u64 {
+        self.cpu_draw_prefix_pool.retained_bytes()
+    }
+
+    pub(crate) fn cpu_draw_prefix_supported(&self, bytes: u64) -> bool {
+        self.cpu_draw_prefix_active()
+            && usize::try_from(bytes).is_ok_and(|bytes| bytes <= CPU_DRAW_PREFIX_SLOT_BYTES)
+    }
+
+    pub fn set_cpu_draw_prefix_enabled(&mut self, enabled: bool) {
+        self.cpu_draw_prefix = enabled && !self.use_cpu;
+        if !self.cpu_draw_prefix_active() {
+            self.cpu_draw_prefix_pool.clear();
+        }
+    }
+
+    /// Whether the optional direct GPU path-dispatch variants may be selected.
+    ///
+    /// Full CPU rendering never uses GPU dispatch variants, even when this
+    /// experiment was requested at construction time.
+    pub fn direct_path_dispatch_enabled(&self) -> bool {
+        self.direct_path_dispatch && !self.use_cpu
+    }
+
+    /// Toggle optional direct GPU path-dispatch variants for A/B comparison.
+    pub fn set_direct_path_dispatch_enabled(&mut self, enabled: bool) {
+        self.direct_path_dispatch = enabled;
+    }
+
+    pub fn set_cpu_pathtag_enabled(&mut self, enabled: bool) {
+        self.cpu_pathtag = enabled;
+        if !enabled {
+            self.cpu_pathtag_pool.clear();
+            self.cpu_metadata_pool.clear();
+            self.cpu_draw_prefix_pool.clear();
+        }
+    }
+
+    fn cpu_pathtag_reuse_active(&self) -> bool {
+        self.cpu_pathtag && self.cpu_pathtag_reuse && !self.use_cpu
+    }
+
+    fn cpu_metadata_active(&self) -> bool {
+        self.cpu_pathtag && self.cpu_metadata && !self.use_cpu
+    }
+
+    fn cpu_draw_prefix_active(&self) -> bool {
+        self.cpu_pathtag && self.cpu_draw_prefix && !self.use_cpu
+    }
+
+    pub fn sparse_fine_enabled(&self) -> bool {
+        self.sparse_fine_enabled
+    }
+
+    pub fn sparse_coarse_enabled(&self) -> bool {
+        self.sparse_coarse_enabled
+    }
+
+    pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
+        self.sparse_fine_enabled = enabled && self.sparse_fine_available;
+    }
+
+    fn bindings_have_pending_clear(&self, bindings: &[ResourceProxy]) -> bool {
+        bindings.iter().any(|resource| match resource {
+            ResourceProxy::Buffer(proxy)
+            | ResourceProxy::BufferRange {
+                proxy,
+                offset: _,
+                size: _,
+            } => self.bind_map.pending_clears.contains(&proxy.id),
+            ResourceProxy::Image(_) => false,
+        })
     }
 
     /// Enable creating any remaining shaders in parallel
@@ -198,7 +1257,7 @@ impl WgpuEngine {
                 .min(new_shaders.len());
             log::info!("Initialising shader modules in parallel using {num_threads} threads");
             let remainder = new_shaders.split_off(num_threads);
-            let (tx, rx) = std::sync::mpsc::channel::<(ShaderId, WgpuShader)>();
+            let (tx, rx) = mpsc::channel::<(ShaderId, WgpuShader)>();
 
             // We expect each initialisation to take much longer than acquiring a lock, so we just
             // use a mutex for our work queue
@@ -275,6 +1334,22 @@ impl WgpuEngine {
             self.shaders.push(shader);
             ShaderId(id)
         };
+        let cpu_pathtag = if is_cpu_pathtag_shader(label) {
+            match &cpu_shader {
+                CpuShaderType::Present(shader) => Some(CpuShader { shader: *shader }),
+                CpuShaderType::Missing | CpuShaderType::Skipped => None,
+            }
+        } else {
+            None
+        };
+        let cpu_metadata = if is_cpu_metadata_shader(label) {
+            match &cpu_shader {
+                CpuShaderType::Present(shader) => Some(CpuShader { shader: *shader }),
+                CpuShaderType::Missing | CpuShaderType::Skipped => None,
+            }
+        } else {
+            None
+        };
 
         if self.use_cpu {
             match cpu_shader {
@@ -282,6 +1357,8 @@ impl WgpuEngine {
                     return add(Shader {
                         wgpu: None,
                         cpu: Some(CpuShader { shader }),
+                        cpu_pathtag: None,
+                        cpu_metadata: None,
                         label,
                     });
                 }
@@ -290,6 +1367,8 @@ impl WgpuEngine {
                     return add(Shader {
                         wgpu: None,
                         cpu: None,
+                        cpu_pathtag: None,
+                        cpu_metadata: None,
                         label,
                     });
                 }
@@ -307,6 +1386,8 @@ impl WgpuEngine {
                 label,
                 wgpu: None,
                 cpu: None,
+                cpu_pathtag,
+                cpu_metadata,
             });
             uninit.push(UninitialisedShader {
                 wgsl,
@@ -326,8 +1407,28 @@ impl WgpuEngine {
         add(Shader {
             wgpu: Some(wgpu),
             cpu: None,
+            cpu_pathtag,
+            cpu_metadata,
             label,
         })
+    }
+
+    /// Register a CPU-only dispatch stage. Callers must record it only while
+    /// their associated opt-in path is active.
+    pub(crate) fn add_cpu_shader(
+        &mut self,
+        label: &'static str,
+        shader: fn(u32, &[CpuBinding<'_>]),
+    ) -> ShaderId {
+        let id = self.shaders.len();
+        self.shaders.push(Shader {
+            label,
+            wgpu: None,
+            cpu: Some(CpuShader { shader }),
+            cpu_pathtag: None,
+            cpu_metadata: None,
+        });
+        ShaderId(id)
     }
 
     #[cfg(feature = "debug_layers")]
@@ -389,9 +1490,261 @@ impl WgpuEngine {
                 bind_group_layout,
             }),
             cpu: None,
+            cpu_pathtag: None,
+            cpu_metadata: None,
             label,
         });
         ShaderId(id)
+    }
+
+    #[expect(
+        clippy::print_stderr,
+        reason = "an explicitly requested diagnostic must report actual shared-pass sizes"
+    )]
+    fn encode_compute_batch(
+        &mut self,
+        commands: &[Command],
+        transient_map: &mut TransientBindMap<'_>,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        free_bufs: &mut HashSet<ResourceId>,
+        free_images: &mut HashSet<ResourceId>,
+        include_frees: bool,
+    ) -> Result<usize> {
+        let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
+        let cpu_metadata_active = self.cpu_metadata_active();
+        let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
+        let mut prepared = SmallVec::<[BatchedDispatch; COMPUTE_BATCH_LIMIT]>::new();
+        let mut consumed = 0usize;
+        for (command_count, command) in commands.iter().enumerate() {
+            // Mode 1 intentionally retains its original 16-command scan
+            // limit. Mode 2 folds free bookkeeping into a run, so its inline
+            // storage instead needs to be bounded by actual dispatches.
+            if !include_frees && command_count == COMPUTE_BATCH_LIMIT {
+                break;
+            }
+            if compute_batch_boundary(command, include_frees) {
+                break;
+            }
+            if include_frees {
+                // The fixed inline storage bounds GPU dispatches, rather than
+                // zero-cost bookkeeping commands between them.
+                match command {
+                    Command::Dispatch(_, workgroups, _)
+                        if prepared.len() == COMPUTE_BATCH_LIMIT =>
+                    {
+                        let (x, y, z) = *workgroups;
+                        if x != 0 && y != 0 && z != 0 {
+                            break;
+                        }
+                    }
+                    Command::DispatchIndirect(..) if prepared.len() == COMPUTE_BATCH_LIMIT => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            match command {
+                Command::Dispatch(shader_id, workgroups, bindings) => {
+                    // `create_bind_group` may encode a lazy clear. Materializing these bindings
+                    // while earlier dispatches are still prepared would encode that clear before
+                    // them. End this run so it emits earlier dispatches first; then a fresh pass
+                    // encodes this command's clear followed by this command's dispatch.
+                    if !prepared.is_empty() && self.bindings_have_pending_clear(bindings) {
+                        break;
+                    }
+                    let (x, y, z) = *workgroups;
+                    if x == 0 || y == 0 || z == 0 {
+                        consumed = consumed.saturating_add(1);
+                        continue;
+                    }
+                    let (stage_id, pipeline, bind_group_layout) = {
+                        let shader = &self.shaders[shader_id.0];
+                        let ShaderKind::Wgpu(wgpu_shader) =
+                            shader.select(self.cpu_pathtag, self.cpu_metadata_active())
+                        else {
+                            break;
+                        };
+                        #[cfg_attr(
+                            not(feature = "debug_layers"),
+                            expect(
+                                irrefutable_let_patterns,
+                                reason = "Render shaders are only enabled if we have the debug pipeline"
+                            )
+                        )]
+                        let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
+                            panic!("cannot issue a dispatch with a render pipeline");
+                        };
+                        (
+                            self.gpu_dispatch_timestamps
+                                .stage_id_for_label(shader.label),
+                            pipeline.clone(),
+                            wgpu_shader.bind_group_layout.clone(),
+                        )
+                    };
+                    let bind_group = transient_map.create_bind_group(
+                        &mut self.bind_map,
+                        &mut self.pool,
+                        cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                        cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                        cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
+                        &mut self.bind_group_cache,
+                        device,
+                        queue,
+                        encoder,
+                        *shader_id,
+                        &bind_group_layout,
+                        bindings,
+                    );
+                    prepared.push(BatchedDispatch::Direct {
+                        stage_id,
+                        pipeline,
+                        bind_group,
+                        workgroups: *workgroups,
+                    });
+                }
+                Command::DispatchIndirect(shader_id, proxy, offset, bindings) => {
+                    // See the direct-dispatch case above: flush prepared dispatches before
+                    // materializing a binding whose lazy clear must precede this dispatch.
+                    if !prepared.is_empty() && self.bindings_have_pending_clear(bindings) {
+                        break;
+                    }
+                    let (stage_id, pipeline, bind_group_layout) = {
+                        let shader = &self.shaders[shader_id.0];
+                        let ShaderKind::Wgpu(wgpu_shader) =
+                            shader.select(self.cpu_pathtag, self.cpu_metadata_active())
+                        else {
+                            break;
+                        };
+                        #[cfg_attr(
+                            not(feature = "debug_layers"),
+                            expect(
+                                irrefutable_let_patterns,
+                                reason = "Render shaders are only enabled if we have the debug pipeline"
+                            )
+                        )]
+                        let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
+                            panic!("cannot issue a dispatch with a render pipeline");
+                        };
+                        (
+                            self.gpu_dispatch_timestamps
+                                .stage_id_for_label(shader.label),
+                            pipeline.clone(),
+                            wgpu_shader.bind_group_layout.clone(),
+                        )
+                    };
+                    let bind_group = transient_map.create_bind_group(
+                        &mut self.bind_map,
+                        &mut self.pool,
+                        cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                        cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                        cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
+                        &mut self.bind_group_cache,
+                        device,
+                        queue,
+                        encoder,
+                        *shader_id,
+                        &bind_group_layout,
+                        bindings,
+                    );
+                    transient_map.materialize_gpu_buf_for_indirect(
+                        &mut self.bind_map,
+                        &mut self.pool,
+                        cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                        cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                        cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
+                        device,
+                        queue,
+                        proxy,
+                    );
+                    let buffer = self
+                        .bind_map
+                        .get_gpu_buf(proxy.id)
+                        .ok_or(Error::UnavailableBufferUsed(
+                            proxy.name,
+                            "indirect dispatch",
+                        ))?
+                        .clone();
+                    prepared.push(BatchedDispatch::Indirect {
+                        stage_id,
+                        pipeline,
+                        bind_group,
+                        buffer,
+                        offset: *offset,
+                    });
+                }
+                Command::FreeBuffer(..) | Command::FreeImage(..) => {
+                    let recorded = record_deferred_free(command, free_bufs, free_images);
+                    debug_assert!(recorded);
+                }
+                _ => unreachable!("batch boundary must have been handled before matching"),
+            }
+            consumed = consumed.saturating_add(1);
+        }
+        if !prepared.is_empty() {
+            if self.compute_batch_log {
+                eprintln!(
+                    "vello: encoded shared compute pass with {} dispatches",
+                    prepared.len()
+                );
+            }
+            let timestamps = self.gpu_timestamps.reserve_pass();
+            let timestamp_writes =
+                timestamps
+                    .as_ref()
+                    .map(|timestamps| wgpu::ComputePassTimestampWrites {
+                        query_set: &timestamps.query_set,
+                        beginning_of_pass_write_index: Some(timestamps.beginning),
+                        end_of_pass_write_index: Some(timestamps.end),
+                    });
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: None,
+                timestamp_writes,
+            });
+            for dispatch in prepared {
+                match dispatch {
+                    BatchedDispatch::Direct {
+                        stage_id,
+                        pipeline,
+                        bind_group,
+                        workgroups,
+                    } => {
+                        let dispatch_timestamps =
+                            self.gpu_dispatch_timestamps.reserve_dispatch(stage_id);
+                        if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                            pass.write_timestamp(&timestamps.query_set, timestamps.beginning);
+                        }
+                        pass.set_pipeline(&pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.dispatch_workgroups(workgroups.0, workgroups.1, workgroups.2);
+                        if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                            pass.write_timestamp(&timestamps.query_set, timestamps.end);
+                        }
+                    }
+                    BatchedDispatch::Indirect {
+                        stage_id,
+                        pipeline,
+                        bind_group,
+                        buffer,
+                        offset,
+                    } => {
+                        let dispatch_timestamps =
+                            self.gpu_dispatch_timestamps.reserve_dispatch(stage_id);
+                        if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                            pass.write_timestamp(&timestamps.query_set, timestamps.beginning);
+                        }
+                        pass.set_pipeline(&pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.dispatch_workgroups_indirect(&buffer, offset);
+                        if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                            pass.write_timestamp(&timestamps.query_set, timestamps.end);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(consumed)
     }
 
     pub fn run_recording(
@@ -403,15 +1756,68 @@ impl WgpuEngine {
         label: &'static str,
         #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
     ) -> Result<()> {
+        self.run_recording_with_post_render(
+            device,
+            queue,
+            recording,
+            external_resources,
+            label,
+            |_| {},
+            #[cfg(feature = "wgpu-profiler")]
+            profiler,
+        )
+    }
+
+    /// Encode a recording and caller commands into one command buffer.
+    ///
+    /// `post_render` runs after every Vello command is encoded and before the
+    /// command buffer is submitted, preserving command ordering without a
+    /// second queue submission.
+    pub fn run_recording_with_post_render<F>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        recording: &Recording,
+        external_resources: &[ExternalResource<'_>],
+        label: &'static str,
+        post_render: F,
+        #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut CommandEncoder),
+    {
+        let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
+        let cpu_metadata_active = self.cpu_metadata_active();
+        let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
         let mut free_bufs: HashSet<ResourceId> = HashSet::default();
         let mut free_images: HashSet<ResourceId> = HashSet::default();
         let mut transient_map = TransientBindMap::new(external_resources);
+        self.gpu_timestamps.begin_recording(device, queue);
+        self.gpu_dispatch_timestamps.begin_recording(device, queue);
 
         let mut encoder =
             device.create_command_encoder(&CommandEncoderDescriptor { label: Some(label) });
         #[cfg(feature = "wgpu-profiler")]
         let query = profiler.begin_query(label, &mut encoder);
-        for command in &recording.commands {
+        let mut command_index = 0usize;
+        while command_index < recording.commands.len() {
+            if self.compute_batch != 0 && !self.use_cpu && !cfg!(feature = "wgpu-profiler") {
+                let consumed = self.encode_compute_batch(
+                    &recording.commands[command_index..],
+                    &mut transient_map,
+                    device,
+                    queue,
+                    &mut encoder,
+                    &mut free_bufs,
+                    &mut free_images,
+                    self.compute_batch == 2,
+                )?;
+                if consumed != 0 {
+                    command_index = command_index.saturating_add(consumed);
+                    continue;
+                }
+            }
+            let command = &recording.commands[command_index];
             match command {
                 Command::Upload(buf_proxy, bytes) => {
                     transient_map
@@ -554,7 +1960,7 @@ impl WgpuEngine {
                     let (x, y, z) = *wg_size;
                     // println!("dispatching {:?} with {} bindings", wg_size, bindings.len());
                     let shader = &self.shaders[shader_id.0];
-                    match shader.select() {
+                    match shader.select(self.cpu_pathtag, self.cpu_metadata_active()) {
                         ShaderKind::Cpu(cpu_shader) => {
                             // The current strategy is to run the CPU shader synchronously. This
                             // works because there is currently the added constraint that data
@@ -564,18 +1970,32 @@ impl WgpuEngine {
                             // mechanisms, as the CPU dispatch can't run until the preceding
                             // command buffer submission completes (and, in WebGPU, the async
                             // mapping operations on the buffers completes).
-                            let resources =
-                                transient_map.create_cpu_resources(&mut self.bind_map, bindings);
+                            let resources = transient_map.create_cpu_resources(
+                                &mut self.bind_map,
+                                cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                                cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                                cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
+                                bindings,
+                            );
                             (cpu_shader.shader)(x, &resources);
                         }
                         ShaderKind::Wgpu(wgpu_shader) => {
                             // Workaround for https://github.com/linebender/vello/issues/637
                             if x == 0 || y == 0 || z == 0 {
+                                command_index = command_index.saturating_add(1);
                                 continue;
                             }
+                            let stage_id = self
+                                .gpu_dispatch_timestamps
+                                .stage_id_for_label(self.shaders[shader_id.0].label);
+                            let dispatch_timestamps =
+                                self.gpu_dispatch_timestamps.reserve_dispatch(stage_id);
                             let bind_group = transient_map.create_bind_group(
                                 &mut self.bind_map,
                                 &mut self.pool,
+                                cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                                cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                                cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
                                 &mut self.bind_group_cache,
                                 device,
                                 queue,
@@ -584,8 +2004,21 @@ impl WgpuEngine {
                                 &wgpu_shader.bind_group_layout,
                                 bindings,
                             );
-                            let mut cpass =
-                                encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                            let timestamps = self.gpu_timestamps.reserve_pass();
+                            let timestamp_writes = timestamps.as_ref().map(|timestamps| {
+                                wgpu::ComputePassTimestampWrites {
+                                    query_set: &timestamps.query_set,
+                                    beginning_of_pass_write_index: Some(timestamps.beginning),
+                                    end_of_pass_write_index: Some(timestamps.end),
+                                }
+                            });
+                            let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                                label: None,
+                                timestamp_writes,
+                            });
+                            if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                                cpass.write_timestamp(&timestamps.query_set, timestamps.beginning);
+                            }
                             #[cfg(feature = "wgpu-profiler")]
                             let query = profiler
                                 .begin_query(shader.label, &mut cpass)
@@ -603,6 +2036,9 @@ impl WgpuEngine {
                             cpass.set_pipeline(pipeline);
                             cpass.set_bind_group(0, &bind_group, &[]);
                             cpass.dispatch_workgroups(x, y, z);
+                            if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                                cpass.write_timestamp(&timestamps.query_set, timestamps.end);
+                            }
                             #[cfg(feature = "wgpu-profiler")]
                             profiler.end_query(&mut cpass, query);
                         }
@@ -610,7 +2046,7 @@ impl WgpuEngine {
                 }
                 Command::DispatchIndirect(shader_id, proxy, offset, bindings) => {
                     let shader = &self.shaders[shader_id.0];
-                    match shader.select() {
+                    match shader.select(self.cpu_pathtag, self.cpu_metadata_active()) {
                         ShaderKind::Cpu(cpu_shader) => {
                             // Same consideration as above about running the CPU shader synchronously.
                             let n_wg;
@@ -621,14 +2057,27 @@ impl WgpuEngine {
                             } else {
                                 panic!("indirect buffer missing from bind map");
                             }
-                            let resources =
-                                transient_map.create_cpu_resources(&mut self.bind_map, bindings);
+                            let resources = transient_map.create_cpu_resources(
+                                &mut self.bind_map,
+                                cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                                cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                                cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
+                                bindings,
+                            );
                             (cpu_shader.shader)(n_wg, &resources);
                         }
                         ShaderKind::Wgpu(wgpu_shader) => {
+                            let stage_id = self
+                                .gpu_dispatch_timestamps
+                                .stage_id_for_label(self.shaders[shader_id.0].label);
+                            let dispatch_timestamps =
+                                self.gpu_dispatch_timestamps.reserve_dispatch(stage_id);
                             let bind_group = transient_map.create_bind_group(
                                 &mut self.bind_map,
                                 &mut self.pool,
+                                cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                                cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                                cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
                                 &mut self.bind_group_cache,
                                 device,
                                 queue,
@@ -640,12 +2089,28 @@ impl WgpuEngine {
                             transient_map.materialize_gpu_buf_for_indirect(
                                 &mut self.bind_map,
                                 &mut self.pool,
+                                cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                                cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                                cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
                                 device,
                                 queue,
                                 proxy,
                             );
-                            let mut cpass =
-                                encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                            let timestamps = self.gpu_timestamps.reserve_pass();
+                            let timestamp_writes = timestamps.as_ref().map(|timestamps| {
+                                wgpu::ComputePassTimestampWrites {
+                                    query_set: &timestamps.query_set,
+                                    beginning_of_pass_write_index: Some(timestamps.beginning),
+                                    end_of_pass_write_index: Some(timestamps.end),
+                                }
+                            });
+                            let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                                label: None,
+                                timestamp_writes,
+                            });
+                            if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                                cpass.write_timestamp(&timestamps.query_set, timestamps.beginning);
+                            }
                             #[cfg(feature = "wgpu-profiler")]
                             let query = profiler
                                 .begin_query(shader.label, &mut cpass)
@@ -666,6 +2131,9 @@ impl WgpuEngine {
                                 Error::UnavailableBufferUsed(proxy.name, "indirect dispatch"),
                             )?;
                             cpass.dispatch_workgroups_indirect(buf, *offset);
+                            if let Some(timestamps) = dispatch_timestamps.as_ref() {
+                                cpass.write_timestamp(&timestamps.query_set, timestamps.end);
+                            }
                             #[cfg(feature = "wgpu-profiler")]
                             profiler.end_query(&mut cpass, query);
                         }
@@ -676,12 +2144,17 @@ impl WgpuEngine {
                     let shader = &self.shaders[draw_params.shader_id.0];
                     #[cfg(feature = "wgpu-profiler")]
                     let label = shader.label;
-                    let ShaderKind::Wgpu(shader) = shader.select() else {
+                    let ShaderKind::Wgpu(shader) =
+                        shader.select(self.cpu_pathtag, self.cpu_metadata_active())
+                    else {
                         panic!("a render pass does not have a CPU equivalent");
                     };
                     let bind_group = transient_map.create_bind_group(
                         &mut self.bind_map,
                         &mut self.pool,
+                        cpu_pathtag_reuse_active.then_some(&mut self.cpu_pathtag_pool),
+                        cpu_metadata_active.then_some(&mut self.cpu_metadata_pool),
+                        cpu_draw_prefix_active.then_some(&mut self.cpu_draw_prefix_pool),
                         &mut self.bind_group_cache,
                         device,
                         queue,
@@ -771,23 +2244,53 @@ impl WgpuEngine {
                     free_images.insert(proxy.id);
                 }
             }
+            command_index = command_index.saturating_add(1);
         }
         #[cfg(feature = "wgpu-profiler")]
         profiler.end_query(&mut encoder, query);
         // TODO: This only actually needs to happen once per frame, but run_recording happens two or three times
         #[cfg(feature = "wgpu-profiler")]
         profiler.resolve_queries(&mut encoder);
+        let timestamp_readback = self.gpu_timestamps.finish_recording(&mut encoder);
+        let dispatch_timestamp_readback =
+            self.gpu_dispatch_timestamps.finish_recording(&mut encoder);
+        post_render(&mut encoder);
         queue.submit(Some(encoder.finish()));
+        if timestamp_readback {
+            self.gpu_timestamps.map_after_submit();
+        }
+        if dispatch_timestamp_readback {
+            self.gpu_dispatch_timestamps.map_after_submit();
+        }
         for id in free_bufs {
-            if let Some(buf) = self.bind_map.buf_map.remove(&id)
-                && let MaterializedBuffer::Gpu(gpu_buf) = buf.buffer
-            {
-                let props = BufferProperties {
-                    size: gpu_buf.size(),
-                    usages: gpu_buf.usage(),
-                    name: buf.label,
-                };
-                self.pool.bufs.entry(props).or_default().push(gpu_buf);
+            if let Some(buf) = self.bind_map.buf_map.remove(&id) {
+                match buf.buffer {
+                    MaterializedBuffer::Gpu(gpu_buf) => {
+                        let props = BufferProperties {
+                            size: gpu_buf.size(),
+                            usages: gpu_buf.usage(),
+                            name: buf.label,
+                        };
+                        self.pool.bufs.entry(props).or_default().push(gpu_buf);
+                    }
+                    MaterializedBuffer::Cpu(cpu_buf) => match buf.label {
+                        CPU_PATHTAG_REDUCED_LABEL | CPU_PATHTAG_MONOID_LABEL
+                            if self.cpu_pathtag_reuse_active() =>
+                        {
+                            self.cpu_pathtag_pool.put(buf.label, cpu_buf.into_inner());
+                        }
+                        CPU_METADATA_PATH_BBOX_LABEL | CPU_METADATA_DRAW_REDUCED_LABEL
+                            if self.cpu_metadata_active() =>
+                        {
+                            self.cpu_metadata_pool.put(buf.label, cpu_buf.into_inner());
+                        }
+                        CPU_DRAW_PREFIX_LABEL if self.cpu_draw_prefix_active() => {
+                            self.cpu_draw_prefix_pool
+                                .put(buf.label, cpu_buf.into_inner());
+                        }
+                        _ => {}
+                    },
+                }
             }
         }
         for id in free_images {
@@ -814,6 +2317,9 @@ impl WgpuEngine {
     pub fn clear_pool(&mut self) {
         self.bind_group_cache.clear();
         self.pool.bufs.clear();
+        self.cpu_pathtag_pool.clear();
+        self.cpu_metadata_pool.clear();
+        self.cpu_draw_prefix_pool.clear();
     }
 
     /// Remove cached bind groups that keep an external texture view alive.
@@ -827,6 +2333,16 @@ impl WgpuEngine {
             !key.resources
                 .iter()
                 .any(|resource| matches!(resource, BoundResource::Image(view) if view == texture))
+        });
+    }
+
+    /// Remove cached bind groups that retain an external buffer being
+    /// replaced independently of Vello's normal resource pool.
+    pub fn invalidate_buffer_bindings(&mut self, buffer: &Buffer) {
+        self.bind_group_cache.retain(|key, _| {
+            !key.resources.iter().any(|resource| {
+                matches!(resource, BoundResource::Buffer(bound, _, _) if bound == buffer)
+            })
         });
     }
 
@@ -868,8 +2384,30 @@ impl WgpuEngine {
         (pooled, live_buffers, images)
     }
 
+    /// Drop a completed download.
     pub fn free_download(&mut self, buf: BufferProxy) {
         self.downloads.remove(&buf.id);
+    }
+
+    /// Recycle the fixed-size adaptive bump-counter download.
+    ///
+    /// The caller must have successfully mapped and then unmapped this
+    /// buffer. Keeping that state transition at the mapping call site avoids
+    /// attempting to unmap a failed mapping (or unmapping twice), both of
+    /// which are validation errors on wgpu.
+    pub fn recycle_bump_download(&mut self, buf: BufferProxy) {
+        if buf.name != "vello.bump_buf" {
+            self.free_download(buf);
+            return;
+        }
+        if let Some(buffer) = self.downloads.remove(&buf.id) {
+            let props = BufferProperties {
+                size: buffer.size(),
+                usages: buffer.usage(),
+                name: "download",
+            };
+            self.pool.bufs.entry(props).or_default().push(buffer);
+        }
     }
 
     fn create_bind_group_layout_entries(
@@ -998,9 +2536,24 @@ impl BindMap {
         }
     }
 
-    fn materialize_cpu_buf(&mut self, buf: &BufferProxy) {
+    fn materialize_cpu_buf(
+        &mut self,
+        buf: &BufferProxy,
+        cpu_pathtag_pool: Option<&mut CpuPathtagPool>,
+        cpu_metadata_pool: Option<&mut CpuMetadataPool>,
+        cpu_draw_prefix_pool: Option<&mut CpuDrawPrefixPool>,
+    ) {
         self.buf_map.entry(buf.id).or_insert_with(|| {
-            let buffer = MaterializedBuffer::Cpu(RefCell::new(vec![0; buf.size as usize]));
+            let bytes = cpu_pathtag_pool
+                .and_then(|pool| pool.take(buf.name, buf.size as usize))
+                .or_else(|| {
+                    cpu_metadata_pool.and_then(|pool| pool.take(buf.name, buf.size as usize))
+                })
+                .or_else(|| {
+                    cpu_draw_prefix_pool.and_then(|pool| pool.take(buf.name, buf.size as usize))
+                })
+                .unwrap_or_else(|| vec![0; buf.size as usize]);
+            let buffer = MaterializedBuffer::Cpu(RefCell::new(bytes));
             BindMapBuffer {
                 buffer,
                 // TODO: do we need to cfg this?
@@ -1111,6 +2664,9 @@ impl BindMapBuffer {
         device: &Device,
         queue: &Queue,
         pool: &mut ResourcePool,
+        cpu_pathtag_pool: Option<&mut CpuPathtagPool>,
+        cpu_metadata_pool: Option<&mut CpuMetadataPool>,
+        cpu_draw_prefix_pool: Option<&mut CpuDrawPrefixPool>,
     ) {
         if let MaterializedBuffer::Cpu(cpu_buf) = &self.buffer {
             let usage = BufferUsages::COPY_SRC
@@ -1119,6 +2675,24 @@ impl BindMapBuffer {
                 | BufferUsages::INDIRECT;
             let buf = pool.get_buf(proxy.size, proxy.name, usage, device);
             queue.write_buffer(&buf, 0, &cpu_buf.borrow());
+            match self.label {
+                CPU_PATHTAG_REDUCED_LABEL | CPU_PATHTAG_MONOID_LABEL => {
+                    if let Some(cpu_pathtag_pool) = cpu_pathtag_pool {
+                        cpu_pathtag_pool.put(self.label, cpu_buf.take());
+                    }
+                }
+                CPU_METADATA_PATH_BBOX_LABEL | CPU_METADATA_DRAW_REDUCED_LABEL => {
+                    if let Some(cpu_metadata_pool) = cpu_metadata_pool {
+                        cpu_metadata_pool.put(self.label, cpu_buf.take());
+                    }
+                }
+                CPU_DRAW_PREFIX_LABEL => {
+                    if let Some(cpu_draw_prefix_pool) = cpu_draw_prefix_pool {
+                        cpu_draw_prefix_pool.put(self.label, cpu_buf.take());
+                    }
+                }
+                _ => {}
+            }
             self.buffer = MaterializedBuffer::Gpu(buf);
         }
     }
@@ -1146,6 +2720,9 @@ impl<'a> TransientBindMap<'a> {
         &mut self,
         bind_map: &mut BindMap,
         pool: &mut ResourcePool,
+        cpu_pathtag_pool: Option<&mut CpuPathtagPool>,
+        cpu_metadata_pool: Option<&mut CpuMetadataPool>,
+        cpu_draw_prefix_pool: Option<&mut CpuDrawPrefixPool>,
         device: &Device,
         queue: &Queue,
         buf: &BufferProxy,
@@ -1153,7 +2730,15 @@ impl<'a> TransientBindMap<'a> {
         if !self.bufs.contains_key(&buf.id)
             && let Some(b) = bind_map.buf_map.get_mut(&buf.id)
         {
-            b.upload_if_needed(buf, device, queue, pool);
+            b.upload_if_needed(
+                buf,
+                device,
+                queue,
+                pool,
+                cpu_pathtag_pool,
+                cpu_metadata_pool,
+                cpu_draw_prefix_pool,
+            );
         }
     }
 
@@ -1170,6 +2755,9 @@ impl<'a> TransientBindMap<'a> {
         &mut self,
         bind_map: &mut BindMap,
         pool: &mut ResourcePool,
+        mut cpu_pathtag_pool: Option<&mut CpuPathtagPool>,
+        mut cpu_metadata_pool: Option<&mut CpuMetadataPool>,
+        mut cpu_draw_prefix_pool: Option<&mut CpuDrawPrefixPool>,
         bind_group_cache: &mut HashMap<BindGroupKey, BindGroup>,
         device: &Device,
         queue: &Queue,
@@ -1207,7 +2795,15 @@ impl<'a> TransientBindMap<'a> {
                             });
                         }
                         Entry::Occupied(mut o) => {
-                            o.get_mut().upload_if_needed(proxy, device, queue, pool);
+                            o.get_mut().upload_if_needed(
+                                proxy,
+                                device,
+                                queue,
+                                pool,
+                                cpu_pathtag_pool.as_deref_mut(),
+                                cpu_metadata_pool.as_deref_mut(),
+                                cpu_draw_prefix_pool.as_deref_mut(),
+                            );
                         }
                     }
                 }
@@ -1348,6 +2944,9 @@ impl<'a> TransientBindMap<'a> {
     fn create_cpu_resources(
         &self,
         bind_map: &'a mut BindMap,
+        mut cpu_pathtag_pool: Option<&mut CpuPathtagPool>,
+        mut cpu_metadata_pool: Option<&mut CpuMetadataPool>,
+        mut cpu_draw_prefix_pool: Option<&mut CpuDrawPrefixPool>,
         bindings: &[ResourceProxy],
     ) -> Vec<CpuBinding<'_>> {
         // First pass is mutable; create buffers as needed
@@ -1361,7 +2960,12 @@ impl<'a> TransientBindMap<'a> {
                 } => match self.bufs.get(&proxy.id) {
                     Some(TransientBuf::Cpu(_)) => (),
                     Some(TransientBuf::Gpu(_)) => panic!("buffer was already materialized on GPU"),
-                    _ => bind_map.materialize_cpu_buf(proxy),
+                    _ => bind_map.materialize_cpu_buf(
+                        proxy,
+                        cpu_pathtag_pool.as_deref_mut(),
+                        cpu_metadata_pool.as_deref_mut(),
+                        cpu_draw_prefix_pool.as_deref_mut(),
+                    ),
                 },
                 ResourceProxy::Image(_) => todo!(),
             }
@@ -1378,5 +2982,356 @@ impl<'a> TransientBindMap<'a> {
                 ResourceProxy::Image(_) => todo!(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_pathtag_shader_labels_are_exact() {
+        assert!(is_cpu_pathtag_shader("vello.pathtag_reduce"));
+        assert!(is_cpu_pathtag_shader("vello.pathtag_scan_small"));
+        assert!(!is_cpu_pathtag_shader("vello.pathtag_reduce2"));
+        assert!(!is_cpu_pathtag_shader("vello.pathtag_scan1"));
+        assert!(!is_cpu_pathtag_shader("pathtag_reduce"));
+    }
+
+    #[test]
+    fn cpu_metadata_shader_labels_are_exact() {
+        assert!(is_cpu_metadata_shader("vello.bbox_clear"));
+        assert!(is_cpu_metadata_shader("vello.draw_reduce"));
+        assert!(!is_cpu_metadata_shader("vello.draw_leaf"));
+        assert!(!is_cpu_metadata_shader("vello.pathtag_reduce"));
+    }
+
+    #[test]
+    fn cpu_pathtag_pool_reuses_only_known_zeroed_slots() {
+        let mut pool = CpuPathtagPool::default();
+        let initial = vec![0xaa; 16];
+        let initial_capacity = initial.capacity();
+        pool.put(CPU_PATHTAG_REDUCED_LABEL, initial);
+        assert_eq!(
+            pool.retained_bytes(),
+            u64::try_from(initial_capacity).unwrap()
+        );
+
+        let bytes = pool.take(CPU_PATHTAG_REDUCED_LABEL, 12).unwrap();
+        assert_eq!(bytes.len(), 12);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        assert_eq!(pool.retained_bytes(), 0);
+
+        let larger_size = bytes.capacity().saturating_add(1);
+        pool.put(CPU_PATHTAG_REDUCED_LABEL, bytes);
+        assert!(pool.take(CPU_PATHTAG_REDUCED_LABEL, larger_size).is_none());
+        assert_eq!(pool.retained_bytes(), 0);
+
+        pool.put("vello.other_buf", vec![0; 16]);
+        assert!(pool.take("vello.other_buf", 16).is_none());
+        assert_eq!(pool.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn cpu_pathtag_pool_caps_oversize_slots_and_clears() {
+        let mut pool = CpuPathtagPool::default();
+        pool.put(
+            CPU_PATHTAG_REDUCED_LABEL,
+            vec![0; CPU_PATHTAG_REUSE_SLOT_BYTES + 1],
+        );
+        assert_eq!(pool.retained_bytes(), 0);
+
+        pool.put(
+            CPU_PATHTAG_REDUCED_LABEL,
+            vec![0; CPU_PATHTAG_REUSE_SLOT_BYTES],
+        );
+        pool.put(
+            CPU_PATHTAG_MONOID_LABEL,
+            vec![0; CPU_PATHTAG_REUSE_SLOT_BYTES],
+        );
+        assert_eq!(
+            pool.retained_bytes(),
+            u64::try_from(CPU_PATHTAG_REUSE_SLOT_BYTES * 2).unwrap()
+        );
+        pool.clear();
+        assert_eq!(pool.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn cpu_metadata_pool_reuses_zeroed_bounded_slots() {
+        let mut pool = CpuMetadataPool::default();
+        pool.put(CPU_METADATA_PATH_BBOX_LABEL, vec![0xab; 64]);
+        let bytes = pool.take(CPU_METADATA_PATH_BBOX_LABEL, 48).unwrap();
+        assert_eq!(bytes.len(), 48);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        pool.put(CPU_METADATA_PATH_BBOX_LABEL, bytes);
+
+        pool.put(
+            CPU_METADATA_DRAW_REDUCED_LABEL,
+            vec![0; CPU_METADATA_DRAW_REDUCED_SLOT_BYTES + 1],
+        );
+        assert!(
+            pool.take(
+                CPU_METADATA_DRAW_REDUCED_LABEL,
+                CPU_METADATA_DRAW_REDUCED_SLOT_BYTES
+            )
+            .is_none()
+        );
+        assert!(pool.take("vello.other_buf", 16).is_none());
+        assert!(
+            pool.retained_bytes()
+                <= u64::try_from(
+                    CPU_METADATA_PATH_BBOX_SLOT_BYTES + CPU_METADATA_DRAW_REDUCED_SLOT_BYTES
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn disabling_cpu_pathtags_disables_metadata_and_clears_its_pool() {
+        let mut engine = WgpuEngine {
+            cpu_pathtag: true,
+            cpu_metadata: true,
+            ..Default::default()
+        };
+        engine
+            .cpu_metadata_pool
+            .put(CPU_METADATA_DRAW_REDUCED_LABEL, vec![0; 16]);
+        assert!(engine.cpu_metadata_enabled());
+        assert_ne!(engine.cpu_metadata_pool_retained_bytes(), 0);
+
+        engine.set_cpu_pathtag_enabled(false);
+        assert!(!engine.cpu_metadata_enabled());
+        assert_eq!(engine.cpu_metadata_pool_retained_bytes(), 0);
+    }
+
+    #[test]
+    fn cpu_draw_prefix_pool_is_bounded_and_zeroed() {
+        let mut pool = CpuDrawPrefixPool::default();
+        pool.put(CPU_DRAW_PREFIX_LABEL, vec![0xcd; 64]);
+        let bytes = pool.take(CPU_DRAW_PREFIX_LABEL, 48).unwrap();
+        assert_eq!(bytes.len(), 48);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        pool.put(CPU_DRAW_PREFIX_LABEL, bytes);
+
+        pool.put("vello.other_buf", vec![0; 16]);
+        assert!(pool.take("vello.other_buf", 16).is_none());
+        pool.put(
+            CPU_DRAW_PREFIX_LABEL,
+            vec![0; CPU_DRAW_PREFIX_SLOT_BYTES + 1],
+        );
+        assert!(pool.retained_bytes() <= u64::try_from(CPU_DRAW_PREFIX_SLOT_BYTES).unwrap());
+        pool.clear();
+        assert_eq!(pool.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn disabling_cpu_pathtags_disables_draw_prefix_and_clears_its_pool() {
+        let mut engine = WgpuEngine {
+            cpu_pathtag: true,
+            cpu_draw_prefix: true,
+            ..Default::default()
+        };
+        engine
+            .cpu_draw_prefix_pool
+            .put(CPU_DRAW_PREFIX_LABEL, vec![0; 16]);
+        assert!(engine.cpu_draw_prefix_enabled());
+        assert!(engine.cpu_draw_prefix_supported(0));
+        assert!(engine.cpu_draw_prefix_supported(16));
+        assert!(
+            engine.cpu_draw_prefix_supported(u64::try_from(CPU_DRAW_PREFIX_SLOT_BYTES).unwrap())
+        );
+        assert!(
+            !engine
+                .cpu_draw_prefix_supported(u64::try_from(CPU_DRAW_PREFIX_SLOT_BYTES + 1).unwrap())
+        );
+        assert!(
+            !engine
+                .cpu_draw_prefix_supported(u64::try_from(CPU_DRAW_PREFIX_SLOT_BYTES + 16).unwrap())
+        );
+
+        engine.set_cpu_pathtag_enabled(false);
+        assert!(!engine.cpu_draw_prefix_enabled());
+        assert_eq!(engine.cpu_draw_prefix_pool_retained_bytes(), 0);
+    }
+
+    #[test]
+    fn direct_path_dispatch_is_default_off_and_excludes_full_cpu() {
+        let mut engine = WgpuEngine::default();
+        assert!(!engine.direct_path_dispatch_enabled());
+
+        engine.set_direct_path_dispatch_enabled(true);
+        assert!(engine.direct_path_dispatch_enabled());
+        engine.set_direct_path_dispatch_enabled(false);
+        assert!(!engine.direct_path_dispatch_enabled());
+
+        let mut cpu_engine = WgpuEngine {
+            use_cpu: true,
+            direct_path_dispatch: true,
+            ..Default::default()
+        };
+        assert!(!cpu_engine.direct_path_dispatch_enabled());
+        cpu_engine.set_direct_path_dispatch_enabled(true);
+        assert!(!cpu_engine.direct_path_dispatch_enabled());
+    }
+
+    #[test]
+    fn direct_path_dispatch_timestamp_labels_are_exact() {
+        assert_eq!(gpu_dispatch_stage_id("vello.path_count_direct"), 26);
+        assert_eq!(gpu_dispatch_stage_id("vello.path_tiling_direct"), 27);
+        assert_eq!(gpu_dispatch_stage_id("vello.path_count"), 15);
+        assert_eq!(gpu_dispatch_stage_id("vello.path_tiling"), 19);
+        assert_eq!(gpu_dispatch_stage_id("vello.path_count_directly"), 0);
+    }
+
+    #[test]
+    fn pending_buffer_clear_ends_a_prepared_compute_run() {
+        let mut engine = WgpuEngine::default();
+        let pending = BufferProxy::new(4, "pending");
+        let other = BufferProxy::new(4, "other");
+        engine.bind_map.pending_clears.insert(pending.id);
+
+        assert!(
+            engine.bindings_have_pending_clear(&[ResourceProxy::BufferRange {
+                proxy: pending,
+                offset: 0,
+                size: 4,
+            }])
+        );
+        assert!(!engine.bindings_have_pending_clear(&[ResourceProxy::Buffer(other)]));
+    }
+
+    #[test]
+    fn deferred_frees_extend_only_the_second_batching_mode() {
+        let buffer = BufferProxy::new(4, "buffer");
+        let image = ImageProxy::new(1, 1, crate::low_level::ImageFormat::Rgba8);
+        let free_buffer = Command::FreeBuffer(buffer);
+        let free_image = Command::FreeImage(image);
+        let clear = Command::Clear(buffer, 0, None);
+
+        assert!(compute_batch_boundary(&free_buffer, false));
+        assert!(compute_batch_boundary(&free_image, false));
+        assert!(!compute_batch_boundary(&free_buffer, true));
+        assert!(!compute_batch_boundary(&free_image, true));
+        assert!(compute_batch_boundary(&clear, true));
+
+        let mut free_bufs = HashSet::default();
+        let mut free_images = HashSet::default();
+        assert!(record_deferred_free(
+            &free_buffer,
+            &mut free_bufs,
+            &mut free_images
+        ));
+        assert!(record_deferred_free(
+            &free_image,
+            &mut free_bufs,
+            &mut free_images
+        ));
+        assert!(!record_deferred_free(
+            &clear,
+            &mut free_bufs,
+            &mut free_images
+        ));
+        assert!(free_bufs.contains(&buffer.id));
+        assert!(free_images.contains(&image.id));
+    }
+
+    #[test]
+    fn timestamp_decoder_reports_span_and_sum_for_complete_monotonic_pairs() {
+        let bytes = [10u64, 16, 20, 29]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let sample = decode_timestamp_sample(7, 2, 0.5, bytes).unwrap();
+
+        assert_eq!(sample.submission_id, 7);
+        assert_eq!(sample.span_ticks, 19);
+        assert_eq!(sample.summed_pass_ticks, 15);
+        assert_eq!(sample.span_ns, 9.5);
+        assert_eq!(sample.summed_pass_ns, 7.5);
+    }
+
+    #[test]
+    fn timestamp_decoder_rejects_non_monotonic_pairs() {
+        let bytes = [10u64, 9].into_iter().flat_map(u64::to_le_bytes).collect();
+        assert!(decode_timestamp_sample(1, 1, 1.0, bytes).is_none());
+    }
+
+    #[test]
+    fn timestamp_lifecycle_only_preserves_a_pending_map() {
+        let (_sender, receiver) = mpsc::channel();
+        assert!(!timestamp_slot_available(&TimestampMapState::Pending {
+            submission_id: 1,
+            pass_count: 1,
+            receiver,
+        }));
+        assert!(timestamp_slot_available(&TimestampMapState::MapFailed {
+            submission_id: 1,
+        }));
+        assert!(timestamp_slot_available(&TimestampMapState::Overflowed {
+            submission_id: 1,
+            pass_count: GPU_TIMESTAMP_PASS_LIMIT + 1,
+        }));
+    }
+
+    #[test]
+    fn timestamp_decoder_rejects_invalid_metadata() {
+        let bytes: Vec<u8> = [1u64, 2].into_iter().flat_map(u64::to_le_bytes).collect();
+        assert!(decode_timestamp_sample(1, 1, 0.0, bytes.clone()).is_none());
+        assert!(decode_timestamp_sample(1, 1, f32::NAN, bytes).is_none());
+    }
+
+    fn dispatch_timestamp_source(pairs: &[u64]) -> GpuTimestampSample {
+        GpuTimestampSample {
+            submission_id: 9,
+            pass_count: u32::try_from(pairs.len().saturating_div(2)).unwrap_or(0),
+            span_ticks: 0,
+            summed_pass_ticks: 0,
+            timestamp_period_ns: 1.0,
+            span_ns: 0.0,
+            summed_pass_ns: 0.0,
+            timestamp_bytes: pairs.iter().flat_map(|tick| tick.to_le_bytes()).collect(),
+        }
+    }
+
+    #[test]
+    fn dispatch_timestamp_decoder_aggregates_repeated_and_unknown_stages() {
+        let sample = dispatch_timestamp_source(&[10, 13, 20, 27, 30, 35]);
+        let mut stage_ids = [0; GPU_TIMESTAMP_PASS_LIMIT as usize];
+        stage_ids[..3].copy_from_slice(&[17, 17, 99]);
+        let decoded = decode_dispatch_timestamp_sample(&sample, &stage_ids, 3).unwrap();
+
+        assert_eq!(decoded.stage_count, 2);
+        assert_eq!(decoded.stages[0].stage_id, 0);
+        assert_eq!(decoded.stages[0].dispatch_count, 1);
+        assert_eq!(decoded.stages[0].duration_ns, 5);
+        assert_eq!(decoded.stages[1].stage_id, 17);
+        assert_eq!(decoded.stages[1].dispatch_count, 2);
+        assert_eq!(decoded.stages[1].duration_ns, 10);
+    }
+
+    #[test]
+    fn dispatch_timestamp_decoder_rejects_bad_pairs_and_stage_counts() {
+        let sample = dispatch_timestamp_source(&[10, 9]);
+        let stage_ids = [17; GPU_TIMESTAMP_PASS_LIMIT as usize];
+        assert!(decode_dispatch_timestamp_sample(&sample, &stage_ids, 1).is_none());
+
+        let sample = dispatch_timestamp_source(&[10, 12]);
+        assert!(decode_dispatch_timestamp_sample(&sample, &stage_ids, 2).is_none());
+    }
+
+    #[test]
+    fn dispatch_timestamp_decoder_rejects_zero_and_over_limit_pass_counts() {
+        let stage_ids = [17; GPU_TIMESTAMP_PASS_LIMIT as usize];
+        let zero = dispatch_timestamp_source(&[]);
+        assert!(decode_dispatch_timestamp_sample(&zero, &stage_ids, 0).is_none());
+
+        let ticks: Vec<u64> = (0..130).collect();
+        let oversized = dispatch_timestamp_source(&ticks);
+        assert_eq!(oversized.pass_count, GPU_TIMESTAMP_PASS_LIMIT + 1);
+        assert!(
+            decode_dispatch_timestamp_sample(&oversized, &stage_ids, GPU_TIMESTAMP_PASS_LIMIT + 1,)
+                .is_none()
+        );
     }
 }

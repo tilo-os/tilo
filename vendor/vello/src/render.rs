@@ -91,6 +91,7 @@ pub(crate) fn render_full(
     params: &RenderParams,
     budget: &vello_encoding::BumpBudget,
     measure: bool,
+    defer_bump_readback: bool,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     render_encoding_full(
         scene.encoding(),
@@ -102,6 +103,7 @@ pub(crate) fn render_full(
         params,
         budget,
         measure,
+        defer_bump_readback,
     )
 }
 
@@ -123,6 +125,7 @@ pub(crate) fn render_encoding_full(
     params: &RenderParams,
     budget: &vello_encoding::BumpBudget,
     measure: bool,
+    defer_bump_readback: bool,
 ) -> (ResourceProxy, Option<BufferProxy>) {
     let mut render = Render::new();
     render.render_encoding_coarse(
@@ -136,11 +139,71 @@ pub(crate) fn render_encoding_full(
         budget,
         measure,
         false,
+        None,
+        defer_bump_readback,
     );
     let out_image = render.out_image();
-    let bump_buf = measure.then(|| render.bump_buf());
+    let bump = render.bump_buf();
+    let bump_buf = measure.then_some(bump);
     render.record_fine(shaders, recording);
+    if defer_bump_readback {
+        finish_bump_readback(recording, bump, measure);
+    }
     (out_image.into(), bump_buf)
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn render_encoding_sparse_fine(
+    encoding: &Encoding,
+    resolver: &mut Resolver,
+    shaders: &FullShaders,
+    image_atlas: &mut Option<ImageProxy>,
+    recording: &mut Recording,
+    packed_scene: &mut Vec<u8>,
+    params: &RenderParams,
+    budget: &vello_encoding::BumpBudget,
+    measure: bool,
+    damage_tiles: &[u32],
+    external_damage_tiles: Option<BufferProxy>,
+    coarse_tiles: Option<&[u32]>,
+    defer_bump_readback: bool,
+) -> (ResourceProxy, Option<BufferProxy>) {
+    let mut render = Render::new();
+    render.render_encoding_coarse(
+        encoding,
+        resolver,
+        shaders,
+        image_atlas,
+        recording,
+        packed_scene,
+        params,
+        budget,
+        measure,
+        false,
+        coarse_tiles,
+        defer_bump_readback,
+    );
+    let out_image = render.out_image();
+    let bump = render.bump_buf();
+    let bump_buf = measure.then_some(bump);
+    render.record_fine_sparse(shaders, recording, damage_tiles, external_damage_tiles);
+    if defer_bump_readback {
+        finish_bump_readback(recording, bump, measure);
+    }
+    (out_image.into(), bump_buf)
+}
+
+/// Finish the bump lifetime at the caller-selected recording point.
+///
+/// The fine shaders do not bind the bump allocator. Deferring the copy is an
+/// opt-in command-order experiment: it preserves the same counters while
+/// allowing a shared compute pass to include fine before the copy boundary.
+#[cfg(feature = "wgpu")]
+fn finish_bump_readback(recording: &mut Recording, bump_buf: BufferProxy, measure: bool) {
+    if measure {
+        recording.download(bump_buf);
+    }
+    recording.free_buffer(bump_buf);
 }
 
 impl Default for Render {
@@ -180,10 +243,18 @@ impl Render {
         budget: &vello_encoding::BumpBudget,
         measure_bump: bool,
         capture_debug: bool,
+        coarse_tiles: Option<&[u32]>,
+        defer_bump_readback: bool,
     ) {
         use vello_encoding::RenderConfig;
         recording.reset_reusing_scene_upload(packed);
         packed.clear();
+        let coarse_tile_bits = coarse_tiles.map(|bits| {
+            recording.upload_uniform(
+                "vello.coarse_sparse_tiles",
+                bytemuck::cast_slice(bits).to_vec(),
+            )
+        });
 
         let (layout, ramps, images) = resolver.resolve(encoding, packed);
         let gradient_image = if ramps.height == 0 {
@@ -352,6 +423,39 @@ impl Render {
             recording.free_resource(reduced2);
             recording.free_resource(reduced_scan);
         }
+        let cpu_draw_prefix = shaders.cpu_draw_prefix_enabled
+            && buffer_sizes.draw_monoids.size_in_bytes() <= 1024 * 1024;
+        let cpu_draw_monoid_buf = if cpu_draw_prefix {
+            let buffer = ResourceProxy::new_buf(
+                buffer_sizes.draw_monoids.size_in_bytes().into(),
+                "vello.draw_monoid_buf",
+            );
+            recording.dispatch(
+                shaders.draw_prefix,
+                (1, 1, 1),
+                [config_buf, scene_buf, buffer],
+            );
+            Some(buffer)
+        } else {
+            None
+        };
+        // Selective CPU metadata only reads the host config/scene streams.
+        // It must run before flatten first materializes those streams on GPU;
+        // its output remains live through the later GPU draw_leaf dispatch.
+        let cpu_draw_reduced_buf = if shaders.cpu_metadata_enabled && !cpu_draw_prefix {
+            let buffer = ResourceProxy::new_buf(
+                buffer_sizes.draw_reduced.size_in_bytes().into(),
+                "vello.draw_reduced_buf",
+            );
+            recording.dispatch(
+                shaders.draw_reduce,
+                wg_counts.draw_reduce,
+                [config_buf, scene_buf, buffer],
+            );
+            Some(buffer)
+        } else {
+            None
+        };
         let path_bbox_buf = ResourceProxy::new_buf(
             buffer_sizes.path_bboxes.size_in_bytes().into(),
             "vello.path_bbox_buf",
@@ -381,37 +485,63 @@ impl Render {
                 lines_buf,
             ],
         );
-        let draw_reduced_buf = ResourceProxy::new_buf(
-            buffer_sizes.draw_reduced.size_in_bytes().into(),
-            "vello.draw_reduced_buf",
-        );
-        recording.dispatch(
-            shaders.draw_reduce,
-            wg_counts.draw_reduce,
-            [config_buf, scene_buf, draw_reduced_buf],
-        );
-        let draw_monoid_buf = ResourceProxy::new_buf(
-            buffer_sizes.draw_monoids.size_in_bytes().into(),
-            "vello.draw_monoid_buf",
-        );
+        let draw_reduced_buf = if let Some(buffer) = cpu_draw_reduced_buf {
+            Some(buffer)
+        } else if cpu_draw_prefix {
+            None
+        } else {
+            let buffer = ResourceProxy::new_buf(
+                buffer_sizes.draw_reduced.size_in_bytes().into(),
+                "vello.draw_reduced_buf",
+            );
+            recording.dispatch(
+                shaders.draw_reduce,
+                wg_counts.draw_reduce,
+                [config_buf, scene_buf, buffer],
+            );
+            Some(buffer)
+        };
+        let draw_monoid_buf = cpu_draw_monoid_buf.unwrap_or_else(|| {
+            ResourceProxy::new_buf(
+                buffer_sizes.draw_monoids.size_in_bytes().into(),
+                "vello.draw_monoid_buf",
+            )
+        });
         let clip_inp_buf = ResourceProxy::new_buf(
             buffer_sizes.clip_inps.size_in_bytes().into(),
             "vello.clip_inp_buf",
         );
-        recording.dispatch(
-            shaders.draw_leaf,
-            wg_counts.draw_leaf,
-            [
-                config_buf,
-                scene_buf,
-                draw_reduced_buf,
-                path_bbox_buf,
-                draw_monoid_buf,
-                info_bin_data_buf,
-                clip_inp_buf,
-            ],
-        );
-        recording.free_resource(draw_reduced_buf);
+        if cpu_draw_prefix {
+            recording.dispatch(
+                shaders.draw_leaf_prefix,
+                wg_counts.draw_leaf,
+                [
+                    config_buf,
+                    scene_buf,
+                    path_bbox_buf,
+                    draw_monoid_buf,
+                    info_bin_data_buf,
+                    clip_inp_buf,
+                ],
+            );
+        } else {
+            recording.dispatch(
+                shaders.draw_leaf,
+                wg_counts.draw_leaf,
+                [
+                    config_buf,
+                    scene_buf,
+                    draw_reduced_buf.expect("GPU draw leaf needs draw reduction"),
+                    path_bbox_buf,
+                    draw_monoid_buf,
+                    info_bin_data_buf,
+                    clip_inp_buf,
+                ],
+            );
+        }
+        if let Some(draw_reduced_buf) = draw_reduced_buf {
+            recording.free_resource(draw_reduced_buf);
+        }
         let clip_el_buf = ResourceProxy::new_buf(
             buffer_sizes.clip_els.size_in_bytes().into(),
             "vello.clip_el_buf",
@@ -491,71 +621,129 @@ impl Render {
         );
         recording.free_resource(draw_bbox_buf);
         recording.free_resource(tagmonoid_buf);
-        let indirect_count_buf = BufferProxy::new(
-            buffer_sizes.indirect_count.size_in_bytes().into(),
-            "vello.indirect_count",
-        );
-        recording.dispatch(
-            shaders.path_count_setup,
-            wg_counts.path_count_setup,
-            [bump_buf, indirect_count_buf.into()],
-        );
+        let indirect_count_buf = (!shaders.direct_path_dispatch_enabled).then(|| {
+            let buffer = BufferProxy::new(
+                buffer_sizes.indirect_count.size_in_bytes().into(),
+                "vello.indirect_count",
+            );
+            recording.dispatch(
+                shaders.path_count_setup,
+                wg_counts.path_count_setup,
+                [bump_buf, buffer.into()],
+            );
+            buffer
+        });
         let seg_counts_buf = ResourceProxy::new_buf(
             buffer_sizes.seg_counts.size_in_bytes().into(),
             "vello.seg_counts_buf",
         );
-        recording.dispatch_indirect(
-            shaders.path_count,
-            indirect_count_buf,
-            0,
-            [
-                config_buf,
-                bump_buf,
-                lines_buf,
-                path_buf,
-                tile_buf,
-                seg_counts_buf,
-            ],
-        );
+        if shaders.direct_path_dispatch_enabled {
+            recording.dispatch(
+                shaders.path_count_direct,
+                (128, 1, 1),
+                [
+                    config_buf,
+                    bump_buf,
+                    lines_buf,
+                    path_buf,
+                    tile_buf,
+                    seg_counts_buf,
+                ],
+            );
+        } else {
+            recording.dispatch_indirect(
+                shaders.path_count,
+                indirect_count_buf.expect("indirect path count needs its count buffer"),
+                0,
+                [
+                    config_buf,
+                    bump_buf,
+                    lines_buf,
+                    path_buf,
+                    tile_buf,
+                    seg_counts_buf,
+                ],
+            );
+        }
         recording.dispatch(
             shaders.backdrop,
             wg_counts.backdrop,
             [config_buf, bump_buf, path_buf, tile_buf],
         );
-        recording.dispatch(
-            shaders.coarse,
-            wg_counts.coarse,
-            [
-                config_buf,
-                scene_buf,
-                draw_monoid_buf,
-                bin_header_buf,
-                info_bin_data_buf,
-                path_buf,
-                tile_buf,
-                bump_buf,
-                ptcl_buf,
-            ],
-        );
-        recording.dispatch(
-            shaders.path_tiling_setup,
-            wg_counts.path_tiling_setup,
-            [bump_buf, indirect_count_buf.into(), ptcl_buf],
-        );
-        recording.dispatch_indirect(
-            shaders.path_tiling,
-            indirect_count_buf,
-            0,
-            [
-                bump_buf,
-                seg_counts_buf,
-                lines_buf,
-                path_buf,
-                tile_buf,
-                segments_buf,
-            ],
-        );
-        recording.free_buffer(indirect_count_buf);
+        if let (Some(shader), Some(bits)) = (shaders.coarse_sparse, coarse_tile_bits) {
+            recording.dispatch(
+                shader,
+                wg_counts.coarse,
+                [
+                    config_buf,
+                    scene_buf,
+                    draw_monoid_buf,
+                    bin_header_buf,
+                    info_bin_data_buf,
+                    path_buf,
+                    tile_buf,
+                    bump_buf,
+                    ptcl_buf,
+                    bits.into(),
+                ],
+            );
+        } else {
+            recording.dispatch(
+                shaders.coarse,
+                wg_counts.coarse,
+                [
+                    config_buf,
+                    scene_buf,
+                    draw_monoid_buf,
+                    bin_header_buf,
+                    info_bin_data_buf,
+                    path_buf,
+                    tile_buf,
+                    bump_buf,
+                    ptcl_buf,
+                ],
+            );
+        }
+        if let Some(bits) = coarse_tile_bits {
+            recording.free_buffer(bits);
+        }
+        if shaders.direct_path_dispatch_enabled {
+            recording.dispatch(
+                shaders.path_tiling_direct,
+                (128, 1, 1),
+                [
+                    bump_buf,
+                    seg_counts_buf,
+                    lines_buf,
+                    path_buf,
+                    tile_buf,
+                    segments_buf,
+                    ptcl_buf,
+                ],
+            );
+        } else {
+            let indirect_count_buf =
+                indirect_count_buf.expect("indirect path tiling needs its count buffer");
+            recording.dispatch(
+                shaders.path_tiling_setup,
+                wg_counts.path_tiling_setup,
+                [bump_buf, indirect_count_buf.into(), ptcl_buf],
+            );
+            recording.dispatch_indirect(
+                shaders.path_tiling,
+                indirect_count_buf,
+                0,
+                [
+                    bump_buf,
+                    seg_counts_buf,
+                    lines_buf,
+                    path_buf,
+                    tile_buf,
+                    segments_buf,
+                ],
+            );
+            recording.free_buffer(indirect_count_buf);
+        }
         recording.free_resource(seg_counts_buf);
         recording.free_resource(scene_buf);
         recording.free_resource(draw_monoid_buf);
@@ -580,10 +768,9 @@ impl Render {
             image_atlas: ResourceProxy::Image(image_atlas),
             out_image,
         });
-        if measure_bump {
-            recording.download(*bump_buf.as_buf().unwrap());
+        if !defer_bump_readback {
+            finish_bump_readback(recording, *bump_buf.as_buf().unwrap(), measure_bump);
         }
-        recording.free_resource(bump_buf);
 
         #[cfg(feature = "debug_layers")]
         {
@@ -682,6 +869,51 @@ impl Render {
         }
     }
 
+    pub fn record_fine_sparse(
+        &mut self,
+        shaders: &FullShaders,
+        recording: &mut Recording,
+        damage_tiles: &[u32],
+        external_damage_tiles: Option<BufferProxy>,
+    ) {
+        let fine = self.fine_resources.take().unwrap();
+        let tile_count = u32::try_from(damage_tiles.len() / 9).unwrap_or(0);
+        let owns_damage_tiles = external_damage_tiles.is_none();
+        let damage_tiles = external_damage_tiles.unwrap_or_else(|| {
+            recording.upload(
+                "vello.damage_tiles",
+                bytemuck::cast_slice::<u32, u8>(damage_tiles).to_vec(),
+            )
+        });
+        recording.dispatch(
+            shaders
+                .fine_sparse_area
+                .expect("sparse fine shader was not configured"),
+            (tile_count, 1, 1),
+            [
+                fine.config_buf,
+                fine.segments_buf,
+                fine.ptcl_buf,
+                fine.info_bin_data_buf,
+                fine.blend_spill_buf,
+                ResourceProxy::Image(fine.out_image),
+                fine.gradient_image,
+                fine.image_atlas,
+                damage_tiles.into(),
+            ],
+        );
+        recording.free_resource(fine.config_buf);
+        recording.free_resource(fine.tile_buf);
+        recording.free_resource(fine.segments_buf);
+        recording.free_resource(fine.ptcl_buf);
+        recording.free_resource(fine.gradient_image);
+        recording.free_resource(fine.info_bin_data_buf);
+        recording.free_resource(fine.blend_spill_buf);
+        if owns_damage_tiles {
+            recording.free_resource(damage_tiles.into());
+        }
+    }
+
     /// Get the output image.
     ///
     /// This is going away, as the caller will add the output image to the bind
@@ -703,5 +935,42 @@ impl Render {
     #[cfg(feature = "debug_layers")]
     pub fn take_captured_buffers(&mut self) -> Option<CapturedBuffers> {
         self.captured_buffers.take()
+    }
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+mod tests {
+    use super::*;
+    use crate::recording::Command;
+
+    #[test]
+    fn finish_bump_readback_appends_download_then_free() {
+        let bump = BufferProxy::new(16, "test.bump");
+        let mut recording = Recording::default();
+        // The helper preserves the ordering after its existing preceding commands.
+        recording.clear_all(bump);
+        finish_bump_readback(&mut recording, bump, true);
+
+        assert!(matches!(
+            recording.commands.first(),
+            Some(Command::Clear(..))
+        ));
+        assert!(
+            matches!(recording.commands.get(1), Some(Command::Download(buf)) if buf.id == bump.id)
+        );
+        assert!(
+            matches!(recording.commands.get(2), Some(Command::FreeBuffer(buf)) if buf.id == bump.id)
+        );
+    }
+
+    #[test]
+    fn finish_unmeasured_bump_readback_only_frees() {
+        let bump = BufferProxy::new(16, "test.bump");
+        let mut recording = Recording::default();
+        finish_bump_readback(&mut recording, bump, false);
+
+        assert!(
+            matches!(recording.commands.as_slice(), [Command::FreeBuffer(buf)] if buf.id == bump.id)
+        );
     }
 }

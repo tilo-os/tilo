@@ -1,0 +1,20 @@
+pathtag_scan
++ pathtag_scan_large
++ pathtag_scan_small: small
+fine
++ fine_area
++ fine_msaa8: msaa msaa8
++ fine_msaa16: msaa msaa16
++ fine_sparse_area: sparse
+coarse
++ coarse
++ coarse_sparse: sparse
+draw_leaf
++ draw_leaf
++ draw_leaf_prefix: cpu_prefix
+path_count
++ path_count
++ path_count_direct: direct_dispatch
+path_tiling
++ path_tiling
++ path_tiling_direct: direct_dispatch
