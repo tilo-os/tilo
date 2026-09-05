@@ -112,29 +112,29 @@ jobs:
           EOF
           )
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package-optimized",targets:$targets},
-              {arch:"arm64",runner:"runner-arm64",targets:$targets}
-            ]}')
+            architectures='[{"arch":"amd64","runner":"qos-package-optimized"},{"arch":"arm64","runner":"runner-arm64"}]'
           else
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"qos-package-optimized",targets:$targets}
-            ]}')
+            architectures='[{"arch":"amd64","runner":"qos-package-optimized"}]'
           fi
+          matrix=$(jq -cn --arg targets "$targets" --argjson architectures "$architectures" '{include:[
+            $architectures[] as $architecture
+            | ($targets | split("\n")[] | select(length > 0) | split("|")) as $target
+            | $architecture + {distro:$target[0],image:$target[1],revision:$target[2]}
+          ]}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   package:
     needs: validate
-    name: package lane / ${{ matrix.arch }}
+    name: package / ${{ matrix.distro }} / ${{ matrix.arch }}
     # The amd64 matrix entry uses the measured optimized package class; native
     # ARM64 tags and explicit full-native runs retain their ARM runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
-    # Each architecture is one sequential lane so the five userspaces reuse
-    # compiler objects without overcommitting its native host.
+    # Every target is an independent one-job Kata VM. The placement broker,
+    # rather than a workflow-wide parallelism knob, admits as many as current
+    # CPU and memory headroom can safely hold.
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -164,55 +164,24 @@ jobs:
         with:
           path: os/external-assets/cache
           key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-      - name: Build and install-test all five target userspaces
+      - name: Build and install-test target userspace
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-          QOS_LANE_TARGETS: ${{ matrix.targets }}
         shell: bash
         run: |
-          status=0
-          while IFS='|' read -r distro image revision; do
-            [[ -n $distro ]] || continue
-            echo "::group::$distro / ${{ matrix.arch }}"
-            if ! dist/ci/run-package-job.sh \
-                "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
-              status=1
-            fi
-            echo "::endgroup::"
-          done <<<"$QOS_LANE_TARGETS"
-          exit "$status"
+          dist/ci/run-package-job.sh \
+            '${{ matrix.distro }}' \
+            '${{ matrix.image }}' \
+            '${{ matrix.arch }}' \
+            '${{ matrix.revision }}'
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
-          name: arch-${{ matrix.arch }}
-          path: dist/ci-output/arch-${{ matrix.arch }}/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always()
-        with:
-          name: nix-${{ matrix.arch }}
-          path: dist/ci-output/nix-${{ matrix.arch }}/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always()
-        with:
-          name: ubuntu-24.04-${{ matrix.arch }}
-          path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always()
-        with:
-          name: debian-13-${{ matrix.arch }}
-          path: dist/ci-output/debian-13-${{ matrix.arch }}/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always()
-        with:
-          name: fedora-44-${{ matrix.arch }}
-          path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
+          name: ${{ matrix.distro }}-${{ matrix.arch }}
+          path: dist/ci-output/${{ matrix.distro }}-${{ matrix.arch }}/*
           if-no-files-found: error
 
   publish-os-payload:
