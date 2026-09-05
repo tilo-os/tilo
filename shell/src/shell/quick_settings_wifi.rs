@@ -11,15 +11,19 @@ use vello::peniko::Fill;
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
 use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::qs_actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::{WifiNetwork, WifiPasswordPrompt};
+#[cfg(test)]
+use crate::shell::quick_settings::WifiNetwork;
+use crate::shell::quick_settings::WifiPasswordPrompt;
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
     list: DrillInList,
+    hotspot_rect: Rect,
 }
 
 impl QuickSettingsWifiPane {
@@ -30,9 +34,18 @@ impl QuickSettingsWifiPane {
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
     ) -> DrillInOutcome {
-        self.list.layout(panel, state.wifi_networks.len());
+        self.list
+            .layout_from(panel, state.wifi_networks.len(), 116.0);
         if self.list.back_contains(point) {
             return DrillInOutcome::Back;
+        }
+        if self.hotspot_rect.contains(point) {
+            state.radios.hotspot_active = !state.radios.hotspot_active;
+            log_qs_result(
+                "set_hotspot",
+                actions.set_hotspot(state.radios.hotspot_active),
+            );
+            return DrillInOutcome::Changed;
         }
         let Some(index) = self.list.row_at(point) else {
             return DrillInOutcome::None;
@@ -63,20 +76,91 @@ impl QuickSettingsWifiPane {
         theme: &Theme,
         panel: Rect,
         cursor: Option<Point>,
-        networks: &[WifiNetwork],
+        state: &QuickSettingsState,
     ) {
-        self.list.layout(panel, networks.len());
+        let networks = &state.wifi_networks;
+        self.list.layout_from(panel, networks.len(), 116.0);
+        self.hotspot_rect = Rect::new(
+            panel.x0 + 12.0,
+            panel.y0 + 56.0,
+            panel.x1 - 12.0,
+            panel.y0 + 108.0,
+        );
         let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(self.hotspot_rect, "")
+                .hovered(cursor.is_some_and(|point| self.hotspot_rect.contains(point)))
+                .accessible_name("Wi-Fi hotspot"),
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                self.hotspot_rect.x0 + 12.0,
+                self.hotspot_rect.y0 + 16.0,
+                self.hotspot_rect.x0 + 32.0,
+                self.hotspot_rect.y0 + 36.0,
+            ),
+            ui::icons::Icon::Wifi,
+            colors.text_primary,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text.draw_text_weighted(
+            scene,
+            "Hotspot",
+            theme.tokens.typography.scale.sm,
+            colors.text_primary,
+            transform
+                .pre_translate((self.hotspot_rect.x0 + 44.0, self.hotspot_rect.y0 + 22.0).into()),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        text.draw_text(
+            scene,
+            if state.radios.hotspot_active {
+                "Sharing this connection"
+            } else {
+                "Off"
+            },
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform
+                .pre_translate((self.hotspot_rect.x0 + 44.0, self.hotspot_rect.y0 + 39.0).into()),
+            None,
+        );
+        Toggle::paint(
+            scene,
+            transform,
+            theme,
+            &ToggleFace::new(
+                Rect::new(
+                    self.hotspot_rect.x1 - 48.0,
+                    self.hotspot_rect.y0 + 16.0,
+                    self.hotspot_rect.x1 - 12.0,
+                    self.hotspot_rect.y0 + 36.0,
+                ),
+                state.radios.hotspot_active,
+            )
+            .hovered(cursor.is_some_and(|point| self.hotspot_rect.contains(point))),
+        );
         if networks.is_empty() {
-            DrillInList::draw_empty(
+            let message = "Scanning for networks…";
+            let (width, _) = text.measure(message, theme.tokens.typography.scale.sm, None);
+            text.draw_text(
                 scene,
-                transform,
-                text,
-                theme,
-                panel,
-                "Scanning for networks…",
+                message,
+                theme.tokens.typography.scale.sm,
+                colors.text_dim,
+                transform.pre_translate(
+                    (panel.center().x - f64::from(width) / 2.0, panel.y0 + 144.0).into(),
+                ),
+                None,
             );
             return;
         }
