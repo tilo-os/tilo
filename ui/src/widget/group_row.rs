@@ -1124,17 +1124,11 @@ impl GroupRow {
     /// to sender" recovery path, called on the source row.
     pub fn accept_cross_strip_drop(
         &mut self,
+        new_id: u64,
         desc: TabDescriptor,
         host: TileHost,
         drop_pos: Point,
-    ) {
-        let new_id = self
-            .groups
-            .iter()
-            .map(|g| g.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+    ) -> usize {
         let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
         new_group.start_spawn_animation();
         // `gap_index_for` returns `None` when `drop_pos` falls inside an
@@ -1144,6 +1138,7 @@ impl GroupRow {
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
         self.structure_dirty = true;
+        clamped
     }
 }
 
