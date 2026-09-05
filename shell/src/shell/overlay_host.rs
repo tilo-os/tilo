@@ -5638,14 +5638,19 @@ impl ShellOverlayHost {
     }
 
     /// Mirror of the geometry in `draw_quick_settings` — the popover rect
-    /// anchored under the top-right tray pill. Width matches the concept's
-    /// `w-80` (320px); height sums the section bands in
-    /// [`Self::draw_quick_settings`], including three rows of system tiles.
+    /// anchored under the top-right tray pill. Laptop-sized outputs use a
+    /// wider two-column root instead of squeezing eight controls into three
+    /// 90px cards; compact outputs retain the original three-column form.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = 320.0_f64;
-        let popover_h = 552.0_f64;
+        let popover_w = if self.rect.width() >= 720.0 {
+            400.0
+        } else {
+            320.0
+        };
+        let desired_h: f64 = if popover_w >= 400.0 { 544.0 } else { 552.0 };
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
+        let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -8373,14 +8378,6 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.quick_settings
                     .push_level(crate::shell::quick_settings::QsLevel::Notifications);
-                st.bump();
-            }
-            RootAction::DisplayNotice => {
-                let mut st = chrome.borrow_mut();
-                st.push_notification(
-                    "Displays",
-                    "Display switching is available in Settings → Displays.",
-                );
                 st.bump();
             }
             RootAction::Changed(pending) => {

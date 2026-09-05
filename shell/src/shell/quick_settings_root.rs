@@ -38,7 +38,6 @@ pub enum RootAction {
     Privacy,
     OpenNotifications,
     OpenPowerMenu,
-    DisplayNotice,
     Enter(QsLevel),
     Changed(PendingRootActions),
 }
@@ -66,7 +65,7 @@ pub struct QuickSettingsRoot {
     panel: Rect,
     slider_drag: Option<usize>,
     /// The immediate-mode root still needs a real keyboard focus model.  The
-    /// index follows paint order: four actions, two sliders, nine system
+    /// index follows paint order: four actions, two sliders, eight system
     /// controls, then power profile.
     keyboard_focus: Option<usize>,
 }
@@ -74,7 +73,7 @@ pub struct QuickSettingsRoot {
 impl QuickSettingsRoot {
     const ACTION_COUNT: usize = 4;
     const SLIDER_COUNT: usize = 2;
-    const TOGGLE_COUNT: usize = 9;
+    const TOGGLE_COUNT: usize = 8;
     const POWER_FOCUS: usize = Self::ACTION_COUNT + Self::SLIDER_COUNT + Self::TOGGLE_COUNT;
     const WIFI_DETAILS_FOCUS: usize = Self::POWER_FOCUS + 1;
     const BLUETOOTH_DETAILS_FOCUS: usize = Self::POWER_FOCUS + 2;
@@ -170,7 +169,22 @@ impl QuickSettingsRoot {
     }
 
     fn focusable(index: usize, state: &QuickSettingsState) -> bool {
-        index != Self::ACTION_COUNT + Self::SLIDER_COUNT + 8 || state.radios.wwan_available
+        if index < Self::ACTION_COUNT + Self::SLIDER_COUNT
+            || index >= Self::ACTION_COUNT + Self::SLIDER_COUNT + Self::TOGGLE_COUNT
+        {
+            return true;
+        }
+        Self::toggle_enabled(index - Self::ACTION_COUNT - Self::SLIDER_COUNT, state)
+    }
+
+    /// Controls without an actionable backend remain visible as status, but
+    /// cannot masquerade as working buttons or keyboard stops.
+    fn toggle_enabled(index: usize, state: &QuickSettingsState) -> bool {
+        match index {
+            2 => state.wired.is_some(),
+            7 => state.radios.wwan_available,
+            _ => true,
+        }
     }
 
     /// Semantic mirror for the root's immediate-mode controls. Values,
@@ -186,7 +200,7 @@ impl QuickSettingsRoot {
             .with_description("Frequently used system controls")
             .with_state(AccessState::new().modal(true));
         for (index, name) in [
-            "Open Settings",
+            "Open workspace settings",
             "Privacy controls",
             "Notification history",
             "Power menu",
@@ -222,10 +236,11 @@ impl QuickSettingsRoot {
         let rows = Self::quick_settings_toggle_rows(state, "Not connected");
         for (index, (on, label, subline)) in rows.iter().enumerate() {
             let focus_index = Self::ACTION_COUNT + Self::SLIDER_COUNT + index;
-            let (role, enabled) = if matches!(index, 5 | 7) {
-                (Role::Button, true)
+            let enabled = Self::toggle_enabled(index, state);
+            let role = if index == 5 {
+                Role::Button
             } else {
-                (Role::Switch, Self::focusable(focus_index, state))
+                Role::Switch
             };
             let mut control = AccessNode::new(role)
                 .with_name(*label)
@@ -353,11 +368,14 @@ impl QuickSettingsRoot {
                 changed = true;
             }
         }
-        for index in 0..9 {
+        for index in 0..Self::TOGGLE_COUNT {
             let card = self.quick_settings_toggle_geometry(index);
             let hit = Rect::new(card.x0 - 4.0, card.y0 - 4.0, card.x1 + 4.0, card.y1 + 4.0);
             if !hit.contains(point) {
                 continue;
+            }
+            if !Self::toggle_enabled(index, state) {
+                return RootAction::None;
             }
             match index {
                 0 => {
@@ -387,7 +405,6 @@ impl QuickSettingsRoot {
                     state.night_light = !state.night_light;
                     pending.night_light = Some(state.night_light);
                 }
-                7 => return RootAction::DisplayNotice,
                 _ if state.radios.wwan_available => {
                     state.radios.wwan_enabled = !state.radios.wwan_enabled;
                     pending.mobile = Some(state.radios.wwan_enabled);
@@ -502,12 +519,19 @@ impl QuickSettingsRoot {
     }
     pub fn toggle_geometry(panel: Rect, index: usize) -> Rect {
         let scale = Self::vertical_scale(panel);
-        let card_w = (panel.width() - 48.0) / 3.0;
-        let row = index / 3;
-        let col = index % 3;
+        let columns = Self::toggle_columns(panel);
+        let gaps = usize_to_f64_lossy(columns.saturating_sub(1)) * 8.0;
+        let card_w = (panel.width() - 32.0 - gaps) / usize_to_f64_lossy(columns);
+        let row = index / columns;
+        let col = index % columns;
         let x0 = panel.x0 + 16.0 + usize_to_f64_lossy(col) * (card_w + 8.0);
-        let y0 = panel.y0 + 176.0 * scale + usize_to_f64_lossy(row) * 96.0 * scale;
-        Rect::new(x0, y0, x0 + card_w, y0 + 88.0 * scale)
+        let (row_stride, card_h) = if columns == 2 {
+            (72.0, 64.0)
+        } else {
+            (96.0, 88.0)
+        };
+        let y0 = panel.y0 + 176.0 * scale + usize_to_f64_lossy(row) * row_stride * scale;
+        Rect::new(x0, y0, x0 + card_w, y0 + card_h * scale)
     }
     pub fn action_geometry(panel: Rect, index: usize) -> Rect {
         let scale = Self::vertical_scale(panel);
@@ -522,27 +546,41 @@ impl QuickSettingsRoot {
     }
     pub fn power_profile_geometry(panel: Rect) -> Rect {
         let scale = Self::vertical_scale(panel);
+        let (y0, y1) = if Self::toggle_columns(panel) == 2 {
+            (472.0, 528.0)
+        } else {
+            (472.0, 520.0)
+        };
         Rect::new(
             panel.x0 + 16.0,
-            panel.y0 + 472.0 * scale,
+            panel.y0 + y0 * scale,
             panel.x1 - 16.0,
-            panel.y0 + 520.0 * scale,
+            panel.y0 + y1 * scale,
         )
+    }
+
+    fn toggle_columns(panel: Rect) -> usize {
+        if panel.width() >= 376.0 { 2 } else { 3 }
     }
 
     /// A short desktop/mobile viewport compresses vertical whitespace and
     /// cards proportionally, never moving the last control below the visible
     /// popover. At the standard 552px height this is exactly 1.0.
     fn vertical_scale(panel: Rect) -> f64 {
-        (panel.height() / 552.0).clamp(0.72, 1.0)
+        let reference = if Self::toggle_columns(panel) == 2 {
+            544.0
+        } else {
+            552.0
+        };
+        (panel.height() / reference).clamp(0.55, 1.0)
     }
     pub fn toggle_switch_geometry(panel: Rect, index: usize) -> Option<Rect> {
-        // Wi-Fi and Bluetooth expose a details list, VPN is navigation, and
-        // Displays is an action. A 3-column utility panel cannot fit both a
+        // Wi-Fi and Bluetooth expose a details list and VPN is navigation.
+        // A 3-column utility panel cannot fit both a
         // 32px details target and a trustworthy switch without overlap, so
         // those cards keep their established whole-card toggle + explicit
         // chevron detail target instead.
-        if matches!(index, 0 | 1 | 5 | 7) {
+        if matches!(index, 0 | 1 | 5) {
             return None;
         }
         let card = Self::toggle_geometry(panel, index);
@@ -595,16 +633,16 @@ impl QuickSettingsRoot {
                 text_renderer,
                 theme,
                 &ButtonFace::new(tile, "")
-                    .style(if i == 3 {
-                        ui::widget::ButtonStyle::Danger
-                    } else {
-                        ui::widget::ButtonStyle::Neutral
-                    })
+                    // Opening the power menu is navigation, not the
+                    // destructive action itself. A solid danger fill made
+                    // its separately-painted icon and label disappear and
+                    // overstated what one click would do.
+                    .style(ui::widget::ButtonStyle::Neutral)
                     .radius(ui::chrome::ChromeRole::Control.radius(theme, tile.height()))
                     .hovered(cursor.is_some_and(|point| tile.contains(point)))
                     .focused(self.keyboard_focus == Some(i))
                     .accessible_name(match i {
-                        0 => "Open Settings",
+                        0 => "Open workspace settings",
                         1 => "Privacy controls",
                         2 => "Notification history",
                         _ => "Power menu",
@@ -640,7 +678,7 @@ impl QuickSettingsRoot {
                 Self::draw_quick_settings_privacy_indicator(scene, transform, tile, colors, qs);
             }
             let action_label = match i {
-                0 => "Settings",
+                0 => "Workspace",
                 1 if !qs.privacy.active_media.is_empty() => "Stop access",
                 1 => "Privacy",
                 2 => "History",
@@ -793,13 +831,13 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// The 9 toggle-card rows (on/off, label, sub-line) section 3 draws
+    /// The toggle-card rows (on/off, label, sub-line) section 3 draws
     /// one card per. Split out of the drawing loop so each is a plain
     /// data computation.
     fn quick_settings_toggle_rows<'a>(
         qs: &'a crate::shell::chrome_state::QuickSettingsState,
         not_connected: &'a str,
-    ) -> [(bool, &'a str, &'a str); 9] {
+    ) -> [(bool, &'a str, &'a str); 8] {
         let wifi_sub = if qs.wifi {
             qs.wifi_networks
                 .iter()
@@ -821,11 +859,7 @@ impl QuickSettingsRoot {
             .wired
             .as_ref()
             .and_then(|wired| wired.device.as_deref())
-            .unwrap_or(if wired_on {
-                "Connected"
-            } else {
-                "Not connected"
-            });
+            .unwrap_or("Unavailable");
         let vpn_active = qs.vpns.iter().any(|vpn| vpn.active);
         let vpn_sub = qs
             .vpns
@@ -850,7 +884,6 @@ impl QuickSettingsRoot {
             (qs.radios.hotspot_active, "Hotspot", "qOS Hotspot"),
             (vpn_active, "VPN", vpn_sub),
             (qs.night_light, "Night Light", "Display comfort"),
-            (false, "Displays", "Switch output"),
             (qs.radios.wwan_enabled, "Mobile data", mobile_sub),
         ]
     }
@@ -879,7 +912,7 @@ impl QuickSettingsRoot {
         for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
             let card = self.quick_settings_toggle_geometry(i);
             let focus_index = Self::ACTION_COUNT + Self::SLIDER_COUNT + i;
-            let is_disabled = i == 8 && !qs.radios.wwan_available;
+            let is_disabled = !Self::toggle_enabled(i, qs);
             Button::paint(
                 scene,
                 transform,
@@ -901,15 +934,13 @@ impl QuickSettingsRoot {
                 card.y0 + 12.0 + 20.0,
             );
             // Slot 0 (Wifi) and slot 4 (Hotspot) both fall to the
-            // catch-all Wifi glyph below, same as anything past slot 7
-            // (e.g. Mobile data).
+            // catch-all Wifi glyph below, including Mobile data.
             let icon = match i {
                 1 => ui::icons::Icon::Bluetooth,
                 2 => ui::icons::Icon::EthernetPort,
                 3 => ui::icons::Icon::WifiOff,
                 5 => ui::icons::Icon::Shield,
                 6 => ui::icons::Icon::Sun,
-                7 => ui::icons::Icon::Monitor,
                 _ => ui::icons::Icon::Wifi,
             };
             ui::icons::draw_icon(
@@ -931,7 +962,7 @@ impl QuickSettingsRoot {
                         .focused(self.keyboard_focus == Some(focus_index))
                         .disabled(is_disabled),
                 );
-            } else {
+            } else if matches!(i, 0 | 1 | 5) {
                 // A real chevron denotes navigation. It no longer appears on
                 // ordinary toggles, where it misleadingly competed with the
                 // switch state.
@@ -1121,10 +1152,10 @@ mod tests {
     fn unavailable_mobile_data_is_a_consumed_no_op() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
-        let card = QuickSettingsRoot::toggle_geometry(PANEL, 8);
+        let card = QuickSettingsRoot::toggle_geometry(PANEL, 7);
         assert_eq!(
             root.handle_click(card.center(), PANEL, &mut state),
-            RootAction::Changed(PendingRootActions::default())
+            RootAction::None
         );
         assert!(!state.radios.wwan_enabled);
     }
@@ -1143,7 +1174,9 @@ mod tests {
             RootAction::Changed(PendingRootActions { wifi: Some(_), .. })
         ));
 
-        for _ in 0..9 {
+        // Seven enabled stops remain between the WLAN switch and its
+        // details button; unavailable hardware/status cards are skipped.
+        for _ in 0..7 {
             root.focus_next(&state, false);
         }
         assert_eq!(
@@ -1161,7 +1194,8 @@ mod tests {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
         root.reset_focus();
-        for _ in 0..16 {
+        // Disabled LAN/mobile cards are not keyboard stops.
+        for _ in 0..14 {
             root.focus_next(&state, false);
         }
         assert_eq!(
@@ -1179,13 +1213,49 @@ mod tests {
         let short = Rect::new(12.0, 48.0, 308.0, 556.0);
         let power = QuickSettingsRoot::power_profile_geometry(short);
         assert!(power.y1 <= short.y1, "power must remain reachable");
-        for index in 0..9 {
+        for index in 0..QuickSettingsRoot::TOGGLE_COUNT {
             let card = QuickSettingsRoot::toggle_geometry(short, index);
             assert!(card.y0 >= short.y0 && card.y1 <= short.y1);
             if index >= 3 {
                 let previous = QuickSettingsRoot::toggle_geometry(short, index - 3);
                 assert!(previous.y1 < card.y0, "grid rows must not overlap");
             }
+        }
+    }
+
+    #[test]
+    fn laptop_popover_uses_roomy_two_column_cards_without_overlap() {
+        let laptop = Rect::new(1184.0, 48.0, 1584.0, 592.0);
+        let first = QuickSettingsRoot::toggle_geometry(laptop, 0);
+        let second = QuickSettingsRoot::toggle_geometry(laptop, 1);
+        let third = QuickSettingsRoot::toggle_geometry(laptop, 2);
+        assert_eq!(first.y0, second.y0, "the first row has two controls");
+        assert!(first.x1 < second.x0, "columns must not overlap");
+        assert!(third.y0 > first.y1, "the third control starts a new row");
+        assert!(first.width() >= 175.0, "labels need useful horizontal room");
+        assert!(
+            QuickSettingsRoot::power_profile_geometry(laptop).y1 <= laptop.y1,
+            "the fourth system row and power control remain on screen"
+        );
+    }
+
+    #[test]
+    fn controls_without_backends_are_disabled_not_fake_actions() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        for index in [2, 7] {
+            let card = QuickSettingsRoot::toggle_geometry(PANEL, index);
+            assert_eq!(
+                root.handle_click(card.center(), PANEL, &mut state),
+                RootAction::None
+            );
+        }
+        let snapshot = root.accessibility_snapshot(&state);
+        for index in [2, 7] {
+            let focus_index =
+                QuickSettingsRoot::ACTION_COUNT + QuickSettingsRoot::SLIDER_COUNT + index;
+            assert!(snapshot.children[focus_index].state.disabled);
+            assert!(!snapshot.children[focus_index].state.focusable);
         }
     }
 
@@ -1208,7 +1278,7 @@ mod tests {
     fn accessibility_cannot_focus_unavailable_mobile_data() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
-        let mobile = QuickSettingsRoot::ACTION_COUNT + QuickSettingsRoot::SLIDER_COUNT + 8;
+        let mobile = QuickSettingsRoot::ACTION_COUNT + QuickSettingsRoot::SLIDER_COUNT + 7;
 
         assert!(!root.focus_accessibility_path(&[mobile], &state));
         assert_eq!(root.focused_index(), None);

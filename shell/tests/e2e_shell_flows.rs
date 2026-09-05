@@ -911,6 +911,12 @@ fn e2e_open_quick_settings() {
         "root-level click on the three-dot tray pill should open the quick-settings overlay"
     );
 
+    // Prime the transition from the newly-set chrome flag. Previously the
+    // loop queried `needs_animation_frame` while the transition still
+    // thought it was closed, so the allegedly-open screenshot captured no
+    // panel at all.
+    h.draw_to(None, &out_dir.join("unused-transition-prime.png"));
+
     // Let the 180 ms open fade settle so the capture shows a fully-open tray.
     let deadline = Instant::now() + Duration::from_millis(400);
     while h.root.needs_animation_frame() && Instant::now() < deadline {

@@ -251,6 +251,17 @@ fn click_at(
 }
 
 #[test]
+fn laptop_quick_settings_uses_the_roomier_responsive_panel() {
+    let tree = minimal_tree();
+    let (mut host, _) = build_nirios_overlay_host_with_chrome(&tree);
+    let _ = layout_host(&mut host);
+    let panel = host.quick_settings_rect_for_tests();
+    assert_eq!(panel.width(), 400.0);
+    assert_eq!(panel.height(), 544.0);
+    assert!(panel.x1 <= 1600.0 && panel.y1 <= 900.0);
+}
+
+#[test]
 fn brightness_slider_click_routes_to_set_brightness() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
