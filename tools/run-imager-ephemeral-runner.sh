@@ -177,7 +177,7 @@ case "$host_arch" in
   *) printf 'unsupported native runner architecture: %s\n' "$host_arch" >&2; exit 1 ;;
 esac
 case "$label:$host_os:$host_arch" in
-  runner:Linux:x86_64|runner-arm64:Linux:aarch64|macos-x64:Darwin:x86_64|macos-arm64:Darwin:aarch64) ;;
+  imager-linux-x86_64:Linux:x86_64|imager-linux-aarch64:Linux:aarch64|imager-macos-x86_64:Darwin:x86_64|imager-macos-aarch64:Darwin:aarch64) ;;
   *) printf 'runner label %s does not match native host %s/%s\n' "$label" "$host_os" "$host_arch" >&2; exit 1 ;;
 esac
 trusted_program "$runner"
