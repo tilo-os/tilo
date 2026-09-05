@@ -207,7 +207,7 @@ impl DrmDispatchState {
             devices: Vec::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
-                natural_scroll: input.natural_scroll,
+                natural_scroll: input.natural_scroll_for(true),
                 ..GestureConfig::default()
             }),
             outputs_changed: false,
@@ -1361,7 +1361,7 @@ impl DrmRuntime {
         let scale_override = load_display_scale_override();
         tracing::info!(
             tap_to_click = input.tap_to_click,
-            natural_scroll = input.natural_scroll,
+            natural_scroll = input.natural_scroll_for(true),
             scale_override = ?scale_override,
             "DRM backend: loaded input and display settings"
         );
@@ -1470,7 +1470,7 @@ impl DrmRuntime {
             self.dispatch.slow_pending.clear();
         }
         self.dispatch.gestures.set_config(GestureConfig {
-            natural_scroll: input.natural_scroll,
+            natural_scroll: input.natural_scroll_for(true),
             ..GestureConfig::default()
         });
         let mut devices = std::mem::take(&mut self.dispatch.devices);

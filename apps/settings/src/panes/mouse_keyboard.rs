@@ -1,7 +1,7 @@
 //! Mouse & Keyboard pane — pointer behaviour and keyboard layout.
 //!
 //! Every control drives real, durable state:
-//! - **Pointer speed / Natural scrolling / Tap to click / Key repeat** are
+//! - **Pointer speed / per-device natural scrolling / Tap to click / Key repeat** are
 //!   persisted to the shared preferences store
 //!   ([`crate::prefs::SystemPrefs`]); the compositor reads them when it
 //!   configures libinput for the session.
@@ -9,8 +9,10 @@
 //!   invokes `localectl`; the compositor owns XKB and hot-reloads this file.
 //
 // CRDT keys this pane reads / writes:
-//   `input.pointer_speed`    — f64 in `[0.0, 1.0]`
-//   `input.natural_scroll`   — bool
+//   `input.touchpad_pointer_speed` — f64 in `[0.0, 1.0]`
+//   `input.mouse_pointer_speed`    — f64 in `[0.0, 1.0]`
+//   `input.touchpad_natural_scroll` — bool
+//   `input.mouse_natural_scroll`    — bool
 //   `input.tap_to_click`     — bool
 //   `input.key_repeat`       — f64 in `[0.0, 1.0]`
 //   `input.keyboard_layout`  — active source display label
@@ -30,7 +32,11 @@ use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
 
 pub const POINTER_SPEED_KEY: &str = "input.pointer_speed";
+pub const TOUCHPAD_POINTER_SPEED_KEY: &str = "input.touchpad_pointer_speed";
+pub const MOUSE_POINTER_SPEED_KEY: &str = "input.mouse_pointer_speed";
 pub const NATURAL_SCROLL_KEY: &str = "input.natural_scroll";
+pub const TOUCHPAD_NATURAL_SCROLL_KEY: &str = "input.touchpad_natural_scroll";
+pub const MOUSE_NATURAL_SCROLL_KEY: &str = "input.mouse_natural_scroll";
 pub const TAP_CLICK_KEY: &str = "input.tap_to_click";
 pub const KEY_REPEAT_KEY: &str = "input.key_repeat";
 pub const LAYOUT_KEY: &str = "input.keyboard_layout";
@@ -161,18 +167,45 @@ impl MouseKeyboardPane {
             "Pointer",
             rows(vec![
                 setting_row(
-                    "Pointer speed",
+                    "Touchpad speed",
                     Box::new(
-                        Slider::new("settings.input.pointer_speed", POINTER_SPEED_KEY)
-                            .with_id("input.pointer_speed"),
+                        Slider::new(
+                            "settings.input.touchpad_pointer_speed",
+                            TOUCHPAD_POINTER_SPEED_KEY,
+                        )
+                        .with_id("input.touchpad_pointer_speed"),
+                    ),
+                ),
+                setting_row(
+                    "Mouse speed",
+                    Box::new(
+                        Slider::new(
+                            "settings.input.mouse_pointer_speed",
+                            MOUSE_POINTER_SPEED_KEY,
+                        )
+                        .with_id("input.mouse_pointer_speed"),
                     ),
                 ),
                 setting_row_described(
-                    "Natural scrolling",
+                    "Touchpad natural scrolling",
                     "Content tracks finger movement",
                     Box::new(
-                        Toggle::new("settings.input.natural_scroll", NATURAL_SCROLL_KEY)
-                            .with_id("input.natural_scroll"),
+                        Toggle::new(
+                            "settings.input.touchpad_natural_scroll",
+                            TOUCHPAD_NATURAL_SCROLL_KEY,
+                        )
+                        .with_id("input.touchpad_natural_scroll"),
+                    ),
+                ),
+                setting_row_described(
+                    "Mouse natural scrolling",
+                    "Content moves in the wheel direction",
+                    Box::new(
+                        Toggle::new(
+                            "settings.input.mouse_natural_scroll",
+                            MOUSE_NATURAL_SCROLL_KEY,
+                        )
+                        .with_id("input.mouse_natural_scroll"),
                     ),
                 ),
                 setting_row_described(
@@ -461,8 +494,21 @@ impl MouseKeyboardPane {
         if self.needs_seed {
             let _ = state.put(
                 root,
-                POINTER_SPEED_KEY,
-                automerge::ScalarValue::F64(self.initial.pointer_speed),
+                TOUCHPAD_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(
+                    self.initial
+                        .touchpad_pointer_speed
+                        .unwrap_or(self.initial.pointer_speed),
+                ),
+            );
+            let _ = state.put(
+                root,
+                MOUSE_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(
+                    self.initial
+                        .mouse_pointer_speed
+                        .unwrap_or(self.initial.pointer_speed),
+                ),
             );
             let _ = state.put(root, TAP_DRAG_KEY, self.initial.tap_drag);
             let _ = state.put(root, DWT_KEY, self.initial.disable_while_typing);
@@ -487,8 +533,21 @@ impl MouseKeyboardPane {
             let _ = state.put(root, COMPOSE_KEY, compose);
             let _ = state.put(
                 root,
-                NATURAL_SCROLL_KEY,
-                automerge::ScalarValue::Boolean(self.initial.natural_scroll),
+                TOUCHPAD_NATURAL_SCROLL_KEY,
+                automerge::ScalarValue::Boolean(
+                    self.initial
+                        .touchpad_natural_scroll
+                        .unwrap_or(self.initial.natural_scroll),
+                ),
+            );
+            let _ = state.put(
+                root,
+                MOUSE_NATURAL_SCROLL_KEY,
+                automerge::ScalarValue::Boolean(
+                    self.initial
+                        .mouse_natural_scroll
+                        .unwrap_or(self.initial.natural_scroll),
+                ),
             );
             let _ = state.put(
                 root,
@@ -535,11 +594,23 @@ impl MouseKeyboardPane {
             self.auto_correct = value;
             Self::persist_text_preference(ui::text_assistance::AUTO_CORRECT_KEY, value);
         }
-        if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
-            && (v - self.last.pointer_speed).abs() > 0.001
+        if let Some(v) = read_f64(state, root, TOUCHPAD_POINTER_SPEED_KEY)
+            && self
+                .last
+                .touchpad_pointer_speed
+                .is_none_or(|last| (v - last).abs() > 0.001)
         {
-            self.last.pointer_speed = v;
-            Self::persist_input(|i| i.pointer_speed = v);
+            self.last.touchpad_pointer_speed = Some(v);
+            Self::persist_input(|i| i.touchpad_pointer_speed = Some(v));
+        }
+        if let Some(v) = read_f64(state, root, MOUSE_POINTER_SPEED_KEY)
+            && self
+                .last
+                .mouse_pointer_speed
+                .is_none_or(|last| (v - last).abs() > 0.001)
+        {
+            self.last.mouse_pointer_speed = Some(v);
+            Self::persist_input(|i| i.mouse_pointer_speed = Some(v));
         }
         if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY)
             && (v - self.last.key_repeat).abs() > 0.001
@@ -547,11 +618,17 @@ impl MouseKeyboardPane {
             self.last.key_repeat = v;
             Self::persist_input(|i| i.key_repeat = v);
         }
-        if let Some(b) = read_bool(state, root, NATURAL_SCROLL_KEY)
-            && b != self.last.natural_scroll
+        if let Some(b) = read_bool(state, root, TOUCHPAD_NATURAL_SCROLL_KEY)
+            && Some(b) != self.last.touchpad_natural_scroll
         {
-            self.last.natural_scroll = b;
-            Self::persist_input(|i| i.natural_scroll = b);
+            self.last.touchpad_natural_scroll = Some(b);
+            Self::persist_input(|i| i.touchpad_natural_scroll = Some(b));
+        }
+        if let Some(b) = read_bool(state, root, MOUSE_NATURAL_SCROLL_KEY)
+            && Some(b) != self.last.mouse_natural_scroll
+        {
+            self.last.mouse_natural_scroll = Some(b);
+            Self::persist_input(|i| i.mouse_natural_scroll = Some(b));
         }
         if let Some(b) = read_bool(state, root, TAP_CLICK_KEY)
             && b != self.last.tap_to_click
@@ -945,18 +1022,27 @@ mod tests {
         assert_eq!(pane.last.keyboard_layout, "us");
     }
 
-    /// The pointer-speed slider is consumed by `sync` (a live control, not a
-    /// static mock): a changed value is adopted into the pane's tracked
-    /// state so it isn't re-processed.
+    /// Both device-class speed sliders are consumed by `sync` (live controls,
+    /// not static mocks) without collapsing them back into one value.
     #[test]
-    fn pointer_speed_change_is_consumed() {
+    fn pointer_speed_changes_are_consumed_independently() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_pointer");
         let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, POINTER_SPEED_KEY, automerge::ScalarValue::F64(0.9));
+        let _ = doc.put(
+            &root,
+            TOUCHPAD_POINTER_SPEED_KEY,
+            automerge::ScalarValue::F64(0.9),
+        );
+        let _ = doc.put(
+            &root,
+            MOUSE_POINTER_SPEED_KEY,
+            automerge::ScalarValue::F64(0.2),
+        );
         pane.sync(&mut doc, &root);
-        assert!((pane.last.pointer_speed - 0.9).abs() < 1e-6);
+        assert_eq!(pane.last.touchpad_pointer_speed, Some(0.9));
+        assert_eq!(pane.last.mouse_pointer_speed, Some(0.2));
     }
 }

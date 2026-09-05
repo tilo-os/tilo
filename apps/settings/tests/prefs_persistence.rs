@@ -86,7 +86,7 @@ fn display_night_light_toggle_persists_to_disk() {
 }
 
 #[test]
-fn input_pointer_speed_persists_to_disk() {
+fn input_device_speeds_persist_independently_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("input");
 
@@ -96,16 +96,24 @@ fn input_pointer_speed_persists_to_disk() {
     pane.sync(&mut doc, &root);
     let _ = doc.put(
         &root,
-        settings::panes::mouse_keyboard::POINTER_SPEED_KEY,
+        settings::panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
         automerge::ScalarValue::F64(0.9),
+    );
+    let _ = doc.put(
+        &root,
+        settings::panes::mouse_keyboard::MOUSE_POINTER_SPEED_KEY,
+        automerge::ScalarValue::F64(0.2),
     );
     pane.sync(&mut doc, &root);
 
     let reloaded = SystemPrefs::load();
     assert!(
-        (reloaded.input.pointer_speed - 0.9).abs() < 1e-6,
-        "pointer speed persisted, got {}",
-        reloaded.input.pointer_speed
+        (reloaded.input.touchpad_pointer_speed.unwrap_or_default() - 0.9).abs() < 1e-6,
+        "touchpad speed persisted"
+    );
+    assert!(
+        (reloaded.input.mouse_pointer_speed.unwrap_or_default() - 0.2).abs() < 1e-6,
+        "mouse speed persisted"
     );
 }
 
