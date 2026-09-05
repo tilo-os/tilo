@@ -122,6 +122,10 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'Authorization: Bearer $jwt' "$os" \
   && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
+  && grep -Fq 'HOST_APP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
+  && grep -Fq '/usr/share/qos-apps/payloads/dev.qos.terminal/bin/terminal' "$repo/os/Containerfile" \
+  && grep -Fq '/usr/share/qos-apps/payloads/dev.qos.file-explorer/bin/file-explorer' "$repo/os/Containerfile" \
+  && grep -Fq '/usr/share/qos-apps/payloads/dev.qos.settings/bin/settings' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/qos-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
