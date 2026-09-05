@@ -25,6 +25,7 @@ TERMINAL_STATUSES = {
     "canceled",
     "skipped",
     "neutral",
+    "blocked",
 }
 GREEN_STATUSES = {"success", "skipped", "neutral"}
 PUSH_COMMAND = re.compile(r"(?:^|[;&|]\s*)git(?:\s+-\S+)*\s+push(?:\s|$)", re.MULTILINE)
