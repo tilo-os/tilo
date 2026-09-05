@@ -1352,6 +1352,15 @@ impl TabBar {
     pub fn take_close(&mut self) -> Option<u64> {
         self.pending_close.take()
     }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn close_rect_for_tests(&self, tab_id: u64) -> Option<Rect> {
+        self.tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .and_then(|index| self.close_rects.get(index).copied())
+            .filter(|rect| rect.area() > 0.0)
+    }
     pub fn take_context_menu(&mut self) -> Option<(u64, Point)> {
         self.pending_context_menu.take()
     }
