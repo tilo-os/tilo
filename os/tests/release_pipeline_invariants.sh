@@ -125,6 +125,8 @@ grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \
+  && grep -Fq 'sccache backend unavailable; compiling normally' "$repo/os/Containerfile" \
+  && grep -Fq 'export RUSTC_WRAPPER=' "$repo/os/Containerfile" \
   && grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile.builder" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile.builder" \
   && ok 'OS and CI builder images install checksum-pinned native cache clients' \

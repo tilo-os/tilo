@@ -389,7 +389,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
-    && sccache --start-server \
+    && if ! sccache --start-server; then \
+         export RUSTC_WRAPPER=; \
+         printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
+       fi \
     && cargo clean --release \
     && cargo clean --profile thin-app \
     && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
