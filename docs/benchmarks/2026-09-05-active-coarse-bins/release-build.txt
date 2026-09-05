@@ -1,0 +1,13 @@
+Command: env -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE cargo build -p ui -p shell --release --example ui-perf --example redraw_bench --locked
+Exit: 0
+
+   Compiling vello_shaders v0.9.0 (/home/user/qos/vendor/vello_shaders)
+   Compiling ui v0.1.0 (/home/user/qos/ui)
+   Compiling vello v0.9.0 (/home/user/qos/vendor/vello)
+   Compiling qos-app v0.1.0 (/home/user/qos/crates/app/qos-app)
+   Compiling greeter v0.1.0 (/home/user/qos/crates/session/greeter)
+   Compiling terminal v0.2.1 (/home/user/qos/apps/terminal)
+   Compiling file-explorer v0.2.0 (/home/user/qos/apps/file-explorer)
+   Compiling word-processor v0.1.0 (/home/user/qos/apps/word-processor)
+   Compiling shell v0.1.0 (/home/user/qos/shell)
+    Finished `release` profile [optimized + debuginfo] target(s) in 14m 01s
