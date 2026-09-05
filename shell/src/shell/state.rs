@@ -7079,6 +7079,7 @@ impl WorkspaceTree {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
                     self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
+                    self.flush_to_disk();
                     return true;
                 }
             }
@@ -7140,6 +7141,7 @@ impl WorkspaceTree {
         // carries the group's full content at the new slot. Tolerant
         // of an unseeded doc — see [`Self::locate_group`].
         self.doc_reorder_group_within_strip(strip_id, &moved, dest);
+        self.flush_to_disk();
         true
     }
 
@@ -7185,6 +7187,7 @@ impl WorkspaceTree {
         // order. Cloned first because the doc write borrows `self` mutably.
         let tabs = group.tabs.clone();
         self.doc_rewrite_group_tabs(group_id, &tabs);
+        self.flush_to_disk();
         true
     }
 
@@ -9757,6 +9760,8 @@ mod active_group_tests {
             g.active_tab = 10;
         }
         tree.seed_doc_from_cache();
+        let state_dir = tempfile::tempdir().expect("state dir");
+        tree.persist_path = Some(state_dir.path().join("state.json"));
 
         let tab_order = |t: &WorkspaceTree| -> Vec<u64> {
             t.workspaces[0].strips[0].window_groups[0]
@@ -9795,6 +9800,16 @@ mod active_group_tests {
             }
         }
         assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
+
+        let reloaded = crate::shell::persist::load_tree_from(
+            tree.persist_path.as_ref().expect("persistence configured"),
+        )
+        .expect("reordered tree reloads");
+        assert_eq!(
+            tab_order(&reloaded),
+            vec![11, 12, 10],
+            "a normal restart must retain the reordered tab list"
+        );
     }
 
     #[test]
@@ -9845,6 +9860,8 @@ mod active_group_tests {
         // the doc's `window_groups` list so peer-sync ships the new order.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
         tree.seed_doc_from_cache();
+        let state_dir = tempfile::tempdir().expect("state dir");
+        tree.persist_path = Some(state_dir.path().join("state.json"));
         tree.reorder_group_within_strip(strip_id, ids[0], 2); // [2,3,1]
 
         let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
@@ -9865,6 +9882,15 @@ mod active_group_tests {
             doc_order,
             vec![2, 3, 1],
             "the doc's window_groups list must mirror the cache reorder",
+        );
+        let reloaded = crate::shell::persist::load_tree_from(
+            tree.persist_path.as_ref().expect("persistence configured"),
+        )
+        .expect("reordered tree reloads");
+        assert_eq!(
+            group_order(&reloaded, strip_id),
+            vec![2, 3, 1],
+            "a normal restart must retain the reordered group list"
         );
     }
 }
