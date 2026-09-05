@@ -7,8 +7,10 @@
 //! `qos-launcher run-host` builds **no sandbox** — nesting a Flatpak's
 //! own sandbox inside qOS's baseline filter just fails to start. A host
 //! app gets no room id, no capability file, no per-room state
-//! directory; `launch` takes no `RoomId` because passing one would
-//! misstate what it's subject to. The palette labels host apps under
+//! directory. `launch` accepts only an opaque portal-attribution room string:
+//! it lets an existing Flatpak's authenticated portal request resolve to the
+//! workspace containing its window, but is not passed to the app and grants
+//! no qOS service or sandbox authority. The palette labels host apps under
 //! [`ResourceKind::HostApplication`] so a user can tell which kind of
 //! app they're looking at. Host-desktop sessions also pass the private
 //! rootless-Xwayland display for software that cannot speak Wayland.
@@ -81,11 +83,39 @@ impl HostApp {
 }
 
 pub fn host_apps() -> Vec<HostApp> {
-    desktop_entry::cache::cached_scan()
-        .entries
-        .iter()
-        .map(HostApp::from_entry)
-        .collect()
+    deduplicate_host_apps(
+        desktop_entry::cache::cached_scan()
+            .entries
+            .iter()
+            .map(HostApp::from_entry)
+            .collect(),
+    )
+}
+
+/// Collapse packaging aliases while preserving genuinely distinct launch
+/// modes. A shared display name alone is not identity; a shared declared
+/// window identity is. Prefer Flatpak when a user/system export and a distro
+/// file both describe the same app because it retains its original sandbox.
+fn deduplicate_host_apps(apps: Vec<HostApp>) -> Vec<HostApp> {
+    let mut out: Vec<HostApp> = Vec::new();
+    for app in apps {
+        let duplicate = out.iter().position(|existing| {
+            existing.name.eq_ignore_ascii_case(&app.name)
+                && existing.window_identities.iter().any(|left| {
+                    app.window_identities
+                        .iter()
+                        .any(|right| left.eq_ignore_ascii_case(right))
+                })
+        });
+        if let Some(index) = duplicate {
+            if app.is_flatpak() && !out[index].is_flatpak() {
+                out[index] = app;
+            }
+        } else {
+            out.push(app);
+        }
+    }
+    out
 }
 
 pub fn invalidate_cache() {
@@ -108,6 +138,7 @@ pub(crate) fn build_launch_command(
     wayland_socket: &Path,
     document: Option<&Path>,
     x11: Option<&X11Session>,
+    portal_workspace_id: Option<String>,
 ) -> launcher::LaunchCommand {
     let mut args = vec![
         "run-host".to_string(),
@@ -134,20 +165,26 @@ pub(crate) fn build_launch_command(
             launcher::runtime_dir().display().to_string(),
         )],
         service_identity: None,
+        portal_workspace_id,
         managed_agent_id: None,
     }
 }
 
 /// Returns as soon as the launch is handed to its worker thread; `Ok`
 /// is the resolved app so callers can name it without a second lookup.
+/// `portal_workspace_id` is compositor bookkeeping for standard desktop
+/// portal attribution only; it never enters the unconfined child environment.
 ///
 /// # Errors
 ///
 /// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
 /// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
 /// when the compositor or `qos-launcher` binary can't be reached.
-pub fn launch(desktop_id: &str) -> Result<HostApp, LaunchError> {
-    launch_with_document(desktop_id, None)
+pub fn launch(
+    desktop_id: &str,
+    portal_workspace_id: Option<String>,
+) -> Result<HostApp, LaunchError> {
+    launch_with_document(desktop_id, None, portal_workspace_id)
 }
 
 /// Unlike a qOS launch there's no grant to make alongside it — the app
@@ -161,6 +198,7 @@ pub fn launch(desktop_id: &str) -> Result<HostApp, LaunchError> {
 pub fn launch_with_document(
     desktop_id: &str,
     document: Option<&Path>,
+    portal_workspace_id: Option<String>,
 ) -> Result<HostApp, LaunchError> {
     let app = find(desktop_id).ok_or_else(|| LaunchError::HostAppNotFound {
         desktop_id: desktop_id.to_string(),
@@ -168,7 +206,14 @@ pub fn launch_with_document(
     let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = launcher::resolve_launcher_bin()?;
     let x11 = x11_session();
-    let command = build_launch_command(&app, &launcher_bin, &socket, document, x11.as_ref());
+    let command = build_launch_command(
+        &app,
+        &launcher_bin,
+        &socket,
+        document,
+        x11.as_ref(),
+        portal_workspace_id,
+    );
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
@@ -189,11 +234,15 @@ pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::
 /// "Spotify" not "spotify", and so the compositor can tell a host app's
 /// window from a qOS app's at all.
 pub fn app_for_window_id(app_id: &str) -> Option<HostApp> {
+    app_for_window_id_in(app_id, host_apps())
+}
+
+fn app_for_window_id_in(app_id: &str, apps: Vec<HostApp>) -> Option<HostApp> {
     let needle = app_id.trim();
     if needle.is_empty() {
         return None;
     }
-    host_apps().into_iter().find(|app| {
+    apps.into_iter().find(|app| {
         app.window_identities
             .iter()
             .any(|id| id.eq_ignore_ascii_case(needle))
@@ -231,6 +280,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-1"),
             None,
             None,
+            None,
         );
         assert_eq!(cmd.program, PathBuf::from("/usr/libexec/qos-launcher"));
         assert_eq!(
@@ -266,6 +316,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-1"),
             Some(Path::new("/home/u/notes.txt")),
             None,
+            None,
         );
         assert_eq!(cmd.args[5], "--open");
         assert_eq!(cmd.args[6], "/home/u/notes.txt");
@@ -284,6 +335,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-2"),
             None,
             Some(&x11),
+            Some("room-7".into()),
         );
         assert!(
             cmd.args
@@ -296,6 +348,11 @@ mod tests {
                 "/run/user/1000/qos-session/Xauthority-1234",
             ]
         }));
+        assert_eq!(cmd.portal_workspace_id.as_deref(), Some("room-7"));
+        assert!(
+            !cmd.env.iter().any(|(key, _)| key.contains("WORKSPACE")),
+            "portal attribution is compositor bookkeeping, not ambient authority"
+        );
     }
 
     /// The real scan of this machine, not a fixture.
@@ -318,5 +375,42 @@ mod tests {
                 app.desktop_id
             );
         }
+    }
+
+    #[test]
+    fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
+        let system = HostApp {
+            source_label: "System",
+            ..app("vendor-chat", "Chat", &["Chat"])
+        };
+        let flatpak = HostApp {
+            source_label: "Flatpak",
+            ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
+        };
+        let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
+        assert_eq!(apps, vec![flatpak]);
+    }
+
+    #[test]
+    fn same_named_distinct_modes_remain_visible() {
+        let apps = deduplicate_host_apps(vec![
+            app("org.example.Editor", "Editor", &["Editor"]),
+            app("org.example.EditorSafe", "Editor", &["EditorSafe"]),
+        ]);
+        assert_eq!(apps.len(), 2);
+    }
+
+    #[test]
+    fn window_adoption_uses_the_canonical_alias() {
+        let system = HostApp {
+            source_label: "System",
+            ..app("vendor-chat", "Chat", &["Chat"])
+        };
+        let flatpak = HostApp {
+            source_label: "Flatpak",
+            ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
+        };
+        let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
+        assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
     }
 }

@@ -23,6 +23,13 @@ before GNOME, KDE, or another session is selected next.
 The portal frontend and filtered D-Bus proxy are hard package dependencies, so
 sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
 
+The package-owned wrapper sends compositor stdout and stderr directly to the
+user journal with `SYSLOG_IDENTIFIER=qos-session`. After returning to another
+desktop, startup, portal, application-launch, and crash diagnostics remain
+available with `journalctl --user -t qos-session`; no GDM-specific session-log
+path is required. The wrapper records no environment dump or credentials, and
+the journal keeps the host's normal per-user/root access controls.
+
 ## Supported outputs
 
 | Distribution | Release files | Architectures |

@@ -6,6 +6,7 @@
 //! stable detail URI. The Store then shows provenance and offers the current
 //! revalidated install action; palette activation never downloads software.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
@@ -79,8 +80,8 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
 
 fn app_detail(needle: &str, app: &InstalledApp) -> String {
     let metadata = match app.category.as_deref() {
-        Some(category) => format!("{category} · {}", app.package_id),
-        None => format!("{} · {}", app.package_id, app.version),
+        Some(category) => format!("qOS · {category} · {}", app.package_id),
+        None => format!("qOS · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
         format!(
@@ -94,8 +95,8 @@ fn app_detail(needle: &str, app: &InstalledApp) -> String {
 
 fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
     let metadata = match app.category.as_deref() {
-        Some(category) => format!("{category} · {}", app.package_id),
-        None => format!("{} · {}", app.package_id, app.version),
+        Some(category) => format!("qOS · {category} · {}", app.package_id),
+        None => format!("qOS · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
         format!(
@@ -264,10 +265,27 @@ impl ApplicationsProvider {
         installed: &[String],
         _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
+        self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
+    }
+
+    fn catalogue_results_for_with_hosts(
+        &self,
+        needle: &str,
+        apps: Vec<CatalogueApp>,
+        installed: &[String],
+        host_apps: &[crate::shell::host_apps::HostApp],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
+        let mut seen = HashSet::new();
         for app in apps {
-            if installed.contains(&app.package_id) {
+            if installed.contains(&app.package_id)
+                || host_apps
+                    .iter()
+                    .any(|host| catalogue_aliases_host(&app, host))
+                || !seen.insert(app.package_id.clone())
+            {
                 continue;
             }
             let name_lower = app.display_name.to_lowercase();
@@ -380,6 +398,18 @@ fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
         ));
     }
     Ok(format!("qos-store:app/{package_id}"))
+}
+
+fn catalogue_aliases_host(
+    catalogue: &CatalogueApp,
+    host: &crate::shell::host_apps::HostApp,
+) -> bool {
+    // Display names and reverse-DNS tails are presentation, not identity:
+    // GNOME Calendar and qOS Calendar are two real applications, as are the
+    // many unrelated programs named Notes or Terminal.  Until the signed
+    // catalogue contract grows explicit aliases, only the complete canonical
+    // ID is strong enough evidence to collapse a cross-provider row.
+    catalogue.package_id.eq_ignore_ascii_case(&host.desktop_id)
 }
 
 /// The package id of the file manager qOS ships as a system app.
@@ -586,10 +616,11 @@ impl SearchProvider for ApplicationsProvider {
             Self::dynamic_apps(),
             ctx.chrome.open_target,
         ));
-        out.extend(self.catalogue_results_for(
+        out.extend(self.catalogue_results_for_with_hosts(
             ctx.needle,
             Self::catalogue_apps(),
             &installed_ids,
+            &crate::shell::host_apps::host_apps(),
             ctx.chrome.open_target,
         ));
         out
@@ -728,7 +759,7 @@ mod tests {
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · dev.qos.hello · 0.1.0"),
+            Some("Opens beside · qOS · dev.qos.hello · 0.1.0"),
             "the row names the package it will launch"
         );
     }
@@ -763,6 +794,96 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_registry_offers_produce_one_application_row() {
+        let p = ApplicationsProvider::new();
+        let app = offered("dev.qos.notes", "Notes", Some("Office"));
+        let out = p.catalogue_results_for("notes", vec![app.clone(), app], &[], OpenTarget::Beside);
+        assert_eq!(out.len(), 1, "registry mirrors must not duplicate an app");
+    }
+
+    #[test]
+    fn an_exact_host_package_identity_hides_its_catalogue_alias() {
+        let p = ApplicationsProvider::new();
+        let hosts = vec![crate::shell::host_apps::HostApp {
+            desktop_id: "dev.qos.notes".into(),
+            name: "Notes".into(),
+            source_label: "Flatpak",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec!["dev.qos.notes".into()],
+        }];
+        let out = p.catalogue_results_for_with_hosts(
+            "notes",
+            vec![offered("dev.qos.notes", "Notes", Some("Office"))],
+            &[],
+            &hosts,
+            OpenTarget::Beside,
+        );
+        assert!(
+            out.is_empty(),
+            "opening an existing app must not offer a duplicate fetch"
+        );
+    }
+
+    fn catalogue_rows_with_host(
+        catalogue_id: &str,
+        catalogue_name: &str,
+        host_id: &str,
+        host_name: &str,
+    ) -> Vec<SearchResult> {
+        let p = ApplicationsProvider::new();
+        let hosts = vec![crate::shell::host_apps::HostApp {
+            desktop_id: host_id.into(),
+            name: host_name.into(),
+            source_label: "System",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec![host_id.into()],
+        }];
+        p.catalogue_results_for_with_hosts(
+            catalogue_name,
+            vec![offered(catalogue_id, catalogue_name, None)],
+            &[],
+            &hosts,
+            OpenTarget::Beside,
+        )
+    }
+
+    #[test]
+    fn gnome_calendar_does_not_hide_qos_calendar() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.calendar",
+            "Calendar",
+            "org.gnome.Calendar",
+            "Calendar",
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].subtitle.as_deref().unwrap().contains("qOS"));
+    }
+
+    #[test]
+    fn host_terminal_does_not_hide_qos_terminal() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.terminal",
+            "Terminal",
+            "org.gnome.Console",
+            "Terminal",
+        );
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn a_generic_shared_name_is_not_cross_provider_identity() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.notes",
+            "Notes",
+            "org.example.PrivateNotes",
+            "Notes",
+        );
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
     fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
@@ -778,7 +899,7 @@ mod tests {
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Office · dev.qos.sheets"),
+            Some("Opens beside · qOS · Office · dev.qos.sheets"),
             "a declared category is the more useful second line than the version"
         );
     }
