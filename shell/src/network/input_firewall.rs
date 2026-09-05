@@ -43,7 +43,9 @@ pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 /// evdev keycodes the scrubber names directly.
 mod keycode {
     pub const DELETE: u32 = 111;
+    #[cfg(test)]
     pub const TAB: u32 = 15;
+    #[cfg(test)]
     pub const PRINT_SCREEN: u32 = 99;
     pub const LEFT_META: u32 = 125;
     pub const RIGHT_META: u32 = 126;
