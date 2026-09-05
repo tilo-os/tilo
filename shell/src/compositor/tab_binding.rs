@@ -296,69 +296,89 @@ pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
 ) -> bool {
-    for ws in &mut tree.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                if let Some(pos) = group.tabs.iter().position(|t| {
-                    matches!(
-                        &t.tile,
-                        TileContent::Foreign { surface_id: s, .. }
-                            if *s == destroyed_surface_id
-                    )
-                }) {
-                    let tab_id = group.tabs[pos].id;
-                    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
-                        tree.continuation_closed_tabs.insert(tab_id, room);
-                    }
-                    let removed = group.tabs.remove(pos);
-                    if let Ok(mut registry) =
-                        crate::shell::personal_continuity_registry::global_registry().lock()
-                    {
-                        registry.forget_local_tab(
-                            crate::shell::personal_continuity::AppInstanceId(removed.id),
-                        );
-                    }
-                    // If the removed tab was active, fall back to the new last tab; a stale id is tolerated by the chrome's resolver, which picks the first existing tab.
-                    if group.active_tab == removed.id {
-                        group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                    }
-                    return true;
-                }
+    let tab_id = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, .. } if *surface_id == destroyed_surface_id => {
+                Some(tab.id)
             }
-        }
-    }
-    false
+            _ => None,
+        });
+    tab_id.is_some_and(|tab_id| remove_tab(tree, tab_id))
 }
 
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
 pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
-    for ws in &mut tree.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
-                    continue;
-                };
-                if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
-                    tree.continuation_closed_tabs.insert(tab_id, room);
+    let located = tree.workspaces.iter().enumerate().find_map(|(ws_idx, ws)| {
+        ws.strips.iter().enumerate().find_map(|(strip_idx, strip)| {
+            strip
+                .window_groups
+                .iter()
+                .enumerate()
+                .find_map(|(group_idx, group)| {
+                    group
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.id == tab_id)
+                        .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx, strip.id, group.id))
+                })
+        })
+    });
+    let Some((ws_idx, strip_idx, group_idx, tab_idx, strip_id, group_id)) = located else {
+        return false;
+    };
+
+    let remove_group = tree.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx]
+        .tabs
+        .len()
+        == 1;
+    // Delete from the CRDT before touching the cache. Besides making the
+    // ordering explicit, this guarantees that a revision/peer merge between
+    // the two representations cannot treat the stale document entry as an
+    // insertion and resurrect it.
+    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) {
+        return false;
+    }
+
+    let group = &mut tree.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx];
+    let removed = group.tabs.remove(tab_idx);
+    if group.active_tab == tab_id {
+        group.active_tab = group.tabs.last().map_or(0, |tab| tab.id);
+    }
+    if remove_group {
+        let removed_was_active = tree.active_group.get(&strip_id) == Some(&group_id);
+        tree.workspaces[ws_idx].strips[strip_idx]
+            .window_groups
+            .remove(group_idx);
+        if removed_was_active {
+            let groups = &tree.workspaces[ws_idx].strips[strip_idx].window_groups;
+            match groups
+                .get(group_idx)
+                .or_else(|| groups.last())
+                .map(|group| group.id)
+            {
+                Some(next) => {
+                    tree.active_group.insert(strip_id, next);
                 }
-                let removed = group.tabs.remove(pos);
-                if let Ok(mut registry) =
-                    crate::shell::personal_continuity_registry::global_registry().lock()
-                {
-                    registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(
-                        removed.id,
-                    ));
+                None => {
+                    tree.active_group.remove(&strip_id);
                 }
-                if group.active_tab == tab_id {
-                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                }
-                return true;
             }
         }
     }
-    false
+    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
+        tree.continuation_closed_tabs.insert(tab_id, room);
+    }
+    if let Ok(mut registry) = crate::shell::personal_continuity_registry::global_registry().lock() {
+        registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(removed.id));
+    }
+    true
 }
 
 /// Turn a wayland app-id into a tab-bar label. The app's own name wins (this session's
@@ -966,6 +986,36 @@ mod tests {
         assert_ne!(
             group.active_tab, tab_id,
             "the group must not point at the tab it no longer has",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn removing_a_group_survives_document_rehydration() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let tab_ids = tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+
+        for tab_id in tab_ids {
+            assert!(remove_tab(&mut tree, tab_id));
+        }
+        assert!(
+            tree.workspaces[0].strips[0].window_groups.is_empty(),
+            "the cache drops the group when its last tab closes"
+        );
+
+        tree.resync_cache_from_doc();
+        assert!(
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != group_id),
+            "rehydrating from the durable document must not resurrect the closed group"
         );
     }
 

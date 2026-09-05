@@ -423,6 +423,7 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
 pub enum ChordKey {
     Space,
     Tab,
+    PrintScreen,
     ArrowUp,
     ArrowDown,
     Escape,
@@ -486,7 +487,9 @@ impl From<&Modifiers> for ChordMods {
 }
 
 /// The shell's chord table, expressed once: every `Super` chord, `Ctrl+K`/
-/// `Alt+Space`, `Ctrl+Tab`, `Ctrl+Arrow`, and `Escape` *only while an overlay is open* — an unconditional Escape grab would break every modal editor running as a client.
+/// `Alt+Space`, `Ctrl+Tab`, conventional `Alt+Tab`, `Ctrl+Arrow`, Print Screen,
+/// and `Escape` *only while an overlay is open* — an unconditional Escape grab
+/// would break every modal editor running as a client.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
         return false;
@@ -496,7 +499,9 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     }
     match key {
         ChordKey::Space => mods.alt,
-        ChordKey::Tab | ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::Tab => mods.ctrl || mods.alt,
+        ChordKey::PrintScreen => true,
+        ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
         ChordKey::Escape => overlay_open,
         ChordKey::Char(c) => mods.ctrl && c == 'k',
         ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
@@ -511,6 +516,7 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
     match key {
         Key::Named(NamedKey::Space) => ChordKey::Space,
         Key::Named(NamedKey::Tab) => ChordKey::Tab,
+        Key::Named(NamedKey::PrintScreen) => ChordKey::PrintScreen,
         Key::Named(NamedKey::ArrowUp) => ChordKey::ArrowUp,
         Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
@@ -546,6 +552,7 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
     match code {
         1 => ChordKey::Escape,
         15 => ChordKey::Tab,
+        99 => ChordKey::PrintScreen,
         // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
         29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
         57 => ChordKey::Space,
@@ -615,6 +622,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::F10 => Some(68),
             NamedKey::F11 => Some(87),
             NamedKey::F12 => Some(88),
+            NamedKey::PrintScreen => Some(99),
             NamedKey::Home => Some(102),
             NamedKey::ArrowUp => Some(103),
             NamedKey::PageUp => Some(104),
@@ -2259,6 +2267,16 @@ mod tests {
             &alt,
             false
         ));
+        assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::Tab), true),
+            &alt,
+            false
+        ));
+        assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::PrintScreen), true),
+            &mods(ModifiersState::empty()),
+            false
+        ));
     }
 
     #[test]
@@ -3055,6 +3073,7 @@ mod tests {
             NamedKey::F10,
             NamedKey::F11,
             NamedKey::F12,
+            NamedKey::PrintScreen,
             NamedKey::Home,
             NamedKey::ArrowUp,
             NamedKey::PageUp,
