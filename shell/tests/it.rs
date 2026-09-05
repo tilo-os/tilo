@@ -93,6 +93,8 @@ mod hevc_hardware_encode;
 mod interaction_test;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "lock_screen_visual.rs"]
+mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
 #[path = "nirios_e2e_test.rs"]
