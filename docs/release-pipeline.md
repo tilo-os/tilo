@@ -6,7 +6,7 @@ does not fan out into unrelated builds:
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
 | Apps | A relevant `main` change, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Changed apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
-| Desktop session | A relevant `main` change or `desktop-vX.Y.Z` | Native host packages; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload on `main` |
+| Desktop session | A relevant `main` change or `desktop-vX.Y.Z` | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload on `main` |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows and macOS downloads |
 
@@ -36,6 +36,12 @@ pinned collection, replaces only the apps selected by the dependency/change
 plan, and publishes a new immutable `.tar.gz`. OS images and desktop
 distributions can pin one by version and architecture without compiling apps
 again.
+
+The desktop release retains its complete ARM64 matrix and verifier behind the
+`QOS_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"0"` because
+no native `runner-arm64` host is registered, so tags publish only x86-64
+packages. Set it to `"1"` when that runner exists; no package or artifact
+definition needs to be restored.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
 the same install-tested `shell`, `qos-launcher`, and `qos-unlock-helper`
