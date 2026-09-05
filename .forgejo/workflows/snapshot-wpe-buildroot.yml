@@ -27,7 +27,10 @@ concurrency:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
+    # Promotion is atomic across both native architectures. Keep automatic
+    # pushes skipped until the ARM64 pool exists instead of leaving every run
+    # permanently queued; enabling the pool is one repository-variable flip.
+    if: github.ref == 'refs/heads/main' && vars.QOS_NATIVE_ARM64_RUNNER == 'true'
     enable-openid-connect: true
     strategy:
       fail-fast: true
