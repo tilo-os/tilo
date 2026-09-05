@@ -1852,6 +1852,16 @@ Raw command and output:
 The mapped destination is CPU memory; KMS mapping, page flip, and physical
 scanout are not measured. None of the 1,000 action samples is omitted.
 
+The two target names do not mean that this workload opens two overlays.
+An exact-routing regression test now drives the first 12 actions through
+`dispatch_click`, layout, and scene painting: the tray press opens Quick
+Settings; the next press at the Overview button is consumed as an outside
+Quick Settings dismissal. Quick Settings therefore alternates open/closed,
+and Overview remains closed throughout those actions. This CPU-only test
+establishes input routing, not GPU timing or animation opacity. The benchmark
+retains its existing actions and wall-clock animations. Opening Overview
+would be a separate workload, not a reinterpretation of these measurements.
+
 A native Vulkan enumeration after this run lists only
 `llvmpipe (LLVM 22.1.8, 128 bits)`, device type CPU, vendor 65541/device 0.
 `glxinfo -B` likewise reports llvmpipe and `Accelerated: no`. The virtio PCI
@@ -2010,3 +2020,185 @@ hardware requirements remain open. The next priority is reducing full native
 render/readback work with correctness-checked retained damage, including old
 and new overlay bounds and real scanout buffer age—not merely reducing CPU
 scene-building time or weakening the benchmark.
+
+## Retained native shell damage and partial readback — 2026-09-05
+
+This follow-up connects bounded shell damage to the production native DRM path.
+The shell records the backdrop, top bar, workspace, Quick Settings, and upper
+overlays in their original order. Exact encoded-scene comparisons must prove
+that the unbounded sections are unchanged before top-bar/Quick-Settings damage
+may be used. Both old and new visual bounds include shadows. The independent
+original `FrameBuilder::paint` traversal remains the full-render pixel oracle.
+
+The bridge keeps its full native target and staging buffer, renders the damaged
+native pixels, and appends only those texture-to-staging copies to the same GPU
+submission. It still writes the complete XRGB CPU destination on every redraw:
+alternating dumb buffers and a software cursor are not safe grounds for assuming
+that the destination contains the preceding frame. Smaller copy payload is not
+a claim of smaller resident GPU memory or measured physical bus traffic.
+
+Retained authority follows the last successfully rendered revision, not just
+the last produced scene. Missing revisions, failed renders, external capture or
+drag overlays, resize, base-color changes, whole-frame filters, unbounded scene
+changes, and unsupported damage force a full render. Overflow also recovers
+with full rendering before publishing pixels. Sparse production presentation is
+restricted to one native 1:1, unrotated output without an ICC transform;
+multi-output, scaled, rotated, and color-transformed presentation stay dense.
+
+Validation found a real workspace-root layout invalidation defect: a root swap
+during `update` could consume the change before the following `relayout`,
+leaving zero-sized replacement widgets and stale layout pointers. A latched
+structural-dirty flag now carries that swap to the layout rebuild. The original
+failing workspace-chevron test and an added real workspace-switch/native-4K
+pixel test pass with this fix. Temporary diagnostics were removed.
+
+The combined frame-test run passed 24/25 but hit the unchanged one-second
+fence timeout in a dense pixel-oracle render. One isolated rerun of that test
+passed. This is retained as a reliability failure, not silently discarded or
+fixed by a longer timeout. The final 23 DRM paint tests, eight shell benchmark
+tests, 40 Vello tests, seven UI benchmark helpers, affected strict clippy, and
+format checks pass. Nineteen capture and eight presenter tests pass. The UI
+`offscreen` name-filter run reports 26 passing tests (including unrelated
+matching names); its sparse-coarse-only test explicitly skips its body when
+that opt-in is not requested. No all-workspace-green claim is made.
+
+The 13-frame native-4K shell preflight compares every candidate XRGB byte
+against an independent dense render: 11 sparse and two full submissions,
+75,915,264 texture-copy payload bytes total. The enlarged-shadow and legacy
+composition oracles use a local reduced-motion test theme to pin their states;
+the timed benchmark does not. Normal benchmark animations remain wall-clock
+driven, so faster execution can naturally sample different animation phases
+from an older binary even with the unchanged action stream.
+
+The predeclared measurement protocol and raw validation results are in
+[`docs/benchmarks/2026-09-05-retained-shell`](benchmarks/2026-09-05-retained-shell/).
+
+### Default-release measurements and retained failures
+
+The production release artifact was built once with the ordinary repository
+profile and target settings. Subsequent source changes before this report were
+test-only lint fixes and a standalone debug probe; they did not change either
+measured production path. Commands, exit codes, and artifact hashes are retained
+in the [evidence directory](benchmarks/2026-09-05-retained-shell/).
+
+The original predeclared shell trials do **not** establish acceptance: the
+previous committed control times out at sample index 357, and all three
+candidate trials time out during the initial desktop paint before the 1,000
+timed actions. The first candidate diagnostic also times out during initial
+paint. No deadline was increased and none of these failures was discarded.
+
+A later diagnostic with the **same unchanged candidate binary** completes all
+1,000 native-4K actions. It records 999 sparse attempts, one full attempt, and
+zero recovery attempts (the initial desktop seed is outside those action
+counts). Profiling deliberately disables acceptance; even its observed timings
+miss both limits.
+
+| Completed shell diagnostic | Measured | Required |
+| --- | ---: | ---: |
+| Whole redraw mean | 35.781 ms | ≤8 ms |
+| Whole redraw p99 | 84.012 ms | ≤30 ms |
+| Largest redraw, retained | 384.335 ms | reported, not excluded |
+| Texture-to-staging payload / redraw | 808,636 bytes | accounting only |
+| Full CPU destination writes / redraw | 33,177,600 bytes | unchanged |
+
+Compared with copying all 3840×2160×4 bytes for every action, the measured API
+texture-copy payload is **97.56% lower**. This is not a resident-memory saving,
+a measurement of physical bus traffic, or a one-million-redraw result. The
+full native target, staging buffer, and CPU output remain. The 13-frame
+correctness preflight above independently reduces copy payload by 82.40%
+versus 13 full copies while checking every XRGB byte.
+
+Phase means are input 0.025 ms, registry 0.073 ms, layout 0.036 ms, scene
+recording 0.536 ms, submission 1.994 ms, completion/readback-map 30.954 ms,
+settlement 0.076 ms, and CPU copy/swizzle 2.075 ms. Completion/map remains the
+dominant measured interval; this does not isolate GPU execution from mapping
+and scheduler waits. Whole-process peak RSS is 543,524 KiB, not evidence of a
+resident-memory reduction.
+
+A separate opt-in `VELLO_SPARSE_COARSE=1` diagnostic completes 1,000 actions at
+29.706 ms mean / 86.852 ms p99, again with 999 sparse, one full, and no recovery
+attempts. Completion/map falls to 24.407 ms while submission rises to 2.502 ms.
+The worse p99 and earlier UI regressions do not support enabling this option:
+**sparse coarse stays off by default**. This experiment is neither an
+acceptance run nor a change to the requested release defaults.
+
+### UI control drift, pixel correctness, and the million-event distinction
+
+All three default-release candidate UI trials complete exactly 1,000 native-4K
+redraws, skip none, and perform zero CPU screenshot readback. All fail the
+unchanged 30 ms p99 gate.
+
+| Native-4K UI run | Mean | p99 | Maximum |
+| --- | ---: | ---: | ---: |
+| Candidate 1 | 67.173 ms | 294.548 ms | 621.173 ms |
+| Candidate 2 | 69.335 ms | 309.486 ms | 467.304 ms |
+| Candidate 3 | 65.866 ms | 307.920 ms | 547.301 ms |
+| Preserved previous-binary drift control | 67.203 ms | 332.911 ms | 598.580 ms |
+
+The fresh previous-binary control is also much slower than the historical
+8 ms-class observations. That prevents attributing the current cross-session
+slowdown solely to this change; it does not prove a particular host/driver
+cause or excuse the failures. No paired latency-success percentage is inferred
+from those historical measurements. The candidate native-4K image preflight
+passes all 40 reference frames with zero differing pixels beyond its existing
+antialiasing tolerance; its timings are suppressed.
+
+The first candidate one-million frozen/idle event run fails its 3 us p99
+budget (15 us mean, 56 us p99), while still reporting zero redraws,
+allocations, and reallocations. The later previous-binary control and one
+bounded unchanged-candidate diagnostic repeat both pass at 1 us mean / 2 us
+p99, with zero redraws and allocations. The initial failure remains in the
+record. These are **one million idle events, not one million rendered frames**.
+
+Four fresh-process debug cold-scene probes (legacy/segmented recordings crossed
+with dense/versioned full bridge entry points) all complete one native-4K
+frame. Segmentation adds one path tag and one transform in this seed scene;
+other reported stream/resource counts match. These debug-only checks cannot
+supply release latency evidence or explain the intermittent release timeouts.
+
+The 8 ms shell mean, 30 ms p99, constant 60 FPS, physical KMS scanout, and 2010
+laptop requirements remain **unmet or unqualified**. The next performance
+priority is the still-full-viewport coarse/prefix work ahead of sparse fine
+rendering, with an independent pixel oracle and unchanged acceptance gates.
+
+### Completed unprofiled follow-up: improvement, still a failed gate
+
+The fixed post-drift sequence is candidate, previous committed control,
+candidate, candidate. All four additional unprofiled runs finish 1,000 redraws
+with ordinary release defaults and no recovery retries. They do not replace
+the earlier failed/incomplete trials. No compiler, correctness test, or other
+benchmark overlaps these measurements.
+
+| Native-4K shell run | Mean | p99 | Maximum | Sparse / full attempts | Peak process RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Candidate follow-up 1 | 41.403 ms | 103.464 ms | 374.029 ms | 999 / 1 | 535,172 KiB |
+| Previous 3e03 control | 286.838 ms | 374.106 ms | 453.953 ms | 0 / 1,000 | 541,100 KiB |
+| Candidate follow-up 2 | 41.738 ms | 107.817 ms | 380.017 ms | 999 / 1 | 545,128 KiB |
+| Candidate follow-up 3 | 40.528 ms | 107.512 ms | 385.260 ms | 999 / 1 | 530,624 KiB |
+
+The median of these three candidate observations is 41.403 ms mean and
+107.512 ms p99. Relative to this single fresh control, average redraw time is
+**85.6% lower (6.93× faster)** and p99 is **71.3% lower (3.48× faster)**.
+These are observed end-to-end improvements for this action workload on this
+software adapter, not physical-hardware guarantees or percentages to compound
+with earlier checkpoints. Normal wall-clock animations remain enabled.
+
+Whole-process user+system CPU time is 1,385.25 seconds for the control versus
+134.95 / 136.67 / 134.80 seconds for the candidates (90.3% lower candidate
+median). Process startup and initial paint are included in those CPU totals.
+Peak RSS varies around the control rather than establishing a meaningful
+memory reduction. The texture-copy reduction is measured in the separately
+labelled diagnostic above, not inferred from CPU time or RSS.
+
+**All four completed runs still fail** the unchanged mean ≤8 ms / p99 ≤30 ms
+gates. The third repeat is not selected over the other results; all samples,
+all completed trials, and all earlier timeouts are kept in the raw evidence.
+
+A final source-frozen correctness sequence passes all five retained-frame tests
+and all 23 DRM paint tests, followed by strict affected-library/example clippy
+(including the cold probe). The prior combined-run timeout remains recorded.
+Native-4K oracle tests are scheduled with all available nextest test threads to
+avoid competing with parallel suites; assertions, fence deadlines, and retry
+policy are unchanged. Nextest is not installed on this host, so CI scheduling
+itself has not been executed locally. No full-workspace or CI-green claim is
+made by these focused checks.

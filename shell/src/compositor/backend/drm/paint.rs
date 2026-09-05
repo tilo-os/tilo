@@ -88,6 +88,19 @@ pub struct BridgePhaseTiming {
     pub cpu_output_bytes: u64,
 }
 
+/// Versioned native-pixel damage for [`VelloDrmBridge::paint_damage_into_xrgb8888`].
+///
+/// `regions: None` deliberately requests a conservative full render. Sparse rendering is only
+/// eligible when `previous_revision` names the complete frame retained by this bridge. This
+/// makes a skipped KMS presentation or a compositor/model snapshot gap a full-frame boundary
+/// instead of allowing stale pixels outside the supplied rectangles to leak through.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneDamage<'a> {
+    pub revision: u64,
+    pub previous_revision: Option<u64>,
+    pub regions: Option<&'a [vello::FineDamageRect]>,
+}
+
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -95,6 +108,14 @@ struct MappedXrgbSource<'a> {
     padded_bytes_per_row: usize,
     width: usize,
     height: usize,
+}
+
+/// Result of attempting the opt-in sparse path. An overflow has already submitted and mapped
+/// work, but those pixels are not safe to expose; its caller immediately starts a dense recovery.
+enum SparseReadback {
+    Unavailable,
+    Complete(wgpu::BufferView),
+    Overflow,
 }
 
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
@@ -117,11 +138,24 @@ pub struct VelloDrmBridge {
     size: (u32, u32),
     /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
-    /// Full Vello submissions used by the latest paint, including bounded bump-budget retries.
+    /// Total Vello submissions used by the latest paint, including sparse work and bounded
+    /// bump-budget recovery retries.
     last_render_attempts: usize,
+    /// Sparse submissions used by the latest paint. Kept separate from dense recovery so
+    /// benchmark reporting never calls a sparse frame a full frame.
+    last_sparse_render_attempts: usize,
+    /// Dense submissions used by the latest paint, including bump-budget retries.
+    last_full_render_attempts: usize,
     /// Profiling is off in production; when on, timings describe only the latest paint.
     phase_timing_enabled: bool,
     last_phase_timing: Option<BridgePhaseTiming>,
+    /// The target and staging buffer contain one complete, settled frame. Both must be true
+    /// before a sparse render is allowed to preserve pixels outside its damage list.
+    retained_target_valid: bool,
+    retained_staging_valid: bool,
+    /// Revision associated with the complete retained frame. Legacy full-render APIs do not
+    /// carry a revision, so they intentionally clear this even though their target is complete.
+    last_successful_revision: Option<u64>,
 }
 
 impl VelloDrmBridge {
@@ -179,14 +213,22 @@ impl VelloDrmBridge {
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             last_render_attempts: 0,
+            last_sparse_render_attempts: 0,
+            last_full_render_attempts: 0,
             phase_timing_enabled: false,
             last_phase_timing: None,
+            retained_target_valid: false,
+            retained_staging_valid: false,
+            last_successful_revision: None,
         })
     }
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
     pub fn set_base_color(&mut self, color: Color) {
         self.base_color = color;
+        // Sparse rendering never clears pixels outside its rectangles. A new clear color is a
+        // full-frame change even if the scene recording itself is unchanged.
+        self.invalidate_retained();
     }
 
     /// Enable wall-clock phase collection for diagnostic runs. This deliberately defaults to
@@ -228,6 +270,9 @@ impl VelloDrmBridge {
     /// returned buffer instead of panicking.
     pub fn paint(&mut self, scene: &Scene) -> Result<&[u8], BridgeError> {
         self.last_phase_timing = None;
+        // This API intentionally has no revision. It always renders densely and cannot seed a
+        // later versioned sparse frame, even though it refreshes the retained texture/staging.
+        self.invalidate_retained();
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
                 "DRM paint: CPU fallback active — vello → wgpu readback → RGBA bytes; \
@@ -239,7 +284,8 @@ impl VelloDrmBridge {
         let (width, height) = self.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
-        let mapped = Self::render_to_readback(
+        self.reset_render_attempts();
+        let mapped = Self::render_full_to_readback(
             &mut self.renderer,
             &self.context,
             self.dev_id,
@@ -250,6 +296,7 @@ impl VelloDrmBridge {
             (width, height),
             self.base_color,
             &mut self.last_render_attempts,
+            &mut self.last_full_render_attempts,
             timing.as_mut(),
             scene,
         )?;
@@ -280,6 +327,10 @@ impl VelloDrmBridge {
         }
         self.last_phase_timing = timing;
 
+        if self.readback.len() == needed {
+            self.mark_retained_complete(None);
+        }
+
         Ok(&self.readback)
     }
 
@@ -300,6 +351,7 @@ impl VelloDrmBridge {
         dst_pitch: usize,
     ) -> Result<(), BridgeError> {
         self.last_phase_timing = None;
+        self.invalidate_retained();
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
                 "DRM paint: CPU fallback active — vello → wgpu readback → XRGB8888 \
@@ -312,7 +364,8 @@ impl VelloDrmBridge {
         let (width, height) = self.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
-        let mapped = Self::render_to_readback(
+        self.reset_render_attempts();
+        let mapped = Self::render_full_to_readback(
             &mut self.renderer,
             &self.context,
             self.dev_id,
@@ -323,6 +376,7 @@ impl VelloDrmBridge {
             (width, height),
             self.base_color,
             &mut self.last_render_attempts,
+            &mut self.last_full_render_attempts,
             timing.as_mut(),
             scene,
         )?;
@@ -335,6 +389,7 @@ impl VelloDrmBridge {
                 timing.cpu_copy_swizzle_us = started.elapsed().as_micros();
             }
             self.last_phase_timing = timing;
+            self.mark_retained_complete(None);
             return Ok(());
         }
         let cpu_output_bytes = Self::swizzle_mapped_xrgb8888(
@@ -355,7 +410,239 @@ impl VelloDrmBridge {
             timing.cpu_output_bytes = cpu_output_bytes;
         }
         self.last_phase_timing = timing;
+        self.mark_retained_complete(None);
         Ok(())
+    }
+
+    /// Render a versioned scene into an XRGB8888 destination, retaining the GPU target and its
+    /// padded staging buffer so a later compatible frame can update only its damaged pixels.
+    ///
+    /// This is deliberately stricter than an ordinary "damage hint": every condition that could
+    /// make an untouched pixel ambiguous (first frame, revision gap, resize/base-colour change,
+    /// unsupported sparse shaders, invalid/empty/large damage, or any failed attempt) selects
+    /// the dense path. Regardless of the GPU copy size, every call swizzles the complete retained
+    /// staging image into `dst`, so callers may rotate DRM dumb buffers without backbuffer-age
+    /// ghosts.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError`] when Vello cannot render or settle a complete frame, or when the
+    /// same bounded texture-readback mapping used by [`Self::paint_into_xrgb8888`] fails.
+    pub fn paint_damage_into_xrgb8888(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        dst: &mut [u8],
+        dst_pitch: usize,
+    ) -> Result<(), BridgeError> {
+        self.last_phase_timing = None;
+        if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
+            tracing::warn!(
+                "DRM paint: CPU fallback active — vello → wgpu readback → XRGB8888 \
+                 (retained sparse damage when version-safe); zero-copy DMA-BUF interop remains \
+                 a follow-up."
+            );
+        }
+
+        // Decide against the last *complete* frame before invalidating it. From this point until
+        // render, copy, map, and bump settlement all succeed, no frame may be reused as sparse
+        // backing state.
+        let sparse_damage = self.eligible_sparse_damage(damage);
+        self.invalidate_retained();
+
+        let (width, height) = self.size;
+        let padded_bytes_per_row = self.padded_bytes_per_row;
+        let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
+        self.reset_render_attempts();
+        let mapped = if let Some(regions) = sparse_damage.as_deref() {
+            match Self::render_sparse_to_readback(
+                &mut self.renderer,
+                &self.context,
+                self.dev_id,
+                &self.texture,
+                &self.view,
+                &self.readback_buf,
+                padded_bytes_per_row,
+                (width, height),
+                self.base_color,
+                &mut self.last_render_attempts,
+                &mut self.last_sparse_render_attempts,
+                timing.as_mut(),
+                scene,
+                regions,
+            )? {
+                SparseReadback::Complete(mapped) => mapped,
+                // Sparse overflow can leave incomplete pixels in both retained resources. The
+                // dense retry begins from the scene and copies every pixel before publication.
+                SparseReadback::Unavailable | SparseReadback::Overflow => {
+                    Self::render_full_to_readback(
+                        &mut self.renderer,
+                        &self.context,
+                        self.dev_id,
+                        &self.texture,
+                        &self.view,
+                        &self.readback_buf,
+                        padded_bytes_per_row,
+                        (width, height),
+                        self.base_color,
+                        &mut self.last_render_attempts,
+                        &mut self.last_full_render_attempts,
+                        timing.as_mut(),
+                        scene,
+                    )?
+                }
+            }
+        } else {
+            Self::render_full_to_readback(
+                &mut self.renderer,
+                &self.context,
+                self.dev_id,
+                &self.texture,
+                &self.view,
+                &self.readback_buf,
+                padded_bytes_per_row,
+                (width, height),
+                self.base_color,
+                &mut self.last_render_attempts,
+                &mut self.last_full_render_attempts,
+                timing.as_mut(),
+                scene,
+            )?
+        };
+
+        let cpu_copy_started = self.phase_timing_enabled.then(Instant::now);
+        let cpu_output_bytes = if dst_pitch == 0 {
+            0
+        } else {
+            Self::swizzle_mapped_xrgb8888(
+                MappedXrgbSource {
+                    bytes: &mapped,
+                    padded_bytes_per_row: padded_bytes_per_row as usize,
+                    width: width as usize,
+                    height: height as usize,
+                },
+                dst,
+                dst_pitch,
+                self.phase_timing_enabled,
+            )
+        };
+        drop(mapped);
+        self.readback_buf.unmap();
+        if let (Some(timing), Some(started)) = (timing.as_mut(), cpu_copy_started) {
+            timing.cpu_copy_swizzle_us = started.elapsed().as_micros();
+            timing.cpu_output_bytes = cpu_output_bytes;
+        }
+        self.last_phase_timing = timing;
+        self.mark_retained_complete(Some(damage.revision));
+        Ok(())
+    }
+
+    /// Select sparse rendering only when every unchanged pixel is backed by the exact preceding
+    /// complete frame. `FineDamageRect` is integer-native already, so "normalization" here means
+    /// rejecting degenerate/out-of-bounds rectangles and removing only exact/contained duplicates.
+    fn eligible_sparse_damage(
+        &self,
+        damage: SceneDamage<'_>,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        let previous = damage.previous_revision?;
+        if self.last_successful_revision != Some(previous)
+            || !self.retained_target_valid
+            || !self.retained_staging_valid
+            || !self.renderer.sparse_fine_supported()
+        {
+            return None;
+        }
+        Self::normalize_damage(damage.regions?, self.size)
+    }
+
+    /// Normalize exact native rectangles without ever expanding their covered area. Overlapping
+    /// rectangles intentionally stay separate unless one contains the other: bounding-box merges
+    /// turn an L-shaped top bar plus popover into a large false damage band. Vello's sparse tile
+    /// masks already deduplicate the raster work, while the copies below account for their actual
+    /// (possibly overlapping) payload. A sparse dispatch with too many regions or at least half
+    /// the output dirty remains a deliberate full-frame boundary.
+    fn normalize_damage(
+        damage: &[vello::FineDamageRect],
+        size: (u32, u32),
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        const MAX_DAMAGE_RECTS: usize = 64;
+        if damage.is_empty() || damage.len() > MAX_DAMAGE_RECTS {
+            return None;
+        }
+        let (width, height) = size;
+        let mut normalized = Vec::with_capacity(damage.len());
+        for &rect in damage {
+            if rect.width == 0
+                || rect.height == 0
+                || rect.x >= width
+                || rect.y >= height
+                || rect.x.checked_add(rect.width).is_none_or(|x1| x1 > width)
+                || rect.y.checked_add(rect.height).is_none_or(|y1| y1 > height)
+            {
+                return None;
+            }
+
+            // Do not bounding-box partial overlap or touching edges. It is cheap for Vello's
+            // masks to union them, but expensive for our texture→staging copies when the union
+            // spans unrelated empty pixels.
+            let mut contained = false;
+            let mut index = 0;
+            while let Some(existing) = normalized.get(index).copied() {
+                if Self::damage_rect_contains(existing, rect) {
+                    contained = true;
+                    break;
+                }
+                if Self::damage_rect_contains(rect, existing) {
+                    normalized.swap_remove(index);
+                } else {
+                    index = index.saturating_add(1);
+                }
+            }
+            if !contained {
+                normalized.push(rect);
+            }
+        }
+
+        let dirty_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
+            pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+        });
+        let full_pixels = u64::from(width).saturating_mul(u64::from(height));
+        if full_pixels == 0 || dirty_pixels.saturating_mul(2) >= full_pixels {
+            return None;
+        }
+        Some(normalized)
+    }
+
+    #[inline]
+    fn damage_rect_contains(outer: vello::FineDamageRect, inner: vello::FineDamageRect) -> bool {
+        let outer_right = outer.x.saturating_add(outer.width);
+        let outer_bottom = outer.y.saturating_add(outer.height);
+        let inner_right = inner.x.saturating_add(inner.width);
+        let inner_bottom = inner.y.saturating_add(inner.height);
+        outer.x <= inner.x
+            && outer.y <= inner.y
+            && outer_right >= inner_right
+            && outer_bottom >= inner_bottom
+    }
+
+    #[inline]
+    fn invalidate_retained(&mut self) {
+        self.retained_target_valid = false;
+        self.retained_staging_valid = false;
+        self.last_successful_revision = None;
+    }
+
+    #[inline]
+    fn mark_retained_complete(&mut self, revision: Option<u64>) {
+        self.retained_target_valid = true;
+        self.retained_staging_valid = true;
+        self.last_successful_revision = revision;
+    }
+
+    #[inline]
+    fn reset_render_attempts(&mut self) {
+        self.last_render_attempts = 0;
+        self.last_sparse_render_attempts = 0;
+        self.last_full_render_attempts = 0;
     }
 
     /// Swizzle mapped RGBA into XRGB. The ordinary branch deliberately has no per-row
@@ -428,14 +715,14 @@ impl VelloDrmBridge {
         }
     }
 
-    /// Render `scene`, append the texture→`readback_buf` copy to Vello's own submission, then
-    /// map the completed copy. A failed bump-budget attempt is unmapped and retried before its
-    /// pixels can reach either public output path.
+    /// Render `scene` densely, append the full texture→`readback_buf` copy to Vello's own
+    /// submission, then map the completed copy. A failed bump-budget attempt is unmapped and
+    /// retried before its pixels can reach either public output path.
     #[allow(
         clippy::too_many_arguments,
         reason = "the owned mapped view keeps paint's destination and tight RGBA buffer independently available to its caller"
     )]
-    fn render_to_readback(
+    fn render_full_to_readback(
         renderer: &mut Renderer,
         context: &RenderContext,
         dev_id: usize,
@@ -446,6 +733,7 @@ impl VelloDrmBridge {
         size: (u32, u32),
         base_color: Color,
         last_render_attempts: &mut usize,
+        last_full_render_attempts: &mut usize,
         mut phase_timing: Option<&mut BridgePhaseTiming>,
         scene: &Scene,
     ) -> Result<wgpu::BufferView, BridgeError> {
@@ -456,9 +744,12 @@ impl VelloDrmBridge {
         let device = &dev_handle.device;
         let queue = &dev_handle.queue;
 
-        *last_render_attempts = 0;
-        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+        // A sparse submission that overflowed has already consumed one bounded attempt. Do not
+        // turn that recovery into an unbounded fifth submission.
+        let remaining_attempts = RESILIENT_RENDER_ATTEMPTS.saturating_sub(*last_render_attempts);
+        for _ in 0..remaining_attempts {
             *last_render_attempts = (*last_render_attempts).saturating_add(1);
+            *last_full_render_attempts = (*last_full_render_attempts).saturating_add(1);
             let submit_started = phase_timing.as_ref().map(|_| Instant::now());
             renderer
                 .render_to_texture_with_post_render(
@@ -539,6 +830,128 @@ impl VelloDrmBridge {
         })
     }
 
+    /// Submit an exact sparse render and append one texture→staging copy for every normalized
+    /// damage rectangle. All copies share the staging buffer's native padded stride, with each
+    /// rectangle placed at `y * stride + x * 4`; untouched bytes therefore remain the previous
+    /// complete frame. No command is submitted when Vello cannot use sparse Area rendering.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the sparse path mirrors the full path so its retained-resource transaction is explicit"
+    )]
+    fn render_sparse_to_readback(
+        renderer: &mut Renderer,
+        context: &RenderContext,
+        dev_id: usize,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        readback_buf: &wgpu::Buffer,
+        padded_bytes_per_row: u32,
+        size: (u32, u32),
+        base_color: Color,
+        last_render_attempts: &mut usize,
+        last_sparse_render_attempts: &mut usize,
+        mut phase_timing: Option<&mut BridgePhaseTiming>,
+        scene: &Scene,
+        damage: &[vello::FineDamageRect],
+    ) -> Result<SparseReadback, BridgeError> {
+        let (width, height) = size;
+        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
+        })?;
+        let device = &dev_handle.device;
+        let queue = &dev_handle.queue;
+        let submit_started = phase_timing.as_ref().map(|_| Instant::now());
+        let sparse = renderer
+            .render_to_texture_with_damage_and_post_render(
+                device,
+                queue,
+                scene,
+                view,
+                &RenderParams {
+                    base_color,
+                    width,
+                    height,
+                    antialiasing_method: AaConfig::Area,
+                },
+                damage,
+                |encoder| {
+                    for rect in damage {
+                        let offset = u64::from(rect.y)
+                            .saturating_mul(u64::from(padded_bytes_per_row))
+                            .saturating_add(u64::from(rect.x).saturating_mul(4));
+                        encoder.copy_texture_to_buffer(
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d {
+                                    x: rect.x,
+                                    y: rect.y,
+                                    z: 0,
+                                },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyBufferInfo {
+                                buffer: readback_buf,
+                                layout: wgpu::TexelCopyBufferLayout {
+                                    offset,
+                                    bytes_per_row: Some(padded_bytes_per_row),
+                                    rows_per_image: Some(rect.height),
+                                },
+                            },
+                            wgpu::Extent3d {
+                                width: rect.width,
+                                height: rect.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
+                },
+            )
+            .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
+        let Some(_stats) = sparse else {
+            return Ok(SparseReadback::Unavailable);
+        };
+        *last_render_attempts = (*last_render_attempts).saturating_add(1);
+        *last_sparse_render_attempts = (*last_sparse_render_attempts).saturating_add(1);
+        if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), submit_started) {
+            timing.submit_us = timing
+                .submit_us
+                .saturating_add(started.elapsed().as_micros());
+        }
+        if let Some(timing) = phase_timing.as_deref_mut() {
+            let copied = damage.iter().fold(0_u64, |bytes, rect| {
+                bytes.saturating_add(
+                    u64::from(rect.width)
+                        .saturating_mul(u64::from(rect.height))
+                        .saturating_mul(4),
+                )
+            });
+            timing.readback_bytes = timing.readback_bytes.saturating_add(copied);
+        }
+
+        let map_started = phase_timing.as_ref().map(|_| Instant::now());
+        let mapped = Self::map_readback(context, dev_id, readback_buf)?;
+        if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), map_started) {
+            timing.completed_readback_map_us = timing
+                .completed_readback_map_us
+                .saturating_add(started.elapsed().as_micros());
+        }
+        let settle_started = phase_timing.as_ref().map(|_| Instant::now());
+        let overflowed = renderer.settle_bump_budget(device);
+        if let (Some(timing), Some(started)) = (phase_timing, settle_started) {
+            timing.settle_us = timing
+                .settle_us
+                .saturating_add(started.elapsed().as_micros());
+        }
+        if overflowed {
+            drop(mapped);
+            readback_buf.unmap();
+            Ok(SparseReadback::Overflow)
+        } else {
+            Ok(SparseReadback::Complete(mapped))
+        }
+    }
+
     /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The
     /// returned view owns a buffer handle; the caller must drop it before `readback_buf.unmap()`.
     fn map_readback(
@@ -589,6 +1002,10 @@ impl VelloDrmBridge {
     /// [`BridgeError::InvalidDevice`] if the bridge's device id is out of range (defensive;
     /// cannot happen in practice).
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
+        // Treat even a rejected/no-op resize request as a sparse boundary. This keeps a caller
+        // that changed its output model but failed to complete reallocation from reusing an
+        // ambiguous target on the next frame.
+        self.invalidate_retained();
         if width == 0 || height == 0 {
             return Err(BridgeError::InvalidSize(format!(
                 "VelloDrmBridge::resize: width/height must be > 0, got {width}x{height}"
@@ -618,10 +1035,21 @@ impl VelloDrmBridge {
         self.size
     }
 
-    /// Full Vello submissions used by the latest [`paint`](Self::paint) or
-    /// [`paint_into_xrgb8888`](Self::paint_into_xrgb8888), including recovery retries.
+    /// Vello submissions used by the latest paint, including any sparse attempt and bounded
+    /// dense bump-budget recovery retries.
     pub fn last_render_attempts(&self) -> usize {
         self.last_render_attempts
+    }
+
+    /// Sparse Vello submissions used by the latest paint. This remains zero for every legacy
+    /// full-render API and for conservative versioned fallbacks.
+    pub fn last_sparse_render_attempts(&self) -> usize {
+        self.last_sparse_render_attempts
+    }
+
+    /// Dense Vello submissions used by the latest paint, including bump-budget retries.
+    pub fn last_full_render_attempts(&self) -> usize {
+        self.last_full_render_attempts
     }
 
     /// Allocate (texture, view, `readback_buf`, `padded_bytes_per_row`) for the given size; shared by `new` and `resize`.
@@ -1062,6 +1490,561 @@ mod tests {
             );
         }
         scene
+    }
+
+    /// 8,192 overlapping fills confined to one native-pixel damage rectangle. 512 fills fit the
+    /// 96×96 sparse tile reservation, so this calibrated count is intentionally high enough to
+    /// exercise a genuine sparse bump overflow and the bounded dense recovery.
+    fn opaque_rect_stack_in_rect_scene(rect: vello::FineDamageRect) -> Scene {
+        let mut scene = Scene::new();
+        let bounds = vello::kurbo::Rect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.x.saturating_add(rect.width)),
+            f64::from(rect.y.saturating_add(rect.height)),
+        );
+        for index in 0..8_192_u32 {
+            let red = u8::try_from(index & 0xFF).unwrap_or(u8::MAX);
+            let green = u8::try_from((index.saturating_mul(3)) & 0xFF).unwrap_or(u8::MAX);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(red, green, 0xA5),
+                None,
+                &bounds,
+            );
+        }
+        scene
+    }
+
+    fn layered_scene(
+        w: u32,
+        h: u32,
+        background: Color,
+        overlays: &[(vello::FineDamageRect, Color)],
+    ) -> Scene {
+        let mut scene = rect_scene(w, h, background);
+        for (rect, color) in overlays {
+            let rect = vello::kurbo::Rect::new(
+                f64::from(rect.x),
+                f64::from(rect.y),
+                f64::from(rect.x.saturating_add(rect.width)),
+                f64::from(rect.y.saturating_add(rect.height)),
+            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, *color, None, &rect);
+        }
+        scene
+    }
+
+    fn assert_xrgb_pixels_eq(
+        actual: &[u8],
+        expected: &[u8],
+        width: usize,
+        height: usize,
+        pitch: usize,
+    ) {
+        for row in 0..height {
+            let start = row.checked_mul(pitch).expect("test row offset fits usize");
+            let pixel_bytes = width.checked_mul(4).expect("test pixel row fits usize");
+            let end = start
+                .checked_add(pixel_bytes)
+                .expect("test row end fits usize");
+            assert_eq!(
+                &actual[start..end],
+                &expected[start..end],
+                "pixel row {row} differs from dense oracle"
+            );
+        }
+    }
+
+    #[test]
+    fn l_shaped_damage_does_not_expand_to_a_bounding_box() {
+        // A QS popover overlapping a full-width top bar is the common case that made a bounding
+        // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
+        let damage = [
+            vello::FineDamageRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 68,
+            },
+            vello::FineDamageRect {
+                x: 1440,
+                y: 40,
+                width: 480,
+                height: 800,
+            },
+        ];
+        let normalized = VelloDrmBridge::normalize_damage(&damage, (1920, 1080))
+            .expect("the precise L shape is sparse eligible");
+        assert_eq!(
+            normalized.as_slice(),
+            &damage,
+            "partial overlap stays as exact copies"
+        );
+        let copied_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
+            pixels + u64::from(rect.width) * u64::from(rect.height)
+        });
+        assert_eq!(copied_pixels, 514_560);
+        let bounding_pixels = 1920_u64 * 840;
+        assert!(
+            bounding_pixels > u64::from(1920_u32) * u64::from(1080_u32) / 2,
+            "the old bounding box would have forced a full fallback"
+        );
+    }
+
+    #[test]
+    fn versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles() {
+        let (width, height) = (64_u32, 48_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let pitch = width as usize * 4 + 16;
+        let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+        let damage = [vello::FineDamageRect {
+            x: 7,
+            y: 9,
+            width: 13,
+            height: 11,
+        }];
+        let second = layered_scene(
+            width,
+            height,
+            Color::from_rgb8(0x11, 0x22, 0x33),
+            &[(damage[0], Color::from_rgb8(0xC0, 0x50, 0x20))],
+        );
+
+        bridge.set_phase_timing_enabled(true);
+        let mut first_destination = vec![0xD1; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &first,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut first_destination,
+                pitch,
+            )
+            .expect("first versioned paint is dense");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "a first versioned paint must not use stale sparse backing"
+        );
+
+        let sparse_supported = bridge.renderer.sparse_fine_supported();
+        let mut alternating_destination = vec![0xA7; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &second,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
+                },
+                &mut alternating_destination,
+                pitch,
+            )
+            .expect("second versioned paint");
+
+        let Some(mut oracle) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let mut expected = vec![0x4E; pitch * height as usize];
+        oracle
+            .paint_into_xrgb8888(&second, &mut expected, pitch)
+            .expect("dense oracle");
+        assert_xrgb_pixels_eq(
+            &alternating_destination,
+            &expected,
+            width as usize,
+            height as usize,
+            pitch,
+        );
+        if sparse_supported {
+            let timing = bridge.last_phase_timing().expect("timing");
+            assert_eq!(
+                timing.readback_bytes,
+                u64::from(damage[0].width) * u64::from(damage[0].height) * 4,
+                "profiled bytes are the submitted dirty copy, not a whole staging frame"
+            );
+            assert_eq!(
+                timing.cpu_output_bytes,
+                u64::from(width) * u64::from(height) * 4,
+                "alternating DRM destinations still receive a complete CPU XRGB image"
+            );
+            assert_eq!(bridge.last_sparse_render_attempts(), 1);
+            assert_eq!(bridge.last_full_render_attempts(), 0);
+            assert_eq!(bridge.last_render_attempts(), 1);
+        }
+        for row in 0..height as usize {
+            assert_eq!(
+                alternating_destination[row * pitch + width as usize * 4],
+                0xA7,
+                "destination padding remains outside the XRGB image"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_disjoint_and_edge_damage_matches_dense_oracle() {
+        let (width, height) = (64_u32, 48_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let pitch = width as usize * 4 + 32;
+        let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
+        let damage = [
+            vello::FineDamageRect {
+                x: 0,
+                y: 0,
+                width: 7,
+                height: 9,
+            },
+            vello::FineDamageRect {
+                x: 5,
+                y: 6,
+                width: 12,
+                height: 10,
+            },
+            vello::FineDamageRect {
+                x: 48,
+                y: 31,
+                width: 16,
+                height: 17,
+            },
+        ];
+        let second = layered_scene(
+            width,
+            height,
+            Color::from_rgb8(0x08, 0x18, 0x28),
+            &[
+                (damage[0], Color::from_rgb8(0xCC, 0x11, 0x22)),
+                (damage[1], Color::from_rgb8(0x22, 0xCC, 0x11)),
+                (damage[2], Color::from_rgb8(0x11, 0x22, 0xCC)),
+            ],
+        );
+        let mut initial = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &first,
+                SceneDamage {
+                    revision: 20,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut initial,
+                pitch,
+            )
+            .expect("dense seed");
+        let mut actual = vec![0xE2; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &second,
+                SceneDamage {
+                    revision: 21,
+                    previous_revision: Some(20),
+                    regions: Some(&damage),
+                },
+                &mut actual,
+                pitch,
+            )
+            .expect("damage paint");
+
+        let Some(mut oracle) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let mut expected = vec![0; pitch * height as usize];
+        oracle
+            .paint_into_xrgb8888(&second, &mut expected, pitch)
+            .expect("dense oracle");
+        assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
+    }
+
+    #[test]
+    fn revision_gap_and_empty_damage_force_full_readback() {
+        let (width, height) = (32_u32, 24_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let rect = [vello::FineDamageRect {
+            x: 2,
+            y: 3,
+            width: 5,
+            height: 7,
+        }];
+        let mut destination = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(1, 2, 3)),
+                SceneDamage {
+                    revision: 100,
+                    previous_revision: None,
+                    regions: Some(&rect),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed");
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(4, 5, 6)),
+                SceneDamage {
+                    revision: 102,
+                    previous_revision: Some(101),
+                    regions: Some(&rect),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("revision gap uses full render");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4
+        );
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(7, 8, 9)),
+                SceneDamage {
+                    revision: 103,
+                    previous_revision: Some(102),
+                    regions: Some(&[]),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("empty damage uses full render");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4
+        );
+    }
+
+    #[test]
+    fn failed_versioned_paint_invalidates_sparse_backing_before_retry() {
+        let (width, height) = (32_u32, 24_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let damage = [vello::FineDamageRect {
+            x: 4,
+            y: 5,
+            width: 8,
+            height: 7,
+        }];
+        let scene = rect_scene(width, height, Color::from_rgb8(0x12, 0x23, 0x34));
+        let mut destination = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed complete retained frame");
+
+        let valid_dev_id = bridge.dev_id;
+        bridge.dev_id = usize::MAX;
+        let failed = bridge.paint_damage_into_xrgb8888(
+            &scene,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&damage),
+            },
+            &mut destination,
+            pitch,
+        );
+        assert!(
+            matches!(failed, Err(BridgeError::InvalidDevice(_))),
+            "test-only invalid device must exercise a post-gate paint failure"
+        );
+        assert!(
+            !bridge.retained_target_valid
+                && !bridge.retained_staging_valid
+                && bridge.last_successful_revision.is_none(),
+            "a failed paint must invalidate the previously compatible retained frame before retry"
+        );
+        bridge.dev_id = valid_dev_id;
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("retry after failed paint");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "failed paint must erase the sparse retained revision"
+        );
+        assert_eq!(bridge.last_sparse_render_attempts(), 0);
+        assert_eq!(bridge.last_full_render_attempts(), 1);
+    }
+
+    #[test]
+    fn sparse_overflow_recovers_dense_without_publishing_partial_pixels() {
+        let (width, height) = (384_u32, 256_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        if !bridge.renderer.sparse_fine_supported() {
+            return;
+        }
+        let pitch = width as usize * 4;
+        let damage = [vello::FineDamageRect {
+            x: 144,
+            y: 80,
+            width: 96,
+            height: 96,
+        }];
+        let overflowing = opaque_rect_stack_in_rect_scene(damage[0]);
+        let mut actual = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &Scene::new(),
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut actual,
+                pitch,
+            )
+            .expect("dense seed");
+        bridge
+            .paint_damage_into_xrgb8888(
+                &overflowing,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
+                },
+                &mut actual,
+                pitch,
+            )
+            .expect("sparse overflow recovers densely");
+        assert_eq!(bridge.last_sparse_render_attempts(), 1);
+        assert!(
+            bridge.last_full_render_attempts() >= 1,
+            "overflowing sparse work must be followed by a dense recovery"
+        );
+        assert!(
+            bridge.last_render_attempts() <= RESILIENT_RENDER_ATTEMPTS,
+            "sparse attempt plus recovery remains globally bounded"
+        );
+
+        let Some(mut oracle) = bridge_or_skip(width, height) else {
+            return;
+        };
+        let mut expected = vec![0; pitch * height as usize];
+        oracle
+            .paint_into_xrgb8888(&overflowing, &mut expected, pitch)
+            .expect("dense overflow oracle");
+        assert_eq!(
+            actual
+                .iter()
+                .zip(&expected)
+                .position(|(actual, expected)| actual != expected),
+            None,
+            "overflowed sparse pixels must never reach the XRGB destination"
+        );
+    }
+
+    #[test]
+    fn base_color_and_resize_invalidate_versioned_sparse_backing() {
+        let (width, height) = (32_u32, 24_u32);
+        let Some(mut bridge) = bridge_or_skip(width, height) else {
+            return;
+        };
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let damage = [vello::FineDamageRect {
+            x: 3,
+            y: 4,
+            width: 6,
+            height: 5,
+        }];
+        let mut destination = vec![0; pitch * height as usize];
+        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed");
+
+        bridge.set_base_color(Color::from_rgb8(0x10, 0x20, 0x30));
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("base-color boundary");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "base color change must refresh the complete retained staging image"
+        );
+
+        let (resized_width, resized_height) = (width + 8, height + 4);
+        bridge
+            .resize(resized_width, resized_height)
+            .expect("different-mode resize boundary");
+        assert_eq!(bridge.size(), (resized_width, resized_height));
+        let resized_pitch = resized_width as usize * 4;
+        let mut resized_destination = vec![0; resized_pitch * resized_height as usize];
+        let resized_scene = rect_scene(
+            resized_width,
+            resized_height,
+            Color::from_rgb8(0x20, 0x30, 0x40),
+        );
+        bridge
+            .paint_damage_into_xrgb8888(
+                &resized_scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(2),
+                    regions: Some(&damage),
+                },
+                &mut resized_destination,
+                resized_pitch,
+            )
+            .expect("resize boundary");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(resized_width) * u64::from(resized_height) * 4,
+            "resize must not retain a sparse backing frame"
+        );
     }
 
     #[test]
