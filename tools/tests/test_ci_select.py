@@ -57,6 +57,22 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(plan["full"])
         self.assertEqual(plan["selected_count"], plan["workspace_count"])
 
+    def test_ci_scripts_do_not_force_unrelated_rust_rebuilds(self) -> None:
+        plan = ci_select.make_plan(
+            self.metadata,
+            self.root,
+            [
+                ".forgejo/workflows/check.yml",
+                "os/tests/imager_ephemeral_runner.sh",
+                "scripts/check-install-contract.py",
+                "tools/run-imager-ephemeral-runner.sh",
+            ],
+            2,
+        )
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["selected"]), {"qdoc", "pkg", "collab-types"})
+        self.assertEqual(plan["shard_count"], 1)
+
     def test_unowned_deleted_crate_path_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)
         self.assertTrue(plan["full"])

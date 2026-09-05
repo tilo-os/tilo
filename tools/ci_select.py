@@ -31,9 +31,6 @@ GLOBAL_FILES = {
 GLOBAL_PREFIXES = (
     ".cargo/",
     ".config/",
-    ".forgejo/",
-    "scripts/",
-    "tools/",
     "vendor/",
 )
 HEAVY_PACKAGES = {
