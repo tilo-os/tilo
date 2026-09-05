@@ -51,7 +51,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
-  && grep -Fq '"runner":"runner-arm64"' "$desktop" \
+  && grep -Fq 'runner:"runner-arm64"' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" amd64,arm64' "$desktop" \
   && ok 'desktop push and pull-request triggers are path-scoped' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
