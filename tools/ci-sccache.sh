@@ -21,16 +21,28 @@ case "$mode" in
         export SCCACHE_S3_KEY_PREFIX="$QOS_SCCACHE_KEY_PREFIX"
         sccache --stop-server >/dev/null 2>&1 || true
       fi
-      if [ -n "${GITHUB_ENV:-}" ]; then
-        printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
-        if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
-          printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$QOS_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
+      if sccache --zero-stats; then
+        if [ -n "${GITHUB_ENV:-}" ]; then
+          printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
+          if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
+            printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$QOS_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
+          fi
+        else
+          export RUSTC_WRAPPER="$path"
         fi
+        echo "remote compiler cache enabled: $($path --version)"
       else
-        export RUSTC_WRAPPER="$path"
+        # A present client is not a usable cache when its backend is down.
+        # Clearing the wrapper makes cache outages a performance degradation,
+        # not an immediate failure of every rustc invocation in the job.
+        sccache --stop-server >/dev/null 2>&1 || true
+        if [ -n "${GITHUB_ENV:-}" ]; then
+          echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
+        else
+          unset RUSTC_WRAPPER || true
+        fi
+        echo '::warning::sccache backend is unavailable; compiling normally'
       fi
-      sccache --zero-stats || true
-      echo "remote compiler cache enabled: $($path --version)"
     else
       # An old builder image may briefly overlap its replacement. Never leave
       # the workflow-level wrapper pointing at a nonexistent executable.
