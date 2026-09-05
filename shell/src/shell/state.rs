@@ -6025,37 +6025,29 @@ impl WorkspaceTree {
         self.doc.delete(&groups, group_idx).is_ok()
     }
 
-    /// Mirror a `move_tab_across_strips` mutation into the doc: captures
-    /// the tab's scalars from the source, deletes it there, and appends a
-    /// fresh map to the destination strip's first window-group's `tabs`.
-    /// No-op if the source tab or destination strip aren't seeded.
+    /// Mirror a cross-strip move into the document with the same new group
+    /// id and insertion index as the cache and rendered row. The old code
+    /// appended the tab to the destination's *first existing group* while
+    /// the cache created a new group, so any subsequent doc resync undid the
+    /// topology the person had just created.
     pub fn doc_move_tab_across_strips(
         &mut self,
         src_strip: StripId,
         dst_strip: StripId,
-        tab_id: u64,
+        src_group_id: GroupId,
+        remove_src_group: bool,
+        new_group: &WindowGroup,
+        destination: usize,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        let Some((_, src_tabs, src_tab_entry, src_idx)) = self.locate_tab(src_strip, tab_id) else {
+        let Some(tab) = new_group.tabs.first() else {
             return false;
         };
-        let title = match self.doc.get(&src_tab_entry, "title").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => v.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
+        let Some((_, src_tabs, _, src_tab_idx)) = self.locate_tab(src_strip, tab.id) else {
+            return false;
         };
-        let tile_blob: Vec<u8> = match self.doc.get(&src_tab_entry, "tile_json").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Bytes(b) => b.clone(),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
-        };
-
-        let _ = self.doc.delete(&src_tabs, src_idx);
-
+        let mut src_groups: Option<(automerge::ObjId, usize)> = None;
+        let mut dst_groups: Option<automerge::ObjId> = None;
         let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
             return false;
         };
@@ -6072,9 +6064,14 @@ impl WorkspaceTree {
                 let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
                     continue;
                 };
-                let dst_matches = matches!(self.doc.get(&strip_entry, "id").ok().flatten(),
-                        Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == dst_strip.raw()));
-                if !dst_matches {
+                let strip_raw = match self.doc.get(&strip_entry, "id").ok().flatten() {
+                    Some((Value::Scalar(s), _)) => match s.as_ref() {
+                        ScalarValue::Uint(id) => *id,
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if strip_raw != src_strip.raw() && strip_raw != dst_strip.raw() {
                     continue;
                 }
                 let Some((_, groups_id)) =
@@ -6082,36 +6079,76 @@ impl WorkspaceTree {
                 else {
                     return false;
                 };
-                if self.doc.length(&groups_id) == 0 {
-                    return false;
+                if strip_raw == dst_strip.raw() {
+                    dst_groups = Some(groups_id.clone());
                 }
-                let Some((_, first_group)) = self.doc.get(&groups_id, 0_usize).ok().flatten()
-                else {
-                    return false;
-                };
-                let tabs_map_id = match self.doc.get(&first_group, "tabs").ok().flatten() {
-                    Some((_, id)) => id,
-                    None => match self.doc.put_object(&first_group, "tabs", ObjType::List) {
-                        Ok(id) => id,
-                        Err(_) => return false,
-                    },
-                };
-                let new_idx = self.doc.length(&tabs_map_id);
-                let Ok(tab_entry) = self.doc.insert_object(&tabs_map_id, new_idx, ObjType::Map)
-                else {
-                    return false;
-                };
-                let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
-                let _ = self.doc.put(&tab_entry, "title", title);
-                if !tile_blob.is_empty() {
-                    let _ = self
-                        .doc
-                        .put(&tab_entry, "tile_json", ScalarValue::Bytes(tile_blob));
+                if strip_raw == src_strip.raw() {
+                    for group_idx in 0..self.doc.length(&groups_id) {
+                        let Some((_, group_entry)) =
+                            self.doc.get(&groups_id, group_idx).ok().flatten()
+                        else {
+                            continue;
+                        };
+                        if matches!(
+                            self.doc.get(&group_entry, "id").ok().flatten(),
+                            Some((Value::Scalar(s), _))
+                                if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == src_group_id)
+                        ) {
+                            src_groups = Some((groups_id.clone(), group_idx));
+                            break;
+                        }
+                    }
                 }
-                return true;
             }
         }
-        false
+        let Some((src_groups, src_group_idx)) = src_groups else {
+            return false;
+        };
+        let Some(dst_groups) = dst_groups else {
+            return false;
+        };
+
+        // AutoCommit mutations are individually fallible. Keep a cheap
+        // document snapshot so the operation is all-or-nothing to callers.
+        let before = self.doc.clone();
+        let removed = if remove_src_group {
+            self.doc.delete(&src_groups, src_group_idx)
+        } else {
+            self.doc.delete(&src_tabs, src_tab_idx)
+        };
+        if removed.is_err() {
+            self.doc = before;
+            return false;
+        }
+        let dest = destination.min(self.doc.length(&dst_groups));
+        let inserted = (|| {
+            let group_entry = self
+                .doc
+                .insert_object(&dst_groups, dest, ObjType::Map)
+                .ok()?;
+            self.doc
+                .put(&group_entry, "id", ScalarValue::Uint(new_group.id))
+                .ok()?;
+            let tabs = self
+                .doc
+                .put_object(&group_entry, "tabs", ObjType::List)
+                .ok()?;
+            let tab_entry = self.doc.insert_object(&tabs, 0, ObjType::Map).ok()?;
+            self.doc
+                .put(&tab_entry, "id", ScalarValue::Uint(tab.id))
+                .ok()?;
+            self.doc.put(&tab_entry, "title", tab.title.clone()).ok()?;
+            let blob = serde_json::to_vec(&tab.tile).ok()?;
+            self.doc
+                .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob))
+                .ok()?;
+            Some(())
+        })();
+        if inserted.is_none() {
+            self.doc = before;
+            return false;
+        }
+        true
     }
 
     /// Mirror a [`Self::reorder_group_within_strip`] cache move into the
@@ -7015,6 +7052,8 @@ impl WorkspaceTree {
         src_strip_id: StripId,
         dest_strip_id: StripId,
         tab_id: TabId,
+        new_group_id: GroupId,
+        destination: usize,
     ) -> bool {
         if src_strip_id == dest_strip_id {
             // Return-to-source re-splices into a new group on the same
@@ -7022,9 +7061,20 @@ impl WorkspaceTree {
             // skipping the write is safe — a restart rebuilds it anyway.
             return false;
         }
+        // Validate the destination before detaching anything. A stale drop
+        // target must not make the source tab disappear.
+        if !self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .any(|strip| strip.id == dest_strip_id)
+        {
+            return false;
+        }
         // Scan every workspace's strips: StripId is workspace-agnostic.
         let mut moved_tab: Option<Tab> = None;
         let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
+        let mut src_group_id = 0;
         'outer: for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
             for (strip_idx, strip) in ws.strips.iter_mut().enumerate() {
                 if strip.id != src_strip_id {
@@ -7032,6 +7082,7 @@ impl WorkspaceTree {
                 }
                 for (group_idx, group) in strip.window_groups.iter_mut().enumerate() {
                     if let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) {
+                        src_group_id = group.id;
                         let removed = group.tabs.remove(pos);
                         // If the moved tab was active, promote the
                         // first remaining sibling so a future re-render
@@ -7065,7 +7116,6 @@ impl WorkspaceTree {
                 groups.remove(group_idx);
             }
         }
-        let new_group_id = next_id();
         let active_tab = moved.id;
         let new_group = WindowGroup {
             id: new_group_id,
@@ -7077,8 +7127,24 @@ impl WorkspaceTree {
         for ws in &mut self.workspaces {
             for strip in &mut ws.strips {
                 if strip.id == dest_strip_id {
-                    strip.window_groups.push(new_group);
-                    self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
+                    let destination = destination.min(strip.window_groups.len());
+                    strip.window_groups.insert(destination, new_group.clone());
+                    let doc_changed = self.doc_move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        src_group_id,
+                        prune_group_at.is_some(),
+                        &new_group,
+                        destination,
+                    );
+                    if !doc_changed {
+                        tracing::warn!(
+                            tab_id,
+                            src_strip_id = src_strip_id.raw(),
+                            dest_strip_id = dest_strip_id.raw(),
+                            "cross-strip move could not be mirrored into the room document"
+                        );
+                    }
                     self.flush_to_disk();
                     return true;
                 }
@@ -9403,7 +9469,14 @@ mod automerge_foundation_tests {
         let src_strip_id = tree_a.workspaces[0].strips[0].id;
         let target_tab = tree_a.workspaces[0].strips[0].window_groups[0].tabs[0].id;
 
-        assert!(tree_a.move_tab_across_strips(src_strip_id, dst_strip_id, target_tab));
+        let new_group_id = next_id();
+        assert!(tree_a.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            new_group_id,
+            1,
+        ));
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
@@ -9427,6 +9500,24 @@ mod automerge_foundation_tests {
         assert!(
             landed_in_dst,
             "moved tab must appear in destination strip after sync"
+        );
+        let destination_groups = &dst_strip_in_b.expect("destination strip").window_groups;
+        assert_eq!(
+            destination_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![dst_group_id, new_group_id],
+            "doc resync must preserve the same new group and insertion order as the cache"
+        );
+        assert_eq!(
+            destination_groups[1]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![target_tab],
+            "the moved tab remains a separate group after resync"
         );
     }
 }
@@ -9859,6 +9950,18 @@ mod active_group_tests {
         // With the doc seeded from the cache, a reorder must also reshuffle
         // the doc's `window_groups` list so peer-sync ships the new order.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        for group in &mut tree.workspaces[0].strips[0].window_groups {
+            let tab_id = 10_000 + group.id;
+            group.tabs.push(Tab {
+                id: tab_id,
+                title: format!("Group {}", group.id),
+                tile: TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: format!("Group {}", group.id),
+                },
+            });
+            group.active_tab = tab_id;
+        }
         tree.seed_doc_from_cache();
         let state_dir = tempfile::tempdir().expect("state dir");
         tree.persist_path = Some(state_dir.path().join("state.json"));
