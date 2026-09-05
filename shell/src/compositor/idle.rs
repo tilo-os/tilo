@@ -239,6 +239,33 @@ impl SessionManager {
         vec![SessionTransition::Locked]
     }
 
+    /// Enter the secure pre-sleep state. This is deliberately separate from
+    /// ordinary activity: suspend always leaves the session locked, even when
+    /// automatic idle locking is disabled.
+    pub fn prepare_for_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
+        self.last_activity = now;
+        self.suspended = true;
+        if self.locked {
+            Vec::new()
+        } else {
+            self.locked = true;
+            vec![SessionTransition::Locked]
+        }
+    }
+
+    /// Apply logind's post-sleep edge. Displays wake and timers re-arm, while
+    /// the lock state is intentionally preserved until authentication.
+    pub fn resume_from_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
+        self.last_activity = now;
+        self.suspended = false;
+        if self.blanked {
+            self.blanked = false;
+            vec![SessionTransition::Woke]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Apply the unlock transition: clears the lock, wakes the display if blanked, resets the idle timer. No-op if not locked.
     ///
     /// The *post-authentication* transition — reached only once a credential is verified, either the
@@ -538,6 +565,45 @@ mod tests {
         assert_eq!(trans, vec![SessionTransition::Woke]);
         assert!(s.is_locked());
         assert!(!s.is_blanked());
+    }
+
+    #[test]
+    fn suspend_resume_wakes_but_remains_locked_until_authentication() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg_s(Some(60), None, Some(120)), t0);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(120)),
+            vec![SessionTransition::Blanked, SessionTransition::Suspend]
+        );
+        assert_eq!(
+            s.prepare_for_sleep(t0 + Duration::from_secs(121)),
+            vec![SessionTransition::Locked]
+        );
+        assert!(s.is_locked() && s.is_blanked() && s.is_suspend_pending());
+
+        assert_eq!(
+            s.resume_from_sleep(t0 + Duration::from_secs(130)),
+            vec![SessionTransition::Woke]
+        );
+        assert!(s.is_locked());
+        assert!(!s.is_blanked());
+        assert!(!s.is_suspend_pending());
+
+        assert_eq!(
+            s.request_unlock(t0 + Duration::from_secs(131)),
+            vec![SessionTransition::Unlocked]
+        );
+        assert!(!s.is_locked());
+    }
+
+    #[test]
+    fn externally_requested_sleep_locks_even_when_idle_lock_is_disabled() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(None, None), t0);
+        assert_eq!(s.prepare_for_sleep(t0), vec![SessionTransition::Locked]);
+        assert!(s.prepare_for_sleep(t0).is_empty());
+        assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+        assert!(s.is_locked());
     }
 
     #[test]

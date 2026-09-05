@@ -70,6 +70,10 @@ pub struct LockOutput {
     pub origin: (f64, f64),
     /// Output size in pixels.
     pub size: (f64, f64),
+    /// Device scale reported for this output. Lock chrome is compositor-owned,
+    /// so it must apply this itself rather than relying on a Wayland client to
+    /// render at the requested scale.
+    pub scale: f64,
 }
 
 impl LockOutput {
@@ -161,6 +165,115 @@ pub fn build_accessibility_tree(outputs: &[LockOutput], view: &LockView<'_>) -> 
         } else {
             LOCK_PASSWORD_ID
         },
+    }
+}
+
+/// Responsive geometry for one output's lock chrome. Keeping layout separate
+/// from painting makes containment and non-overlap contractual instead of a
+/// property inferred from screenshots.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LockLayout {
+    pub output: Rect,
+    pub clock: Rect,
+    pub date: Rect,
+    pub panel: Rect,
+    pub icon: Rect,
+    pub title: Rect,
+    pub password: Rect,
+    pub status: Rect,
+    pub notifications: Rect,
+    pub scale: f64,
+}
+
+impl LockLayout {
+    /// Resolve a bounded lock layout for one output. The device/theme scale is
+    /// honoured when it fits and reduced on compact outputs, so a high-DPI
+    /// laptop never clips the password/error controls below the panel.
+    pub fn for_output(output: LockOutput, theme: &Theme) -> Self {
+        let width = output.size.0.max(1.0);
+        let height = output.size.1.max(1.0);
+        let output_rect = Rect::new(
+            output.origin.0,
+            output.origin.1,
+            output.origin.0 + width,
+            output.origin.1 + height,
+        );
+        let edge = (width.min(height) * 0.035).clamp(1.0, 28.0);
+        let desired_scale = (output.scale * f64::from(theme.ui_scale)).clamp(0.5, 3.0);
+        let width_fit = ((width - edge * 2.0) / 420.0).max(0.05);
+        let height_fit = ((height - edge * 2.0) / 470.0).max(0.05);
+        let scale = desired_scale.min(width_fit).min(height_fit).max(0.05);
+
+        let panel_width = 400.0 * scale;
+        let panel_height = 270.0 * scale;
+        let clock_height = 78.0 * scale;
+        let date_height = 28.0 * scale;
+        let clock_date_gap = 4.0 * scale;
+        let panel_gap = 34.0 * scale;
+        let stack_height = clock_height + clock_date_gap + date_height + panel_gap + panel_height;
+        let top = output.origin.1 + (height - stack_height) / 2.0;
+        let cx = output.origin.0 + width / 2.0;
+
+        let clock = Rect::new(
+            output.origin.0 + edge,
+            top,
+            output.origin.0 + width - edge,
+            top + clock_height,
+        );
+        let date_y = clock.y1 + clock_date_gap;
+        let date = Rect::new(clock.x0, date_y, clock.x1, date_y + date_height);
+        let panel_y = date.y1 + panel_gap;
+        let panel = Rect::new(
+            cx - panel_width / 2.0,
+            panel_y,
+            cx + panel_width / 2.0,
+            panel_y + panel_height,
+        );
+
+        let icon_size = 42.0 * scale;
+        let icon = Rect::new(
+            cx - icon_size / 2.0,
+            panel.y0 + 22.0 * scale,
+            cx + icon_size / 2.0,
+            panel.y0 + (22.0 * scale) + icon_size,
+        );
+        let title = Rect::new(
+            panel.x0 + 28.0 * scale,
+            icon.y1 + 8.0 * scale,
+            panel.x1 - 28.0 * scale,
+            icon.y1 + 40.0 * scale,
+        );
+        let password = Rect::new(
+            panel.x0 + 30.0 * scale,
+            title.y1 + 14.0 * scale,
+            panel.x1 - 30.0 * scale,
+            title.y1 + 64.0 * scale,
+        );
+        let status = Rect::new(
+            password.x0,
+            password.y1 + 10.0 * scale,
+            password.x1,
+            password.y1 + 42.0 * scale,
+        );
+        let notifications = Rect::new(
+            password.x0,
+            status.y1 + 4.0 * scale,
+            password.x1,
+            panel.y1 - 14.0 * scale,
+        );
+
+        Self {
+            output: output_rect,
+            clock,
+            date,
+            panel,
+            icon,
+            title,
+            password,
+            status,
+            notifications,
+            scale,
+        }
     }
 }
 
@@ -261,83 +374,137 @@ pub fn draw_lock_scene_with_wallpaper(
 
     // 2. One interactive lock widget per output, centred on that output.
     for output in outputs {
-        draw_lock_widget(&mut scene, output.center(), theme, text, view);
+        draw_lock_widget(
+            &mut scene,
+            LockLayout::for_output(*output, theme),
+            theme,
+            text,
+            view,
+        );
     }
 
     scene
 }
 
-/// Draw the interactive lock widget (clock, padlock, password field, status
-/// line, notification summary) centred at `(cx, cy)`. Factored out of
-/// [`draw_lock_scene`] so it can be stamped once per output; draws no
-/// backdrop of its own.
-///
-/// Split into per-section helpers (below) purely to keep each function
-/// short; the sections still run in the same top-to-bottom order and each
-/// one's vertical position is threaded through from the one above it.
+/// Draw the interactive lock widget from one already-bounded layout.
 fn draw_lock_widget(
     scene: &mut Scene,
-    (cx, cy): (f64, f64),
-    theme: &Theme,
-    text: &mut TextRenderer,
-    view: &LockView<'_>,
-) {
-    draw_lock_clock_and_date(scene, cx, cy, theme, text, view);
-    let title_y = draw_lock_padlock_and_title(scene, cx, cy, theme, text);
-    let field_geom = draw_lock_password_field(scene, cx, title_y, theme, text, view);
-    draw_lock_status_and_notifications(scene, cx, field_geom, theme, text, view);
-}
-
-/// Clock + date, centred in the upper third. Part of [`draw_lock_widget`].
-fn draw_lock_clock_and_date(
-    scene: &mut Scene,
-    cx: f64,
-    cy: f64,
+    layout: LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
     if !view.clock.is_empty() {
-        let clock_size = 64.0_f32;
-        let (cw, _) = text.measure(view.clock, clock_size, None);
-        text.draw_text(
+        draw_centered_text(
             scene,
+            text,
             view.clock,
-            clock_size,
+            scaled_text_size(64.0, layout.scale, theme),
             theme.text_primary,
-            Affine::translate((cx - f64::from(cw) / 2.0, cy - 170.0)),
-            None,
+            layout.clock,
         );
     }
     if !view.date.is_empty() {
-        let date_size = 18.0_f32;
-        let (dw, _) = text.measure(view.date, date_size, None);
-        text.draw_text(
+        draw_centered_text(
             scene,
+            text,
             view.date,
-            date_size,
+            scaled_text_size(18.0, layout.scale, theme),
             theme.text_dim,
-            Affine::translate((cx - f64::from(dw) / 2.0, cy - 120.0)),
-            None,
+            layout.date,
+        );
+    }
+
+    let panel = RoundedRect::from_rect(layout.panel, 24.0 * layout.scale);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.bg_primary,
+        None,
+        &panel,
+    );
+    scene.stroke(
+        &Stroke::new((1.0 * layout.scale).max(1.0)),
+        Affine::IDENTITY,
+        theme.border_standard,
+        None,
+        &panel,
+    );
+
+    draw_lock_icon(scene, layout, theme);
+    draw_centered_text(
+        scene,
+        text,
+        "Session locked",
+        scaled_text_size(22.0, layout.scale, theme),
+        theme.text_primary,
+        layout.title,
+    );
+    draw_password_field(scene, layout, theme, text, view);
+    draw_status(scene, layout, theme, text, view);
+    let label = count_label(view.notification_count);
+    if !label.is_empty() {
+        draw_centered_text(
+            scene,
+            text,
+            &label,
+            scaled_text_size(13.0, layout.scale, theme),
+            theme.text_dim,
+            layout.notifications,
         );
     }
 }
 
-/// Padlock glyph (body, shackle, keyhole) + the "Locked" title beneath it.
-/// Returns the title's baseline y — where the password field starts. Part
-/// of [`draw_lock_widget`].
-fn draw_lock_padlock_and_title(
+fn scaled_text_size(base: f32, scale: f64, theme: &Theme) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded lock-layout scale is at most 3; f32 is exact enough for font pixels"
+    )]
+    let scale = scale as f32;
+    base * scale * theme.text_scale
+}
+
+fn draw_centered_text(
     scene: &mut Scene,
-    cx: f64,
-    cy: f64,
-    theme: &Theme,
     text: &mut TextRenderer,
-) -> f64 {
-    // Padlock body — a rounded rectangle just above centre.
-    let bw = 60.0_f64;
-    let bh = 46.0_f64;
-    let body_y = cy - 60.0;
-    let body = RoundedRect::new(cx - bw / 2.0, body_y, cx + bw / 2.0, body_y + bh, 10.0);
+    value: &str,
+    size: f32,
+    color: vello::peniko::Color,
+    bounds: Rect,
+) {
+    if value.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "lock output geometry is bounded to compositor dimensions; f32 width is sufficient for text shaping"
+    )]
+    let max_width = bounds.width() as f32;
+    let (width, height) = text.measure(value, size, Some(max_width));
+    let x = bounds.x0 + (bounds.width() - f64::from(width.min(max_width))) / 2.0;
+    let y = bounds.y0 + (bounds.height() - f64::from(height)) / 2.0;
+    text.draw_text(
+        scene,
+        value,
+        size,
+        color,
+        Affine::translate((x, y)),
+        Some(max_width),
+    );
+}
+
+fn draw_lock_icon(scene: &mut Scene, layout: LockLayout, theme: &Theme) {
+    let cx = layout.icon.center().x;
+    let body_width = layout.icon.width() * 0.72;
+    let body_height = layout.icon.height() * 0.50;
+    let body_y = layout.icon.y0 + layout.icon.height() * 0.46;
+    let body = RoundedRect::new(
+        cx - body_width / 2.0,
+        body_y,
+        cx + body_width / 2.0,
+        body_y + body_height,
+        6.0 * layout.scale,
+    );
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -346,20 +513,20 @@ fn draw_lock_padlock_and_title(
         &body,
     );
 
-    // Shackle — upper semicircle on the body's top edge. In screen
-    // (y-down) space, start_angle = PI sweeping +PI traces the upper half.
-    let r = bw / 3.2;
+    let r = body_width * 0.31;
     let shackle = Arc::new(Point::new(cx, body_y), (r, r), PI, PI, 0.0);
     scene.stroke(
-        &Stroke::new(8.0),
+        &Stroke::new((5.0 * layout.scale).max(1.0)),
         Affine::IDENTITY,
         theme.accent_primary,
         None,
         &shackle,
     );
 
-    // Keyhole — a dot punched into the body in the backdrop colour.
-    let keyhole = Circle::new(Point::new(cx, body_y + bh / 2.0), 6.0);
+    let keyhole = Circle::new(
+        Point::new(cx, body_y + body_height / 2.0),
+        3.5 * layout.scale,
+    );
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -367,80 +534,41 @@ fn draw_lock_padlock_and_title(
         None,
         &keyhole,
     );
-
-    // "Locked" title.
-    let title = "Locked";
-    let title_size = 24.0_f32;
-    let (tw, _) = text.measure(title, title_size, None);
-    let title_y = body_y + bh + 30.0;
-    text.draw_text(
-        scene,
-        title,
-        title_size,
-        theme.text_primary,
-        Affine::translate((cx - f64::from(tw) / 2.0, title_y)),
-        None,
-    );
-    title_y
 }
 
-/// Password field — rounded pill, one dot per typed character. Only the
-/// length is available here, never the plaintext. Returns `(field_y,
-/// field_h)` so the status line below can be positioned. Part of
-/// [`draw_lock_widget`].
-fn draw_lock_password_field(
+fn draw_password_field(
     scene: &mut Scene,
-    cx: f64,
-    title_y: f64,
+    layout: LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
-) -> (f64, f64) {
-    let field_w = 280.0_f64;
-    let field_h = 44.0_f64;
-    let field_x = cx - field_w / 2.0;
-    let field_y = title_y + 26.0;
-    let field = RoundedRect::new(field_x, field_y, field_x + field_w, field_y + field_h, 22.0);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        theme.bg_primary,
-        None,
-        &field,
-    );
+) {
+    let field = RoundedRect::from_rect(layout.password, layout.password.height() / 2.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &field);
     // A subtle border — focused colour, since the field always holds focus
     // while locked.
     scene.stroke(
-        &Stroke::new(1.5),
+        &Stroke::new((1.5 * layout.scale).max(1.0)),
         Affine::IDENTITY,
         theme.border_focus,
         None,
         &field,
     );
     if view.verifying {
-        // Buffer handed to the worker: no dots, no placeholder — the
-        // status line below reads "Verifying…".
+        // The status below names the in-flight action. Keeping the field
+        // visually quiet prevents it looking like a second prompt.
     } else if view.password_len == 0 {
-        // Placeholder prompt when empty.
-        let ph = "Enter password";
-        let ph_size = 15.0_f32;
-        let (pw, ph_h) = text.measure(ph, ph_size, None);
-        text.draw_text(
+        draw_centered_text(
             scene,
-            ph,
-            ph_size,
+            text,
+            "Enter password",
+            scaled_text_size(15.0, layout.scale, theme),
             theme.text_dim,
-            Affine::translate((
-                cx - f64::from(pw) / 2.0,
-                field_y + field_h / 2.0 + f64::from(ph_h) / 2.0 - 3.0,
-            )),
-            None,
+            layout.password,
         );
     } else {
-        // One dot per character, centred, capped so a very long password
-        // can't overflow the field.
-        let dot_r = 4.0_f64;
-        let gap = 14.0_f64;
+        let dot_r = 4.0 * layout.scale;
+        let gap = 14.0 * layout.scale;
         let shown = view.password_len.min(18);
         // `shown` is capped to at most 18 by the `.min` above, so both
         // usize -> f64 conversions below are always exact.
@@ -450,8 +578,8 @@ fn draw_lock_password_field(
         )]
         {
             let total_w = (shown as f64 - 1.0).max(0.0) * gap;
-            let start_x = cx - total_w / 2.0;
-            let dot_y = field_y + field_h / 2.0;
+            let start_x = layout.password.center().x - total_w / 2.0;
+            let dot_y = layout.password.center().y;
             for i in 0..shown {
                 let dot = Circle::new(Point::new(start_x + i as f64 * gap, dot_y), dot_r);
                 scene.fill(
@@ -464,74 +592,30 @@ fn draw_lock_password_field(
             }
         }
     }
-    (field_y, field_h)
 }
 
-/// Status line (verifying / error / hint) plus the count-only notification
-/// summary below the password field. Part of [`draw_lock_widget`].
-fn draw_lock_status_and_notifications(
+fn draw_status(
     scene: &mut Scene,
-    cx: f64,
-    (field_y, field_h): (f64, f64),
+    layout: LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
-    // Status line under the field: "Verifying…" while a check runs, else
-    // the last error (danger colour), else the neutral hint.
-    let line_y = field_y + field_h + 26.0;
-    if view.verifying {
-        let verifying = "Verifying…";
-        let v_size = 14.0_f32;
-        let (vw, _) = text.measure(verifying, v_size, None);
-        text.draw_text(
-            scene,
-            verifying,
-            v_size,
-            theme.text_dim,
-            Affine::translate((cx - f64::from(vw) / 2.0, line_y)),
-            None,
-        );
+    let (value, color, size) = if view.verifying {
+        ("Verifying…", theme.text_dim, 14.0)
     } else if let Some(err) = view.error {
-        let err_size = 14.0_f32;
-        let (ew, _) = text.measure(err, err_size, None);
-        text.draw_text(
-            scene,
-            err,
-            err_size,
-            theme.tokens.colors.semantic.danger,
-            Affine::translate((cx - f64::from(ew) / 2.0, line_y)),
-            None,
-        );
+        (err, theme.tokens.colors.semantic.danger, 13.0)
     } else {
-        let hint = "Type your password and press Enter";
-        let hint_size = 13.0_f32;
-        let (hw, _) = text.measure(hint, hint_size, None);
-        text.draw_text(
-            scene,
-            hint,
-            hint_size,
-            theme.text_dim,
-            Affine::translate((cx - f64::from(hw) / 2.0, line_y)),
-            None,
-        );
-    }
-
-    // Count-only notification summary (lock-suppression). Show
-    // "N notifications" — never any content.
-    let label = count_label(view.notification_count);
-    if !label.is_empty() {
-        let label_size = 14.0_f32;
-        let (lw, _) = text.measure(&label, label_size, None);
-        text.draw_text(
-            scene,
-            &label,
-            label_size,
-            theme.text_dim,
-            Affine::translate((cx - f64::from(lw) / 2.0, line_y + 34.0)),
-            None,
-        );
-    }
+        ("Press Enter to unlock", theme.text_dim, 13.0)
+    };
+    draw_centered_text(
+        scene,
+        text,
+        value,
+        scaled_text_size(size, layout.scale, theme),
+        color,
+        layout.status,
+    );
 }
 
 /// Lock-screen count label: "N notifications" (empty for zero); reuses the
@@ -559,6 +643,7 @@ mod tests {
         [LockOutput {
             origin: (0.0, 0.0),
             size: (w, h),
+            scale: 1.0,
         }]
     }
 
@@ -718,6 +803,94 @@ mod tests {
         assert!(!scene.encoding().is_empty());
     }
 
+    fn assert_inside(inner: Rect, outer: Rect, name: &str) {
+        assert!(
+            inner.x0 >= outer.x0
+                && inner.y0 >= outer.y0
+                && inner.x1 <= outer.x1
+                && inner.y1 <= outer.y1
+                && inner.x0 <= inner.x1
+                && inner.y0 <= inner.y1,
+            "{name} {inner:?} escapes output {outer:?}"
+        );
+    }
+
+    #[test]
+    fn responsive_layout_is_bounded_and_non_overlapping() {
+        let theme = Theme::dark();
+        for output in [
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1600.0, 900.0),
+                scale: 1.0,
+            },
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1366.0, 768.0),
+                scale: 1.25,
+            },
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1280.0, 720.0),
+                scale: 1.0,
+            },
+            LockOutput {
+                origin: (40.0, 30.0),
+                size: (1280.0, 720.0),
+                scale: 2.0,
+            },
+        ] {
+            let layout = LockLayout::for_output(output, &theme);
+            for (name, rect) in [
+                ("clock", layout.clock),
+                ("date", layout.date),
+                ("panel", layout.panel),
+                ("icon", layout.icon),
+                ("title", layout.title),
+                ("password", layout.password),
+                ("status", layout.status),
+                ("notifications", layout.notifications),
+            ] {
+                assert_inside(rect, layout.output, name);
+            }
+            assert!(layout.clock.y1 <= layout.date.y0);
+            assert!(layout.date.y1 <= layout.panel.y0);
+            assert!(layout.icon.y1 <= layout.title.y0);
+            assert!(layout.title.y1 <= layout.password.y0);
+            assert!(layout.password.y1 <= layout.status.y0);
+            assert!(layout.status.y1 <= layout.notifications.y0);
+            assert_inside(layout.icon, layout.panel, "icon/panel");
+            assert_inside(layout.title, layout.panel, "title/panel");
+            assert_inside(layout.password, layout.panel, "password/panel");
+            assert_inside(layout.status, layout.panel, "status/panel");
+            assert_inside(layout.notifications, layout.panel, "notifications/panel");
+        }
+    }
+
+    #[test]
+    fn asymmetric_outputs_get_independent_bounded_layouts() {
+        let theme = Theme::dark();
+        for output in [
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1366.0, 768.0),
+                scale: 1.25,
+            },
+            LockOutput {
+                origin: (1366.0, 48.0),
+                size: (1280.0, 720.0),
+                scale: 1.0,
+            },
+        ] {
+            let layout = LockLayout::for_output(output, &theme);
+            assert_inside(layout.panel, layout.output, "panel");
+            assert_eq!(
+                layout.panel.x0 + layout.panel.x1,
+                output.origin.0 * 2.0 + output.size.0
+            );
+        }
+    }
+
     // ---- multi-output ---------------------------------------------------
 
     /// Each output's widget is anchored at that output's centre. A second
@@ -729,11 +902,13 @@ mod tests {
         let primary = LockOutput {
             origin: (0.0, 0.0),
             size: (1920.0, 1080.0),
+            scale: 1.0,
         };
         assert_eq!(primary.center(), (960.0, 540.0));
         let secondary = LockOutput {
             origin: (1920.0, 0.0),
             size: (1280.0, 1024.0),
+            scale: 1.0,
         };
         assert_eq!(secondary.center(), (2560.0, 512.0));
     }
@@ -746,10 +921,12 @@ mod tests {
             LockOutput {
                 origin: (0.0, 0.0),
                 size: (1920.0, 1080.0),
+                scale: 1.0,
             },
             LockOutput {
                 origin: (1920.0, 0.0),
                 size: (1280.0, 1024.0),
+                scale: 1.0,
             },
         ];
         assert_eq!(combined_extent(&outs), (3200.0, 1080.0));
@@ -770,10 +947,12 @@ mod tests {
             LockOutput {
                 origin: (0.0, 0.0),
                 size: (1920.0, 1080.0),
+                scale: 1.0,
             },
             LockOutput {
                 origin: (1920.0, 0.0),
                 size: (1920.0, 1080.0),
+                scale: 1.0,
             },
         ];
         let two = draw_lock_scene(&two_outs, &theme, &mut text, &view());

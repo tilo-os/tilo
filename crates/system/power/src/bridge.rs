@@ -33,6 +33,10 @@ pub struct PowerNotification {
 pub enum PowerSignal {
     /// Lock the session (lid/power-key policy resolved to `Lock`).
     Lock,
+    /// logind is about to suspend. The compositor must enter its existing
+    /// lock state and draw that state before acknowledging the sleep delay
+    /// inhibitor; this is distinct from a policy-only lock request.
+    PreparingForSleep,
     /// Post a battery notification.
     Notify(PowerNotification),
     /// The machine just resumed from sleep — reset the idle timer so it does
@@ -49,6 +53,9 @@ pub enum PowerCommand {
     /// Suspend the machine via logind. Emitted after the sync loop has
     /// consulted the inhibitor registry and decided suspend should proceed.
     Suspend,
+    /// The compositor has submitted a frame containing the lock screen. The
+    /// power service may now release its logind sleep delay inhibitor.
+    LockScreenDrawn,
     /// Settings changed on disk; replace the service's threshold/lid policy.
     UpdatePolicy(PowerPolicy),
 }
@@ -95,6 +102,10 @@ impl PowerBridge {
     /// Ask the power service to suspend the machine.
     pub fn request_suspend(&self) {
         self.lock().commands.push(PowerCommand::Suspend);
+    }
+
+    pub fn lock_screen_drawn(&self) {
+        self.lock().commands.push(PowerCommand::LockScreenDrawn);
     }
 
     pub fn update_policy(&self, policy: PowerPolicy) {
