@@ -22,8 +22,11 @@ assert contract["completeSystem"]["alongside"] == {
 }
 
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-for runner, architecture in (("runner", "x86_64"), ("runner-arm64", "aarch64")):
-    assert f"arch: {architecture}\n            runner: {runner}" in imager_workflow
+for runner, architecture in (
+    ("imager-linux-x86_64", "x86_64"),
+    ("imager-linux-aarch64", "aarch64"),
+):
+    assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
     medium = f"qos-installer-linux-{architecture}.img.zst"
     assert f"            {medium}" in imager_workflow
 assert """      - name: Verify the installer-medium release payload
