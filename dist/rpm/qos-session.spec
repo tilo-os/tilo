@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
-%{!?qos_version:%global qos_version 0.1.4}
+%{!?qos_version:%global qos_version 0.1.5}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -33,8 +33,8 @@ License:        AGPL-3.0-only
 URL:            https://code.podesta.ai/qos/qos
 Source0:        %{name}-%{version}.tar.gz
 
-# The payload contains native ELF binaries. CI builds it natively on both
-# release architectures; rpmbuild rejects every other architecture.
+# The payload contains native ELF binaries. CI builds it on each enabled
+# native release architecture; rpmbuild rejects every other architecture.
 ExclusiveArch:  x86_64 aarch64
 
 # Everything below is dlopen()ed at runtime, so the automatic ELF dependency
@@ -200,6 +200,9 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Sat Sep 05 2026 qOS <qos@code.podesta.ai> - 0.1.5-1
+- Keep ARM64 packaging available behind a native-runner capability switch.
+
 * Fri Sep 04 2026 qOS <qos@code.podesta.ai> - 0.1.4-1
 - Require Bubblewrap for sandboxed application launches.
 - Require the portal frontend and filtered D-Bus proxy for sandboxed apps.
