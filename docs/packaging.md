@@ -104,6 +104,11 @@ desktop in GDM whenever you want to switch back. Removing qOS later uses
 `sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
 development subpackage for an ordinary installation.
 
+When this repository publishes a newer `qos-session`, the normal
+`sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves
+it into the next deployment together with the host OS update. Users do not
+download or reinstall release RPMs by hand.
+
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
 ```ini
