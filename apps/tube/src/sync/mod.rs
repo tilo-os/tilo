@@ -18,12 +18,13 @@
 //!   subscription/history packages. Built on the [`snow`](https://docs.rs/snow)
 //!   Noise crate.
 //!
-//! ## Hermetic by construction
+//! ## Product lifecycle
 //!
-//! The default build compiles only [`protocol`] and the [`StubTransport`]; the
-//! socket/Noise/gzip stack is entirely behind `grayjay-sync`. [`default_transport`]
-//! is always the stub, so nothing here can touch the `--shots`/test path or dial
-//! the network unless the app *explicitly* constructs a [`GrayjaySyncTransport`].
+//! The shipped build enables `grayjay-sync`.  The app derives its long-lived
+//! Noise identity from the desktop secret portal, persists only public peer
+//! routes and revocation tombstones, requires explicit fingerprint approval,
+//! and runs bounded background sync.  Builds without that feature retain a
+//! hermetic unavailable seam for tests and constrained downstream packages.
 //!
 //! ## Licensing
 //!
@@ -35,10 +36,55 @@
 pub mod protocol;
 
 #[cfg(feature = "grayjay-sync")]
+mod lifecycle;
+
+#[cfg(feature = "grayjay-sync")]
 pub mod transport;
 
 #[cfg(feature = "grayjay-sync")]
 pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
+
+#[cfg(feature = "grayjay-sync")]
+pub use lifecycle::state_from_model as lifecycle_state;
+#[cfg(feature = "grayjay-sync")]
+pub use lifecycle::{DeviceSync, PeerRecord, SyncStatus, SyncView, merge_remote_state};
+
+#[cfg(not(feature = "grayjay-sync"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SyncStatus {
+    #[default]
+    Unavailable,
+}
+
+#[cfg(not(feature = "grayjay-sync"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncView {
+    pub status: SyncStatus,
+    pub summary: String,
+    pub device_public_key: Option<String>,
+    pub peers: Vec<PeerRecord>,
+}
+
+#[cfg(not(feature = "grayjay-sync"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerRecord {
+    pub id: String,
+    pub name: String,
+    pub pending_approval: bool,
+    pub revoked_at: Option<i64>,
+    pub last_sync_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[cfg(not(feature = "grayjay-sync"))]
+impl PeerRecord {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none()
+    }
+    pub fn short_id(&self) -> String {
+        self.id.chars().take(10).collect()
+    }
+}
 
 use crate::model::{Settings, VideoId};
 
@@ -71,6 +117,13 @@ pub enum SyncError {
     Pairing(String),
     /// Transport-level failure (handshake, framing, relay).
     Transport(String),
+    /// The host secret broker/keyring is absent or locked. Device sync fails
+    /// closed; Tube never creates a plaintext private-key fallback.
+    KeyUnavailable(String),
+    /// Durable, device-local peer metadata could not be validated or written.
+    Persistence(String),
+    /// The peer has been locally revoked and cannot be resurrected by replay.
+    Revoked,
 }
 
 impl std::fmt::Display for SyncError {
@@ -79,6 +132,9 @@ impl std::fmt::Display for SyncError {
             SyncError::NotImplemented => write!(f, "Grayjay sync is not implemented in this build"),
             SyncError::Pairing(m) => write!(f, "pairing failed: {m}"),
             SyncError::Transport(m) => write!(f, "transport error: {m}"),
+            SyncError::KeyUnavailable(m) => write!(f, "device key unavailable: {m}"),
+            SyncError::Persistence(m) => write!(f, "peer store error: {m}"),
+            SyncError::Revoked => write!(f, "peer was revoked on this device"),
         }
     }
 }
@@ -86,6 +142,36 @@ impl std::fmt::Display for SyncError {
 impl std::error::Error for SyncError {}
 
 pub type SyncResult<T> = Result<T, SyncError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncCapability {
+    pub available: bool,
+    pub summary: &'static str,
+}
+
+/// Product-facing status for device sync. Availability still depends on the
+/// host secret broker at runtime; [`DeviceSync::production`] fails closed when
+/// that broker cannot provide app-scoped key material.
+pub const fn capability() -> SyncCapability {
+    #[cfg(feature = "grayjay-sync")]
+    return SyncCapability {
+        available: true,
+        summary: "Encrypted Grayjay sync is available when the desktop secret broker is unlocked.",
+    };
+    #[cfg(not(feature = "grayjay-sync"))]
+    SyncCapability {
+        available: false,
+        summary: "This build does not include Grayjay device sync.",
+    }
+}
+
+/// Non-secret connection metadata needed to restore an authenticated peer.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PeerDescriptor {
+    pub public_key: String,
+    pub addresses: Vec<String>,
+    pub port: i32,
+}
 
 /// The clean seam between Tube's state and *whatever* moves it to/from a
 /// Grayjay peer. A real implementation speaks Noise over TCP 12315 (or via the
@@ -99,8 +185,8 @@ pub type SyncResult<T> = Result<T, SyncError>;
 pub trait SyncTransport: Send {
     fn name(&self) -> &str;
 
-    /// Whether a real transport backs this seam. The settings UI shows the
-    /// sync section as "coming soon" while this is false.
+    /// Whether a real low-level transport backs this seam. This is deliberately
+    /// distinct from [`capability`], which describes product readiness.
     fn is_available(&self) -> bool {
         false
     }
@@ -127,12 +213,25 @@ pub trait SyncTransport: Send {
     ///
     /// Returns `Err` if the peer is unreachable or its state can't be fetched.
     fn pull(&mut self, peer: &PeerId) -> SyncResult<SyncState>;
+
+    /// Restore public connection metadata after an app restart.
+    fn restore_peer(&mut self, _peer: &PeerDescriptor) -> SyncResult<()> {
+        Err(SyncError::NotImplemented)
+    }
+
+    /// Remove all in-memory routes for a revoked peer.
+    fn forget_peer(&mut self, _peer: &PeerId) {}
+
+    /// Export only public route data after a successful pair. Pairing codes and
+    /// this device's private key are intentionally absent.
+    fn peer_descriptor(&self, _peer: &PeerId) -> Option<PeerDescriptor> {
+        None
+    }
 }
 
-/// The only transport compiled by default: a stub that is wired nowhere and
-/// reports everything as not-implemented. Lets the settings UI and any caller
-/// reference the seam without pulling in `snow` / networking, and keeps the
-/// shape honest (a real transport is a drop-in replacement).
+/// Hermetic unavailable transport used by non-`grayjay-sync` builds and unit
+/// tests.  The shipped default feature set constructs [`DeviceSync`] with the
+/// live Noise transport instead.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StubTransport;
 
@@ -154,8 +253,8 @@ impl SyncTransport for StubTransport {
     }
 }
 
-/// The default transport for this build. Always the stub unless a future
-/// `grayjay-sync` feature swaps in the Noise implementation.
+/// Hermetic trait default for callers that explicitly request no live backend.
+/// Production startup does not call this function.
 pub fn default_transport() -> Box<dyn SyncTransport> {
     Box::new(StubTransport)
 }

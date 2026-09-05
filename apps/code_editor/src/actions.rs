@@ -42,11 +42,12 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::command_palette::Command;
@@ -60,6 +61,17 @@ pub const CODE_EDITOR_OPERATION_TYPE: &str = "code_editor.operation";
 pub enum CodeEditorOperation {
     Open {
         node: u64,
+    },
+    /// Open a file and reproduce an exact editor location. A disk path is
+    /// carried for project-search hits whose lazy tree node is not revealed
+    /// yet; symbols use `node` directly. `show_search` restores the results
+    /// panel for a result row but stays false for file/symbol navigation.
+    RevealLocation {
+        node: Option<u64>,
+        path: Option<String>,
+        line: usize,
+        col: usize,
+        show_search: bool,
     },
     OpenFile {
         path: Option<String>,
@@ -77,22 +89,110 @@ pub enum CodeEditorOperation {
     },
 }
 
+pub fn operation_kind(operation: &CodeEditorOperation) -> Result<OperationKind, String> {
+    let kind = match operation {
+        CodeEditorOperation::Open { .. } | CodeEditorOperation::RevealLocation { .. } => {
+            OperationKind::View
+        }
+        CodeEditorOperation::OpenFile { .. }
+        | CodeEditorOperation::OpenFolder { .. }
+        | CodeEditorOperation::Save { .. } => OperationKind::Effect,
+        CodeEditorOperation::Command { id, .. } => {
+            let command =
+                Command::from_id(id).ok_or_else(|| format!("unknown code editor command: {id}"))?;
+            match command {
+                Command::OpenFolder
+                | Command::OpenFile
+                | Command::Save
+                | Command::SaveAs
+                | Command::SaveAll
+                | Command::RevertFile => OperationKind::Effect,
+                _ => OperationKind::View,
+            }
+        }
+    };
+    Ok(kind)
+}
+
 fn file_operation(
     id: &str,
     label: &str,
     kind: OperationKind,
-    operation: CodeEditorOperation,
+    operation: &CodeEditorOperation,
 ) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
+    let spec = ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, operation)
         .expect("CodeEditorOperation is always serializable");
     match operation {
-        CodeEditorOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        CodeEditorOperation::Open { .. } | CodeEditorOperation::RevealLocation { .. } => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
         CodeEditorOperation::OpenFile { .. } | CodeEditorOperation::OpenFolder { .. } => spec
             .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
         CodeEditorOperation::Save { .. } => spec.destructive(),
         CodeEditorOperation::Command { .. } => spec,
     }
+}
+
+pub fn file_resource_id(node: u64) -> String {
+    format!("code_editor.file:{node}")
+}
+
+pub fn open_file_address(node: u64) -> ActionAddress {
+    ActionAddress::new(file_resource_id(node), "open")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolRef {
+    pub node: u64,
+    pub name: String,
+    pub path: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResultRef {
+    pub node: Option<u64>,
+    pub path: String,
+    pub disk_path: Option<String>,
+    pub preview: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+fn path_key(path: &str) -> String {
+    path.as_bytes().iter().fold(
+        String::with_capacity(path.len().saturating_mul(2)),
+        |mut key, byte| {
+            let _ = write!(key, "{byte:02x}");
+            key
+        },
+    )
+}
+
+pub fn symbol_resource_id(symbol: &SymbolRef) -> String {
+    format!(
+        "code_editor.symbol:{}:{}:{}",
+        symbol.node, symbol.line, symbol.col
+    )
+}
+
+pub fn result_resource_id(result: &SearchResultRef) -> String {
+    format!(
+        "code_editor.search-result:{}:{}:{}",
+        path_key(&result.path),
+        result.line,
+        result.col
+    )
+}
+
+pub fn open_symbol_address(symbol: &SymbolRef) -> ActionAddress {
+    ActionAddress::new(symbol_resource_id(symbol), "open")
+}
+
+pub fn reveal_result_address(result: &SearchResultRef) -> ActionAddress {
+    ActionAddress::new(result_resource_id(result), "reveal")
 }
 
 /// Every collaborative operation Code exports on the shared document.
@@ -200,6 +300,10 @@ pub struct CodeEditorResourceCtx {
     /// build the byte-identical action.
     pub next_id: u64,
     pub open_files: Vec<OpenFileRef>,
+    /// Declaration locations derived from the collaborative buffer text.
+    pub symbols: Vec<SymbolRef>,
+    /// The live project-wide result set shown in the bottom panel.
+    pub search_results: Vec<SearchResultRef>,
 }
 
 /// Build the resource tree Code currently has open: the project root (always
@@ -229,15 +333,11 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
     let mut project = Resource::new("code_editor.project", "code_editor.project", label);
     for (command, command_label, _) in Command::catalogue() {
         let action_id = format!("command-{}", command.id());
-        let kind = match command {
-            Command::OpenFolder
-            | Command::OpenFile
-            | Command::Save
-            | Command::SaveAs
-            | Command::SaveAll
-            | Command::RevertFile => OperationKind::Effect,
-            _ => OperationKind::View,
-        };
+        let kind = operation_kind(&CodeEditorOperation::Command {
+            id: command.id().to_string(),
+            argument: None,
+        })
+        .expect("catalogued commands always have a kind");
         let spec = if command == Command::GoToLine {
             ActionSpec::prompted_operation(
                 action_id,
@@ -337,17 +437,13 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
         } else {
             f.name.clone()
         };
-        let mut file = Resource::new(
-            format!("code_editor.file:{}", f.node),
-            "code_editor.file",
-            label,
-        )
-        .with_action(file_operation(
-            "open",
-            "Open file",
-            OperationKind::View,
-            CodeEditorOperation::Open { node: f.node },
-        ));
+        let mut file = Resource::new(file_resource_id(f.node), "code_editor.file", label)
+            .with_action(file_operation(
+                "open",
+                "Open file",
+                OperationKind::View,
+                &CodeEditorOperation::Open { node: f.node },
+            ));
         let node = f.node;
         file = file.with_action(
             ActionSpec::typed_operation(
@@ -379,7 +475,50 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
             .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
         );
+        for symbol in ctx.symbols.iter().filter(|symbol| symbol.node == f.node) {
+            file = file.with_child(
+                Resource::new(
+                    symbol_resource_id(symbol),
+                    "code_editor.symbol",
+                    symbol.name.clone(),
+                )
+                .with_action(file_operation(
+                    "open",
+                    "Open symbol",
+                    OperationKind::View,
+                    &CodeEditorOperation::RevealLocation {
+                        node: Some(symbol.node),
+                        path: None,
+                        line: symbol.line,
+                        col: symbol.col,
+                        show_search: false,
+                    },
+                )),
+            );
+        }
         project = project.with_child(file);
+    }
+
+    for result in &ctx.search_results {
+        project = project.with_child(
+            Resource::new(
+                result_resource_id(result),
+                "code_editor.search-result",
+                result.preview.clone(),
+            )
+            .with_action(file_operation(
+                "reveal",
+                "Reveal search result",
+                OperationKind::View,
+                &CodeEditorOperation::RevealLocation {
+                    node: result.node,
+                    path: result.disk_path.clone(),
+                    line: result.line,
+                    col: result.col,
+                    show_search: true,
+                },
+            )),
+        );
     }
 
     vec![project]
@@ -412,6 +551,8 @@ mod tests {
                 name: "x.rs".into(),
                 can_save: false,
             }],
+            symbols: Vec::new(),
+            search_results: Vec::new(),
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
         for spec in resources[0]
@@ -500,6 +641,8 @@ mod tests {
                     can_save: true,
                 },
             ],
+            symbols: Vec::new(),
+            search_results: Vec::new(),
         };
         let doc = AutoCommit::new();
         let resources = provide_resources(&ctx, &doc);
@@ -616,6 +759,8 @@ mod tests {
             project_name: "demo".into(),
             next_id: 12,
             open_files: Vec::new(),
+            symbols: Vec::new(),
+            search_results: Vec::new(),
         };
         let doc = AutoCommit::new();
         let resources = provide_resources(&ctx, &doc);

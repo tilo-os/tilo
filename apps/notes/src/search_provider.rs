@@ -4,27 +4,24 @@
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
 //! page tree, so every note page becomes a typed [`SearchResult`] the unified
 //! Ctrl+K palette can rank alongside every other provider's hits. Activating a
-//! row hands back an opaque `action_id` the app resolves to a [`PageId`] and
-//! navigates to.
+//! row addresses the `open` view action exported by that page or block
+//! resource. The shared broker therefore owns activation for pointer,
+//! keyboard, assistive technology, search and agents alike.
 //!
-//! The provider is deliberately **library-scoped and synchronous**: it matches
-//! against page *titles* held in memory (`Workspace::pages`), never touching
-//! disk or the network on the query path. Page bodies live as `.md` files on
-//! disk (see [`crate::storage`]); reading every one on each keystroke would
-//! violate the toolkit's no-per-frame-IO rule, so body text is intentionally
-//! out of scope here.
+//! The provider is deliberately **library-scoped and synchronous**: its page
+//! metadata and plain-text blocks are snapshotted when the search surface
+//! opens, so query keystrokes never touch disk or the network.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+};
 
 use crate::model::{PageId, PageMeta, Workspace};
 
 /// The kind label (and result-group header) Notes produces.
 pub const NOTE_KIND: &str = "Notes";
-
-/// The `action_id` prefix. A chosen row's `action_id` is `note:<uuid>`;
-/// [`parse_action_id`] turns it back into a [`PageId`].
-const ACTION_PREFIX: &str = "note:";
+pub const BLOCK_KIND: &str = "Note blocks";
 
 /// The title shown for a page whose title is still blank.
 const UNTITLED: &str = "Untitled";
@@ -34,28 +31,45 @@ const UNTITLED: &str = "Untitled";
 /// the search surface opens.
 pub struct NoteSearchProvider {
     pages: Vec<PageMeta>,
+    blocks: std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
 }
 
 impl NoteSearchProvider {
     /// Snapshot the current page tree into a provider.
     pub fn new(workspace: &Workspace) -> Self {
         Self {
-            pages: workspace.pages().to_vec(),
+            pages: workspace
+                .pages()
+                .iter()
+                .take(DEFAULT_SEARCH_INDEX_LIMIT)
+                .cloned()
+                .collect(),
+            blocks: std::collections::HashMap::new(),
         }
     }
 
-    /// The `action_id` for a page — what a chosen row hands back.
-    pub fn action_id(id: PageId) -> String {
-        format!("{ACTION_PREFIX}{id}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back to a [`PageId`],
-    /// so the host can navigate to the chosen page. Returns `None` for an id
-    /// this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<PageId> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .and_then(|rest| PageId::parse_str(rest).ok())
+    /// Snapshot page metadata together with searchable plain-text blocks.
+    pub fn with_blocks(
+        workspace: &Workspace,
+        blocks: std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    ) -> Self {
+        let pages = workspace
+            .pages()
+            .iter()
+            .take(DEFAULT_SEARCH_INDEX_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut remaining = DEFAULT_SEARCH_INDEX_LIMIT;
+        let blocks = pages
+            .iter()
+            .filter_map(|page| {
+                let rows = blocks.get(&page.id)?;
+                let kept = rows.iter().take(remaining).cloned().collect::<Vec<_>>();
+                remaining = remaining.saturating_sub(kept.len());
+                Some((page.id, kept))
+            })
+            .collect();
+        Self { pages, blocks }
     }
 
     /// The display title for a page, substituting a placeholder for a blank
@@ -75,19 +89,72 @@ impl SearchProvider for NoteSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        // Substring filter over the (placeholder-substituted) title; the
-        // registry re-ranks the survivors by `fuzzy_score` against the same
-        // title. An empty query matches everything (the whole notebook is
-        // browsable), matching the contacts reference.
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        if limit == 0 {
+            return Vec::new();
+        }
+        // Substring filter over page titles and block text; the registry
+        // re-ranks the survivors by `fuzzy_score` against the visible label.
+        // An empty query browses the complete snapshot.
         let q = query.to_lowercase();
-        self.pages
-            .iter()
-            .filter(|p| Self::display_title(p).to_lowercase().contains(&q))
-            .map(|p| {
-                SearchResult::new(NOTE_KIND, Self::display_title(p), Self::action_id(p.id))
-                    .with_icon(Icon::FileText)
-            })
-            .collect()
+        let mut out = Vec::new();
+        for page in &self.pages {
+            let page_title = Self::display_title(page);
+            if page_title.to_lowercase().contains(&q) {
+                out.push(
+                    SearchResult::for_action(
+                        NOTE_KIND,
+                        page_title,
+                        crate::actions::open_page_address(page.id),
+                    )
+                    .with_icon(Icon::FileText),
+                );
+                if out.len() == limit {
+                    return out;
+                }
+            }
+            for block in self.blocks.get(&page.id).into_iter().flatten() {
+                let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if collapsed.is_empty() || (!q.is_empty() && !collapsed.to_lowercase().contains(&q))
+                {
+                    continue;
+                }
+                let title = if collapsed.chars().count() > 72 {
+                    collapsed.chars().take(69).collect::<String>() + "…"
+                } else {
+                    collapsed
+                };
+                out.push(
+                    SearchResult::for_action(
+                        BLOCK_KIND,
+                        title,
+                        crate::actions::open_block_address(page.id, &block.id),
+                    )
+                    .with_subtitle(page_title)
+                    .with_icon(Icon::List),
+                );
+                if out.len() == limit {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    fn resolve_action_resource(
+        &self,
+        address: &qos_actions::ActionAddress,
+    ) -> Option<qos_actions::Resource> {
+        self.blocks.iter().find_map(|(page, blocks)| {
+            blocks
+                .iter()
+                .find(|block| crate::actions::open_block_address(*page, &block.id) == *address)
+                .and_then(|block| crate::actions::block_resource(*page, block))
+        })
     }
 }
 
@@ -133,7 +200,14 @@ mod tests {
     }
 
     #[test]
-    fn action_id_round_trips_to_the_chosen_page() {
+    fn limited_search_honours_the_materialisation_budget() {
+        let provider = NoteSearchProvider::new(&populated());
+        assert_eq!(provider.search_limited("", 1).len(), 1);
+        assert!(provider.search_limited("", 0).is_empty());
+    }
+
+    #[test]
+    fn page_result_addresses_the_exported_open_action() {
         let ws = populated();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(NoteSearchProvider::new(&ws)));
@@ -143,23 +217,44 @@ mod tests {
         let top = &groups[0].results[0];
         assert_eq!(top.title, "Trip planning", "the best match leads");
 
-        let id = NoteSearchProvider::parse_action_id(&top.action_id)
-            .expect("action_id parses to a PageId");
-        assert!(
-            ws.get(id).is_some(),
-            "the id resolves to a real stored page"
-        );
         assert_eq!(
-            ws.get(id).unwrap().title,
-            top.title,
-            "activation lands on the right page"
+            top.action_address(),
+            Some(crate::actions::open_page_address(
+                ws.pages()
+                    .iter()
+                    .find(|page| page.title == top.title)
+                    .unwrap()
+                    .id
+            )),
+            "search and the resource tree publish one canonical address"
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(NoteSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(NoteSearchProvider::parse_action_id("note:not-a-uuid").is_none());
+    fn block_result_addresses_its_exported_reveal_action() {
+        let ws = populated();
+        let page = ws
+            .pages()
+            .iter()
+            .find(|page| page.title == "Meeting notes")
+            .unwrap();
+        let provider = NoteSearchProvider::with_blocks(
+            &ws,
+            std::collections::HashMap::from([(
+                page.id,
+                vec![crate::actions::NoteBlockResource {
+                    id: "block-object".into(),
+                    text: "Budget decisions".into(),
+                }],
+            )]),
+        );
+        let hit = provider.search("budget").pop().expect("block hit");
+        assert_eq!(hit.kind, BLOCK_KIND);
+        assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
+        assert_eq!(
+            hit.action_address(),
+            Some(crate::actions::open_block_address(page.id, "block-object"))
+        );
     }
 
     #[test]

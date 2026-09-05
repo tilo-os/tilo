@@ -61,6 +61,15 @@ else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
 
+if grep -Fq "key='\${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
+   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
+   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
+   && grep -Fxq 'ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
+  ok 'fresh images carry a release-validated pinned marketplace owner key'
+else
+  bad 'marketplace trust anchor is missing, placeholder, or not a release build input'
+fi
+
 grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh" \
   && grep -Fq 'latest does not point at signed gen$current' "$repo/os/dev/next-generation.sh" \
   && grep -Fq -- '--type slsaprovenance1' "$repo/os/dev/next-generation.sh" \

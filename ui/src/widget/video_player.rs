@@ -17,7 +17,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
+    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -36,6 +36,7 @@ const SCRUB_TRACK_HEIGHT: f64 = 5.0;
 const SCRUB_THUMB_RADIUS: f64 = 7.0;
 const VOLUME_WIDTH: f64 = 78.0;
 const KEY_SEEK_STEP: Duration = Duration::from_secs(5);
+const CONTROLS_FADE: Duration = Duration::from_millis(220);
 
 /// Push mode has no engine to report a real duration, so this stands in.
 const PUSH_MODE_DEFAULT_DURATION_MS: u64 = 60_000;
@@ -208,6 +209,7 @@ pub struct VideoPlayer {
     buffering: u8,
     volume: f32,
     muted: bool,
+    transport_enabled: bool,
     /// So a fresh player expresses no opinion until asked — see
     /// [`Widget::fullscreen_intent`].
     fullscreen: bool,
@@ -219,12 +221,15 @@ pub struct VideoPlayer {
     play_button_rect: Rect,
     scrub_track_rect: Rect,
     volume_track_rect: Rect,
+    mute_button_rect: Rect,
     fullscreen_button_rect: Rect,
     /// `None` means hidden.
     controls_visible_until: Option<Instant>,
     scrubbing: bool,
     last_cursor: Point,
     focused: bool,
+    a11y_focus: Option<String>,
+    motion_reduced: bool,
     dirty: bool,
     test_id: Option<&'static str>,
     /// Duration-fraction bands painted on the scrub track — e.g. Tube's
@@ -282,6 +287,7 @@ impl VideoPlayer {
             buffering: 100,
             volume: 0.8,
             muted: false,
+            transport_enabled: true,
             fullscreen: false,
             fullscreen_touched: false,
             on_seek: None,
@@ -289,11 +295,14 @@ impl VideoPlayer {
             play_button_rect: Rect::ZERO,
             scrub_track_rect: Rect::ZERO,
             volume_track_rect: Rect::ZERO,
+            mute_button_rect: Rect::ZERO,
             fullscreen_button_rect: Rect::ZERO,
             controls_visible_until: None,
             scrubbing: false,
             last_cursor: Point::ZERO,
             focused: false,
+            a11y_focus: None,
+            motion_reduced: false,
             dirty: true,
             test_id: None,
             scrub_marks: Vec::new(),
@@ -594,6 +603,16 @@ impl VideoPlayer {
         self.latest_frame.as_ref()
     }
 
+    /// Whether a source is loaded, including the asynchronous interval before
+    /// its first decoded frame arrives.
+    pub fn has_media(&self) -> bool {
+        self.latest_frame.is_some()
+            || self
+                .engine
+                .as_ref()
+                .is_some_and(|engine| engine.source().is_some())
+    }
+
     pub fn is_playing(&self) -> bool {
         match &self.engine {
             Some(e) => e.is_playing(),
@@ -624,6 +643,9 @@ impl VideoPlayer {
     }
 
     pub fn toggle_play(&mut self) {
+        if !self.transport_enabled {
+            return;
+        }
         if self.is_playing() {
             self.pause();
         } else {
@@ -641,6 +663,9 @@ impl VideoPlayer {
 
     /// `ms` is clamped to the duration.
     pub fn seek_to_ms(&mut self, ms: u64) {
+        if !self.transport_enabled {
+            return;
+        }
         let target = ms.min(self.duration_ms);
         self.position_ms = target;
         if let Some(e) = &mut self.engine {
@@ -680,6 +705,15 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
+    /// Disable local play/seek input while a collaborative follower is bound
+    /// to an authoritative host. Audio volume and presentation stay local.
+    pub fn set_transport_enabled(&mut self, enabled: bool) {
+        if self.transport_enabled != enabled {
+            self.transport_enabled = enabled;
+            self.dirty = true;
+        }
+    }
+
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen
     }
@@ -716,6 +750,31 @@ impl VideoPlayer {
         match self.controls_visible_until {
             Some(deadline) => Instant::now() < deadline,
             None => false,
+        }
+    }
+
+    /// Opacity for the shared control/host-overlay fade. Reduced motion keeps
+    /// the exact same visibility timing but snaps between endpoints.
+    pub fn controls_opacity(&self) -> f32 {
+        if self.open_menu.is_some() {
+            return 1.0;
+        }
+        let Some(deadline) = self.controls_visible_until else {
+            return 0.0;
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            return 0.0;
+        }
+        if self.motion_reduced {
+            return 1.0;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining >= CONTROLS_FADE {
+            1.0
+        } else {
+            let linear = remaining.as_secs_f32() / CONTROLS_FADE.as_secs_f32();
+            linear * linear * (3.0 - 2.0 * linear)
         }
     }
 
@@ -871,13 +930,27 @@ impl VideoPlayer {
             self.play_button_rect = Rect::ZERO;
             self.scrub_track_rect = Rect::ZERO;
             self.volume_track_rect = Rect::ZERO;
+            self.mute_button_rect = Rect::ZERO;
             self.fullscreen_button_rect = Rect::ZERO;
             self.gear_button_rect = Rect::ZERO;
             self.setting_icon_rects.clear();
             self.menu_hit_rects.clear();
             return;
         }
+        let opacity = self.controls_opacity();
+        if opacity <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            opacity,
+            transform,
+            &self.rect,
+        );
         self.paint_controls(scene, transform, text_renderer, theme);
+        scene.pop_layer();
+        self.paint_accessibility_focus(scene, transform, theme);
     }
 
     fn paint_controls(
@@ -1186,6 +1259,7 @@ impl VideoPlayer {
             vol_x0 + icon * 0.8,
             mid_y + icon * 0.4,
         );
+        self.mute_button_rect = speaker;
         draw_speaker_glyph(scene, transform, speaker, colors.text_primary, self.muted);
         let vtrack_x0 = speaker.x1 + pad * 0.5;
         let vtrack = Rect::new(
@@ -1628,14 +1702,24 @@ impl VideoPlayer {
             None,
             &Circle::new((cx, cy), r),
         );
-        // Nudged right so the triangle reads centred.
-        let s = r * 0.62;
-        let mut p = BezPath::new();
-        p.move_to((cx - s * 0.35, cy - s * 0.62));
-        p.line_to((cx + s * 0.7, cy));
-        p.line_to((cx - s * 0.35, cy + s * 0.62));
-        p.close_path();
-        scene.fill(Fill::NonZero, transform, dim, None, &p);
+        if self.has_media() {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                None,
+                &Circle::new((cx, cy), (r * 0.12).max(2.0)),
+            );
+        } else {
+            // Nudged right so the triangle reads centred.
+            let s = r * 0.62;
+            let mut p = BezPath::new();
+            p.move_to((cx - s * 0.35, cy - s * 0.62));
+            p.line_to((cx + s * 0.7, cy));
+            p.line_to((cx - s * 0.35, cy + s * 0.62));
+            p.close_path();
+            scene.fill(Fill::NonZero, transform, dim, None, &p);
+        }
     }
 
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
@@ -1656,6 +1740,24 @@ impl VideoPlayer {
             p.line_to((cx - s * 0.5, cy + s * 0.7));
             p.close_path();
             scene.fill(Fill::NonZero, transform, color, None, &p);
+        }
+    }
+
+    fn paint_accessibility_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let rect = self.a11y_focus.as_deref().and_then(|target| {
+            self.semantic_controls()
+                .into_iter()
+                .find(|(candidate, _, _)| candidate == target)
+                .map(|(_, _, rect)| rect)
+        });
+        if let Some(rect) = rect.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                None,
+                &RoundedRect::from_rect(rect.inflate(3.0, 3.0), 6.0),
+            );
         }
     }
 }
@@ -1851,6 +1953,10 @@ impl Widget for VideoPlayer {
         self.paint(scene, transform, text_renderer, theme);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one widget event boundary must coordinate pointer, keyboard, transport, scrub, volume, settings, and overlay interaction without splitting event ordering"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1907,18 +2013,18 @@ impl Widget for VideoPlayer {
                 event: key_event, ..
             } if self.focused && key_event.state == ElementState::Pressed => {
                 match &key_event.logical_key {
-                    Key::Named(NamedKey::Space) => {
+                    Key::Named(NamedKey::Space) if self.has_media() => {
                         self.toggle_play();
                         self.show_controls();
                         *handled = true;
                     }
-                    Key::Named(NamedKey::ArrowLeft) => {
+                    Key::Named(NamedKey::ArrowLeft) if self.has_media() => {
                         let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
                         self.seek_to_ms(self.position_ms.saturating_sub(step));
                         self.show_controls();
                         *handled = true;
                     }
-                    Key::Named(NamedKey::ArrowRight) => {
+                    Key::Named(NamedKey::ArrowRight) if self.has_media() => {
                         let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
                         self.seek_to_ms(self.position_ms.saturating_add(step));
                         self.show_controls();
@@ -1929,8 +2035,36 @@ impl Widget for VideoPlayer {
                         *handled = true;
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("m") => {
-                        self.toggle_mute();
+                        if self.has_media() {
+                            self.toggle_mute();
+                            self.show_controls();
+                            *handled = true;
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowUp) if self.has_media() => {
+                        self.set_volume(self.volume + 0.05);
                         self.show_controls();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown) if self.has_media() => {
+                        self.set_volume(self.volume - 0.05);
+                        self.show_controls();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Home) if self.has_media() => {
+                        self.seek_to_ms(0);
+                        self.show_controls();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::End) if self.has_media() => {
+                        self.seek_to_ms(self.duration_ms);
+                        self.show_controls();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Escape) if self.open_menu.is_some() => {
+                        self.open_menu = None;
+                        self.gear_expanded = None;
+                        self.dirty = true;
                         *handled = true;
                     }
                     _ => {}
@@ -1958,6 +2092,7 @@ impl Widget for VideoPlayer {
             || ((self.controls_visible_now() || self.open_menu.is_some())
                 && (self.play_button_rect.contains(point)
                     || self.fullscreen_button_rect.contains(point)
+                    || self.mute_button_rect.contains(point)
                     || self.scrub_track_rect.contains(point)
                     || self.volume_track_rect.contains(point)
                     || (self.gear_button_rect.width() > 0.0
@@ -1976,6 +2111,11 @@ impl Widget for VideoPlayer {
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+        if focused {
+            self.show_controls();
+        } else {
+            self.a11y_focus = None;
+        }
     }
 
     fn is_focused(&self) -> bool {
@@ -2024,14 +2164,96 @@ impl Widget for VideoPlayer {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let children = self
+            .semantic_controls()
+            .into_iter()
+            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
+            .map(|(_, node, rect)| node.with_bounds(rect))
+            .collect();
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Video player")
+                .with_description(if self.has_media() {
+                    "Space plays or pauses; Left and Right Arrow seek; Up and Down Arrow change volume; M mutes; F toggles fullscreen"
+                } else {
+                    "No video loaded"
+                })
                 .with_state(AccessState {
                     busy: self.is_playing(),
+                    focusable: true,
+                    focused: self.focused,
                     ..Default::default()
-                }),
+                })
+                .with_children(children),
         )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else { return None };
+        self.semantic_controls()
+            .into_iter()
+            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
+            .nth(*index)
+            .map(|(_, _, rect)| rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else { return false };
+        let target = self
+            .semantic_controls()
+            .into_iter()
+            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
+            .nth(*index)
+            .map(|(target, _, _)| target);
+        if let Some(target) = target {
+            self.a11y_focus = Some(target);
+            self.focused = true;
+            self.reveal_controls();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.activate_semantic_target(target, action)
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        let point = self.last_cursor;
+        if self.play_button_rect.contains(point) {
+            Some(if self.is_playing() { "Pause" } else { "Play" })
+        } else if self.scrub_track_rect.contains(point) {
+            Some("Seek")
+        } else if self.mute_button_rect.contains(point) {
+            Some(if self.muted { "Unmute" } else { "Mute" })
+        } else if self.volume_track_rect.contains(point) {
+            Some("Volume")
+        } else if self.fullscreen_button_rect.contains(point) {
+            Some(if self.fullscreen {
+                "Exit fullscreen"
+            } else {
+                "Enter fullscreen"
+            })
+        } else if self.gear_button_rect.contains(point) {
+            Some("Playback settings")
+        } else {
+            self.setting_icon_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(point))
+                .and_then(|(index, _)| self.settings.get(*index))
+                .map(|setting| setting.name.as_str())
+        }
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
     }
 
     fn get_rect(&self) -> Rect {
@@ -2090,7 +2312,9 @@ impl VideoPlayer {
         }
 
         if self.play_button_rect.contains(p) {
-            self.toggle_play();
+            if self.has_media() {
+                self.toggle_play();
+            }
             return true;
         }
         if self.fullscreen_button_rect.contains(p) {
@@ -2109,6 +2333,12 @@ impl VideoPlayer {
             self.set_volume(frac as f32);
             return true;
         }
+        if self.mute_button_rect.width() > 0.0 && self.mute_button_rect.contains(p) {
+            if self.has_media() {
+                self.toggle_mute();
+            }
+            return true;
+        }
         if self.scrub_track_rect.width() > 0.0 && self.scrub_track_rect.contains(p) {
             self.scrubbing = true;
             self.seek_from_cursor();
@@ -2116,7 +2346,9 @@ impl VideoPlayer {
         }
 
         // A plain click on the video surface toggles play/pause.
-        self.toggle_play();
+        if self.has_media() {
+            self.toggle_play();
+        }
         true
     }
 
@@ -2231,6 +2463,321 @@ impl VideoPlayer {
         )]
         let target = (frac * ms_to_f64(self.duration_ms)) as u64;
         self.seek_to_ms(target);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the accessibility tree intentionally inventories the complete transport and settings surface in one order-matched function"
+    )]
+    fn semantic_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut controls = Vec::new();
+        let focused = |target: &str| self.a11y_focus.as_deref() == Some(target);
+        let focusable = |target: &str| AccessState {
+            focusable: true,
+            focused: focused(target),
+            ..Default::default()
+        };
+
+        if self.has_media() {
+            let play_target = "transport.play-pause".to_string();
+            controls.push((
+                play_target.clone(),
+                AccessNode::new(Role::Button)
+                    .with_name(if self.is_playing() { "Pause" } else { "Play" })
+                    .with_description("Space")
+                    .with_action_target(play_target.clone())
+                    .with_state(AccessState {
+                        disabled: !self.transport_enabled,
+                        ..focusable(&play_target)
+                    }),
+                self.play_button_rect,
+            ));
+
+            let seek_target = "transport.seek".to_string();
+            controls.push((
+                seek_target.clone(),
+                AccessNode::new(Role::Slider)
+                    .with_name("Playback position")
+                    .with_value(format!(
+                        "{} of {}",
+                        format_ms(self.position_ms),
+                        format_ms(self.duration_ms)
+                    ))
+                    .with_description("Left and Right Arrow seek five seconds")
+                    .with_action_target(seek_target.clone())
+                    .with_state(AccessState {
+                        disabled: !self.transport_enabled,
+                        ..focusable(&seek_target)
+                    }),
+                self.scrub_track_rect,
+            ));
+
+            let mute_target = "audio.mute".to_string();
+            controls.push((
+                mute_target.clone(),
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(if self.muted { "Unmute" } else { "Mute" })
+                    .with_description("M")
+                    .with_action_target(mute_target.clone())
+                    .with_state(AccessState {
+                        checked: Some(self.muted),
+                        ..focusable(&mute_target)
+                    }),
+                self.mute_button_rect,
+            ));
+
+            let volume_target = "audio.volume".to_string();
+            controls.push((
+                volume_target.clone(),
+                AccessNode::new(Role::Slider)
+                    .with_name("Volume")
+                    .with_value(format!("{}%", (self.effective_volume() * 100.0).round()))
+                    .with_action_target(volume_target.clone())
+                    .with_state(focusable(&volume_target)),
+                self.volume_track_rect,
+            ));
+        }
+
+        for (idx, rect) in &self.setting_icon_rects {
+            let Some(setting) = self.settings.get(*idx) else {
+                continue;
+            };
+            let target = format!("setting:{}", setting.id);
+            let mut state = focusable(&target);
+            let (role, value) = match &setting.control {
+                PlayerSettingControl::Toggle { on } => {
+                    state.checked = Some(*on);
+                    (Role::ToggleButton, None)
+                }
+                PlayerSettingControl::Choice { options, selected } => {
+                    state.expanded = Some(self.open_menu == Some(OpenMenu::Choice(*idx)));
+                    (Role::ComboBox, options.get(*selected).cloned())
+                }
+                PlayerSettingControl::Button => (Role::Button, None),
+            };
+            controls.push((
+                target.clone(),
+                AccessNode::new(role)
+                    .with_name(setting.name.clone())
+                    .with_optional_value(value)
+                    .with_action_target(target.clone())
+                    .with_state(state),
+                *rect,
+            ));
+        }
+
+        if self.gear_button_rect.width() > 0.0 {
+            let target = "settings.menu".to_string();
+            controls.push((
+                target.clone(),
+                AccessNode::new(Role::Button)
+                    .with_name("Playback settings")
+                    .with_action_target(target.clone())
+                    .with_state(AccessState {
+                        expanded: Some(self.open_menu == Some(OpenMenu::Gear)),
+                        ..focusable(&target)
+                    }),
+                self.gear_button_rect,
+            ));
+        }
+
+        for (hit, rect) in &self.menu_hit_rects {
+            match hit {
+                MenuHit::Setting(idx) => {
+                    let Some(setting) = self.settings.get(*idx) else {
+                        continue;
+                    };
+                    let target = format!("menu-setting:{}", setting.id);
+                    let mut state = focusable(&target);
+                    let value = match &setting.control {
+                        PlayerSettingControl::Toggle { on } => {
+                            state.checked = Some(*on);
+                            Some(if *on { "On".into() } else { "Off".into() })
+                        }
+                        PlayerSettingControl::Choice { options, selected } => {
+                            state.expanded = Some(self.gear_expanded == Some(*idx));
+                            options.get(*selected).cloned()
+                        }
+                        PlayerSettingControl::Button => None,
+                    };
+                    controls.push((
+                        target.clone(),
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(setting.name.clone())
+                            .with_optional_value(value)
+                            .with_action_target(target.clone())
+                            .with_state(state),
+                        *rect,
+                    ));
+                }
+                MenuHit::Option(idx, option) => {
+                    let Some(setting) = self.settings.get(*idx) else {
+                        continue;
+                    };
+                    let PlayerSettingControl::Choice { options, selected } = &setting.control
+                    else {
+                        continue;
+                    };
+                    let Some(label) = options.get(*option) else {
+                        continue;
+                    };
+                    let target = format!("setting-option:{}:{option}", setting.id);
+                    controls.push((
+                        target.clone(),
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(label.clone())
+                            .with_action_target(target.clone())
+                            .with_state(AccessState {
+                                selected: *selected == *option,
+                                ..focusable(&target)
+                            }),
+                        *rect,
+                    ));
+                }
+            }
+        }
+
+        let fullscreen_target = "presentation.fullscreen".to_string();
+        controls.push((
+            fullscreen_target.clone(),
+            AccessNode::new(Role::Button)
+                .with_name(if self.fullscreen {
+                    "Exit fullscreen"
+                } else {
+                    "Enter fullscreen"
+                })
+                .with_description("F")
+                .with_action_target(fullscreen_target.clone())
+                .with_state(focusable(&fullscreen_target)),
+            self.fullscreen_button_rect,
+        ));
+        controls
+    }
+
+    fn setting_index(&self, id: &str) -> Option<usize> {
+        self.settings.iter().position(|setting| setting.id == id)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all semantic targets share one auditable dispatch table matching semantic_controls"
+    )]
+    fn activate_semantic_target(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
+        use crate::a11y::Action;
+        match target {
+            "transport.play-pause"
+                if self.has_media()
+                    && self.transport_enabled
+                    && matches!(action, Action::Activate | Action::ToggleCheck) =>
+            {
+                self.toggle_play();
+                self.show_controls();
+                true
+            }
+            "transport.seek" if self.has_media() && self.transport_enabled => match action {
+                Action::Increment => {
+                    self.seek_to_ms(self.position_ms.saturating_add(5_000));
+                    true
+                }
+                Action::Decrement => {
+                    self.seek_to_ms(self.position_ms.saturating_sub(5_000));
+                    true
+                }
+                Action::SetValue(value) => value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+                    .is_some_and(|seconds| {
+                        let millis = std::time::Duration::from_secs_f64(seconds).as_millis();
+                        self.seek_to_ms(u64::try_from(millis).unwrap_or(u64::MAX));
+                        true
+                    }),
+                _ => false,
+            },
+            "audio.mute"
+                if self.has_media() && matches!(action, Action::Activate | Action::ToggleCheck) =>
+            {
+                self.toggle_mute();
+                true
+            }
+            "audio.volume" if self.has_media() => match action {
+                Action::Increment => {
+                    self.set_volume(self.volume + 0.05);
+                    true
+                }
+                Action::Decrement => {
+                    self.set_volume(self.volume - 0.05);
+                    true
+                }
+                Action::SetValue(value) => {
+                    let normalized = value
+                        .trim()
+                        .strip_suffix('%')
+                        .and_then(|raw| raw.parse::<f32>().ok().map(|percent| percent / 100.0));
+                    value
+                        .parse::<f32>()
+                        .ok()
+                        .or(normalized)
+                        .is_some_and(|volume| {
+                            self.set_volume(volume);
+                            true
+                        })
+                }
+                _ => false,
+            },
+            "presentation.fullscreen" if matches!(action, Action::Activate) => {
+                self.toggle_fullscreen();
+                true
+            }
+            "settings.menu" => match action {
+                Action::Activate | Action::Expand => {
+                    self.open_menu = Some(OpenMenu::Gear);
+                    self.reveal_controls();
+                    self.dirty = true;
+                    true
+                }
+                Action::Collapse => {
+                    self.open_menu = None;
+                    self.gear_expanded = None;
+                    self.dirty = true;
+                    true
+                }
+                _ => false,
+            },
+            _ => {
+                if let Some(id) = target.strip_prefix("setting:")
+                    && let Some(index) = self.setting_index(id)
+                    && matches!(
+                        action,
+                        Action::Activate | Action::ToggleCheck | Action::Expand
+                    )
+                {
+                    self.activate_setting_icon(index);
+                    return true;
+                }
+                if let Some(id) = target.strip_prefix("menu-setting:")
+                    && let Some(index) = self.setting_index(id)
+                    && matches!(
+                        action,
+                        Action::Activate | Action::ToggleCheck | Action::Expand
+                    )
+                {
+                    self.activate_menu_hit(MenuHit::Setting(index));
+                    return true;
+                }
+                if let Some(rest) = target.strip_prefix("setting-option:")
+                    && let Some((id, option)) = rest.rsplit_once(':')
+                    && let Some(index) = self.setting_index(id)
+                    && let Ok(option) = option.parse::<usize>()
+                    && matches!(action, Action::Activate | Action::ToggleCheck)
+                {
+                    self.choose_option(index, option);
+                    return true;
+                }
+                false
+            }
+        }
     }
 }
 
@@ -2758,6 +3305,66 @@ mod tests {
         assert!(!node.state.busy);
         vp.play();
         assert!(Widget::accessibility(&vp).unwrap().state.busy);
+    }
+
+    #[test]
+    fn accessibility_exposes_every_painted_transport_control_and_drives_it() {
+        use crate::a11y::{Action, Role};
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 760.0, 480.0);
+        vp.reveal_controls();
+        draw_once(&mut vp);
+
+        let node = Widget::accessibility(&vp).unwrap();
+        let names: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Play"), "{names:?}");
+        assert!(names.contains(&"Playback position"), "{names:?}");
+        assert!(names.contains(&"Mute"), "{names:?}");
+        assert!(names.contains(&"Volume"), "{names:?}");
+        assert!(names.contains(&"Enter fullscreen"), "{names:?}");
+        assert!(node.children.iter().all(|child| child.bounds.is_some()));
+        assert!(node.children.iter().any(|child| child.role == Role::Slider));
+
+        assert!(Widget::perform_semantic_action(
+            &mut vp,
+            "transport.play-pause",
+            &Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(vp.is_playing());
+        assert!(Widget::perform_semantic_action(
+            &mut vp,
+            "audio.volume",
+            &Action::SetValue("25%".into()),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!((vp.volume() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn follower_transport_is_truthfully_disabled_but_local_audio_still_works() {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.set_transport_enabled(false);
+        vp.toggle_play();
+        assert!(!vp.is_playing());
+        vp.seek_to_ms(30_000);
+        assert_eq!(vp.position_ms(), 0);
+        vp.set_volume(0.3);
+        assert!((vp.volume() - 0.3).abs() < 1e-6);
     }
 
     #[test]

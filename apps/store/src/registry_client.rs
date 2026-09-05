@@ -17,5 +17,6 @@
 //! `store::registry_client::fetch_entries` still resolves.
 
 pub use app_catalogue::client::{
-    RegistryError, TrustLevel, VerifiedEntry, classify_entries, fetch_entries, fetch_handshake,
+    RegistryError, TrustLevel, VerifiedEntry, classify_snapshot, fetch_entries, fetch_handshake,
+    fetch_snapshot,
 };

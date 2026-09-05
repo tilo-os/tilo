@@ -84,11 +84,11 @@ pub use network::{
     VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_connection_policy,
     configure_connection_policy_patch, configure_hotspot, configure_ipv4, connect_enterprise_wifi,
     connect_wifi, connection_diagnostics, connection_profile_settings, create_mobile_profile,
-    forget_network_profile, get_connectivity, get_link_status, get_radio_state, get_wifi,
-    get_wired, import_vpn_config, inspect_certificate, list_hotspot_clients,
-    list_saved_network_profiles, list_vpn_connections, list_wifi_networks, set_airplane_mode,
-    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection, set_wifi,
-    set_wired,
+    delete_vpn_connection, forget_network_profile, get_connectivity, get_link_status,
+    get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
+    list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
+    set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
+    set_vpn_connection, set_wifi, set_wired,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};

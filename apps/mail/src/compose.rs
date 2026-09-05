@@ -268,6 +268,261 @@ impl ComposeWindow {
         self.rect
     }
 
+    /// Semantic mirror of the immediate-mode compose surface. Bounds come from
+    /// the same hit map as pointer input and values come from the retained text
+    /// fields, so screen readers and automation operate the editor users see.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the dialog's complete semantic tree is kept beside its visual control inventory to prevent drift"
+    )]
+    pub fn accessibility_node(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let rect_for = |hit| {
+            self.hits
+                .iter()
+                .find(|(_, candidate)| *candidate == hit)
+                .map(|(rect, _)| *rect)
+        };
+        let field = |name: &str, target: &str, value: String, rect: Option<Rect>, multiline| {
+            let mut node = AccessNode::new(if multiline {
+                Role::MultilineTextInput
+            } else {
+                Role::TextInput
+            })
+            .with_name(name)
+            .with_value(value)
+            .with_action_target(format!("mail.compose:{target}"))
+            .with_state(AccessState::new().focusable(true).multiline(multiline));
+            if let Some(rect) = rect {
+                node = node.with_bounds(rect);
+            }
+            node
+        };
+        let mut children = vec![
+            field(
+                "To",
+                "to",
+                self.to.value().to_string(),
+                rect_for(ComposeHit::FieldTo),
+                false,
+            ),
+            field(
+                "Subject",
+                "subject",
+                self.subject.value().to_string(),
+                rect_for(ComposeHit::FieldSubject),
+                false,
+            ),
+            field(
+                "Message body",
+                "body",
+                if self.format == ComposeFormat::Html {
+                    self.editor.to_plain()
+                } else {
+                    self.plain_body.value().to_string()
+                },
+                rect_for(ComposeHit::Body),
+                true,
+            ),
+        ];
+        if self.show_cc_bcc {
+            children.insert(
+                1,
+                field(
+                    "Cc",
+                    "cc",
+                    self.cc.value().to_string(),
+                    rect_for(ComposeHit::FieldCc),
+                    false,
+                ),
+            );
+            children.insert(
+                2,
+                field(
+                    "Bcc",
+                    "bcc",
+                    self.bcc.value().to_string(),
+                    rect_for(ComposeHit::FieldBcc),
+                    false,
+                ),
+            );
+        }
+        let marks = self.editor.active_marks();
+        let block = self.editor.active_block_kind();
+        for (hit, name, target, checked) in [
+            (ComposeHit::Send, "Send", "send", None),
+            (ComposeHit::SaveDraft, "Save draft", "save", None),
+            (ComposeHit::Discard, "Discard", "discard", None),
+            (ComposeHit::Attach, "Attach file", "attach", None),
+            (
+                ComposeHit::ToggleCcBcc,
+                "Show Cc and Bcc",
+                "cc-bcc",
+                Some(self.show_cc_bcc),
+            ),
+            (
+                ComposeHit::FormatToggle,
+                "Use HTML formatting",
+                "format",
+                Some(self.format == ComposeFormat::Html),
+            ),
+            (ComposeHit::Bold, "Bold", "bold", Some(marks.bold)),
+            (ComposeHit::Italic, "Italic", "italic", Some(marks.italic)),
+            (
+                ComposeHit::Underline,
+                "Underline",
+                "underline",
+                Some(marks.underline),
+            ),
+            (
+                ComposeHit::H1,
+                "Heading 1",
+                "heading-1",
+                Some(matches!(block, BlockKind::Heading(1))),
+            ),
+            (
+                ComposeHit::H2,
+                "Heading 2",
+                "heading-2",
+                Some(matches!(block, BlockKind::Heading(2))),
+            ),
+            (
+                ComposeHit::Bullet,
+                "Bulleted list",
+                "bullet",
+                Some(matches!(block, BlockKind::Bullet)),
+            ),
+            (
+                ComposeHit::Numbered,
+                "Numbered list",
+                "numbered",
+                Some(matches!(block, BlockKind::Numbered)),
+            ),
+            (
+                ComposeHit::Quote,
+                "Quote",
+                "quote",
+                Some(matches!(block, BlockKind::Quote)),
+            ),
+            (ComposeHit::Link, "Insert link", "link", None),
+        ] {
+            let Some(rect) = rect_for(hit) else { continue };
+            let role = if checked.is_some() {
+                Role::ToggleButton
+            } else {
+                Role::Button
+            };
+            children.push(
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_bounds(rect)
+                    .with_action_target(format!("mail.compose:{target}"))
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked,
+                        ..Default::default()
+                    }),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Compose email")
+            .with_description("Email composer")
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().modal(true))
+            .with_children(children)
+    }
+
+    pub fn perform_semantic_action(
+        &mut self,
+        control: &str,
+        action: &ui::a11y::Action,
+    ) -> Option<ComposeAction> {
+        use ui::a11y::Action;
+        let field_action = |field: &mut TextInput, action: &Action| match action {
+            Action::SetValue(value) => {
+                field.set_text(value);
+                true
+            }
+            _ => false,
+        };
+        match control {
+            "to" | "cc" | "bcc" | "subject" => {
+                let focus = match control {
+                    "cc" => Field::Cc,
+                    "bcc" => Field::Bcc,
+                    "subject" => Field::Subject,
+                    _ => Field::To,
+                };
+                match action {
+                    Action::Focus | Action::Activate => self.set_focus(focus),
+                    Action::SetValue(_) => {
+                        let target = match focus {
+                            Field::Cc => &mut self.cc,
+                            Field::Bcc => &mut self.bcc,
+                            Field::Subject => &mut self.subject,
+                            _ => &mut self.to,
+                        };
+                        let _ = field_action(target, action);
+                    }
+                    _ => return None,
+                }
+            }
+            "body" => match action {
+                Action::Focus | Action::Activate => self.set_focus(Field::Body),
+                Action::SetValue(value) => {
+                    if self.format == ComposeFormat::Html {
+                        self.editor.set_plain(value);
+                    } else {
+                        self.plain_body.set_text(value);
+                    }
+                }
+                _ => return None,
+            },
+            "send" if matches!(action, Action::Activate) => return Some(ComposeAction::Send),
+            "save" if matches!(action, Action::Activate) => return Some(ComposeAction::SaveDraft),
+            "discard" if matches!(action, Action::Activate) => {
+                self.close();
+                return Some(ComposeAction::Close);
+            }
+            "attach" if matches!(action, Action::Activate) => self.open_prompt(PromptKind::Attach),
+            "cc-bcc" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.show_cc_bcc = !self.show_cc_bcc;
+                self.relayout_regions();
+            }
+            "format" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.toggle_format();
+            }
+            "bold" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.toggle_inline(InlineMark::Bold);
+            }
+            "italic" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.toggle_inline(InlineMark::Italic);
+            }
+            "underline" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.toggle_inline(InlineMark::Underline);
+            }
+            "heading-1" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.set_block_kind(BlockKind::Heading(1));
+            }
+            "heading-2" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.set_block_kind(BlockKind::Heading(2));
+            }
+            "bullet" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.set_block_kind(BlockKind::Bullet);
+            }
+            "numbered" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.set_block_kind(BlockKind::Numbered);
+            }
+            "quote" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.editor.set_block_kind(BlockKind::Quote);
+            }
+            "link" if matches!(action, Action::Activate) => self.open_prompt(PromptKind::Link),
+            _ => return None,
+        }
+        self.dirty = true;
+        Some(ComposeAction::None)
+    }
+
     /// Open a blank compose window (or a reply when fields are pre-seeded by
     /// the caller right after).
     pub fn open_blank(&mut self) {

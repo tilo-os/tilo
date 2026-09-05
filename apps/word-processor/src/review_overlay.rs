@@ -105,7 +105,6 @@ impl ReviewOverlay {
             .map(|(_, action)| action.clone())
     }
 
-    #[cfg(test)]
     pub(super) fn hits(&self) -> &[(Rect, ReviewAction)] {
         &self.hits
     }

@@ -218,7 +218,14 @@ struct FormRects {
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
-type SyncWorkerResult = (caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>);
+type SyncWorkerResult = (
+    caldav::SyncResult,
+    SyncOutcome,
+    Vec<Id>,
+    Vec<Id>,
+    Vec<String>,
+    Vec<caldav::RemoteRevision>,
+);
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -481,6 +488,21 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Deterministic transport-state presentation for visual regression shots.
+    pub fn shots_set_sync_state(&mut self, state: &str) {
+        self.syncing = state == "syncing";
+        self.status = Some(match state {
+            "syncing" => "Syncing calendars…".into(),
+            "offline" => "Offline · changes will sync when you reconnect".into(),
+            "conflict" => {
+                "1 change also changed on the server; your version is safe and still queued".into()
+            }
+            "error" => "Sync failed · check the account in Settings and retry".into(),
+            _ => return,
+        });
+        self.dirty = true;
+    }
+
     /// Create a fresh event on the next sync and open its edit form — the
     /// New-Event screenshot. The event has an empty title (so the field shows
     /// its placeholder) and empty notes (so the notes editor shows its hint).
@@ -547,6 +569,7 @@ impl CalendarApp {
         // collections are pulled.
         let delete_jobs = self.gather_delete_jobs(doc);
         let push_jobs = self.gather_push_jobs(doc);
+        let sync_tokens = CalDoc::sync_tokens(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
         for id in &sync_account_ids {
@@ -555,21 +578,38 @@ impl CalendarApp {
             }
         }
         std::thread::spawn(move || {
-            let deleted = caldav::delete_all(&delete_jobs);
-            let pushed = caldav::push_all(&push_jobs);
+            let delete_result = caldav::remove_jobs(&delete_jobs);
+            let push_result = caldav::push_jobs(&push_jobs);
+            let deleted = delete_result.confirmed;
+            let pushed = push_result.confirmed;
+            let revisions = push_result.revisions;
+            let protected_hrefs: Vec<(String, String)> = push_jobs
+                .iter()
+                .filter(|job| !pushed.contains(&job.event.id))
+                .filter_map(|job| job.href.clone().map(|href| (job.calendar.id.clone(), href)))
+                .collect();
+            let conflicts: Vec<String> = delete_result
+                .conflicts
+                .into_iter()
+                .chain(push_result.conflicts)
+                .map(|(_, href)| href)
+                .collect();
             let mut result = caldav::SyncResult::default();
             let mut synced_calendars = 0;
             let mut first_failure = None;
             for (id, input) in sync_account_ids.iter().zip(inputs.iter()) {
-                let (mut account_result, account_outcome) =
-                    caldav::sync_all(std::slice::from_ref(input), today);
+                let (mut account_result, account_outcome) = caldav::sync_all_with_checkpoints(
+                    std::slice::from_ref(input),
+                    today,
+                    &sync_tokens,
+                );
                 let reporter = accounts::AccountSyncReporter::new(id.clone());
                 let upload_failed = push_jobs
                     .iter()
-                    .any(|(config, _, event)| config == &input.0 && !pushed.contains(&event.id));
+                    .any(|job| &job.config == &input.0 && !pushed.contains(&job.event.id));
                 let delete_failed = delete_jobs
                     .iter()
-                    .any(|(config, _, uid)| config == &input.0 && !deleted.contains(uid));
+                    .any(|job| &job.config == &input.0 && !deleted.contains(&job.id));
                 let persisted = if matches!(&account_outcome, caldav::SyncOutcome::Synced { .. })
                     && (upload_failed || delete_failed)
                 {
@@ -592,6 +632,9 @@ impl CalendarApp {
                 }
                 result.events.append(&mut account_result.events);
                 result.tasks.append(&mut account_result.tasks);
+                result.resources.append(&mut account_result.resources);
+                result.deletions.append(&mut account_result.deletions);
+                result.checkpoints.append(&mut account_result.checkpoints);
                 match account_outcome {
                     caldav::SyncOutcome::Synced { calendars, .. } => {
                         synced_calendars += calendars;
@@ -612,7 +655,39 @@ impl CalendarApp {
             } else {
                 caldav::SyncOutcome::Offline
             };
-            let _ = tx.send((result, outcome, pushed, deleted));
+            // Do not overwrite a locally edited object after its conditional
+            // upload conflicted. It stays queued; the next retry can be
+            // resolved without destroying either copy.
+            result.resources.retain(|resource| {
+                !conflicts
+                    .iter()
+                    .any(|href| caldav::hrefs_equal(href, &resource.href))
+                    && !protected_hrefs.iter().any(|(calendar_id, href)| {
+                        calendar_id == &resource.calendar_id
+                            && caldav::hrefs_equal(href, &resource.href)
+                    })
+            });
+            // A failed/conflicted local edit wins neither side automatically.
+            // Suppress an incremental tombstone for it and treat it as seen in
+            // a full fallback, leaving the local copy and outbox intact for an
+            // explicit retry/resolution.
+            result.deletions.retain(|deletion| {
+                !protected_hrefs.iter().any(|(calendar_id, href)| {
+                    calendar_id == &deletion.calendar_id
+                        && caldav::hrefs_equal(href, &deletion.href)
+                })
+            });
+            for checkpoint in &mut result.checkpoints {
+                if checkpoint.full {
+                    checkpoint.seen_hrefs.extend(
+                        protected_hrefs
+                            .iter()
+                            .filter(|(calendar_id, _)| calendar_id == &checkpoint.calendar_id)
+                            .map(|(_, href)| href.clone()),
+                    );
+                }
+            }
+            let _ = tx.send((result, outcome, pushed, deleted, conflicts, revisions));
         });
         self.sync_rx = Some(rx);
         self.syncing = true;
@@ -628,16 +703,33 @@ impl CalendarApp {
             return;
         };
         match rx.try_recv() {
-            Ok((result, outcome, pushed, deleted)) => {
+            Ok((result, mut outcome, pushed, deleted, conflicts, revisions)) => {
                 self.sync_rx = None;
                 self.syncing = false;
                 // Clear successfully-uploaded events from the push outbox and
                 // server-confirmed removals from the delete outbox.
+                for revision in revisions {
+                    CalDoc::set_remote_binding(
+                        doc,
+                        revision.id,
+                        &revision.calendar_id,
+                        &revision.href,
+                        revision.etag.as_deref(),
+                    );
+                }
                 for id in pushed {
                     CalDoc::dequeue_push(doc, id);
                 }
                 for id in deleted {
                     CalDoc::dequeue_delete(doc, id);
+                    CalDoc::remove_remote_binding(doc, id);
+                }
+                if !conflicts.is_empty() {
+                    outcome = SyncOutcome::Failed(format!(
+                        "{} change{} also changed on the server; your version is safe and still queued",
+                        conflicts.len(),
+                        if conflicts.len() == 1 { "" } else { "s" }
+                    ));
                 }
                 let failure = match &outcome {
                     SyncOutcome::Failed(reason) => Some(reason.clone()),
@@ -689,8 +781,9 @@ impl CalendarApp {
         }
     }
 
-    /// Merge a pull's events into the model + CRDT and set the status pill.
-    /// De-duped by (title, start) so a repeated sync is close to idempotent.
+    /// Atomically reconcile server resources by stable collection href. A
+    /// title/date is presentation, never identity; edits update the same local
+    /// UUID across pulls and server deletions remove it without resurrection.
     fn apply_sync_result(
         &mut self,
         result: caldav::SyncResult,
@@ -698,6 +791,10 @@ impl CalendarApp {
         doc: &mut AutoCommit,
     ) {
         let mut added = 0usize;
+        let mut updated = 0usize;
+        let mut removed = 0usize;
+
+        // Demo/import results have no DAV resource envelope.
         for mut e in result.events {
             if self
                 .model
@@ -712,10 +809,116 @@ impl CalendarApp {
             self.model.events.push(e);
             added += 1;
         }
+        for resource in result.resources {
+            let existing = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &resource.href);
+            for (index, mut event) in resource.events.into_iter().enumerate() {
+                // Current parser represents recurrence as one event. If a
+                // server returns multiple components in one object, retain
+                // stable identities for all by an internal component suffix.
+                let binding_href = if index == 0 {
+                    resource.href.clone()
+                } else {
+                    format!("{}#qos-component-{index}", resource.href)
+                };
+                let id = if index == 0 {
+                    existing
+                } else {
+                    CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
+                }
+                .unwrap_or_else(Uuid::new_v4);
+                event.id = id;
+                event.calendar_id = Some(resource.calendar_id.clone());
+                if let Some(slot) = self.model.events.iter_mut().find(|item| item.id == id) {
+                    *slot = event.clone();
+                    updated += 1;
+                } else {
+                    self.model.events.push(event.clone());
+                    added += 1;
+                }
+                CalDoc::update_event(doc, &event);
+                CalDoc::set_remote_binding(
+                    doc,
+                    id,
+                    &resource.calendar_id,
+                    &binding_href,
+                    resource.etag.as_deref(),
+                );
+            }
+            for (index, mut task) in resource.tasks.into_iter().enumerate() {
+                let binding_href = format!("{}#qos-task-{index}", resource.href);
+                let id = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
+                    .unwrap_or_else(Uuid::new_v4);
+                task.id = id;
+                if let Some(slot) = self.model.tasks.iter_mut().find(|item| item.id == id) {
+                    *slot = task.clone();
+                    updated += 1;
+                } else {
+                    self.model.tasks.push(task.clone());
+                    added += 1;
+                }
+                CalDoc::update_task(doc, &task);
+                CalDoc::set_remote_binding(
+                    doc,
+                    id,
+                    &resource.calendar_id,
+                    &binding_href,
+                    resource.etag.as_deref(),
+                );
+            }
+        }
+        for deletion in result.deletions {
+            let victims: Vec<Id> = CalDoc::remote_bindings_for_calendar(doc, &deletion.calendar_id)
+                .into_iter()
+                .filter(|(_, href)| {
+                    caldav::hrefs_equal(href.split("#qos-").next().unwrap_or(href), &deletion.href)
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for id in victims {
+                CalDoc::delete_event(doc, id);
+                CalDoc::delete_task(doc, id);
+                CalDoc::remove_remote_binding(doc, id);
+                CalDoc::dequeue_push(doc, id);
+                self.model.events.retain(|event| event.id != id);
+                self.model.tasks.retain(|task| task.id != id);
+                removed += 1;
+            }
+        }
+        // A successful full query is authoritative for that collection. This
+        // is also the invalid-token recovery path.
+        for checkpoint in &result.checkpoints {
+            if checkpoint.full {
+                let seen: HashSet<&str> =
+                    checkpoint.seen_hrefs.iter().map(String::as_str).collect();
+                for (id, href) in CalDoc::remote_bindings_for_calendar(doc, &checkpoint.calendar_id)
+                {
+                    let base = href.split("#qos-").next().unwrap_or(&href);
+                    if !seen
+                        .iter()
+                        .any(|seen_href| caldav::hrefs_equal(base, seen_href))
+                    {
+                        CalDoc::delete_event(doc, id);
+                        CalDoc::delete_task(doc, id);
+                        CalDoc::remove_remote_binding(doc, id);
+                        CalDoc::dequeue_push(doc, id);
+                        self.model.events.retain(|event| event.id != id);
+                        self.model.tasks.retain(|task| task.id != id);
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        // Commit markers are deliberately last: a crash before here repeats a
+        // response idempotently; a crash after here sees fully reconciled data.
+        for checkpoint in result.checkpoints {
+            CalDoc::set_sync_token(doc, &checkpoint.calendar_id, &checkpoint.token);
+        }
         self.model.events.sort_by_key(|e| e.start);
         self.status = Some(match outcome {
             SyncOutcome::Synced { calendars, .. } => {
-                format!("Synced {added} events from {calendars} calendars")
+                format!(
+                    "Synced {calendars} calendars · {added} new, {updated} updated, {removed} removed"
+                )
             }
             SyncOutcome::Offline => {
                 if self.accounts.is_empty() {
@@ -733,14 +936,7 @@ impl CalendarApp {
     /// with the account config and remote calendar it targets. Events whose
     /// calendar is no longer configured (or that became local) are skipped and
     /// left in the queue for a later attempt — never fabricated.
-    fn gather_push_jobs(
-        &self,
-        doc: &AutoCommit,
-    ) -> Vec<(
-        crate::account::CalDavConfig,
-        crate::account::RemoteCalendar,
-        Event,
-    )> {
+    fn gather_push_jobs(&self, doc: &AutoCommit) -> Vec<caldav::UploadJob> {
         let mut jobs = Vec::new();
         for id in CalDoc::outbox(doc) {
             let Some(event) = self.model.event(id) else {
@@ -751,7 +947,14 @@ impl CalendarApp {
             };
             for acc in &self.accounts.accounts {
                 if let Some(cal) = acc.calendars.iter().find(|c| &c.id == cal_id) {
-                    jobs.push((acc.config.clone(), cal.clone(), event.clone()));
+                    let binding = CalDoc::remote_binding(doc, event.id);
+                    jobs.push(caldav::UploadJob {
+                        config: acc.config.clone(),
+                        calendar: cal.clone(),
+                        event: event.clone(),
+                        href: binding.as_ref().map(|(_, href, _)| href.clone()),
+                        etag: binding.and_then(|(_, _, etag)| etag),
+                    });
                     break;
                 }
             }
@@ -986,7 +1189,7 @@ impl CalendarApp {
 
     /// The context Ctrl+K needs to build the calendar's resource tree: a template
     /// for a palette-created event (from the current view), and the events +
-    /// top-level tasks currently in the model.
+    /// tasks currently in the model.
     pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
         let start = self
             .anchor
@@ -1018,7 +1221,6 @@ impl CalendarApp {
             .model
             .tasks
             .iter()
-            .filter(|t| t.parent.is_none())
             .map(|t| crate::actions::TaskResource {
                 data: crate::actions::TaskData::from_task(t),
                 subtasks: self
@@ -1058,6 +1260,14 @@ impl CalendarApp {
     fn select_task(&mut self, id: Id) {
         self.selection = Some(Sel::Task(id));
         self.open_detail();
+    }
+
+    /// The task currently selected, if the selection is a task (not an event).
+    pub fn selected_task(&self) -> Option<Id> {
+        match self.selection {
+            Some(Sel::Task(id)) => Some(id),
+            _ => None,
+        }
     }
 
     /// Open the detail editor for the current selection. In the full-screen
@@ -1153,19 +1363,19 @@ impl CalendarApp {
     /// `(calendar_id, uid)` paired with the account config + remote calendar it
     /// targets. Entries whose calendar is no longer configured are skipped and
     /// left queued for a later attempt.
-    fn gather_delete_jobs(
-        &self,
-        doc: &AutoCommit,
-    ) -> Vec<(
-        crate::account::CalDavConfig,
-        crate::account::RemoteCalendar,
-        Id,
-    )> {
+    fn gather_delete_jobs(&self, doc: &AutoCommit) -> Vec<caldav::RemoveJob> {
         let mut jobs = Vec::new();
         for (cal_id, uid) in CalDoc::delete_outbox(doc) {
             for acc in &self.accounts.accounts {
                 if let Some(cal) = acc.calendars.iter().find(|c| c.id == cal_id) {
-                    jobs.push((acc.config.clone(), cal.clone(), uid));
+                    let binding = CalDoc::remote_binding(doc, uid);
+                    jobs.push(caldav::RemoveJob {
+                        config: acc.config.clone(),
+                        calendar: cal.clone(),
+                        id: uid,
+                        href: binding.as_ref().map(|(_, href, _)| href.clone()),
+                        etag: binding.and_then(|(_, _, etag)| etag),
+                    });
                     break;
                 }
             }
@@ -4195,6 +4405,36 @@ impl Widget for CalendarApp {
         let operation: crate::actions::CalendarOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match (kind, operation) {
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::OpenEvent { id },
+            ) => {
+                let id = id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid event id".to_string())?;
+                let event = self
+                    .model
+                    .event(id)
+                    .ok_or_else(|| "event no longer exists".to_string())?;
+                self.anchor = event.start.date();
+                self.select_event(id);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::OpenTask { id },
+            ) => {
+                let id = id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid task id".to_string())?;
+                let task = self
+                    .model
+                    .task(id)
+                    .ok_or_else(|| "task no longer exists".to_string())?;
+                if let Some(due) = task.due {
+                    self.anchor = due;
+                }
+                self.select_task(id);
+            }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month
             }
@@ -4277,26 +4517,12 @@ impl Widget for CalendarApp {
         }
     }
 
-    /// Fold the calendar's events into the unified Ctrl+K palette: a snapshot
-    /// [`EventSearchProvider`](crate::search_provider::EventSearchProvider)
-    /// makes every event findable there, alongside the actions the app exports.
+    /// Fold the calendar's events and tasks into the unified Ctrl+K palette.
+    /// Every hit addresses the matching resource's exported `open` view action.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::EventSearchProvider::new(
-            &self.model,
-        ))]
-    }
-
-    /// Navigate to the event a chosen palette row identifies: jump the view's
-    /// anchor to its day and select it. Anchor/selection are app-local
-    /// presentation (per-peer, never in the shared doc), so the doc args are
-    /// unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::EventSearchProvider::parse_action_id(action_id)
-            && let Some(ev) = self.model.event(id)
-        {
-            self.anchor = ev.start.date();
-            self.select_event(id);
-        }
+        vec![Box::new(
+            crate::search_provider::CalendarSearchProvider::new(&self.model),
+        )]
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -6109,11 +6335,14 @@ mod tests {
             caldav::SyncResult {
                 events: vec![synced],
                 tasks: Vec::new(),
+                ..caldav::SyncResult::default()
             },
             SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         ))
@@ -7228,8 +7457,7 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         app.demo = false;
         let mut state = AutoCommit::new();
-        let (tx, rx) =
-            std::sync::mpsc::channel::<(caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>)>();
+        let (tx, rx) = std::sync::mpsc::channel::<SyncWorkerResult>();
         app.sync_rx = Some(rx);
         app.syncing = true;
         drop(tx); // worker vanished without sending
@@ -7950,5 +8178,104 @@ mod tests {
             View::Week,
             "a shortcut works once the editor has closed"
         );
+    }
+
+    #[test]
+    fn caldav_reconciliation_updates_and_deletes_by_href_without_uuid_churn() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let start = NaiveDate::from_ymd_opt(2026, 8, 3)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let remote_event = |title: &str| Event {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Blue,
+            recurrence: Recurrence::None,
+            reminder_min: None,
+            project: None,
+            calendar_id: Some("work/default".into()),
+        };
+        app.apply_sync_result(
+            caldav::SyncResult {
+                resources: vec![caldav::RemoteResource {
+                    calendar_id: "work/default".into(),
+                    href: "/dav/work/meeting.ics".into(),
+                    etag: Some("\"one\"".into()),
+                    events: vec![remote_event("First title")],
+                    tasks: Vec::new(),
+                }],
+                checkpoints: vec![caldav::CollectionCheckpoint {
+                    calendar_id: "work/default".into(),
+                    token: "token-1".into(),
+                    full: true,
+                    seen_hrefs: vec!["/dav/work/meeting.ics".into()],
+                }],
+                ..caldav::SyncResult::default()
+            },
+            SyncOutcome::Synced {
+                calendars: 1,
+                events: 1,
+            },
+            &mut doc,
+        );
+        let id = CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/meeting.ics")
+            .expect("binding stored");
+        app.apply_sync_result(
+            caldav::SyncResult {
+                resources: vec![caldav::RemoteResource {
+                    calendar_id: "work/default".into(),
+                    href: "/dav/work/meeting.ics".into(),
+                    etag: Some("\"two\"".into()),
+                    events: vec![remote_event("Server-edited title")],
+                    tasks: Vec::new(),
+                }],
+                checkpoints: vec![caldav::CollectionCheckpoint {
+                    calendar_id: "work/default".into(),
+                    token: "token-2".into(),
+                    full: false,
+                    seen_hrefs: vec!["/dav/work/meeting.ics".into()],
+                }],
+                ..caldav::SyncResult::default()
+            },
+            SyncOutcome::Synced {
+                calendars: 1,
+                events: 1,
+            },
+            &mut doc,
+        );
+        assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
+        assert_eq!(
+            CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
+            Some("\"two\"")
+        );
+        app.apply_sync_result(
+            caldav::SyncResult {
+                deletions: vec![caldav::RemoteDeletion {
+                    calendar_id: "work/default".into(),
+                    href: "/dav/work/meeting.ics".into(),
+                }],
+                checkpoints: vec![caldav::CollectionCheckpoint {
+                    calendar_id: "work/default".into(),
+                    token: "token-3".into(),
+                    full: false,
+                    seen_hrefs: Vec::new(),
+                }],
+                ..caldav::SyncResult::default()
+            },
+            SyncOutcome::Synced {
+                calendars: 1,
+                events: 0,
+            },
+            &mut doc,
+        );
+        assert!(app.model.event(id).is_none());
+        assert!(CalDoc::remote_binding(&doc, id).is_none());
+        assert_eq!(CalDoc::sync_tokens(&doc)[0].1, "token-3");
     }
 }

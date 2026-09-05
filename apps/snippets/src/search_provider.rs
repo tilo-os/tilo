@@ -3,27 +3,25 @@
 //! Mirrors the reference wiring in [`apps/contacts`]: the snippet manager
 //! declares its searchable type by implementing [`SearchProvider`] over a
 //! snapshot of the library, so a snippet is findable from the unified Ctrl+K
-//! palette by title, language, folder, tag, description or body. Activating a
-//! row hands back an opaque `action_id` the app resolves to a [`SnippetId`] and
-//! opens.
+//! palette by title, language, folder, tag, description or body. Snippet hits
+//! address their exported `open` view action; distinct tag hits address their
+//! exported `reveal` view action. The shared broker therefore owns activation
+//! for search, accessibility and agents alike.
 //!
 //! The provider is deliberately **library-scoped and synchronous**: it matches
 //! against the in-memory [`Library`] the app already holds, so a Ctrl+K query
 //! never blocks.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+};
 
-use crate::model::{Library, Snippet, SnippetId};
+use crate::model::{Library, Snippet};
 
 /// The kind label (and result-group header) Snippets produces.
 pub const SNIPPET_KIND: &str = "Snippets";
-
-/// The `action_id` prefix, shared with the app's action/resource layer so
-/// activation stays consistent. A chosen row's `action_id` is
-/// `snippets.snippet:<uuid>`; [`parse_action_id`] turns it back into a
-/// [`SnippetId`].
-const ACTION_PREFIX: &str = "snippets.snippet:";
+pub const TAG_KIND: &str = "Snippet tags";
 
 /// Shown for a snippet whose title is still blank.
 const UNTITLED: &str = "Untitled snippet";
@@ -32,27 +30,23 @@ const UNTITLED: &str = "Untitled snippet";
 /// whenever the search surface opens.
 pub struct SnippetSearchProvider {
     snippets: Vec<Snippet>,
+    tags: Vec<(String, usize)>,
 }
 
 impl SnippetSearchProvider {
     /// Snapshot the current library into a provider.
     pub fn new(library: &Library) -> Self {
-        Self {
-            snippets: library.snippets.clone(),
+        let snippets = library
+            .snippets
+            .iter()
+            .take(DEFAULT_SEARCH_INDEX_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>();
+        let tags = Library {
+            snippets: snippets.clone(),
         }
-    }
-
-    /// The `action_id` for a snippet — what a chosen row hands back.
-    pub fn action_id(id: SnippetId) -> String {
-        format!("{ACTION_PREFIX}{id}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back to a
-    /// [`SnippetId`]. Returns `None` for an id this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<SnippetId> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .and_then(|rest| rest.parse::<SnippetId>().ok())
+        .tags();
+        Self { snippets, tags }
     }
 
     fn display_title(s: &Snippet) -> &str {
@@ -84,8 +78,14 @@ impl SearchProvider for SnippetSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let q = query.to_lowercase();
-        self.snippets
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        let mut results = self
+            .snippets
             .iter()
             .filter(|s| Self::matches(s, &q))
             .map(|s| {
@@ -94,16 +94,43 @@ impl SearchProvider for SnippetSearchProvider {
                 } else {
                     format!("{} · {}", s.language.label(), s.folder)
                 };
-                let mut r =
-                    SearchResult::new(SNIPPET_KIND, Self::display_title(s), Self::action_id(s.id))
-                        .with_subtitle(subtitle)
-                        .with_icon(Icon::Code);
+                let mut r = SearchResult::for_action(
+                    SNIPPET_KIND,
+                    Self::display_title(s),
+                    crate::actions::open_snippet_address(s.id),
+                )
+                .with_subtitle(subtitle)
+                .with_icon(Icon::Code);
                 if s.favorite {
                     r = r.with_score(1);
                 }
                 r
             })
-            .collect()
+            .take(limit)
+            .collect::<Vec<_>>();
+        if results.len() == limit {
+            return results;
+        }
+        let remaining = limit - results.len();
+        results.extend(
+            self.tags
+                .iter()
+                .filter(|(tag, _)| q.is_empty() || tag.to_lowercase().contains(&q))
+                .map(|(tag, count)| {
+                    SearchResult::for_action(
+                        TAG_KIND,
+                        format!("#{tag}"),
+                        crate::actions::reveal_tag_address(tag),
+                    )
+                    .with_subtitle(format!(
+                        "{count} snippet{}",
+                        if *count == 1 { "" } else { "s" }
+                    ))
+                    .with_icon(Icon::List)
+                })
+                .take(remaining),
+        );
+        results
     }
 }
 
@@ -140,11 +167,14 @@ mod tests {
     fn empty_query_browses_the_whole_library() {
         let lib = seeded();
         let provider = SnippetSearchProvider::new(&lib);
-        assert_eq!(provider.search("").len(), lib.snippets.len());
+        assert_eq!(
+            provider.search("").len(),
+            lib.snippets.len() + lib.tags().len()
+        );
     }
 
     #[test]
-    fn action_id_round_trips_to_a_stored_snippet() {
+    fn snippet_result_addresses_the_exported_open_action() {
         let lib = seeded();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(SnippetSearchProvider::new(&lib)));
@@ -153,23 +183,33 @@ mod tests {
         let hit = registry
             .query(&some.title)
             .into_iter()
-            .find(|r| r.action_id == SnippetSearchProvider::action_id(some.id))
+            .find(|r| r.title == SnippetSearchProvider::display_title(&some))
             .expect("the snippet is findable through the registry");
-        let id = SnippetSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert!(
-            lib.get(id).is_some(),
-            "the id resolves to a real stored snippet"
+        assert_eq!(
+            hit.action_address(),
+            Some(crate::actions::open_snippet_address(some.id))
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(SnippetSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(SnippetSearchProvider::parse_action_id("snippets.snippet:not-a-uuid").is_none());
+    fn tag_result_addresses_the_exported_reveal_action() {
+        let lib = seeded();
+        let (tag, count) = lib.tags().into_iter().next().expect("a seeded tag");
+        let hit = SnippetSearchProvider::new(&lib)
+            .search(&tag)
+            .into_iter()
+            .find(|hit| hit.kind == TAG_KIND && hit.title == format!("#{tag}"))
+            .expect("tag is independently searchable");
+        assert_eq!(
+            hit.action_address(),
+            Some(crate::actions::reveal_tag_address(&tag))
+        );
+        let expected_subtitle = format!("{count} snippet{}", if count == 1 { "" } else { "s" });
+        assert_eq!(hit.subtitle.as_deref(), Some(expected_subtitle.as_str()));
     }
 
     #[test]
-    fn widget_hooks_find_then_open_the_snippet() {
+    fn canonical_search_hit_resolves_and_opens_through_the_broker() {
         use automerge::{AutoCommit, ROOT};
         use ui::widget::Widget;
 
@@ -177,8 +217,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
 
-        // Browse the app's OWN provider (its real ids) and take a hit.
-        let (action_id, id) = {
+        let (address, id) = {
             let providers = app.search_providers();
             assert!(
                 !providers.is_empty(),
@@ -186,18 +225,89 @@ mod tests {
             );
             let hits = providers[0].search("");
             let hit = hits
-                .first()
+                .iter()
+                .find(|hit| hit.kind == SNIPPET_KIND)
                 .expect("the seeded library is browsable through the real hook")
                 .clone();
-            let id = SnippetSearchProvider::parse_action_id(&hit.action_id).unwrap();
-            (hit.action_id, id)
+            let address = hit.action_address().expect("canonical action address");
+            let id = address
+                .resource
+                .strip_prefix("snippets.snippet:")
+                .and_then(|raw| raw.parse().ok())
+                .expect("snippet resource id");
+            (address, id)
         };
 
-        app.activate_search_result(&action_id, &mut doc, &ROOT);
+        let resources = Widget::resources(&app, &doc);
+        let spec = qos_actions::door::resolve(&resources, &address)
+            .expect("search address resolves against the live resource tree");
+        let encoded = match &spec.input {
+            qos_actions::ActionInput::Immediate(encoded) => encoded,
+            qos_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
+        };
+        assert_ne!(
+            app.open_id_for_test(),
+            Some(id),
+            "precondition: the selected search hit is not already open"
+        );
+        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("brokered open succeeds")
+        );
         assert_eq!(
             app.open_id_for_test(),
             Some(id),
-            "activation opened the chosen snippet"
+            "the exported view operation opened the chosen snippet"
+        );
+    }
+
+    #[test]
+    fn canonical_tag_hit_resolves_and_reveals_the_filtered_library() {
+        use automerge::{AutoCommit, ROOT};
+        use ui::widget::Widget;
+
+        let mut app = crate::app::SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let (tag, expected_count) = seeded().tags().into_iter().next().expect("a seeded tag");
+        let hit = app.search_providers()[0]
+            .search(&tag)
+            .into_iter()
+            .find(|hit| hit.kind == TAG_KIND && hit.title == format!("#{tag}"))
+            .expect("the tag provider hit");
+        let address = hit.action_address().expect("canonical tag address");
+        let resources = Widget::resources(&app, &doc);
+        let spec = qos_actions::door::resolve(&resources, &address)
+            .expect("tag address resolves against the exported tree");
+        let encoded = match &spec.input {
+            qos_actions::ActionInput::Immediate(encoded) => encoded,
+            qos_actions::ActionInput::Prompted { .. } => panic!("reveal takes no argument"),
+        };
+
+        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("brokered tag reveal succeeds")
+        );
+        assert_eq!(
+            app.visible_count_for_test(),
+            expected_count,
+            "the reveal operation selects exactly the tagged snippets"
         );
     }
 }

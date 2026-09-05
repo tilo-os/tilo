@@ -14,7 +14,7 @@
 //! bespoke rendering. The action button label + click path are wired by the
 //! caller: this fn is pure composition.
 
-use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Column, Container, Row, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -31,26 +31,23 @@ pub const CARD_HEIGHT: f32 = 84.0;
 ///   click. The app's `sync` reads it,
 ///   dispatches the action, and clears the
 ///   bit so it's a one-shot edge.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "card construction receives the item, paired typed actions, shared artwork service, theme, and responsive mode as one cohesive view boundary"
+)]
 pub fn store_card(
     item: &StoreItem,
     action: ActionKind,
     select_key: &str,
     action_click_key: &str,
-    pin_click_key: &str,
-    remove_click_key: &str,
     theme: &ui::Theme,
+    images: Option<ui::ImageStore>,
+    action_binding: Option<ui::qos_actions::ActionBinding<()>>,
+    detail_binding: Option<ui::qos_actions::ActionBinding<()>>,
+    compact: bool,
 ) -> Box<dyn Widget> {
     // Left column: name + description. Secondary text reads its dim tone
     // from the live theme so it stays legible in light and dark.
-    let name_line = Row::new()
-        .push(Box::new(Text::new(&item.name).with_size(15.0)))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(
-            Text::new(&badge_line(item))
-                .with_size(11.0)
-                .with_color(theme.text_dim),
-        ));
-
     // The text column grows to fill the space between the icon and the
     // action buttons (`fill_remaining_height` gives it `flex_grow: 1`,
     // `flex_basis: 0`), so the buttons sit on the right of the same row
@@ -58,7 +55,12 @@ pub fn store_card(
     let text_col = Column::new()
         .with_no_padding()
         .with_fill_remaining_height()
-        .push(Box::new(name_line))
+        .push(Box::new(Text::new(&item.name).with_size(15.0)))
+        .push(Box::new(
+            Text::new(&badge_line(item))
+                .with_size(11.0)
+                .with_color(theme.text_dim),
+        ))
         .push(Box::new(
             Text::new(&item.description)
                 .with_size(12.0)
@@ -70,51 +72,73 @@ pub fn store_card(
     // ghost buttons so the card has one clear primary action. They are direct
     // children of the row (fixed-width buttons) laid out as a horizontal
     // cluster on the right, not a vertical stack.
-    let action_btn =
-        Button::new(action_click_key, action.label(), Some(action_click_key)).primary();
-
-    let mut row = Row::new()
-        .no_wrap()
-        .push(icon_placeholder(theme))
-        .push(Box::new(text_col))
-        .push(Box::new(
-            Button::new(&format!("{select_key}.button"), "Details", Some(select_key)).ghost(),
-        ))
-        .push(Box::new(action_btn));
-    // Optional secondary controls for a cached qOS app: the "mark
-    // installed" (pin) toggle and a small Remove. These are absent
-    // until the app has been Opened at least once — there is never a
-    // separate Install step.
-    if let Some(pin_action) = item.pin_action() {
-        row = row.push(Box::new(
-            Button::new(pin_click_key, pin_action.label(), Some(pin_click_key)).ghost(),
-        ));
+    let mut action_btn = Button::new(action_click_key, action.label(), Some(action_click_key));
+    if let Some(binding) = action_binding {
+        action_btn = action_btn.on_action(binding);
     }
-    if item.offers_remove() {
-        row = row.push(Box::new(
-            Button::new(remove_click_key, "Remove", Some(remove_click_key)).ghost(),
-        ));
-    }
+    let action_btn = action_btn
+        .primary()
+        .tooltip(format!("{} {}", action.label(), item.name));
 
-    Box::new(Container::new().with_background().with_child(Box::new(row)))
+    let mut details = Button::new(&format!("{select_key}.button"), "Details", Some(select_key));
+    if let Some(binding) = detail_binding {
+        details = details.on_action(binding);
+    }
+    let content: Box<dyn Widget> = if compact {
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(icon_artwork(item, images))
+                        .push(Box::new(text_col)),
+                ))
+                .push(Box::new(
+                    Row::new()
+                        .push(Box::new(
+                            details
+                                .ghost()
+                                .tooltip(format!("Show details for {}", item.name)),
+                        ))
+                        .push(Box::new(action_btn)),
+                )),
+        )
+    } else {
+        Box::new(
+            Row::new()
+                .push(icon_artwork(item, images))
+                .push(Box::new(text_col))
+                .push(Box::new(
+                    details
+                        .ghost()
+                        .tooltip(format!("Show details for {}", item.name)),
+                ))
+                .push(Box::new(action_btn)),
+        )
+    };
+    Box::new(Container::new().with_background().with_child(content))
 }
 
-/// Small decorative icon square. Real icon fetching is a follow-up;
-/// today we render a themed rectangle so the card layout stays
-/// consistent whether the source publishes an icon or not.
-fn icon_placeholder(theme: &ui::Theme) -> Box<dyn Widget> {
-    Box::new(
-        Container::new()
-            .with_size(48.0, 48.0)
-            .with_fill(theme.bg_hover),
-    )
+/// Bounded remote icon with the shared deterministic initial-art fallback.
+/// [`super::Artwork`] requests HTTPS imagery through the Store's guarded
+/// [`ui::ImageStore`]; an absent, rejected, or undecodable image keeps the
+/// same card geometry and renders the fallback instead.
+fn icon_artwork(item: &StoreItem, images: Option<ui::ImageStore>) -> Box<dyn Widget> {
+    Box::new(super::Artwork::new(
+        images,
+        item.icon_url.as_deref(),
+        &item.name,
+        48.0,
+        48.0,
+    ))
 }
 
 /// The right-hand badge line under the name: version + source label.
 fn badge_line(item: &StoreItem) -> String {
     let source_label = match &item.source {
-        StoreSource::Qos { registry_name } => registry_name.clone(),
-        StoreSource::Flathub => "Flathub".to_string(),
+        StoreSource::Qos { registry_name } => format!("{} · {registry_name}", item.trust.label()),
+        StoreSource::Flathub => item.trust.label().to_string(),
     };
     let v = item.latest_version();
     if v.is_empty() {

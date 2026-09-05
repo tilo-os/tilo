@@ -46,6 +46,17 @@ impl Action for WindowsAction {
 pub fn register(registry: &mut ActionRegistry) {
     registry.register::<WindowsAction>(WINDOWS_ACTION_TYPE);
 }
+
+/// Read one collaborative route override from the shared document.
+pub fn route_override(doc: &Doc, app_id: &str) -> Option<Route> {
+    let (_, map) = doc.get(&ROOT, ROOT_KEY).ok().flatten()?;
+    match doc.get(&map, app_id).ok().flatten()?.0.to_str()? {
+        "Wine" => Some(Route::Wine),
+        "Proton" => Some(Route::Proton),
+        "Windows VM" => Some(Route::Vm),
+        _ => None,
+    }
+}
 pub fn encode(action: &WindowsAction) -> EncodedAction {
     EncodedAction::encode(WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
         type_id: WINDOWS_ACTION_TYPE.into(),
@@ -84,7 +95,7 @@ fn effect(
 }
 
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
-    let mut resources: Vec<Resource> = catalogue
+    let apps: Vec<Resource> = catalogue
         .apps
         .iter()
         .map(|app| {
@@ -209,59 +220,121 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
         })
         .collect();
     let mut manager = Resource::new("windows.manager", "windows.manager", "Windows manager");
-    for (id, label, type_id, description) in [
-        (
+    manager = manager.with_action(
+        ActionSpec::typed_operation(
             "install",
             "Install Windows application",
+            "path (omit to use the system file picker)",
+            OperationKind::Effect,
             "windows.install",
-            "installer path",
-        ),
-        (
-            "import-iso",
-            "Import Windows ISO",
-            "windows.import-iso",
-            "ISO path",
-        ),
-    ] {
-        manager = manager.with_action(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system file picker)",
-                OperationKind::Effect,
-                type_id,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    description,
-                )],
-                move |args: &ActionArgs| {
-                    EncodedAction::encode_operation(type_id, &args.text("path").unwrap_or(""))
-                        .unwrap_or_else(|_| EncodedAction {
-                            type_id: type_id.into(),
-                            payload: Vec::new(),
-                        })
-                },
+            vec![ActionParam::optional_owned(
+                "path",
+                ParamType::Text,
+                "installer path",
+            )],
+            |args: &ActionArgs| {
+                EncodedAction::encode_operation("windows.install", &args.text("path").unwrap_or(""))
+                    .unwrap_or_else(|_| EncodedAction {
+                        type_id: "windows.install".into(),
+                        payload: Vec::new(),
+                    })
+            },
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged()
+        .execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Job),
+    );
+    if let Some(confirmation) = &catalogue.vm_install_confirmation {
+        let contract = || ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::AtMostOnce,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
+        };
+        manager = manager.with_child(
+            Resource::new(
+                "windows.pending-install",
+                "windows.pending-install",
+                format!("Install {}", confirmation.display_name),
             )
-            .requiring(PermissionRequirement::Admin)
-            .privileged()
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
+            .with_action(effect(
+                "install-private-capsule",
+                "Install in a private capsule",
+                "windows.confirm-capsule-install",
+                "",
+                contract(),
+            ))
+            .with_action(effect(
+                "install-windows-appliance",
+                "Install in the Windows appliance",
+                "windows.confirm-vm-install",
+                "",
+                contract(),
+            )),
         );
     }
+
+    let mut appliance = Resource::new(
+        "windows.appliance",
+        "windows.appliance",
+        "Managed Windows appliance",
+    );
+    appliance = appliance.with_action(
+        ActionSpec::typed_operation(
+            "import-iso",
+            "Import Windows ISO",
+            "path (omit to use the system file picker)",
+            OperationKind::Effect,
+            "windows.import-iso",
+            vec![ActionParam::optional_owned(
+                "path",
+                ParamType::Text,
+                "ISO path",
+            )],
+            |args: &ActionArgs| {
+                EncodedAction::encode_operation(
+                    "windows.import-iso",
+                    &args.text("path").unwrap_or(""),
+                )
+                .unwrap_or_else(|_| EncodedAction {
+                    type_id: "windows.import-iso".into(),
+                    payload: Vec::new(),
+                })
+            },
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged()
+        .execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Job),
+    );
     for (id, label, type_id) in [
         ("recovery", "Open recovery desktop", "windows.recovery"),
+        ("start", "Start Windows", "windows.start"),
         ("restart", "Restart Windows", "windows.restart"),
         ("suspend", "Suspend Windows", "windows.suspend"),
         ("resume", "Resume Windows", "windows.resume"),
         ("shutdown", "Shut down Windows", "windows.shutdown"),
         (
             "temporary-network",
-            "Temporarily connect Windows",
+            "Connect temporarily for activation",
             "windows.temporary-network",
         ),
+        (
+            "update-network",
+            "Connect temporarily for Windows Update",
+            "windows.update-network",
+        ),
+        (
+            "revoke-network",
+            "Disconnect temporary network access",
+            "windows.revoke-network",
+        ),
     ] {
-        manager = manager.with_action(effect(
+        appliance = appliance.with_action(effect(
             id,
             label,
             type_id,
@@ -273,12 +346,16 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                 retry: RetryPolicy::AtMostOnce,
                 execution: ExecutionMode::Background { cancellable: false },
                 result: ResultSpec::Job,
+                availability: availability(
+                    catalogue.vm.ready,
+                    Some("Set up the managed Windows appliance first"),
+                ),
                 ..ActionContract::default()
             },
         ));
     }
-    resources.insert(0, manager);
-    resources
+    manager = manager.with_child(appliance).with_children(apps);
+    vec![manager]
 }
 
 #[cfg(test)]
@@ -309,27 +386,26 @@ mod tests {
     #[test]
     fn every_catalogue_app_has_explicit_routes() {
         let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        assert!(res.iter().all(|r| r.actions.len() >= 3));
+        let flattened = qos_actions::flatten(&res);
+        let manager = res.first().expect("manager root");
         assert!(
-            res.iter()
+            manager
+                .children
+                .iter()
                 .filter(|resource| resource.kind == "windows.compat-app")
                 .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
         );
-        assert!(
-            res.iter()
-                .flat_map(|resource| &resource.actions)
-                .any(|action| {
-                    action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
-                })
-        );
+        assert!(flattened.iter().map(|action| action.action).any(|action| {
+            action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
+        }));
     }
 
     #[test]
     fn every_background_operation_declares_a_job_result() {
         let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        for action in resources
-            .iter()
-            .flat_map(|resource| resource.actions.iter())
+        for action in qos_actions::flatten(&resources)
+            .into_iter()
+            .map(|action| action.action)
         {
             if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
                 assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
@@ -340,5 +416,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resources_form_a_manager_appliance_application_hierarchy() {
+        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+        let manager = resources.first().expect("manager root");
+        assert_eq!(manager.id.as_str(), "windows.manager");
+        let appliance = manager
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "windows.appliance")
+            .expect("appliance child");
+        for expected in [
+            "start",
+            "restart",
+            "suspend",
+            "resume",
+            "shutdown",
+            "temporary-network",
+            "update-network",
+            "revoke-network",
+        ] {
+            assert!(
+                appliance.actions.iter().any(|action| action.id == expected),
+                "missing appliance action {expected}"
+            );
+        }
+        assert_eq!(
+            manager
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "windows.compat-app")
+                .count(),
+            3
+        );
     }
 }

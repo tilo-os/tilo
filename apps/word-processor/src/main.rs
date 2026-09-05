@@ -112,7 +112,7 @@ fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
             .max_positionals(1)
-            .allowed_flags(&["--history"])
+            .allowed_flags(&["--history", "--styles", "--comments", "--error"])
             .shot_handler(run_shot)
             .live_handler(run_live),
     );
@@ -148,10 +148,20 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Plain `--shots`: build the concrete widget so the transient status bubble
-    // (which replaced the bottom strip) can be armed — pinned fully visible — for
-    // the single headless frame, then render.
+    // Plain and scenario shots share the real widget. Scenario flags only seed
+    // state that a user could reach through the normal UI, keeping visual
+    // review representative rather than maintaining a second mock renderer.
     let (state, mut wp) = build_concrete(file)?;
+    let mut state = state;
+    if args.has("--comments") {
+        seed_review(&mut state, &mut wp)?;
+    }
+    if args.has("--styles") {
+        wp.set_styles_panel_open(true);
+    }
+    if args.has("--error") {
+        wp.stage_error_for_shot();
+    }
     wp.arm_status_bubble_for_shots();
     render_shot(
         state,
@@ -159,6 +169,38 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         args.viewport.unwrap_or((1000, 700)),
         out,
     )?;
+    Ok(())
+}
+
+fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
+    let containers = qdoc::model::open(&state.doc, &state.root)?;
+    let Some(block) = qdoc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .find(|id| {
+            qdoc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
+        })
+    else {
+        return Ok(());
+    };
+    let len = qdoc::model::block_text(&state.doc, &containers, &block)
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let mut doc = qdoc::DocMut {
+        doc: &mut state.doc,
+        c: &containers,
+        ids: &mut ids,
+    };
+    doc.add_comment(
+        &block,
+        0,
+        len.min(12),
+        "Maya Chen",
+        "Could we make this opening more specific?",
+    );
+    doc.track_insert(&block, len, " — reviewed", "Jonas Weber", "2026-09-05");
+    wp.sync(&mut state.doc, &state.root);
     Ok(())
 }
 
@@ -397,6 +439,10 @@ fn render_shot(
         &presence,
         &permission,
     );
+    // A real frame always runs the widget's top-layer pass after its body.
+    // Keep shots honest: this is where recovery/error toasts, menus, and other
+    // transient surfaces are painted.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

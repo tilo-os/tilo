@@ -149,28 +149,27 @@ impl SecretVault {
     /// Seal + write the vault. Best-effort: logs and returns on any error so a read-only config
     /// dir never crashes the caller.
     pub fn save(&self) {
-        if let Err(e) = std::fs::create_dir_all(&self.dir) {
-            tracing::warn!(error = %e, "accounts: could not create vault dir");
-            return;
-        }
-        let Some(key) = load_or_create_key(&self.dir, self.custody) else {
-            tracing::warn!("accounts: no vault key available; secrets kept in memory only");
-            return;
-        };
-        let plaintext = match serde_json::to_vec(&self.entries) {
-            Ok(bytes) => Zeroizing::new(bytes),
-            Err(e) => {
-                tracing::warn!(error = %e, "accounts: vault serialize failed");
-                return;
-            }
-        };
-        let Some(blob) = seal(&key, &plaintext) else {
-            tracing::warn!("accounts: vault encryption failed");
-            return;
-        };
-        if let Err(e) = atomic_file::write(&self.dir.join("vault.enc"), &blob) {
+        if let Err(e) = self.try_save() {
             tracing::warn!(error = %e, "accounts: vault write failed");
         }
+    }
+
+    /// Seal and atomically persist the vault, returning failures to callers
+    /// that must not publish account metadata unless credential custody
+    /// succeeded first.
+    pub fn try_save(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|error| format!("could not create vault directory: {error}"))?;
+        let key = load_or_create_key(&self.dir, self.custody)
+            .ok_or_else(|| "no vault key is available".to_string())?;
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&self.entries)
+                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+        );
+        let blob = seal(&key, &plaintext)
+            .ok_or_else(|| "credential vault encryption failed".to_string())?;
+        atomic_file::write(&self.dir.join("vault.enc"), &blob)
+            .map_err(|error| format!("could not write credential vault: {error}"))
     }
 }
 

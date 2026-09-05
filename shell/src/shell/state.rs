@@ -1232,6 +1232,64 @@ pub struct WorkspaceTaskAuditEvent {
     pub summary: String,
 }
 
+/// Append-only, broker-authenticated record of an external side effect.
+/// Arguments, output values, produced resource addresses, failure messages,
+/// and failure details are deliberately absent from this durable shape.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceEffectReceipt {
+    pub invocation: qos_actions::InvocationId,
+    pub actor: String,
+    pub context: qos_actions::ActionContext,
+    pub status: qos_actions::EffectReceiptStatus,
+    pub completed_at: i64,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or_default()
+}
+
+fn bounded_receipt_text(value: &str, max: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
+    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(app) = &mut context.app {
+        app.id = bounded_receipt_text(&app.id, 160);
+        app.label = bounded_receipt_text(&app.label, 160);
+    }
+    if let Some(resource) = &mut context.resource {
+        resource.id = bounded_receipt_text(&resource.id, 512);
+        resource.kind = bounded_receipt_text(&resource.kind, 160);
+        resource.label = bounded_receipt_text(&resource.label, 200);
+    }
+    context.purpose = context
+        .purpose
+        .as_deref()
+        .map(|value| bounded_receipt_text(value, 512))
+        .filter(|value| !value.is_empty());
+    if let Some(group) = &mut context.group {
+        group.id = bounded_receipt_text(&group.id, 160);
+        group.label = bounded_receipt_text(&group.label, 200);
+        group.kind = bounded_receipt_text(&group.kind, 160);
+    }
+    context.facets.truncate(32);
+    for facet in &mut context.facets {
+        facet.key = bounded_receipt_text(&facet.key, 96);
+        facet.value = bounded_receipt_text(&facet.value, 160);
+    }
+}
+
 /// A durable unit of work in a collaboration room.
 ///
 /// Tasks are deliberately shell-owned rather than chat messages: every app
@@ -1309,6 +1367,10 @@ pub struct Workspace {
     /// Values are projected as a CRDT map keyed by task id.
     #[serde(default)]
     pub tasks: Vec<WorkspaceTask>,
+    /// Consequential effects are activity, but never pretend to be edits to
+    /// an app's collaborative document.
+    #[serde(default)]
+    pub effect_receipts: Vec<WorkspaceEffectReceipt>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -1986,6 +2048,7 @@ impl Workspace {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -2047,6 +2110,7 @@ impl Default for Workspace {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -2843,6 +2907,7 @@ impl WorkspaceTree {
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let tasks = ws.tasks.clone();
+        let effect_receipts = ws.effect_receipts.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let peer_identities = self
@@ -2912,6 +2977,7 @@ impl WorkspaceTree {
         Self::project_room_records(doc, &held);
         Self::project_owned_contents(doc, &strips, local_salt, share_floor);
         Self::project_workspace_tasks(doc, &tasks);
+        Self::project_effect_receipts(doc, &effect_receipts);
 
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
@@ -2962,6 +3028,7 @@ impl WorkspaceTree {
     const ROOM_PEERS_KEY: &'static str = "peers";
     const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
     const ROOM_TASKS_KEY: &'static str = "tasks_v1";
+    const ROOM_EFFECT_RECEIPTS_KEY: &'static str = "effect_receipts_v1";
 
     /// Project durable tasks as independently mergeable values. Task ids are
     /// stable, so two collaborators creating work concurrently add two map
@@ -3017,6 +3084,65 @@ impl WorkspaceTree {
                 .then_with(|| left.id.cmp(&right.id))
         });
         tasks
+    }
+
+    fn project_effect_receipts(doc: &mut AutoCommit, receipts: &[WorkspaceEffectReceipt]) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        let object = match doc
+            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        {
+            Some((_, id)) => id,
+            None if receipts.is_empty() => return,
+            None => match doc.put_object(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map) {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(?error, "room doc: effect receipts map");
+                    return;
+                }
+            },
+        };
+        for receipt in receipts {
+            let key = receipt.invocation.0.to_string();
+            let Ok(blob) = serde_json::to_vec(receipt) else {
+                continue;
+            };
+            let unchanged = matches!(
+                doc.get(&object, key.as_str()).ok().flatten(),
+                Some((Value::Scalar(value), _))
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+            );
+            if !unchanged {
+                let _ = doc.put(&object, key, ScalarValue::Bytes(blob));
+            }
+        }
+    }
+
+    fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let Some((_, object)) = doc
+            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut receipts = doc
+            .keys(&object)
+            .filter_map(|key| {
+                let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
+                    return None;
+                };
+                let ScalarValue::Bytes(blob) = value.as_ref() else {
+                    return None;
+                };
+                serde_json::from_slice(blob).ok()
+            })
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+        receipts
     }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
@@ -4265,6 +4391,26 @@ impl WorkspaceTree {
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let mut tasks = Self::workspace_tasks_of(&candidate);
+        let mut effect_receipts = Self::workspace_effect_receipts_of(&candidate);
+        if let Some(workspace) = self.workspace_in_room(room) {
+            for existing in &workspace.effect_receipts {
+                match effect_receipts
+                    .iter()
+                    .find(|receipt| receipt.invocation == existing.invocation)
+                {
+                    Some(received) if received != existing => {
+                        tracing::warn!(
+                            room = %room,
+                            invocation = %existing.invocation.0,
+                            "room sync refused: an effect receipt is immutable",
+                        );
+                        return Ok(false);
+                    }
+                    Some(_) => {}
+                    None => effect_receipts.push(existing.clone()),
+                }
+            }
+        }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
         self.room_docs.insert(room, candidate);
@@ -4305,6 +4451,13 @@ impl WorkspaceTree {
         current_tasks.sort_by(|left, right| left.id.cmp(&right.id));
         if current_tasks != tasks {
             ws.tasks = tasks;
+            fields_changed = true;
+        }
+        effect_receipts.sort_by_key(|receipt| receipt.invocation.0);
+        let mut current_receipts = ws.effect_receipts.clone();
+        current_receipts.sort_by_key(|receipt| receipt.invocation.0);
+        if current_receipts != effect_receipts {
+            ws.effect_receipts = effect_receipts;
             fields_changed = true;
         }
 
@@ -4390,6 +4543,20 @@ impl WorkspaceTree {
                         let _ = self
                             .doc
                             .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
+                    }
+                }
+            }
+            if let Ok(receipts_id) =
+                self.doc
+                    .put_object(&entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
+            {
+                for receipt in &ws.effect_receipts {
+                    if let Ok(blob) = serde_json::to_vec(receipt) {
+                        let _ = self.doc.put(
+                            &receipts_id,
+                            receipt.invocation.0.to_string(),
+                            ScalarValue::Bytes(blob),
+                        );
                     }
                 }
             }
@@ -4556,6 +4723,7 @@ impl WorkspaceTree {
                     ws.capabilities = caps;
                 }
                 ws.tasks = self.doc_read_workspace_tasks(&entry_id);
+                ws.effect_receipts = self.doc_read_workspace_effect_receipts(&entry_id);
                 new_workspaces.push(ws);
             }
             self.workspaces = new_workspaces;
@@ -5334,6 +5502,58 @@ impl WorkspaceTree {
         true
     }
 
+    /// Persist one terminal effect exactly once. This creates semantic
+    /// workspace activity, not a mutation in the target application's CRDT.
+    pub fn append_workspace_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: qos_actions::InvocationId,
+        actor: &str,
+        mut context: qos_actions::ActionContext,
+        status: qos_actions::EffectReceiptStatus,
+    ) -> bool {
+        let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        if workspace
+            .effect_receipts
+            .iter()
+            .any(|receipt| receipt.invocation == invocation)
+        {
+            return false;
+        }
+        let completed_at = unix_now();
+        let original_action = bounded_receipt_text(&context.action_label, 160);
+        context.action_label = if original_action.is_empty() {
+            status.label().to_string()
+        } else {
+            format!("{} · {original_action}", status.label())
+        };
+        context
+            .facets
+            .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
+        context.facets.push(qos_actions::ActionFacet::new(
+            "qos.invocation",
+            invocation.0.to_string(),
+        ));
+        redact_receipt_context(&mut context);
+        let receipt = WorkspaceEffectReceipt {
+            invocation,
+            actor: bounded_receipt_text(actor, 160),
+            context,
+            status,
+            completed_at,
+        };
+        workspace.effect_receipts.push(receipt.clone());
+        self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
+        self.flush_to_disk();
+        true
+    }
+
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
         use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
@@ -5353,6 +5573,46 @@ impl WorkspaceTree {
             .doc
             .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
         self.commit_room_change();
+    }
+
+    fn doc_upsert_workspace_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        receipt: &WorkspaceEffectReceipt,
+    ) {
+        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let object = match self
+            .doc
+            .get(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        {
+            Some((_, id)) => id,
+            None => {
+                match self
+                    .doc
+                    .put_object(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
+                {
+                    Ok(id) => id,
+                    Err(_) => return,
+                }
+            }
+        };
+        let Ok(blob) = serde_json::to_vec(receipt) else {
+            return;
+        };
+        let _ = self.doc.put(
+            &object,
+            receipt.invocation.0.to_string(),
+            ScalarValue::Bytes(blob),
+        );
+        let _ = qdoc::history::commit_stamped_with_message(
+            &mut self.doc,
+            receipt.context.change_message(),
+        );
     }
 
     /// Mirror the room's owner into the doc.
@@ -5410,6 +5670,36 @@ impl WorkspaceTree {
             }
         }
         tasks
+    }
+
+    fn doc_read_workspace_effect_receipts(
+        &self,
+        ws_entry: &automerge::ObjId,
+    ) -> Vec<WorkspaceEffectReceipt> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        let Some((_, object)) = self
+            .doc
+            .get(ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut receipts = self
+            .doc
+            .keys(&object)
+            .filter_map(|key| {
+                let (Value::Scalar(value), _) = self.doc.get(&object, key).ok().flatten()? else {
+                    return None;
+                };
+                let ScalarValue::Bytes(blob) = value.as_ref() else {
+                    return None;
+                };
+                serde_json::from_slice(blob).ok()
+            })
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+        receipts
     }
 
     /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Strip id
@@ -5813,6 +6103,7 @@ impl WorkspaceTree {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5905,6 +6196,7 @@ impl WorkspaceTree {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5967,6 +6259,7 @@ impl WorkspaceTree {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         self.active_strip.insert(ws_id, strip_id);
@@ -8982,6 +9275,7 @@ mod active_group_tests {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -9325,6 +9619,7 @@ mod active_workspace_peer_count_tests {
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -10481,5 +10776,62 @@ mod peer_window_merge_tests {
         assert_eq!(task.status, WorkspaceTaskStatus::Done);
         assert_eq!(task.audit.len(), 3);
         assert_eq!(task.audit.last().unwrap().summary, "Status · Done");
+    }
+
+    #[test]
+    fn effect_receipt_is_durable_semantic_activity_not_an_app_edit() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.active;
+        let mut app_document = automerge::AutoCommit::new();
+        let app_heads_before = app_document.get_heads();
+        let invocation = qos_actions::InvocationId::new();
+        let context = qos_actions::ActionContext::for_resource(
+            "Send",
+            "mail.message:42",
+            "mail.message",
+            "Release update",
+        )
+        .with_app("org.qos.Mail", "Mail");
+
+        assert!(tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            context,
+            qos_actions::EffectReceiptStatus::Failed {
+                code: "smtp_rejected".into(),
+            },
+        ));
+        assert!(!tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            qos_actions::ActionContext::default(),
+            qos_actions::EffectReceiptStatus::Succeeded,
+        ));
+        assert_eq!(app_document.get_heads(), app_heads_before);
+
+        tree.resync_cache_from_doc();
+        let receipt = &tree.active_workspace().unwrap().effect_receipts[0];
+        assert_eq!(receipt.invocation, invocation);
+        assert_eq!(receipt.status.label(), "Failed");
+        assert!(receipt.context.action_label.starts_with("Failed · Send"));
+
+        let entry = ui::HistorySource::new()
+            .entries(&mut tree.doc)
+            .into_iter()
+            .find(|entry| {
+                entry.context.as_ref().is_some_and(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+                })
+            })
+            .expect("effect receipt appears in workspace activity");
+        assert!(
+            !entry.is_revertible(),
+            "external work is not a CRDT undo claim"
+        );
     }
 }

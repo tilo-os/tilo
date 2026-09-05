@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::model::{Category, ChannelId, PlaylistId, Route, SearchType, VideoId};
+use serde::{Deserialize, Serialize};
 
 /// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,10 +48,54 @@ pub enum Action {
     /// `hit` is a deep-link (`tube://watch/<id>`, `tube://channel/<id>`);
     /// routes to the right screen and closes the palette.
     ActivateHit(String),
+    /// Approve the Grayjay invite currently held in the local-only input.
+    PairDevice,
+    SyncDevices,
+    ApproveDevice(String),
+    RevokeDevice(String),
+}
+
+impl Action {
+    /// Concise, stable fallback used by Tube's custom clickable surfaces for
+    /// screen readers, keyboard focus and hover help. Call sites may render a
+    /// richer visible title, but a control must never become an unnamed box.
+    pub fn accessible_label(&self) -> &'static str {
+        match self {
+            Self::Navigate(Route::Home) => "Open Home",
+            Self::Navigate(Route::Trending) => "Open Trending",
+            Self::Navigate(Route::Subscriptions) => "Open subscriptions",
+            Self::Navigate(Route::History) => "Open watch history",
+            Self::Navigate(Route::Settings) => "Open settings",
+            Self::Navigate(_) => "Open view",
+            Self::OpenVideo(_) => "Open video",
+            Self::OpenChannel(_) => "Open creator",
+            Self::OpenPlaylist(_) => "Open playlist",
+            Self::ToggleSearchType(_) => "Toggle result type",
+            Self::Back => "Go back",
+            Self::ToggleSubscribe(_) => "Subscribe or unsubscribe",
+            Self::Seek(_) => "Seek video",
+            Self::TogglePlay => "Play or pause",
+            Self::ToggleCategory(_) => "Change segment handling",
+            Self::SkipSegment(_) => "Skip segment",
+            Self::ToggleSetting(_) => "Change setting",
+            Self::SubmitSearch => "Search",
+            Self::SetQuality(_) => "Change playback quality",
+            Self::ToggleLike(_) => "Like or unlike video",
+            Self::Share(_) => "Copy share link",
+            Self::ToggleSidebar => "Show or hide navigation",
+            Self::OpenPalette => "Search Tube actions",
+            Self::ClosePalette => "Close action search",
+            Self::ActivateHit(_) => "Open search result",
+            Self::PairDevice => "Pair Grayjay device",
+            Self::SyncDevices => "Sync approved devices now",
+            Self::ApproveDevice(_) => "Approve device access",
+            Self::RevokeDevice(_) => "Revoke device access",
+        }
+    }
 }
 
 /// Named boolean settings the settings page can flip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettingFlag {
     SponsorBlock,
     DeArrow,

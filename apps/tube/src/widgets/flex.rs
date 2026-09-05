@@ -25,6 +25,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -140,11 +141,14 @@ pub struct Flex {
     // Click support.
     bus: Option<ActionBus>,
     action: Option<Action>,
+    accessible_name: Option<String>,
+    tooltip: Option<String>,
 
     // Runtime state.
     rect: Rect,
     hovered: bool,
     pressed: bool,
+    focused: bool,
     dirty: bool,
     test_id: Option<String>,
 }
@@ -179,9 +183,12 @@ impl Flex {
             hover_surface: None,
             bus: None,
             action: None,
+            accessible_name: None,
+            tooltip: None,
             rect: Rect::ZERO,
             hovered: false,
             pressed: false,
+            focused: false,
             dirty: true,
             test_id: None,
         }
@@ -352,8 +359,30 @@ impl Flex {
     /// Make the whole box a button that pushes `action` on click.
     #[must_use]
     pub fn on_click(mut self, bus: &ActionBus, action: Action) -> Self {
+        let fallback = action.accessible_label();
         self.bus = Some(bus.clone());
         self.action = Some(action);
+        self.accessible_name = Some(fallback.to_string());
+        self.tooltip = Some(fallback.to_string());
+        self
+    }
+
+    /// Override the action-derived fallback with the visible control's exact
+    /// localized name. This also becomes hover help unless a separate tooltip
+    /// is supplied.
+    #[must_use]
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        self.accessible_name = Some(name.clone());
+        if self.tooltip.is_none() {
+            self.tooltip = Some(name);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -703,6 +732,20 @@ impl Widget for Flex {
             return;
         }
         match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused && !*handled => {
+                if let (Some(bus), Some(act)) = (&self.bus, &self.action) {
+                    action::push(bus, act.clone());
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let hov = self.rect.contains(p);
@@ -752,6 +795,71 @@ impl Widget for Flex {
             .collect()
     }
 
+    fn is_focusable(&self) -> bool {
+        self.action.is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.action.as_ref().map(|_| {
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name(
+                    self.accessible_name
+                        .clone()
+                        .unwrap_or_else(|| "Action".to_string()),
+                )
+                .with_bounds(self.rect)
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                )
+        })
+    }
+
+    fn perform_action(
+        &mut self,
+        action_kind: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        match action_kind {
+            ui::a11y::Action::Focus if self.action.is_some() => {
+                self.set_focus(true);
+                true
+            }
+            ui::a11y::Action::Activate if self.action.is_some() => {
+                if let (Some(bus), Some(action)) = (&self.bus, &self.action) {
+                    crate::action::push(bus, action.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.action.as_ref()?;
+        self.tooltip.as_deref()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.action.is_some() && self.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         // An overlay captures all pointer events so it behaves modally — the
         // parent routes exclusively to it, keeping clicks off the shell beneath
@@ -794,5 +902,34 @@ impl Widget for Flex {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::*;
+
+    #[test]
+    fn clickable_surface_is_a_named_keyboard_focusable_button() {
+        let bus = crate::action::new_bus();
+        let mut control = Flex::row()
+            .on_click(&bus, Action::Navigate(crate::model::Route::Home))
+            .accessible_name("Home");
+        let node = Widget::accessibility(&control).expect("clickable surface is semantic");
+        assert_eq!(node.role, ui::a11y::Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Home"));
+        assert!(node.state.focusable);
+        Widget::set_focus(&mut control, true);
+        assert!(Widget::is_focused(&control));
+        assert!(Widget::perform_action(
+            &mut control,
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            crate::action::drain(&bus),
+            vec![Action::Navigate(crate::model::Route::Home)]
+        );
     }
 }

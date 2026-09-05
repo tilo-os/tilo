@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::NotesDoc;
@@ -47,9 +47,32 @@ use crate::num;
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
 pub const NOTES_OPERATION_TYPE: &str = "notes.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub fn page_resource_id(page: PageId) -> String {
+    format!("notes.page:{page}")
+}
+
+pub fn block_resource_id(page: PageId, block_id: &str) -> String {
+    format!("notes.block:{page}:{block_id}")
+}
+
+pub fn open_page_address(page: PageId) -> ActionAddress {
+    ActionAddress::new(page_resource_id(page), "open")
+}
+
+pub fn open_block_address(page: PageId, block_id: &str) -> ActionAddress {
+    ActionAddress::new(block_resource_id(page, block_id), "open")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotesOperation {
-    OpenPage { page: PageId },
+    OpenPage {
+        page: PageId,
+        /// Stable Automerge Text object id for a block. Collaborative list
+        /// insert/delete and reorder preserve it, so invocation resolves the
+        /// block's current index rather than trusting a stale position.
+        #[serde(default)]
+        block_id: Option<String>,
+    },
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<NotesOperation>, String> {
@@ -280,6 +303,13 @@ pub fn delete_page_action(id: PageId) -> NotesAction {
 #[derive(Debug, Clone)]
 pub struct NotesResourceCtx {
     pub pages: Vec<PageMeta>,
+    pub blocks: std::collections::HashMap<PageId, Vec<NoteBlockResource>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteBlockResource {
+    pub id: String,
+    pub text: String,
 }
 
 /// A one-line label for a page in the palette.
@@ -318,8 +348,12 @@ fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
 }
 
 /// Build one page resource and, recursively, its child pages.
-fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
-    let mut res = Resource::new(format!("notes.page:{}", m.id), "notes.page", page_label(m));
+fn page_resource(
+    m: &PageMeta,
+    pages: &[PageMeta],
+    blocks: &std::collections::HashMap<PageId, Vec<NoteBlockResource>>,
+) -> Resource {
+    let mut res = Resource::new(page_resource_id(m.id), "notes.page", page_label(m));
 
     res = res.with_action(
         ActionSpec::operation(
@@ -327,11 +361,20 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
             "Open page",
             OperationKind::View,
             NOTES_OPERATION_TYPE,
-            &NotesOperation::OpenPage { page: m.id },
+            &NotesOperation::OpenPage {
+                page: m.id,
+                block_id: None,
+            },
         )
         .expect("NotesOperation is always serializable")
         .retry_policy(RetryPolicy::Idempotent),
     );
+
+    for block in blocks.get(&m.id).into_iter().flatten() {
+        if let Some(resource) = block_resource(m.id, block) {
+            res = res.with_child(resource);
+        }
+    }
 
     // Rename — a prompted action carrying the rest of the page's metadata
     // unchanged so only the title diff-splices.
@@ -373,9 +416,32 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     let mut children: Vec<&PageMeta> = pages.iter().filter(|p| p.parent == Some(m.id)).collect();
     children.sort_by_key(|p| p.order);
     for child in children {
-        res = res.with_child(page_resource(child, pages));
+        res = res.with_child(page_resource(child, pages, blocks));
     }
     res
+}
+
+pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<Resource> {
+    let label = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.is_empty() {
+        return None;
+    }
+    Some(
+        Resource::new(block_resource_id(page, &block.id), "notes.block", label).with_action(
+            ActionSpec::operation(
+                "open",
+                "Reveal block",
+                OperationKind::View,
+                NOTES_OPERATION_TYPE,
+                &NotesOperation::OpenPage {
+                    page,
+                    block_id: Some(block.id.clone()),
+                },
+            )
+            .expect("NotesOperation is always serializable")
+            .retry_policy(RetryPolicy::Idempotent),
+        ),
+    )
 }
 
 /// Build the resource tree Notes currently has open: the notebook (always
@@ -405,7 +471,11 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     let mut roots: Vec<&PageMeta> = ctx.pages.iter().filter(|p| p.parent.is_none()).collect();
     roots.sort_by_key(|p| p.order);
     for root in roots {
-        notebook = notebook.with_child(page_resource(root, &ctx.pages));
+        notebook = notebook.with_child(page_resource(
+            root,
+            &ctx.pages,
+            &std::collections::HashMap::new(),
+        ));
     }
 
     vec![notebook]
@@ -414,6 +484,16 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 impl ResourceProvider for crate::app::NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.notes_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let ctx = self.notes_resource_ctx();
+        ctx.blocks.iter().find_map(|(page, blocks)| {
+            blocks
+                .iter()
+                .find(|block| block_resource_id(*page, &block.id) == id)
+                .and_then(|block| block_resource(*page, block))
+        })
     }
 }
 
@@ -494,6 +574,7 @@ mod tests {
     fn ctx_from(doc: &AutoCommit) -> NotesResourceCtx {
         NotesResourceCtx {
             pages: NotesDoc::list_pages(doc),
+            blocks: std::collections::HashMap::new(),
         }
     }
 
@@ -547,6 +628,71 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete page")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn block_resource_exports_the_same_stable_reveal_address_as_search() {
+        let (doc, projects, _a, _b, _inbox) = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.blocks.insert(
+            projects,
+            vec![
+                NoteBlockResource {
+                    id: "obj-a".into(),
+                    text: "Project overview".into(),
+                },
+                NoteBlockResource {
+                    id: "obj-b".into(),
+                    text: "Budget decisions".into(),
+                },
+            ],
+        );
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            qos_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
+                .is_none()
+        );
+        let block = block_resource(projects, &ctx.blocks[&projects][1])
+            .expect("second block resource resolves lazily");
+        let open = block
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("block reveal action");
+        assert_eq!(open.kind, OperationKind::View);
+        assert_eq!(
+            open_block_address(projects, "obj-b"),
+            ActionAddress::new(&block.id.0, &open.id)
+        );
+        let encoded = immediate_encode(open);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(NotesOperation::OpenPage {
+                page: projects,
+                block_id: Some("obj-b".into())
+            })
+        );
+    }
+
+    #[test]
+    fn ten_thousand_blocks_stay_out_of_the_open_snapshot() {
+        let (doc, projects, _a, _b, _inbox) = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.blocks.insert(
+            projects,
+            (0..10_000)
+                .map(|id| NoteBlockResource {
+                    id: format!("block-{id}"),
+                    text: format!("Block {id}"),
+                })
+                .collect(),
+        );
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            qos_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
+                .is_none()
+        );
+        assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
     }
 
     /// Deleting a page through its action removes the page *and* its whole

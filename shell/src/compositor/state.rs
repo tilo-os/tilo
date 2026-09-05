@@ -1405,7 +1405,8 @@ impl State {
     }
 
     /// Engage the remote-input kill switch: every peer's input stops at
-    /// once and stays stopped, and no share keeps write access.
+    /// once and stays stopped, all held keys are released, and every live
+    /// stream/share is terminated.
     ///
     /// Flipping the shares as well as latching the firewall is what makes
     /// this survive a restart of the input path — a latch alone would be
@@ -1413,10 +1414,37 @@ impl State {
     pub fn engage_remote_input_kill_switch(&mut self) -> usize {
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
+
+        // Release keys before dropping attribution. Otherwise a peer which
+        // vanished while holding a modifier could leave the app-facing seat
+        // stuck after the emergency stop.
+        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        for peer in self.remote_seats.peer_ids() {
+            for keycode in self.remote_seats.release_peer_keys(peer) {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    let serial = self.next_serial();
+                    let _: Option<()> = keyboard.input(
+                        self,
+                        keycode.saturating_add(8).into(),
+                        KeyState::Released,
+                        serial,
+                        time,
+                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                    );
+                }
+            }
+            self.remote_seats.drop_peer(peer);
+        }
+
+        let surfaces = self.active_sessions.keys().copied().collect::<Vec<_>>();
+        for surface in surfaces {
+            self.unregister_share_session(surface);
+        }
+        self.share_registry.clear();
         tracing::warn!(
             target: "shell::compositor::state",
             revoked,
-            "remote-input kill switch engaged"
+            "remote-input kill switch engaged; shares and streams terminated"
         );
         revoked
     }

@@ -878,6 +878,18 @@ impl FeedsApp {
                 id: f.id,
                 title: f.title.clone(),
                 unread: self.store.unread_ids_for(Filter::Feed(f.id)),
+                articles: self
+                    .store
+                    .articles
+                    .iter()
+                    .filter(|article| article.feed_id == f.id)
+                    .map(|article| actions::ArticleRef {
+                        id: article.id,
+                        title: article.title.clone(),
+                        read: article.read,
+                        starred: article.starred,
+                    })
+                    .collect(),
             })
             .collect();
         feeds.sort_by_key(|f| f.title.to_lowercase());
@@ -3753,19 +3765,42 @@ impl Widget for FeedsApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
-            return Ok(false);
-        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match operation {
-            crate::actions::FeedsOperation::RefreshAll => {
+        match (kind, operation) {
+            (qos_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
                 }
                 self.refresh_all();
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealFeed { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
+                if self.store.feed(id).is_none() {
+                    return Err("feed no longer exists".into());
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealArticle { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
+                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+                    return Err("article no longer exists".into());
+                };
+                self.set_filter(Filter::Feed(feed_id));
+                self.selected = Some(id);
+                self.reader_scroll = 0.0;
+                if self.single_pane() {
+                    self.detail_pushed = true;
+                }
+            }
+            _ => return Ok(false),
         }
         Ok(true)
     }
@@ -3829,24 +3864,6 @@ impl Widget for FeedsApp {
         vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
             &self.store,
         ))]
-    }
-
-    /// Navigate to the article or feed a chosen palette row identifies. For an
-    /// article, focus its feed (so the row is in the visible list) then open it,
-    /// marking it read; for a feed, focus that subscription.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        match crate::search_provider::Activation::parse(action_id) {
-            Some(crate::search_provider::Activation::Article(id)) => {
-                if let Some(feed_id) = self.store.article(id).map(|a| a.feed_id) {
-                    self.set_filter(Filter::Feed(feed_id));
-                    self.select_article(id, doc);
-                }
-            }
-            Some(crate::search_provider::Activation::Feed(id)) if self.store.feed(id).is_some() => {
-                self.set_filter(Filter::Feed(id));
-            }
-            Some(crate::search_provider::Activation::Feed(_)) | None => {}
-        }
     }
 
     #[allow(

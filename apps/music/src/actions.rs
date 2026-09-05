@@ -40,14 +40,68 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ParamType, Resource, ResourceProvider,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc as mdoc;
 
 /// Registry `type_id` for every Music action.
 pub const MUSIC_ACTION_TYPE: &str = "music.action";
+pub const MUSIC_OPERATION_TYPE: &str = "music.operation";
+
+pub fn track_resource_id(id: &str) -> String {
+    format!("music.track:{id}")
+}
+
+pub fn album_resource_id(id: &str) -> String {
+    format!("music.album:{id}")
+}
+
+pub fn artist_resource_id(id: &str) -> String {
+    format!("music.artist:{id}")
+}
+
+pub fn playlist_resource_id(id: &str) -> String {
+    format!("music.playlist:{id}")
+}
+
+pub fn play_track_address(id: &str) -> ActionAddress {
+    ActionAddress::new(track_resource_id(id), "play")
+}
+
+pub fn open_album_address(id: &str) -> ActionAddress {
+    ActionAddress::new(album_resource_id(id), "open")
+}
+
+pub fn open_artist_address(id: &str) -> ActionAddress {
+    ActionAddress::new(artist_resource_id(id), "open")
+}
+
+pub fn open_playlist_address(id: &str) -> ActionAddress {
+    ActionAddress::new(playlist_resource_id(id), "open")
+}
+
+/// Non-document operations exported by Music. Navigation changes only the
+/// local presentation, and playback is a transient device effect; neither is
+/// replayed into collaborative library history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MusicOperation {
+    PlayTrack { id: String },
+    OpenAlbum { id: String },
+    OpenArtist { id: String },
+    OpenPlaylist { id: String },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MusicOperation>, String> {
+    if type_id != MUSIC_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// Every collaborative operation Music exports on its shared library.
 ///
@@ -320,12 +374,21 @@ pub struct PlaylistResource {
     pub tracks: Vec<TrackRef>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CatalogResource {
+    pub id: String,
+    pub label: String,
+}
+
 /// The presentation context Music hands [`provide_resources`]: the user's
 /// playlists and their tracks currently in the model cache. Everything here is
 /// derived from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
 pub struct MusicResourceCtx {
     pub playlists: Vec<PlaylistResource>,
+    pub tracks: Vec<CatalogResource>,
+    pub albums: Vec<CatalogResource>,
+    pub artists: Vec<CatalogResource>,
     pub playback: crate::model::Playback,
 }
 
@@ -337,6 +400,21 @@ fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
     ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action)
         .expect("encode music action")
         .reversible()
+}
+
+fn operation_spec(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: &MusicOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, MUSIC_OPERATION_TYPE, operation)
+        .expect("encode music operation");
+    if kind == OperationKind::View {
+        spec.retry_policy(RetryPolicy::Idempotent)
+    } else {
+        spec
+    }
 }
 
 fn playlist_label(p: &PlaylistResource) -> String {
@@ -489,10 +567,16 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 
     for pl in &ctx.playlists {
         let mut child = Resource::new(
-            format!("music.playlist:{}", pl.id),
+            playlist_resource_id(&pl.id),
             "music.playlist",
             playlist_label(pl),
-        );
+        )
+        .with_action(operation_spec(
+            "open",
+            "Open playlist",
+            OperationKind::View,
+            &MusicOperation::OpenPlaylist { id: pl.id.clone() },
+        ));
 
         // Rename — a prompted action.
         let pid = pl.id.clone();
@@ -534,6 +618,58 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         }
 
         root = root.with_child(child);
+    }
+
+    for track in &ctx.tracks {
+        root = root.with_child(
+            Resource::new(
+                track_resource_id(&track.id),
+                "music.track",
+                track.label.clone(),
+            )
+            .with_action(operation_spec(
+                "play",
+                "Play track",
+                OperationKind::Effect,
+                &MusicOperation::PlayTrack {
+                    id: track.id.clone(),
+                },
+            )),
+        );
+    }
+    for album in &ctx.albums {
+        root = root.with_child(
+            Resource::new(
+                album_resource_id(&album.id),
+                "music.album",
+                album.label.clone(),
+            )
+            .with_action(operation_spec(
+                "open",
+                "Open album",
+                OperationKind::View,
+                &MusicOperation::OpenAlbum {
+                    id: album.id.clone(),
+                },
+            )),
+        );
+    }
+    for artist in &ctx.artists {
+        root = root.with_child(
+            Resource::new(
+                artist_resource_id(&artist.id),
+                "music.artist",
+                artist.label.clone(),
+            )
+            .with_action(operation_spec(
+                "open",
+                "Open artist",
+                OperationKind::View,
+                &MusicOperation::OpenArtist {
+                    id: artist.id.clone(),
+                },
+            )),
+        );
     }
 
     vec![root]

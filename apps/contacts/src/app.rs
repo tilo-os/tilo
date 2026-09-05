@@ -1622,7 +1622,7 @@ impl ContactsApp {
         // redrawing while `needs_animation_frame` is true); ticking here
         // keeps the eased slide in step with the frame it's drawn into. The
         // sliding pane rects are recomputed by re-running layout.
-        if self.push.tick() {
+        if self.push.tick(theme.reduce_motion) {
             self.layout();
             self.layout_detail_actions();
             self.dirty = true;
@@ -3796,16 +3796,6 @@ impl Widget for ContactsApp {
         )]
     }
 
-    /// Navigate to the contact a chosen palette row identifies (selection is
-    /// app-local presentation, not a shared-doc mutation).
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id)
-            && self.store.get(id).is_some()
-        {
-            self.reveal_contact(id);
-        }
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4014,6 +4004,16 @@ impl Widget for ContactsApp {
         // timed dismissal fires without further input, or while a file-chooser
         // portal is in flight so its outcome is drained the moment it arrives.
         self.push.is_animating() || self.toast.is_some() || self.portal_in_flight()
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        if reduced {
+            // `tick` owns the endpoint semantics; a zero-motion policy settles
+            // the currently requested pane without waiting for another frame.
+            let _ = self.push.tick(true);
+            self.relayout = true;
+            self.dirty = true;
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -5454,43 +5454,68 @@ mod tests {
         }
     }
 
-    /// Contacts folds its address book into the unified Ctrl+K palette: the
-    /// provider surfaces a real contact, and activating that row navigates the
-    /// app to it (selection). Proves both `Widget` hooks on the real path.
+    /// Contacts folds its address book into the unified Ctrl+K palette. A
+    /// field-only query ensures the selected row is the provider hit (not the
+    /// separately listed action), then activation leaves the palette as the
+    /// same brokered `open` view operation agents and accessibility consume.
     #[test]
-    fn search_provider_row_navigates_to_the_contact() {
+    fn search_provider_row_invokes_the_exported_open_action() {
         let mut app = ContactsApp::new();
         for c in sample_contacts() {
             app.store.upsert(c);
         }
-        // The unified palette collects this provider each time it opens.
-        let providers = Widget::search_providers(&app);
-        assert_eq!(providers.len(), 1, "contacts exposes one searchable source");
-        let hits = providers[0].search("grace");
-        let grace = hits
+        let id = app
+            .store
+            .contacts
             .iter()
-            .find(|r| r.title == "Grace Hopper")
-            .expect("the provider surfaces the real contact");
-        let action_id = grace.action_id.clone();
+            .find(|contact| contact.display_name() == "Grace Hopper")
+            .expect("Grace is seeded")
+            .id;
+        let doc = AutoCommit::new();
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&Widget::resources(&app, &doc));
+        palette.set_providers(Widget::search_providers(&app));
+        palette.open();
+        palette.set_query("navy");
+        assert_eq!(palette.result_labels(), vec!["Grace Hopper"]);
 
-        // Activating the row navigates the app to that contact.
         assert!(app.selected.is_none(), "nothing selected yet");
-        let mut doc = AutoCommit::new();
-        Widget::activate_search_result(&mut app, &action_id, &mut doc, &ROOT);
-        let id = crate::search_provider::ContactSearchProvider::parse_action_id(&action_id)
-            .expect("the id parses back to a contact");
+        palette.activate_selected();
+        let operation = palette
+            .take_operation()
+            .expect("canonical search hit queued a broker operation");
+        assert_eq!(operation.kind, qos_actions::OperationKind::View);
         assert_eq!(
-            app.selected,
-            Some(id),
-            "the palette row selected the contact"
+            operation
+                .context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some(crate::actions::contact_resource_id(id).as_str())
         );
+        assert!(
+            palette.take_navigation().is_none(),
+            "legacy navigation was not used"
+        );
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("open operation succeeds")
+        );
+        assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
     /// Opening a contact from the global palette must *reveal* it: if the list
     /// is filtered to a group the target is not in, activating the search row
     /// drops that filter so the contact is actually visible, not just selected
-    /// behind a filter. Drives the same two `Widget` hooks the shell palette
-    /// calls — `search_providers()` then `activate_search_result(id, doc, root)`.
+    /// behind a filter. This drives the canonical action address exported to
+    /// search, accessibility and agents.
     #[test]
     fn search_activation_reveals_a_contact_hidden_by_the_group_filter() {
         let mut app = ContactsApp::new();
@@ -5501,14 +5526,13 @@ mod tests {
         // (Alan Turing's group) filters her out of the visible set.
         app.group_filter = Some("Friends".to_string());
 
-        let providers = Widget::search_providers(&app);
-        let hits = providers[0].search("grace");
-        let grace = hits
+        let id = app
+            .store
+            .contacts
             .iter()
-            .find(|r| r.title == "Grace Hopper")
-            .expect("global search finds Grace regardless of the in-app filter");
-        let id = crate::search_provider::ContactSearchProvider::parse_action_id(&grace.action_id)
-            .expect("the action id parses back to a contact");
+            .find(|contact| contact.display_name() == "Grace Hopper")
+            .expect("Grace is seeded")
+            .id;
 
         // Precondition: under the Friends filter, Grace is not in the list.
         assert!(
@@ -5516,8 +5540,26 @@ mod tests {
             "the Friends group filter hides Grace before activation"
         );
 
-        let mut doc = AutoCommit::new();
-        Widget::activate_search_result(&mut app, &grace.action_id, &mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        let resources = Widget::resources(&app, &doc);
+        let address = crate::actions::open_contact_address(id);
+        let spec = qos_actions::door::resolve(&resources, &address)
+            .expect("the search address resolves in the agent-visible tree");
+        let encoded = match &spec.input {
+            qos_actions::ActionInput::Immediate(encoded) => encoded,
+            qos_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
+        };
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("open operation succeeds")
+        );
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
         assert!(

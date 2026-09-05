@@ -171,6 +171,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                         .push_back(CollabEvent::Document {
                             envelope: envelope.clone(),
                             from_user_id: from.clone(),
+                            decrypted_payload: None,
                         });
                 }
             }
@@ -181,6 +182,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                     inbox.push_back(CollabEvent::ScrollbackBatch {
                         artifact,
                         ops: Vec::new(),
+                        decrypted_payloads: Vec::new(),
                         exhausted: true,
                     });
                 }
@@ -208,6 +210,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
+            | CollabRequest::RecordLocalEffect { .. }
             | CollabRequest::InvokePublishedAction { .. }
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
@@ -236,6 +239,7 @@ fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str)
     CollabEvent::Document {
         envelope: Box::new(envelope),
         from_user_id: from_user_id.to_owned(),
+        decrypted_payload: None,
     }
 }
 

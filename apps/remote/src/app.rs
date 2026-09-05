@@ -24,15 +24,17 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
 };
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::Widget;
+use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, FlapState, SplitLayout, TextInput};
+use ui::widget::tooltip::draw_hover_tooltip;
+use ui::widget::{Button, ButtonFace, FlapState, SplitLayout, TextInput, TooltipHost};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -102,6 +104,9 @@ const RAIL_W: f64 = 64.0;
 const HEADER_H: f64 = 64.0;
 /// Connection-row height in the list.
 const ROW_H: f64 = 72.0;
+/// Rows gain a second action line when the content column can no longer keep
+/// identity, metadata, and two 44px-minimum targets side by side.
+const COMPACT_ROW_H: f64 = 116.0;
 /// Session toolbar height.
 const TOOLBAR_H: f64 = 48.0;
 
@@ -155,8 +160,6 @@ enum Action {
     ToggleScale,
     /// Toggle fullscreen for the session surface.
     ToggleFullscreen,
-    /// Copy the session's clipboard sample (no-op offline, but live).
-    CopyClipboard,
     /// Disconnect from the active session.
     Disconnect,
     /// Pick one of the discovered qOS devices into the form.
@@ -196,6 +199,60 @@ impl Field {
             Field::Port => "Port",
             Field::User => "username",
             Field::Group => "group (optional)",
+        }
+    }
+
+    fn target_name(self) -> &'static str {
+        match self {
+            Field::Search => "search",
+            Field::Name => "name",
+            Field::Host => "host",
+            Field::Port => "port",
+            Field::User => "user",
+            Field::Group => "group",
+        }
+    }
+
+    fn from_target_name(name: &str) -> Option<Self> {
+        match name {
+            "search" => Some(Field::Search),
+            "name" => Some(Field::Name),
+            "host" => Some(Field::Host),
+            "port" => Some(Field::Port),
+            "user" => Some(Field::User),
+            "group" => Some(Field::Group),
+            _ => None,
+        }
+    }
+}
+
+impl AuthMethod {
+    fn target_name(self) -> &'static str {
+        match self {
+            AuthMethod::Password => "password",
+            AuthMethod::PublicKey => "public-key",
+            AuthMethod::DeviceIdentity => "device-identity",
+        }
+    }
+
+    fn from_target_name(name: &str) -> Self {
+        match name {
+            "public-key" => AuthMethod::PublicKey,
+            "device-identity" => AuthMethod::DeviceIdentity,
+            _ => AuthMethod::Password,
+        }
+    }
+}
+
+trait OptionalAccessBounds {
+    fn with_optional_bounds(self, bounds: Option<Rect>) -> Self;
+}
+
+impl OptionalAccessBounds for AccessNode {
+    fn with_optional_bounds(self, bounds: Option<Rect>) -> Self {
+        match bounds {
+            Some(bounds) => self.with_bounds(bounds),
+            None => self,
         }
     }
 }
@@ -309,6 +366,10 @@ pub struct RemoteApp {
     hits: Vec<Hit>,
     /// Last pointer position in logical coords (for hover + hit-tests).
     pointer: Point,
+    /// Vertical offset and most recently measured limit for the saved-machine
+    /// list. Kept as view state: collaborators can browse independently.
+    list_scroll: f64,
+    list_scroll_max: f64,
     /// Repaint gate.
     dirty: bool,
     /// True once the in-memory workspace has been mirrored into the CRDT.
@@ -336,6 +397,11 @@ pub struct RemoteApp {
     /// Wall-clock of the last rail animation advance, so the eased slide is
     /// frame-rate independent regardless of how often the host repaints.
     last_tick: std::time::Instant,
+    /// System motion preference. The rail keeps the same spatial model, but
+    /// snaps between endpoints when motion is reduced.
+    motion_reduced: bool,
+    /// Shared delayed tooltip state for icon-only canvas controls.
+    tooltips: TooltipHost,
 }
 
 impl RemoteApp {
@@ -381,6 +447,8 @@ impl RemoteApp {
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
+            list_scroll: 0.0,
+            list_scroll_max: 0.0,
             dirty: true,
             seeded: false,
             actions: ui::ActionHost::new(),
@@ -389,6 +457,8 @@ impl RemoteApp {
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
             last_tick: std::time::Instant::now(),
+            motion_reduced: false,
+            tooltips: TooltipHost::new(),
         }
     }
 
@@ -534,10 +604,6 @@ impl RemoteApp {
             Action::ToggleFullscreen => {
                 self.fullscreen = !self.fullscreen;
             }
-            Action::CopyClipboard => {
-                // Offline: clipboard sync is a no-op placeholder. Live, this
-                // would push the remote selection into the local clipboard.
-            }
             Action::Disconnect => {
                 self.disconnect_session();
             }
@@ -556,6 +622,42 @@ impl RemoteApp {
                 self.rail.toggle(self.rail_layout);
             }
         }
+    }
+
+    /// The most recently painted bounds for a custom-canvas affordance. Hit
+    /// regions and accessibility geometry deliberately share this source so a
+    /// resized or responsive control cannot become visually/semantically split.
+    fn action_bounds(&self, action: Action) -> Option<Rect> {
+        self.hits
+            .iter()
+            .rev()
+            .find_map(|hit| (hit.action == action).then_some(hit.rect))
+    }
+
+    /// Accessibility edits take the same validation path as keyboard/paste:
+    /// notably, the port remains numeric instead of accepting a value the Save
+    /// action would later reject for a different reason.
+    fn set_field_value(&mut self, field: Field, value: &str) {
+        let value = if field == Field::Port {
+            value.chars().filter(char::is_ascii_digit).collect()
+        } else {
+            value.to_string()
+        };
+        match field {
+            Field::Search => self.search.clone_from(&value),
+            Field::Name => self.draft.name.clone_from(&value),
+            Field::Host => self.draft.host.clone_from(&value),
+            Field::Port => self.draft.port.clone_from(&value),
+            Field::User => self.draft.user.clone_from(&value),
+            Field::Group => self.draft.group.clone_from(&value),
+        }
+        self.inputs.get(field).set_text(&value);
+        self.focus_field(field);
+        if field == Field::Search {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
+            self.list_scroll = 0.0;
+        }
+        self.dirty = true;
     }
 
     fn toggle_favorite(&mut self, id: ConnectionId, state: &mut AutoCommit) {
@@ -625,7 +727,8 @@ impl RemoteApp {
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
-        if can_attempt_live(c.kind) {
+        let can_connect = can_attempt_live(c.kind);
+        if can_connect {
             let live = self.start_live(&c);
             self.live = Some(live);
             // Record the attempt in "last used"; presence is only marked
@@ -1338,7 +1441,11 @@ impl Widget for RemoteApp {
                 Some(LiveSession::Ssh(session))
                     if session.status() == SessionStatus::Connected
             );
-            resources.push(crate::actions::session_resource(connection, can_send_text));
+            if let Some(workspace) = resources.first_mut() {
+                workspace
+                    .children
+                    .push(crate::actions::session_resource(connection, can_send_text));
+            }
         }
         resources
     }
@@ -1358,13 +1465,31 @@ impl Widget for RemoteApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("remote operation kind does not match its declared contract".into());
+        }
         match operation {
+            crate::actions::RemoteOperation::ShowConnections => {
+                self.apply(Action::GoList, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::NewConnectionForm => {
+                self.apply(Action::NewConnection, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::EditConnection { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".into());
+                }
+                self.apply(
+                    Action::EditConnection(connection_id),
+                    &mut AutoCommit::new(),
+                );
+            }
             crate::actions::RemoteOperation::Connect { connection_id } => {
                 if self.workspace.get(connection_id).is_none() {
                     return Err("saved connection no longer exists".to_string());
@@ -1417,6 +1542,11 @@ impl Widget for RemoteApp {
             return Err("another remote operation is still running".into());
         }
         match operation {
+            crate::actions::RemoteOperation::ShowConnections
+            | crate::actions::RemoteOperation::NewConnectionForm
+            | crate::actions::RemoteOperation::EditConnection { .. } => {
+                Err("view operations do not start background work".into())
+            }
             crate::actions::RemoteOperation::Connect { connection_id } => {
                 let Some(connection) = self.workspace.get(connection_id) else {
                     return Err("saved connection no longer exists".into());
@@ -1553,14 +1683,25 @@ impl Widget for RemoteApp {
         // connections) has anything to publish here.
         let doc_conns = RemoteDoc::list(state);
         if self.seeded {
-            // Pull any connections a peer added that we don't have yet.
-            let local: std::collections::HashSet<ConnectionId> =
-                self.workspace.connections().iter().map(|c| c.id).collect();
-            for dc in doc_conns {
-                if !local.contains(&dc.id) {
-                    self.workspace.connections.push(dc);
-                    self.dirty = true;
+            // The CRDT is authoritative after seeding. Adopt the complete
+            // merged projection, not merely additions: collaborator edits,
+            // favourite changes, and deletions must all become visible.
+            if self.workspace.connections() != doc_conns.as_slice() {
+                self.workspace.connections = doc_conns;
+                if self
+                    .selected
+                    .and_then(|id| self.workspace.get(id))
+                    .is_none()
+                {
+                    self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
                 }
+                if self
+                    .session_for
+                    .is_some_and(|id| self.workspace.get(id).is_none())
+                {
+                    self.disconnect_session();
+                }
+                self.dirty = true;
             }
         } else {
             if doc_conns.is_empty() {
@@ -1649,7 +1790,9 @@ impl Widget for RemoteApp {
         let now = std::time::Instant::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
-        if self.rail.tick(self.rail_layout, dt) {
+        if self.motion_reduced {
+            self.rail.settle(self.rail_layout);
+        } else if self.rail.tick(self.rail_layout, dt) {
             self.dirty = true;
         }
 
@@ -1746,6 +1889,21 @@ impl Widget for RemoteApp {
             let rail_x0 = self.rect.x0 - RAIL_W * (1.0 - slide);
             self.draw_rail(scene, transform, text_renderer, theme, rail_x0);
         }
+
+        if self.tooltips.tick(now) {
+            self.dirty = true;
+        }
+        if let Some((label, anchor)) = self.tooltips.visible() {
+            draw_hover_tooltip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                anchor,
+                label,
+                self.rect,
+            );
+        }
     }
 
     fn handle_event(
@@ -1760,6 +1918,9 @@ impl Widget for RemoteApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) && self.tooltips.dismiss() {
+            self.dirty = true;
+        }
         let ctx = EventRouteCtx {
             scale_factor,
             modifiers: *modifiers,
@@ -1771,6 +1932,18 @@ impl Widget for RemoteApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
+            }
+            WindowEvent::MouseWheel { delta, .. } if matches!(self.screen, Screen::List) => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                };
+                let next = (self.list_scroll + dy).clamp(0.0, self.list_scroll_max);
+                if (next - self.list_scroll).abs() > f64::EPSILON {
+                    self.list_scroll = next;
+                    self.dirty = true;
+                }
+                *handled = true;
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.qos_pointer_target(self.pointer).is_some() =>
@@ -1876,6 +2049,474 @@ impl Widget for RemoteApp {
         self.rect
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom canvas has one explicit semantic mirror for its three screens"
+    )]
+    fn accessibility(&self) -> Option<AccessNode> {
+        let focusable = || AccessState::new().focusable(true);
+        let button = |name: &str, target: String, bounds: Option<Rect>| {
+            let mut node = AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_action_target(target)
+                .with_state(focusable());
+            if let Some(bounds) = bounds {
+                node = node.with_bounds(bounds);
+            }
+            node
+        };
+
+        let mut nav = Vec::new();
+        if self.rail_layout == SplitLayout::Overlay {
+            nav.push(
+                AccessNode::new(Role::Button)
+                    .with_name(if self.rail_open() {
+                        "Close navigation"
+                    } else {
+                        "Open navigation"
+                    })
+                    .with_description("Show Connections and Add connection")
+                    .with_action_target("remote.nav.toggle")
+                    .with_optional_bounds(self.action_bounds(Action::ToggleRail))
+                    .with_state(focusable().expanded(self.rail_open())),
+            );
+        }
+        if self.rail_layout == SplitLayout::Docked || self.rail_open() {
+            nav.push(button(
+                "Connections",
+                "remote.nav.list".into(),
+                self.action_bounds(Action::GoList),
+            ));
+            nav.push(button(
+                "Add connection",
+                "remote.connection.new".into(),
+                self.action_bounds(Action::NewConnection),
+            ));
+        }
+        let nav = AccessNode::new(Role::Toolbar)
+            .with_name("Remote navigation")
+            .with_children(nav);
+
+        let content = match self.screen {
+            Screen::List => {
+                let visible = self.workspace.filtered(&self.search);
+                let search = AccessNode::new(Role::TextInput)
+                    .with_name("Search saved connections")
+                    .with_description("Shortcut: slash or Control F")
+                    .with_value(self.search.clone())
+                    .with_action_target("remote.field:search")
+                    .with_optional_bounds(self.action_bounds(Action::FocusField(Field::Search)))
+                    .with_state(focusable().focused(self.focus == Some(Field::Search)));
+                let mut children = Vec::new();
+                for (index, connection) in visible.iter().enumerate() {
+                    let id = connection.id;
+                    let presence = match connection.presence {
+                        Presence::Online => "online",
+                        Presence::Offline => "offline",
+                        Presence::Unknown => "status unknown",
+                    };
+                    let mut actions = vec![
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name(if connection.favorite {
+                                "Remove from favourites"
+                            } else {
+                                "Add to favourites"
+                            })
+                            .with_action_target(format!("remote.connection:{id}:favorite"))
+                            .with_optional_bounds(self.action_bounds(Action::ToggleFavorite(id)))
+                            .with_state(focusable().checked(connection.favorite)),
+                        button(
+                            "Edit connection",
+                            format!("remote.connection:{id}:edit"),
+                            self.action_bounds(Action::EditConnection(id)),
+                        ),
+                    ];
+                    if can_attempt_live(connection.kind) {
+                        actions.push(button(
+                            "Connect",
+                            format!("remote.connection:{id}:connect"),
+                            self.action_bounds(Action::Connect(id)),
+                        ));
+                    }
+                    let row_name = format!(
+                        "{}, {}, {}, last used {}",
+                        connection.name,
+                        connection.kind.label(),
+                        presence,
+                        connection.last_used
+                    );
+                    let mut row = AccessNode::new(Role::ListItem)
+                        .with_name(row_name)
+                        .with_value(connection.address())
+                        .with_action_target(format!("remote.connection:{id}:select"))
+                        .with_position(index + 1, visible.len())
+                        .with_state(focusable().selected(self.selected == Some(id)))
+                        .with_children(actions);
+                    if let Some(bounds) = self.action_bounds(Action::SelectRow(id)) {
+                        row = row.with_bounds(bounds);
+                    }
+                    children.push(row);
+                }
+                let list = AccessNode::new(Role::List)
+                    .with_name("Saved connections")
+                    .with_hashed_key("remote.list")
+                    .with_children(children);
+                let mut screen = vec![
+                    AccessNode::new(Role::Heading { level: 1 })
+                        .with_name("Remote Machines")
+                        .with_hashed_key("remote.list.heading"),
+                    button(
+                        "New connection",
+                        "remote.connection.new".into(),
+                        self.action_bounds(Action::NewConnection),
+                    ),
+                    search,
+                    list,
+                ];
+                if visible.is_empty() {
+                    screen.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name(if self.workspace.connections().is_empty() {
+                                "No machines yet. Add a connection to reach it over SSH, VNC, or the qOS relay."
+                            } else {
+                                "No machines match your search."
+                            })
+                            .with_live(Politeness::Polite)
+                            .with_hashed_key("remote.list.empty"),
+                    );
+                }
+                AccessNode::new(Role::Group)
+                    .with_name("Connections")
+                    .with_children(screen)
+            }
+            Screen::Form { editing } => {
+                let title = if editing.is_some() {
+                    "Edit connection"
+                } else {
+                    "New connection"
+                };
+                let mut children = vec![
+                    AccessNode::new(Role::Heading { level: 1 })
+                        .with_name(title)
+                        .with_hashed_key("remote.form.heading"),
+                ];
+                let protocol = ConnectionKind::available_to_create()
+                    .into_iter()
+                    .map(|kind| {
+                        AccessNode::new(Role::RadioButton)
+                            .with_name(kind.label())
+                            .with_action_target(format!("remote.kind:{}", kind.tag()))
+                            .with_optional_bounds(self.action_bounds(Action::SetKind(kind)))
+                            .with_state(focusable().checked(self.draft.kind == kind))
+                    })
+                    .collect();
+                children.push(
+                    AccessNode::new(Role::Group)
+                        .with_name("Protocol")
+                        .with_hashed_key("remote.form.protocol")
+                        .with_children(protocol),
+                );
+                if self.draft.kind == ConnectionKind::Qos {
+                    children.push(
+                        AccessNode::new(Role::List)
+                            .with_name("Discovered qOS devices")
+                            .with_hashed_key("remote.form.devices")
+                            .with_children(
+                                self.qos_devices
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, device)| {
+                                        AccessNode::new(Role::ListItem)
+                                            .with_name(device.name.clone())
+                                            .with_value(device.node.clone())
+                                            .with_description(if device.online {
+                                                "Online"
+                                            } else {
+                                                "Offline"
+                                            })
+                                            .with_action_target(format!("remote.device:{index}"))
+                                            .with_optional_bounds(
+                                                self.action_bounds(Action::PickQosDevice(index)),
+                                            )
+                                            .with_state(
+                                                focusable()
+                                                    .selected(self.draft.host == device.node),
+                                            )
+                                    })
+                                    .collect(),
+                            ),
+                    );
+                }
+                for (field, name) in [
+                    (Field::Name, "Connection name"),
+                    (
+                        Field::Host,
+                        if self.draft.kind == ConnectionKind::Qos {
+                            "Device node"
+                        } else {
+                            "Host name or IP address"
+                        },
+                    ),
+                    (Field::Port, "Port"),
+                    (Field::User, "User name"),
+                    (Field::Group, "Group"),
+                ] {
+                    if self.draft.kind == ConnectionKind::Qos
+                        && matches!(field, Field::Port | Field::User | Field::Group)
+                    {
+                        continue;
+                    }
+                    children.push(
+                        AccessNode::new(Role::TextInput)
+                            .with_name(name)
+                            .with_value(self.field_value(field))
+                            .with_action_target(format!("remote.field:{}", field.target_name()))
+                            .with_optional_bounds(self.action_bounds(Action::FocusField(field)))
+                            .with_state(focusable().focused(self.focus == Some(field))),
+                    );
+                }
+                if self.draft.kind != ConnectionKind::Qos {
+                    children.push(
+                        AccessNode::new(Role::Group)
+                            .with_name("Authentication")
+                            .with_hashed_key("remote.form.authentication")
+                            .with_children(
+                                AuthMethod::all()
+                                    .into_iter()
+                                    .filter(|auth| *auth != AuthMethod::DeviceIdentity)
+                                    .map(|auth| {
+                                        AccessNode::new(Role::RadioButton)
+                                            .with_name(auth.label())
+                                            .with_action_target(format!(
+                                                "remote.auth:{}",
+                                                auth.target_name()
+                                            ))
+                                            .with_optional_bounds(
+                                                self.action_bounds(Action::SetAuth(auth)),
+                                            )
+                                            .with_state(
+                                                focusable().checked(self.draft.auth == auth),
+                                            )
+                                    })
+                                    .collect(),
+                            ),
+                    );
+                }
+                let problems = self.draft.problems();
+                if !problems.is_empty() {
+                    children.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name(problems.join(". "))
+                            .with_live(Politeness::Polite)
+                            .with_hashed_key("remote.form.problems"),
+                    );
+                }
+                let mut form_actions = vec![
+                    button(
+                        "Cancel",
+                        "remote.form.cancel".into(),
+                        self.action_bounds(Action::Back),
+                    ),
+                    AccessNode::new(Role::Button)
+                        .with_name("Save connection")
+                        .with_action_target("remote.form.save")
+                        .with_optional_bounds(self.action_bounds(Action::SaveForm))
+                        .with_state(focusable().disabled(!problems.is_empty())),
+                ];
+                if let Some(id) = editing {
+                    form_actions.push(button(
+                        "Delete connection",
+                        format!("remote.connection:{id}:delete"),
+                        self.action_bounds(Action::Delete(id)),
+                    ));
+                }
+                children.push(
+                    AccessNode::new(Role::Toolbar)
+                        .with_name("Form actions")
+                        .with_hashed_key("remote.form.actions")
+                        .with_children(form_actions),
+                );
+                AccessNode::new(Role::Group)
+                    .with_name(title)
+                    .with_children(children)
+            }
+            Screen::Session { id } => {
+                let connection = self.workspace.get(id);
+                let status = self.live.as_ref().map(LiveSession::status);
+                let status_label = match &status {
+                    None => "Not connected".to_string(),
+                    Some(SessionStatus::Connecting) => "Connecting".to_string(),
+                    Some(SessionStatus::Connected) => "Connected".to_string(),
+                    Some(SessionStatus::Closed) => "Session ended".to_string(),
+                    Some(SessionStatus::Failed(error)) => format!("Connection failed: {error}"),
+                };
+                let mut children = vec![
+                    AccessNode::new(Role::Heading { level: 1 })
+                        .with_name(
+                            connection
+                                .map_or("Remote session", |connection| connection.name.as_str()),
+                        )
+                        .with_hashed_key("remote.session.heading"),
+                    AccessNode::new(Role::StaticText)
+                        .with_name(status_label)
+                        .with_live(Politeness::Polite)
+                        .with_hashed_key("remote.session.status"),
+                ];
+                if status == Some(SessionStatus::Connected) {
+                    children.push(
+                        AccessNode::new(if connection.is_some_and(|c| c.kind.is_terminal()) {
+                            Role::Document
+                        } else {
+                            Role::Canvas
+                        })
+                        .with_name(if connection.is_some_and(|c| c.kind.is_terminal()) {
+                            "Interactive SSH terminal"
+                        } else {
+                            "Interactive remote desktop"
+                        })
+                        .with_hashed_key("remote.session.surface")
+                        .with_description(
+                            "Keyboard and pointer input are sent to the remote machine",
+                        ),
+                    );
+                    if connection.is_some_and(|c| c.kind.streams_framebuffer()) {
+                        children.push(
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Scale remote desktop to fit")
+                                .with_action_target("remote.session.scale")
+                                .with_optional_bounds(self.action_bounds(Action::ToggleScale))
+                                .with_state(focusable().checked(self.scale_to_fit)),
+                        );
+                        children.push(button(
+                            if self.fullscreen {
+                                "Exit fullscreen"
+                            } else {
+                                "Enter fullscreen"
+                            },
+                            "remote.session.fullscreen".into(),
+                            self.action_bounds(Action::ToggleFullscreen),
+                        ));
+                    }
+                }
+                if matches!(status, Some(SessionStatus::Failed(_))) {
+                    children.push(button(
+                        "Retry connection",
+                        format!("remote.connection:{id}:connect"),
+                        self.action_bounds(Action::Connect(id)),
+                    ));
+                }
+                children.push(button(
+                    if status == Some(SessionStatus::Connected) {
+                        "Disconnect"
+                    } else {
+                        "Back to list"
+                    },
+                    "remote.session.disconnect".into(),
+                    self.action_bounds(Action::Disconnect),
+                ));
+                AccessNode::new(Role::Group)
+                    .with_name("Remote session")
+                    .with_children(children)
+            }
+        };
+
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Remote")
+                .with_bounds(self.rect)
+                .with_children(vec![nav, content]),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action as A11yAction;
+        if let Some(name) = target.strip_prefix("remote.field:") {
+            let Some(field) = Field::from_target_name(name) else {
+                return false;
+            };
+            match action {
+                A11yAction::Activate | A11yAction::Focus => self.focus_field(field),
+                A11yAction::SetValue(value) => self.set_field_value(field, value),
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+        if let Some(tag) = target.strip_prefix("remote.kind:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+        {
+            self.apply(Action::SetKind(ConnectionKind::from_tag(tag)), state);
+            return true;
+        }
+        if let Some(name) = target.strip_prefix("remote.auth:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+        {
+            self.apply(Action::SetAuth(AuthMethod::from_target_name(name)), state);
+            return true;
+        }
+        if let Some(index) = target
+            .strip_prefix("remote.device:")
+            .and_then(|value| value.parse::<usize>().ok())
+            && matches!(action, A11yAction::Activate | A11yAction::Focus)
+        {
+            self.apply(Action::PickQosDevice(index), state);
+            return true;
+        }
+        if let Some(rest) = target.strip_prefix("remote.connection:") {
+            let Some((raw_id, verb)) = rest.rsplit_once(':') else {
+                return false;
+            };
+            let Ok(id) = raw_id.parse::<ConnectionId>() else {
+                return false;
+            };
+            if verb == "select" && matches!(action, A11yAction::ScrollIntoView) {
+                let visible = self.workspace.filtered(&self.search);
+                let Some(index) = visible.iter().position(|connection| connection.id == id) else {
+                    return false;
+                };
+                self.selected = Some(id);
+                self.scroll_connection_into_view(index, visible.len());
+                self.dirty = true;
+                return true;
+            }
+            let routed = match (verb, action) {
+                ("select", A11yAction::Activate | A11yAction::Focus) => Action::SelectRow(id),
+                ("favorite", A11yAction::Activate | A11yAction::ToggleCheck) => {
+                    Action::ToggleFavorite(id)
+                }
+                ("edit", A11yAction::Activate) => Action::EditConnection(id),
+                ("connect", A11yAction::Activate) => Action::Connect(id),
+                ("delete", A11yAction::Activate) => Action::Delete(id),
+                _ => return false,
+            };
+            self.apply(routed, state);
+            return true;
+        }
+        let routed = match (target, action) {
+            ("remote.nav.toggle", A11yAction::Activate) => Action::ToggleRail,
+            ("remote.nav.list", A11yAction::Activate) => Action::GoList,
+            ("remote.connection.new", A11yAction::Activate) => Action::NewConnection,
+            ("remote.form.cancel", A11yAction::Activate) => Action::Back,
+            ("remote.form.save", A11yAction::Activate) if self.draft.problems().is_empty() => {
+                Action::SaveForm
+            }
+            ("remote.session.disconnect", A11yAction::Activate) => Action::Disconnect,
+            ("remote.session.scale", A11yAction::Activate | A11yAction::ToggleCheck) => {
+                Action::ToggleScale
+            }
+            ("remote.session.fullscreen", A11yAction::Activate) => Action::ToggleFullscreen,
+            _ => return false,
+        };
+        self.apply(routed, state);
+        true
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -1885,7 +2526,16 @@ impl Widget for RemoteApp {
         // pumping frames so the eased transition plays smoothly. A live
         // session likewise needs continuous frames so incoming remote data
         // (PTY output, framebuffer updates) is drained and rendered.
-        self.rail.is_animating(self.rail_layout) || self.live_active()
+        (!self.motion_reduced && self.rail.is_animating(self.rail_layout))
+            || self.tooltips.needs_frame()
+            || self.live_active()
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        if reduced {
+            self.rail.settle(self.rail_layout);
+        }
     }
 
     fn mark_drawn(&mut self) {
@@ -1924,6 +2574,39 @@ impl RemoteApp {
             if let Some((x, y)) = self.qos_pointer_target(p) {
                 self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion { x, y });
             }
+        }
+        let tip = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| hit.rect.contains(p))
+            .and_then(|hit| match hit.action {
+                Action::GoList => Some((hit.rect, "Connections".to_string())),
+                Action::NewConnection => Some((hit.rect, "Add connection (Ctrl+N)".to_string())),
+                Action::ToggleRail => Some((
+                    hit.rect,
+                    if self.rail_open() {
+                        "Close navigation"
+                    } else {
+                        "Open navigation"
+                    }
+                    .to_string(),
+                )),
+                Action::ToggleFavorite(id) => self.workspace.get(id).map(|connection| {
+                    (
+                        hit.rect,
+                        if connection.favorite {
+                            "Remove from favourites"
+                        } else {
+                            "Add to favourites"
+                        }
+                        .to_string(),
+                    )
+                }),
+                _ => None,
+            });
+        if self.tooltips.on_pointer(tip, std::time::Instant::now()) {
+            self.dirty = true;
         }
         // A focused field tracks the pointer so a drag extends its
         // selection past the edge of the box.
@@ -2252,8 +2935,29 @@ impl RemoteApp {
         // `next` is derived from `cur` (in bounds, or 0) via `min`/`saturating_sub`.
         if let Some(&id) = filtered.get(next) {
             self.selected = Some(id);
+            self.scroll_connection_into_view(next, filtered.len());
         }
         self.dirty = true;
+    }
+
+    fn scroll_connection_into_view(&mut self, index: usize, count: usize) {
+        let content_width = (self.rect.width() - RAIL_W).max(0.0);
+        let row_h = if content_width < 620.0 {
+            COMPACT_ROW_H
+        } else {
+            ROW_H
+        };
+        let stride = row_h + 10.0;
+        let viewport = (self.rect.height() - (HEADER_H + 56.0)).max(row_h);
+        self.list_scroll_max = (count as f64 * stride - 10.0 - viewport).max(0.0);
+        let top = index as f64 * stride;
+        let bottom = top + row_h;
+        if top < self.list_scroll {
+            self.list_scroll = top;
+        } else if bottom > self.list_scroll + viewport {
+            self.list_scroll = bottom - viewport;
+        }
+        self.list_scroll = self.list_scroll.clamp(0.0, self.list_scroll_max);
     }
 
     // -- Drawing helpers ----------------------------------------------------
@@ -2479,9 +3183,14 @@ impl RemoteApp {
 
         // --- Header ---
         let header = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        let compact_header = content.width() < 520.0;
         text_renderer.draw_text_weighted(
             scene,
-            "Remote Machines",
+            if compact_header {
+                "Remote"
+            } else {
+                "Remote Machines"
+            },
             22.0,
             tokens.colors.text_primary,
             transform * Affine::translate((header.x0 + pad, header.y0 + 14.0)),
@@ -2490,7 +3199,17 @@ impl RemoteApp {
         );
         let total = self.workspace.connections().len();
         let online = self.workspace.online_count();
-        let stat = format!("{total} saved · {online} online");
+        let connectable = self
+            .workspace
+            .connections()
+            .iter()
+            .filter(|connection| can_attempt_live(connection.kind))
+            .count();
+        let stat = if connectable < total {
+            format!("{total} saved · {online} online · {connectable} connectable here")
+        } else {
+            format!("{total} saved · {online} online")
+        };
         text_renderer.draw_text(
             scene,
             &stat,
@@ -2501,8 +3220,9 @@ impl RemoteApp {
         );
 
         // New-connection button (top-right).
+        let add_w = if compact_header { 88.0 } else { 150.0 };
         let add = Rect::new(
-            content.x1 - pad - 150.0,
+            content.x1 - pad - add_w,
             header.y0 + 16.0,
             content.x1 - pad,
             header.y0 + 48.0,
@@ -2513,7 +3233,11 @@ impl RemoteApp {
             text_renderer,
             theme,
             add,
-            "+ New connection",
+            if compact_header {
+                "+ New"
+            } else {
+                "+ New connection"
+            },
             true,
         );
         self.push_hit(add, Action::NewConnection);
@@ -2538,7 +3262,6 @@ impl RemoteApp {
 
         // --- Rows ---
         let list_top = search.y1 + 16.0;
-        let mut y = list_top;
         let rows: Vec<Connection> = self
             .workspace
             .filtered(&self.search)
@@ -2547,6 +3270,8 @@ impl RemoteApp {
             .collect();
 
         if rows.is_empty() {
+            self.list_scroll = 0.0;
+            self.list_scroll_max = 0.0;
             let region = Rect::new(content.x0, list_top, content.x1, content.y1);
             if self.workspace.connections().is_empty() {
                 self.draw_empty_state(scene, transform, text_renderer, theme, region);
@@ -2574,6 +3299,16 @@ impl RemoteApp {
         // Clip rows to the content area so a long list doesn't paint over
         // the header.
         let list_clip = Rect::new(content.x0, list_top, content.x1, content.y1);
+        let row_h = if content.width() < 620.0 {
+            COMPACT_ROW_H
+        } else {
+            ROW_H
+        };
+        let stride = row_h + 10.0;
+        let content_height = rows.len() as f64 * stride - 10.0;
+        self.list_scroll_max = (content_height - list_clip.height()).max(0.0);
+        self.list_scroll = self.list_scroll.clamp(0.0, self.list_scroll_max);
+        let mut y = list_top - self.list_scroll;
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2582,9 +3317,11 @@ impl RemoteApp {
             &list_clip,
         );
         for c in &rows {
-            let row = Rect::new(content.x0 + pad, y, content.x1 - pad, y + ROW_H);
-            self.draw_connection_row(scene, transform, text_renderer, theme, row, c);
-            y += ROW_H + 10.0;
+            let row = Rect::new(content.x0 + pad, y, content.x1 - pad, y + row_h);
+            if row.y1 >= list_clip.y0 && row.y0 <= list_clip.y1 {
+                self.draw_connection_row(scene, transform, text_renderer, theme, row, c);
+            }
+            y += stride;
         }
         scene.pop_layer();
     }
@@ -2800,6 +3537,7 @@ impl RemoteApp {
         let tokens = &theme.tokens;
         let name_x = row.x0 + 44.0;
         // --- Second line: kind badge · address · group ---
+        let compact = row.height() > ROW_H;
         let line2_y = row.y0 + 38.0;
         // Kind badge first (leftmost), vertically centered on line2.
         let badge_w = Self::draw_kind_badge_at(
@@ -2823,7 +3561,7 @@ impl RemoteApp {
         let (aw, _) = text_renderer.measure(&c.address(), 13.0, None);
         x += f64::from(aw) + 14.0;
         // Group chip.
-        if !c.group.is_empty() {
+        if !compact && !c.group.is_empty() {
             let g = format!("· {}", c.group);
             text_renderer.draw_text(
                 scene,
@@ -2836,32 +3574,35 @@ impl RemoteApp {
         }
 
         // --- Right-aligned action buttons ---
-        let connect = Rect::new(
-            row.x1 - 116.0,
-            row.center().y - 16.0,
-            row.x1 - 16.0,
-            row.center().y + 16.0,
-        );
-        if c.kind.can_attempt() {
+        let connect = if compact {
+            Rect::new(row.x1 - 108.0, row.y0 + 72.0, row.x1 - 12.0, row.y0 + 104.0)
+        } else {
+            Rect::new(
+                row.x1 - 116.0,
+                row.center().y - 16.0,
+                row.x1 - 16.0,
+                row.center().y + 16.0,
+            )
+        };
+        let can_connect = can_attempt_live(c.kind);
+        if can_connect {
             self.draw_button(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 connect,
-                if c.kind == ConnectionKind::Qos {
-                    "Connect"
-                } else {
-                    "Connect"
-                },
+                "Connect",
                 true,
             );
             self.push_hit(connect, Action::Connect(c.id));
-        } else {
-            Self::draw_unavailable_button(scene, transform, text_renderer, theme, connect);
         }
 
-        let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
+        let edit = if can_connect {
+            Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1)
+        } else {
+            Rect::new(row.x1 - 88.0, connect.y0, row.x1 - 12.0, connect.y1)
+        };
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
         self.push_hit(edit, Action::EditConnection(c.id));
 
@@ -2872,7 +3613,12 @@ impl RemoteApp {
             &c.last_used,
             12.0,
             tokens.colors.neutral[5],
-            transform * Affine::translate((edit.x0 - 20.0 - f64::from(uw), row.center().y - 7.0)),
+            transform
+                * Affine::translate(if compact {
+                    (row.x0 + 44.0, row.y0 + 81.0)
+                } else {
+                    (edit.x0 - 20.0 - f64::from(uw), row.center().y - 7.0)
+                }),
             None,
         );
     }
@@ -2933,41 +3679,6 @@ impl RemoteApp {
             .weight(TextWeight::Semibold);
         let face = if primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
-    }
-
-    /// A non-interactive status, deliberately not styled like a secondary
-    /// action. It makes old profiles truthful without turning them into a
-    /// dead "Connect" button.
-    fn draw_unavailable_button(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let rr = RoundedRect::from_rect(rect, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[2],
-            None,
-            &rr,
-        );
-        let label = "Unavailable";
-        let (width, _) = text_renderer.measure_weighted(label, 12.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            12.0,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(width) / 2.0,
-                    rect.center().y - 7.0,
-                )),
-            None,
-            TextWeight::Semibold,
-        );
     }
 
     /// The text band inside a field box — where the shared input lives, and
@@ -3695,9 +4406,8 @@ impl RemoteApp {
                 &c,
                 "Not connected",
                 &[
-                    "Live remote sessions are off in this build.".to_string(),
-                    "Set REMOTE_LIVE_SESSIONS to connect for real —".to_string(),
-                    "nothing here is simulated.".to_string(),
+                    "This transport is unavailable in this build.".to_string(),
+                    "Your saved connection is unchanged.".to_string(),
                 ],
                 StatusTone::Neutral,
             );
@@ -4239,7 +4949,10 @@ impl RemoteApp {
         self.push_hit(disconnect, Action::Disconnect);
         x = disconnect.x0 - 10.0;
 
-        // Framebuffer-only controls: fullscreen, scale, clipboard.
+        // Framebuffer-only controls. Clipboard is intentionally absent until
+        // the transports implement a real, consent-aware synchronization
+        // channel; a clickable no-op would lie about a security-sensitive
+        // capability.
         if c.kind.streams_framebuffer() {
             let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
             self.push_hit(fs, Action::ToggleFullscreen);
@@ -4252,14 +4965,6 @@ impl RemoteApp {
             };
             let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
             self.push_hit(sc, Action::ToggleScale);
-            x = sc.x0 - 8.0;
-
-            let clip = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Clipboard");
-            self.push_hit(clip, Action::CopyClipboard);
-        } else {
-            // Terminal: clipboard only.
-            let clip = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Copy");
-            self.push_hit(clip, Action::CopyClipboard);
         }
     }
 
@@ -4708,12 +5413,172 @@ mod tests {
     }
 
     #[test]
+    fn collaborator_edits_and_deletes_replace_the_local_projection() {
+        let mut app = RemoteApp::new_demo();
+        let id = app.workspace.connections()[0].id;
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+
+        RemoteDoc::rename(&mut state, id, "Renamed by collaborator");
+        app.sync(&mut state, &automerge::ROOT);
+        assert_eq!(
+            app.workspace
+                .get(id)
+                .expect("remote edit remains present")
+                .name,
+            "Renamed by collaborator"
+        );
+
+        RemoteDoc::remove(&mut state, id);
+        app.sync(&mut state, &automerge::ROOT);
+        assert!(
+            app.workspace.get(id).is_none(),
+            "a collaborator's deletion cannot leave a local ghost row"
+        );
+    }
+
+    #[test]
     fn demo_build_is_populated_for_shots() {
         // `--shots` still needs a lived-in frame.
         let app = RemoteApp::new_demo();
         assert!(app.workspace.connections().len() >= 6);
         assert_eq!(app.screen, Screen::List);
         assert!(app.selected.is_some());
+    }
+
+    fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_semantic_target(child, target))
+    }
+
+    #[test]
+    fn accessibility_exposes_and_routes_every_connection_control() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 640.0, 900.0);
+        let id = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| can_attempt_live(connection.kind))
+            .expect("demo has a production-available qOS connection")
+            .id;
+        let tree = app.accessibility().expect("Remote window semantics");
+        for target in [
+            "remote.connection.new".to_string(),
+            "remote.field:search".to_string(),
+            format!("remote.connection:{id}:select"),
+            format!("remote.connection:{id}:favorite"),
+            format!("remote.connection:{id}:edit"),
+            format!("remote.connection:{id}:connect"),
+        ] {
+            assert!(
+                find_semantic_target(&tree, &target).is_some(),
+                "missing semantic control {target}"
+            );
+        }
+
+        let before = app.workspace.get(id).expect("connection").favorite;
+        assert!(app.perform_semantic_action(
+            &format!("remote.connection:{id}:favorite"),
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.workspace.get(id).expect("connection").favorite, !before);
+    }
+
+    #[test]
+    fn accessibility_can_edit_form_fields_without_bypassing_validation() {
+        let mut app = RemoteApp::new();
+        app.apply(Action::NewConnection, &mut doc());
+        assert!(app.perform_semantic_action(
+            "remote.field:host",
+            &ui::a11y::Action::SetValue("build.internal".into()),
+            &mut doc(),
+            &automerge::ROOT,
+        ));
+        assert!(app.perform_semantic_action(
+            "remote.field:port",
+            &ui::a11y::Action::SetValue("22ssh".into()),
+            &mut doc(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.draft.host, "build.internal");
+        assert_eq!(app.draft.port, "22");
+        assert_eq!(app.focus, Some(Field::Port));
+        let tree = app.accessibility().expect("form semantics");
+        for target in [
+            "remote.kind:SSH",
+            "remote.field:name",
+            "remote.field:host",
+            "remote.field:port",
+            "remote.auth:password",
+            "remote.form.cancel",
+            "remote.form.save",
+        ] {
+            assert!(
+                find_semantic_target(&tree, target).is_some(),
+                "missing form control {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn view_resource_operations_open_the_exact_requested_ui() {
+        let mut app = RemoteApp::new_demo();
+        let id = app.workspace.connections()[0].id;
+        let edit = qos_actions::EncodedAction::encode_operation(
+            crate::actions::REMOTE_OPERATION_TYPE,
+            &crate::actions::RemoteOperation::EditConnection { connection_id: id },
+        )
+        .expect("serializable view operation");
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &edit.type_id,
+                &edit.payload,
+                &doc(),
+                &automerge::ROOT,
+            )
+            .expect("view routed")
+        );
+        assert_eq!(app.screen, Screen::Form { editing: Some(id) });
+
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                &edit.type_id,
+                &edit.payload,
+                &doc(),
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reduced_motion_settles_the_navigation_flap() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 640.0, 900.0);
+        app.apply(Action::ToggleRail, &mut doc());
+        assert!(app.needs_animation_frame());
+        app.set_motion_reduced(true);
+        assert!(!app.needs_animation_frame());
+        assert_eq!(app.rail.reveal(), 1.0);
+    }
+
+    #[test]
+    fn long_narrow_lists_scroll_and_keep_selection_visible() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 640.0, 500.0);
+        let count = app.workspace.connections().len();
+        app.scroll_connection_into_view(count - 1, count);
+        assert!(app.list_scroll > 0.0);
+        assert!(app.list_scroll <= app.list_scroll_max);
     }
 
     /// A hostname or a key is exactly the sort of string nobody types by

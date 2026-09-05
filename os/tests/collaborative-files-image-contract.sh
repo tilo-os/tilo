@@ -62,6 +62,7 @@ echo "== collaborative Files shipped-image contract ($mode) =="
 for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/qos-launcher \
             /usr/bin/qos-install /usr/bin/qos-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/qos/files-atspi-smoke.sh \
+            /usr/libexec/qos/native-atspi-smoke.sh \
             /usr/libexec/qos-session; do
   require_exec "$path"
 done

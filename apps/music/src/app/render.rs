@@ -394,13 +394,65 @@ impl Widget for MusicApp {
         ))]
     }
 
-    /// Route a chosen palette row onto the real navigate/play path. The row's
-    /// opaque `action_id` is a `music://…` deep link, so this is the same
-    /// router the OS-search host and an in-app hit both use
-    /// ([`MusicApp::open_deep_link`]) — playing a song, or opening an album /
-    /// artist / playlist page.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        self.open_deep_link(action_id, doc);
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::MUSIC_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayTrack { id },
+            ) => {
+                if !self.lib.tracks.contains_key(&id) {
+                    return Err("track is no longer in the library".into());
+                }
+                self.pb.queue = vec![id.clone()];
+                self.shuffle_order.clear();
+                self.play_index(0);
+                self.start_stream(&id);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenAlbum { id },
+            ) => {
+                if !self.lib.albums.contains_key(&id) {
+                    return Err("album is no longer in the library".into());
+                }
+                self.on_nav(View::Album(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenArtist { id },
+            ) => {
+                if !self.lib.artists.contains_key(&id) {
+                    return Err("artist is no longer in the library".into());
+                }
+                self.on_nav(View::Artist(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenPlaylist { id },
+            ) => {
+                if self.lib.playlist(&id).is_none() {
+                    return Err("playlist is no longer in the library".into());
+                }
+                self.on_nav(View::Playlist(id));
+            }
+            _ => return Ok(false),
+        }
+        self.dirty = true;
+        Ok(true)
     }
 
     fn build_layout(

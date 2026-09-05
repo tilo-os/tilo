@@ -21,9 +21,11 @@ use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
+use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionSpec, OperationKind, PermissionRequirement, Resource, RetryPolicy, flatten,
+    ActionAddress, ActionSpec, ControlInvocation, OperationKind, PermissionRequirement, Resource,
+    RetryPolicy, flatten,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -241,6 +243,14 @@ pub struct ContainersApp {
     /// `sync`, where the framework deliberately provides mutable document
     /// access for collaborative view state.
     pending_resource_selection: Option<String>,
+    /// Navigation requested by a canonical resource View operation. Applied
+    /// on sync so it enters the same collaborative document path as clicks.
+    pending_resource_section: Option<Section>,
+    pending_resource_tab: Option<DetailTab>,
+    /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
+    /// and agents. The host re-resolves authority, records the Effect, then
+    /// calls `invoke_resource_operation`.
+    pub(crate) pending_control_invocation: Option<ControlInvocation>,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
     /// Wall-clock anchor for advancing the sidebar slide from the draw path.
@@ -266,6 +276,9 @@ pub struct ContainersApp {
     /// follows this instead of guessing from width alone, because 200% text
     /// also switches the surface to a single detail pane.
     compact_layout_active: bool,
+    /// Framework motion policy. Time-driven state still updates through idle
+    /// sync, but decorative toast/progress repaint loops stop when reduced.
+    motion_reduced: bool,
 }
 
 impl ContainersApp {
@@ -320,6 +333,9 @@ impl ContainersApp {
             palette: CommandPalette::commands(),
             palette_open: false,
             pending_resource_selection: None,
+            pending_resource_section: None,
+            pending_resource_tab: None,
+            pending_control_invocation: None,
             sidebar_flap: FlapState::open_when_docked(),
             sidebar_tick: None,
             toast: None,
@@ -332,6 +348,7 @@ impl ContainersApp {
             structure_dirty: false,
             view: ViewState::default(),
             compact_layout_active: false,
+            motion_reduced: false,
         }
     }
 
@@ -423,17 +440,27 @@ impl ContainersApp {
             .engine
             .find(id)
             .map_or_else(|| id.to_string(), |c| c.name.clone());
-        if self.live {
-            match podman::run_action(action, id) {
-                Ok(()) => self.show_toast(format!("{} {}", action.label(), name), false),
-                Err(e) => self.show_toast(format!("{} failed: {}", action.label(), e), true),
-            }
-            self.spawn_refresh();
-        } else {
+        if self.engine.live {
+            let verb = match action {
+                Action::Start => "start",
+                Action::Stop => "stop",
+                Action::Restart => "restart",
+                Action::Pause => "pause",
+                Action::Unpause => "unpause",
+                Action::Remove => "remove",
+            };
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new(format!("container:{id}"), verb),
+                arguments: serde_json::Map::new(),
+            });
+            self.show_toast(format!("{} {} requested", action.label(), name), false);
+        } else if !self.live {
             // Offline: reflect the action in the local snapshot so the
             // sample surface still responds to clicks.
             self.apply_action_offline(action, id);
             self.show_toast(format!("{} {}", action.label(), name), false);
+        } else {
+            self.show_toast("Container engine is offline", true);
         }
     }
 
@@ -539,16 +566,18 @@ impl ContainersApp {
     /// Remove an image (post-confirmation). Force-removes so an unused tag
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
-        if self.live {
-            match podman::remove_image(reference, true) {
-                Ok(()) => self.show_toast(format!("Removed {reference}"), false),
-                Err(e) => self.show_toast(format!("Remove failed: {e}"), true),
-            }
-            self.spawn_refresh();
-        } else {
+        if self.engine.live {
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new(format!("image:{reference}"), "remove"),
+                arguments: serde_json::Map::new(),
+            });
+            self.show_toast(format!("Remove {reference} requested"), false);
+        } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
             self.show_toast(format!("Removed {reference}"), false);
             self.structure_dirty = true;
+        } else {
+            self.show_toast("Container engine is offline", true);
         }
     }
 
@@ -599,16 +628,18 @@ impl ContainersApp {
 
     /// Remove a named volume (post-confirmation).
     pub(crate) fn remove_volume(&mut self, name: &str) {
-        if self.live {
-            match podman::remove_volume(name, false) {
-                Ok(()) => self.show_toast(format!("Removed volume {name}"), false),
-                Err(e) => self.show_toast(format!("Remove failed: {e}"), true),
-            }
-            self.spawn_refresh();
-        } else {
+        if self.engine.live {
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new(format!("volume:{name}"), "remove"),
+                arguments: serde_json::Map::new(),
+            });
+            self.show_toast(format!("Remove volume {name} requested"), false);
+        } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
             self.show_toast(format!("Removed volume {name}"), false);
             self.structure_dirty = true;
+        } else {
+            self.show_toast("Container engine is offline", true);
         }
     }
 
@@ -616,13 +647,16 @@ impl ContainersApp {
     /// qOS terminal app running `podman exec -it <id> <shell>`.
     pub(crate) fn attach_shell(&mut self, id: &str) {
         let short = id.chars().take(12).collect::<String>();
-        if self.live {
-            match crate::terminal::spawn_exec_attach(id, "/bin/sh") {
-                Ok(()) => self.show_toast(format!("Attached shell to {short}"), false),
-                Err(e) => self.show_toast(format!("Terminal failed: {e}"), true),
-            }
-        } else {
+        if self.engine.live {
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new(format!("container:{id}"), "shell"),
+                arguments: serde_json::Map::new(),
+            });
+            self.show_toast(format!("Shell for {short} requested"), false);
+        } else if !self.live {
             self.show_toast(format!("podman exec -it {short} /bin/sh"), false);
+        } else {
+            self.show_toast("Container engine is offline", true);
         }
     }
 
@@ -1010,20 +1044,271 @@ fn enter_pressed(event: &WindowEvent) -> bool {
 }
 
 // =====================================================================
+// Accessibility mirror for the immediate-mode surface
+// =====================================================================
+
+impl ContainersApp {
+    /// Stable semantic identity for a painted hit. Dynamic targets use the
+    /// engine object's stable id/reference rather than its visible row index,
+    /// so an assistive technology can retain focus across refreshes/re-sorts.
+    fn semantic_target(&self, hit: &Hit) -> String {
+        match hit {
+            Hit::Section(section) => format!("containers.section:{}", section.as_str()),
+            Hit::NewContainer => "containers.create.open".into(),
+            Hit::SelectContainer(id) => format!("containers.container:{id}:select"),
+            Hit::SelectImage(index) => self.engine.images.get(*index).map_or_else(
+                || format!("containers.image-index:{index}:select"),
+                |image| format!("containers.image:{}:select", image.reference()),
+            ),
+            Hit::Action { id, action } => {
+                format!(
+                    "containers.container:{id}:{}",
+                    action.label().to_ascii_lowercase()
+                )
+            }
+            Hit::ImageAct { reference, action } => {
+                format!(
+                    "containers.image:{reference}:{}",
+                    action.label().to_ascii_lowercase()
+                )
+            }
+            Hit::PullImage(reference) => format!("containers.image:{reference}:pull"),
+            Hit::PullTyped => "containers.image.pull".into(),
+            Hit::TagImage(reference) => format!("containers.image:{reference}:tag"),
+            Hit::InspectImage(reference) => format!("containers.image:{reference}:inspect"),
+            Hit::CreateVolume => "containers.volume.create".into(),
+            Hit::RemoveVolume(name) => format!("containers.volume:{name}:remove"),
+            Hit::AttachShell(id) => format!("containers.container:{id}:shell"),
+            Hit::DistroEnter(name) => format!("containers.distrobox:{name}:enter"),
+            Hit::DistroCreate => "containers.distrobox.create".into(),
+            Hit::DetailTab(tab) => format!("containers.detail.tab:{}", tab.as_str()),
+            Hit::CloseDetail => "containers.detail.close".into(),
+            Hit::CreateField(field) => format!("containers.create.field:{}", field.key()),
+            Hit::CreateSubmit => "containers.create.submit".into(),
+            Hit::CreateCancel => "containers.create.cancel".into(),
+            Hit::ComboToggle => "containers.create.image-options".into(),
+            Hit::ComboPick(index) => format!("containers.create.image-option:{index}"),
+            Hit::ToggleSidebar => "containers.sidebar.toggle".into(),
+            Hit::PromptCancel => "containers.progress.close".into(),
+        }
+    }
+
+    fn semantic_copy(&self, hit: &Hit) -> (Role, String, Option<String>, AccessState) {
+        let focusable = AccessState::new().focusable(true);
+        match hit {
+            Hit::Section(section) => (
+                Role::Tab,
+                section.label().into(),
+                Some(format!(
+                    "Shortcut: {}",
+                    match section {
+                        Section::Containers => 1,
+                        Section::Images => 2,
+                        Section::Volumes => 3,
+                        Section::Distrobox => 4,
+                    }
+                )),
+                focusable.selected(self.view.section == *section),
+            ),
+            Hit::NewContainer => (
+                Role::Button,
+                "New container".into(),
+                Some("Shortcut: N".into()),
+                focusable,
+            ),
+            Hit::SelectContainer(id) => {
+                let container = self.engine.find(id);
+                let name = container.map_or_else(|| id.clone(), |c| c.name.clone());
+                let detail = container
+                    .map(|c| format!("{}; {}; {}", c.image, c.status.label(), c.status_detail));
+                (
+                    Role::ListItem,
+                    name,
+                    detail,
+                    focusable.selected(self.view.selected.as_deref() == Some(id)),
+                )
+            }
+            Hit::SelectImage(index) => {
+                let image = self.engine.images.get(*index);
+                (
+                    Role::ListItem,
+                    image.map_or_else(|| "Image".into(), |i| i.reference()),
+                    image.map(|i| format!("{}; {}", ui::format::bytes(i.size_bytes), i.created)),
+                    focusable,
+                )
+            }
+            Hit::Action { id, action } => (
+                Role::Button,
+                format!(
+                    "{} {}",
+                    action.label(),
+                    self.engine
+                        .find(id)
+                        .map_or(id.as_str(), |c| c.name.as_str())
+                ),
+                None,
+                focusable,
+            ),
+            Hit::ImageAct { reference, action } => (
+                Role::Button,
+                format!("{} {reference}", action.label()),
+                None,
+                focusable,
+            ),
+            Hit::PullImage(reference) => (
+                Role::Button,
+                format!("Pull image {reference}"),
+                Some("Download or update this image".into()),
+                focusable,
+            ),
+            Hit::PullTyped => (
+                Role::Button,
+                "Pull image".into(),
+                Some("Download the image named in the form".into()),
+                focusable,
+            ),
+            Hit::TagImage(reference) => (
+                Role::Button,
+                format!("Tag image {reference}"),
+                None,
+                focusable,
+            ),
+            Hit::InspectImage(reference) => (
+                Role::Button,
+                format!("Inspect image {reference}"),
+                None,
+                focusable,
+            ),
+            Hit::CreateVolume => (Role::Button, "New volume".into(), None, focusable),
+            Hit::RemoveVolume(name) => (
+                Role::Button,
+                format!("Remove volume {name}"),
+                None,
+                focusable,
+            ),
+            Hit::AttachShell(id) => (
+                Role::Button,
+                format!(
+                    "Open shell in {}",
+                    self.engine
+                        .find(id)
+                        .map_or(id.as_str(), |c| c.name.as_str())
+                ),
+                None,
+                focusable,
+            ),
+            Hit::DistroEnter(name) => (
+                Role::Button,
+                format!("Enter distrobox {name}"),
+                None,
+                focusable,
+            ),
+            Hit::DistroCreate => (Role::Button, "Create distrobox".into(), None, focusable),
+            Hit::DetailTab(tab) => (
+                Role::Tab,
+                tab.label().into(),
+                None,
+                focusable.selected(self.view.tab == *tab),
+            ),
+            Hit::CloseDetail => (
+                Role::Button,
+                "Back to containers".into(),
+                Some("Shortcut: Escape".into()),
+                focusable,
+            ),
+            Hit::CreateField(field) => (
+                Role::TextInput,
+                field.label().into(),
+                Some(field.placeholder().into()),
+                focusable.focused(self.create_focus == *field),
+            ),
+            Hit::CreateSubmit => (
+                Role::Button,
+                "Create container".into(),
+                None,
+                focusable.disabled(
+                    self.create_input(CreateField::Image)
+                        .value()
+                        .trim()
+                        .is_empty(),
+                ),
+            ),
+            Hit::CreateCancel => (
+                Role::Button,
+                "Cancel".into(),
+                Some("Shortcut: Escape".into()),
+                focusable,
+            ),
+            Hit::ComboToggle => (
+                Role::ComboBox,
+                "Installed image suggestions".into(),
+                None,
+                focusable.expanded(self.combo.open),
+            ),
+            Hit::ComboPick(index) => {
+                let options = self.engine.image_references();
+                let name = options
+                    .get(*index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Image option {}", index + 1));
+                (
+                    Role::ListItem,
+                    name,
+                    None,
+                    focusable.selected(self.combo.highlight == *index),
+                )
+            }
+            Hit::ToggleSidebar => (
+                Role::Button,
+                if self.sidebar_flap.is_open(SplitLayout::Docked) {
+                    "Collapse navigation"
+                } else {
+                    "Expand navigation"
+                }
+                .into(),
+                Some("Shortcut: B".into()),
+                focusable,
+            ),
+            Hit::PromptCancel => (Role::Button, "Close progress".into(), None, focusable),
+        }
+    }
+}
+
+// =====================================================================
 // Widget impl
 // =====================================================================
 
 impl Widget for ContainersApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
+            "containers.engine",
             "containers.container",
+            "containers.logs",
             "containers.image",
             "containers.volume",
+            "containers.distrobox",
         ]
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("containers", "containers.engine", "Containers");
+        if let Ok(spec) = ActionSpec::operation(
+            "create",
+            "Create container",
+            OperationKind::View,
+            "containers.engine",
+            &["create"],
+        ) {
+            let spec = if self.engine.live {
+                spec
+            } else {
+                spec.unavailable(
+                    "engine_offline",
+                    "Creating containers requires a connected Podman engine",
+                )
+            };
+            root.actions.push(spec);
+        }
         for container in &self.engine.containers {
             let mut resource = Resource::new(
                 format!("container:{}", container.id),
@@ -1040,15 +1325,21 @@ impl Widget for ContainersApp {
             ) {
                 resource.actions.push(spec);
             }
-            let verbs: &[(&str, &str)] = if container.status.is_running() {
-                &[
+            let verbs: &[(&str, &str)] = match container.status {
+                crate::model::ContainerStatus::Running
+                | crate::model::ContainerStatus::Restarting => &[
                     ("stop", "Stop"),
                     ("restart", "Restart"),
                     ("pause", "Pause"),
                     ("shell", "Open shell"),
-                ]
-            } else {
-                &[("start", "Start"), ("remove", "Remove")]
+                ],
+                crate::model::ContainerStatus::Paused => &[
+                    ("unpause", "Resume"),
+                    ("stop", "Stop"),
+                    ("remove", "Remove"),
+                    ("shell", "Open shell"),
+                ],
+                _ => &[("start", "Start"), ("remove", "Remove")],
             };
             for (verb, label) in verbs {
                 let payload = vec![(*verb).to_string(), container.id.clone()];
@@ -1065,7 +1356,7 @@ impl Widget for ContainersApp {
                     } else if *verb != "restart" && *verb != "shell" {
                         spec = spec.retry_policy(RetryPolicy::Idempotent);
                     }
-                    if !self.live {
+                    if !self.engine.live {
                         spec = spec.unavailable(
                             "engine_offline",
                             "Container engine actions are unavailable in demo mode",
@@ -1074,13 +1365,40 @@ impl Widget for ContainersApp {
                     resource.actions.push(spec);
                 }
             }
+            let mut logs = Resource::new(
+                format!("container:{}:logs", container.id),
+                "containers.logs",
+                format!("{} logs", container.name),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                "Open logs",
+                OperationKind::View,
+                "containers.logs",
+                &["logs", container.id.as_str()],
+            ) {
+                logs.actions.push(spec);
+            }
+            resource.children.push(logs);
             root.children.push(resource);
         }
         for image in &self.engine.images {
             let reference = image.reference();
             let payload = vec!["remove".to_string(), reference.clone()];
-            let mut resource =
-                Resource::new(format!("image:{reference}"), "containers.image", reference);
+            let mut resource = Resource::new(
+                format!("image:{reference}"),
+                "containers.image",
+                reference.clone(),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                "Show image",
+                OperationKind::View,
+                "containers.image",
+                &["open", reference.as_str()],
+            ) {
+                resource.actions.push(spec);
+            }
             if let Ok(spec) = ActionSpec::operation(
                 "remove",
                 "Remove image",
@@ -1092,7 +1410,7 @@ impl Widget for ContainersApp {
                     .requiring(PermissionRequirement::Admin)
                     .privileged()
                     .destructive();
-                if !self.live {
+                if !self.engine.live {
                     spec = spec.unavailable(
                         "engine_offline",
                         "Container engine actions are unavailable in demo mode",
@@ -1110,6 +1428,15 @@ impl Widget for ContainersApp {
                 volume.name.clone(),
             );
             if let Ok(spec) = ActionSpec::operation(
+                "open",
+                "Show volume",
+                OperationKind::View,
+                "containers.volume",
+                &["open", volume.name.as_str()],
+            ) {
+                resource.actions.push(spec);
+            }
+            if let Ok(spec) = ActionSpec::operation(
                 "remove",
                 "Remove volume",
                 OperationKind::Effect,
@@ -1120,7 +1447,7 @@ impl Widget for ContainersApp {
                     .requiring(PermissionRequirement::Admin)
                     .privileged()
                     .destructive();
-                if !self.live {
+                if !self.engine.live {
                     spec = spec.unavailable(
                         "engine_offline",
                         "Container engine actions are unavailable in demo mode",
@@ -1130,7 +1457,46 @@ impl Widget for ContainersApp {
             }
             root.children.push(resource);
         }
+        for distrobox in &self.engine.distroboxes {
+            let mut resource = Resource::new(
+                format!("distrobox:{}", distrobox.name),
+                "containers.distrobox",
+                distrobox.name.clone(),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                "Show distrobox",
+                OperationKind::View,
+                "containers.distrobox",
+                &["open", distrobox.name.as_str()],
+            ) {
+                resource.actions.push(spec);
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "enter",
+                "Enter distrobox",
+                OperationKind::Effect,
+                "containers.distrobox",
+                &["enter", distrobox.name.as_str()],
+            ) {
+                let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
+                if !self.engine.live {
+                    spec = spec.unavailable(
+                        "engine_offline",
+                        "Distrobox actions are unavailable in demo mode",
+                    );
+                }
+                resource.actions.push(spec);
+            }
+            root.children.push(resource);
+        }
         vec![root]
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::ContainerSearchProvider::new(&self.engine),
+        )]
     }
 
     fn invoke_resource_operation(
@@ -1145,18 +1511,36 @@ impl Widget for ContainersApp {
         let Some(verb) = args.first().map(String::as_str) else {
             return Err("missing operation".into());
         };
-        let Some(target) = args.get(1).map(String::as_str) else {
-            return Err("missing target".into());
-        };
+        let target = args.get(1).map(String::as_str).unwrap_or_default();
+        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
+            self.create_open = true;
+            self.focus_create_field(CreateField::Image);
+            return Ok(true);
+        }
         if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
             self.pending_resource_selection = Some(target.to_string());
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
+            self.pending_resource_selection = Some(target.to_string());
+            self.pending_resource_section = Some(Section::Containers);
+            self.pending_resource_tab = Some(DetailTab::Logs);
+            return Ok(true);
+        }
+        if kind == OperationKind::View && verb == "open" {
+            self.pending_resource_section = Some(match type_id {
+                "containers.image" => Section::Images,
+                "containers.volume" => Section::Volumes,
+                "containers.distrobox" => Section::Distrobox,
+                _ => return Ok(false),
+            });
             return Ok(true);
         }
         if kind != OperationKind::Effect {
             return Ok(false);
         }
-        if !self.live {
-            return Err("container engine actions are unavailable in demo mode".into());
+        if !self.engine.live {
+            return Err("container engine actions are unavailable while Podman is offline".into());
         }
         match type_id {
             "containers.container" => match verb {
@@ -1171,6 +1555,9 @@ impl Widget for ContainersApp {
                 }
                 "pause" => {
                     podman::run_action(Action::Pause, target)?;
+                }
+                "unpause" => {
+                    podman::run_action(Action::Unpause, target)?;
                 }
                 "remove" => {
                     podman::run_action(Action::Remove, target)?;
@@ -1187,6 +1574,9 @@ impl Widget for ContainersApp {
             "containers.volume" if verb == "remove" => {
                 podman::remove_volume(target, false)?;
             }
+            "containers.distrobox" if verb == "enter" => {
+                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
+            }
             _ => return Ok(false),
         }
         self.spawn_refresh();
@@ -1197,6 +1587,12 @@ impl Widget for ContainersApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(target) = self.pending_resource_selection.take() {
             ViewDoc::set_selected(doc, Some(&target));
+        }
+        if let Some(section) = self.pending_resource_section.take() {
+            ViewDoc::set_section(doc, section);
+        }
+        if let Some(tab) = self.pending_resource_tab.take() {
+            ViewDoc::set_tab(doc, tab);
         }
         self.drain_bg(doc);
         // Seed a representative selection on the very first sync of a demo /
@@ -1301,12 +1697,13 @@ impl Widget for ContainersApp {
     fn needs_animation_frame(&self) -> bool {
         // Toast fade, the sidebar collapse slide, and live pull progress all
         // keep the host pumping frames.
-        self.toast.is_some()
+        (!self.motion_reduced && self.toast.is_some())
             || self.sidebar_flap.is_animating(SplitLayout::Docked)
-            || self
-                .pull
-                .as_ref()
-                .is_some_and(|p| !p.done && p.failed.is_none())
+            || (!self.motion_reduced
+                && self
+                    .pull
+                    .as_ref()
+                    .is_some_and(|p| !p.done && p.failed.is_none()))
     }
 
     fn build_layout(
@@ -1638,15 +2035,364 @@ impl Widget for ContainersApp {
         "ContainersApp"
     }
 
+    fn tooltip(&self) -> Option<&str> {
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|region| region.rect.contains(self.cursor))?;
+        Some(match &hit.hit {
+            Hit::Section(section) => section.label(),
+            Hit::NewContainer | Hit::DistroCreate => "Create container",
+            Hit::SelectContainer(_) => "Open container details",
+            Hit::SelectImage(_) => "Show image details",
+            Hit::Action { action, .. } => action.label(),
+            Hit::ImageAct { action, .. } => action.label(),
+            Hit::PullImage(_) | Hit::PullTyped => "Pull image",
+            Hit::TagImage(_) => "Tag image",
+            Hit::InspectImage(_) => "Inspect image",
+            Hit::CreateVolume => "Create volume",
+            Hit::RemoveVolume(_) => "Remove volume",
+            Hit::AttachShell(_) => "Open interactive shell",
+            Hit::DistroEnter(_) => "Enter distrobox",
+            Hit::DetailTab(tab) => tab.label(),
+            Hit::CloseDetail => "Back to containers (Esc)",
+            Hit::CreateField(field) => field.label(),
+            Hit::CreateSubmit => "Create container",
+            Hit::CreateCancel => "Cancel (Esc)",
+            Hit::ComboToggle => "Show installed images",
+            Hit::ComboPick(_) => "Use this image",
+            Hit::ToggleSidebar => "Toggle navigation (B)",
+            Hit::PromptCancel => "Close",
+        })
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.hits
+            .iter()
+            .rev()
+            .any(|region| region.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.palette_open
+            || self.create_open
+            || self.pull.is_some()
+            || self.prompt.is_some()
+            || self.confirm.is_some()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.traps_focus().then_some(self.rect)
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        if self.palette_open {
+            return self.palette.accessibility();
+        }
+        if let Some(dialog) = self
+            .confirm_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.dialog.accessibility())
+        {
+            return Some(dialog);
+        }
+        if let Some(dialog) = self
+            .prompt_dialog
+            .as_ref()
+            .and_then(|dialog| dialog.dialog.accessibility())
+        {
+            return Some(dialog);
+        }
+
+        let modal_prefix = if self.create_open {
+            Some("containers.create.")
+        } else if self.pull.is_some() {
+            Some("containers.progress.")
+        } else {
+            None
+        };
+        let mut targets = std::collections::HashSet::new();
+        let mut controls = Vec::new();
+        if modal_prefix.is_none() && self.search_field.get_rect() != Rect::ZERO {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Open search")
+                    .with_description("Shortcut: Control K or slash")
+                    .with_action_target("containers.search.open")
+                    .with_bounds(self.search_field.get_rect())
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            targets.insert("containers.search.open".to_string());
+        }
+        for region in &self.hits {
+            let target = self.semantic_target(&region.hit);
+            if modal_prefix.is_some_and(|prefix| !target.starts_with(prefix))
+                || !targets.insert(target.clone())
+            {
+                continue;
+            }
+            let (role, name, description, state) = self.semantic_copy(&region.hit);
+            let mut node = AccessNode::new(role)
+                .with_name(name)
+                .with_action_target(target)
+                .with_bounds(region.rect)
+                .with_state(state);
+            if let Some(description) = description {
+                node = node.with_description(description);
+            }
+            if let Hit::CreateField(field) = &region.hit {
+                node = node.with_value(self.create_input(*field).value());
+            }
+            controls.push(node);
+        }
+
+        let mut children = if let Some(prefix) = modal_prefix {
+            let name = if prefix == "containers.create." {
+                "Create container"
+            } else {
+                "Image pull progress"
+            };
+            vec![
+                AccessNode::new(Role::Dialog)
+                    .with_name(name)
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(controls),
+            ]
+        } else {
+            controls
+        };
+        if let Some(pull) = &self.pull {
+            let status = pull.failed.as_ref().map_or_else(
+                || {
+                    if pull.done {
+                        format!("Finished pulling {}", pull.reference)
+                    } else {
+                        pull.lines
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| format!("Pulling {}", pull.reference))
+                    }
+                },
+                |error| format!("Pull failed: {error}"),
+            );
+            children.push(
+                AccessNode::new(Role::ProgressBar)
+                    .with_name("Image pull")
+                    .with_value(status)
+                    .with_live(Politeness::Polite)
+                    .with_state(AccessState::new().busy(!pull.done && pull.failed.is_none())),
+            );
+        }
+        if let Some(toast) = &self.toast {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(&toast.message)
+                    .with_live(if toast.error {
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    }),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Containers")
+                .with_description(&self.engine.connection)
+                .with_bounds(self.rect)
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &AccessibilityAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.palette_open {
+            return self
+                .palette
+                .perform_semantic_action(target, action, state, &automerge::ROOT);
+        }
+        if self.confirm.is_some() {
+            self.ensure_confirm_dialog();
+            let handled = self.confirm_dialog.as_mut().is_some_and(|dialog| {
+                dialog
+                    .dialog
+                    .perform_semantic_action(target, action, state, &automerge::ROOT)
+            });
+            let (confirm, cancel) = self
+                .confirm_dialog
+                .as_ref()
+                .map_or((false, false), |dialog| {
+                    (dialog.confirm.replace(false), dialog.cancel.replace(false))
+                });
+            if confirm {
+                self.apply_confirm(state);
+            } else if cancel {
+                self.confirm = None;
+                self.confirm_dialog = None;
+            }
+            return handled;
+        }
+        if target == "containers.search.open"
+            && matches!(
+                action,
+                AccessibilityAction::Activate | AccessibilityAction::Focus
+            )
+        {
+            self.open_container_palette();
+            return true;
+        }
+        if self.prompt.is_some() {
+            self.ensure_prompt_dialog();
+            let handled = self.prompt_dialog.as_mut().is_some_and(|dialog| {
+                dialog
+                    .dialog
+                    .perform_semantic_action(target, action, state, &automerge::ROOT)
+            });
+            let (submit, cancel) = self
+                .prompt_dialog
+                .as_ref()
+                .map_or((false, false), |dialog| {
+                    (dialog.submit.replace(false), dialog.cancel.replace(false))
+                });
+            if submit {
+                self.submit_prompt(state);
+            } else if cancel {
+                self.prompt = None;
+                self.prompt_dialog = None;
+            }
+            return handled;
+        }
+        if let Some(field_key) = target.strip_prefix("containers.create.field:") {
+            let Some(field) = CreateField::ALL
+                .into_iter()
+                .find(|field| field.key() == field_key)
+            else {
+                return false;
+            };
+            match action {
+                AccessibilityAction::Focus | AccessibilityAction::Activate => {
+                    self.apply_hit(state, Hit::CreateField(field));
+                    self.refresh_view(state);
+                    return true;
+                }
+                AccessibilityAction::SetValue(value) => {
+                    ViewDoc::set_create_field(state, field, value);
+                    self.focus_create_field(field);
+                    self.refresh_view(state);
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        if !matches!(
+            action,
+            AccessibilityAction::Activate | AccessibilityAction::Focus
+        ) {
+            return false;
+        }
+        let hit = self
+            .hits
+            .iter()
+            .find(|region| self.semantic_target(&region.hit) == target)
+            .map(|region| region.hit.clone());
+        if let Some(hit) = hit {
+            self.apply_hit(state, hit);
+            self.refresh_view(state);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        if reduced {
+            self.sidebar_flap.settle(SplitLayout::Docked);
+            self.sidebar_tick = None;
+        }
+    }
+
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
+        self.palette
+            .take_control_invocation()
+            .or_else(|| self.pending_control_invocation.take())
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         if self.palette_open {
             self.palette.control_action_bindings()
         } else {
-            Vec::new()
+            let mut seen = std::collections::HashSet::new();
+            let mut bindings = vec![ui::widget::ControlBindingMetadata::semantic(
+                "containers.search.open",
+            )];
+            bindings.extend(
+                self.hits
+                    .iter()
+                    .filter_map(|region| {
+                        let role = self.semantic_copy(&region.hit).0;
+                        if !matches!(
+                            role,
+                            Role::Button
+                                | Role::ToggleButton
+                                | Role::Checkbox
+                                | Role::RadioButton
+                                | Role::Switch
+                                | Role::ComboBox
+                                | Role::Slider
+                                | Role::SpinButton
+                                | Role::TextInput
+                                | Role::MultilineTextInput
+                        ) {
+                            return None;
+                        }
+                        let control_id = self.semantic_target(&region.hit);
+                        if !seen.insert(control_id.clone()) {
+                            return None;
+                        }
+                        let action = match &region.hit {
+                            Hit::Action { id, action } => Some(ActionAddress::new(
+                                format!("container:{id}"),
+                                match action {
+                                    Action::Start => "start",
+                                    Action::Stop => "stop",
+                                    Action::Restart => "restart",
+                                    Action::Pause => "pause",
+                                    Action::Unpause => "unpause",
+                                    Action::Remove => "remove",
+                                },
+                            )),
+                            Hit::AttachShell(id) => {
+                                Some(ActionAddress::new(format!("container:{id}"), "shell"))
+                            }
+                            Hit::ImageAct { reference, .. } => {
+                                Some(ActionAddress::new(format!("image:{reference}"), "remove"))
+                            }
+                            Hit::RemoveVolume(name) => {
+                                Some(ActionAddress::new(format!("volume:{name}"), "remove"))
+                            }
+                            Hit::DistroEnter(name) => {
+                                Some(ActionAddress::new(format!("distrobox:{name}"), "enter"))
+                            }
+                            _ => None,
+                        };
+                        Some(ui::widget::ControlBindingMetadata {
+                            control_id: control_id.clone(),
+                            kind: action.map_or_else(
+                                || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                                ui::widget::ControlBindingKind::Action,
+                            ),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            bindings
         }
     }
 
@@ -1821,6 +2567,18 @@ impl ContainersApp {
 
     pub(crate) fn uses_compact_layout(&self, theme: &Theme) -> bool {
         Self::compact_layout_for(self.rect.width(), theme.tokens.typography.scale.base)
+    }
+
+    /// Whether lifecycle affordances should be painted. The deterministic
+    /// populated sample remains interactive for demos/tests; a genuinely empty
+    /// disconnected engine does not advertise controls that can only fail.
+    pub(crate) fn engine_controls_available(&self) -> bool {
+        self.engine.live
+            || (!self.live
+                && (!self.engine.containers.is_empty()
+                    || !self.engine.images.is_empty()
+                    || !self.engine.volumes.is_empty()
+                    || !self.engine.distroboxes.is_empty()))
     }
 
     /// A selected container is a full-page drill-in on compact surfaces. The
@@ -2188,6 +2946,27 @@ mod palette_launcher_tests {
         assert!(
             app.engine.volumes.iter().any(|v| v.name == "data"),
             "the volume is named from the typed field value",
+        );
+    }
+
+    #[test]
+    fn lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline() {
+        let mut app = ContainersApp::new(false);
+        app.engine.live = true;
+        let id = app.engine.containers[0].id.clone();
+        app.apply_action(Action::Stop, &id);
+        let intent = app
+            .take_control_invocation()
+            .expect("the host receives an inert resource intent");
+        assert_eq!(
+            intent.address,
+            ActionAddress::new(format!("container:{id}"), "stop")
+        );
+        assert!(intent.arguments.is_empty());
+        assert_eq!(
+            app.engine.find(&id).map(|container| container.status),
+            Some(crate::model::ContainerStatus::Running),
+            "the control does not mutate the engine before host authorization"
         );
     }
 }

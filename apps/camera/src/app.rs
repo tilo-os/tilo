@@ -376,6 +376,10 @@ impl CameraApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive mapping keeps every painted Camera action paired with its role, name, state, bounds, and stable semantic target; splitting the match would make that audit less reliable"
+    )]
     fn a11y_node(&self, rect: Rect, action: &Action) -> AccessNode {
         let (role, name, state) = match action {
             Action::Nav(screen) => (
@@ -713,27 +717,35 @@ impl CameraApp {
 
     fn apply_delete_selected(&mut self, doc: &mut AutoCommit) {
         if let Some(id) = self.selected_capture.clone() {
+            self.delete_capture(&id, doc);
+        }
+    }
+
+    fn delete_capture(&mut self, id: &str, doc: &mut AutoCommit) {
+        if self.captures.iter().any(|capture| capture.id == id) {
             if let Storage::Disk(dir) = &self.storage {
-                let _ = library::delete(dir, &id);
+                let _ = library::delete(dir, id);
             }
             // The pixels are device I/O (removed above / reconciled via
             // FUSE); the shot's only collaborative trace is its favorite
             // flag, cleared through the same action the heart uses — but
             // only when it was actually starred, so an unstarred delete
             // touches the document not at all.
-            if self.favorites.contains(&id) {
+            if self.favorites.contains(id) {
                 self.perform_action(
                     doc,
                     &crate::actions::CameraAction::SetFavorite {
-                        id: id.clone(),
+                        id: id.to_string(),
                         on: false,
                     },
                 );
             }
             self.captures.retain(|c| c.id != id);
-            self.thumbs.remove(&id);
-            self.favorites.remove(&id);
-            self.selected_capture = None;
+            self.thumbs.remove(id);
+            self.favorites.remove(id);
+            if self.selected_capture.as_deref() == Some(id) {
+                self.selected_capture = None;
+            }
             self.toast = Some("Deleted".into());
         }
     }
@@ -1046,8 +1058,8 @@ fn ago(ts: i64, now: i64) -> String {
 }
 
 fn fmt_dur(ms: i64) -> String {
-    let s = ms / 1000;
-    format!("{}:{:02}", s / 60, s % 60)
+    let seconds = ms.max(0) / 1000;
+    ui::format::timecode(u64::try_from(seconds).unwrap_or(0))
 }
 
 /// Best-effort hand-off to the system default handler for a URI. Never
@@ -1138,6 +1150,34 @@ impl Widget for CameraApp {
         };
         self.perform_resource_operation(operation)?;
         Ok(true)
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        _invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if let crate::actions::CameraOperation::Delete { id } = operation {
+            if !self.captures.iter().any(|capture| capture.id == id) {
+                return Err("the capture no longer exists".into());
+            }
+            self.delete_capture(&id, doc);
+        } else {
+            self.perform_resource_operation(operation)?;
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            qos_actions::ActionOutput::default(),
+        )))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -4565,6 +4605,38 @@ mod tests {
             &root,
         ));
         assert_eq!(app.captures.len(), before + 1);
+    }
+
+    #[test]
+    fn resource_delete_removes_pixels_and_dispatches_favorite_cleanup() {
+        let (mut app, mut doc, root) = sample_app();
+        let id = "c1";
+        assert!(app.captures.iter().any(|capture| capture.id == id));
+        doc::set_favorite(&mut doc, &automerge::ROOT, id, true);
+        app.favorites.insert(id.to_string());
+        assert!(doc::read_favorites(&doc, &automerge::ROOT).contains(id));
+        let payload =
+            serde_json::to_vec(&crate::actions::CameraOperation::Delete { id: id.to_string() })
+                .unwrap();
+
+        let started = Widget::start_resource_operation_with_document(
+            &mut app,
+            qos_actions::InvocationId::new(),
+            qos_actions::OperationKind::Effect,
+            crate::actions::CAMERA_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            started,
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert!(!app.captures.iter().any(|capture| capture.id == id));
+        assert!(!doc::read_favorites(&doc, &automerge::ROOT).contains(id));
+        assert!(app.take_committed_action().is_some());
     }
 
     #[test]

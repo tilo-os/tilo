@@ -169,16 +169,20 @@ impl Presentation {
         self.blank = Blank::None;
     }
 
-    pub(crate) fn expire_transition(&mut self) {
-        if self
-            .transition
-            .is_some_and(|(_, at)| at.elapsed().as_millis() >= TRANSITION_MS)
+    pub(crate) fn expire_transition(&mut self, reduce_motion: bool) {
+        if reduce_motion
+            || self
+                .transition
+                .is_some_and(|(_, at)| at.elapsed().as_millis() >= TRANSITION_MS)
         {
             self.transition = None;
         }
     }
 
-    pub(crate) fn transition_alpha(&self) -> f32 {
+    pub(crate) fn transition_alpha(&self, reduce_motion: bool) -> f32 {
+        if reduce_motion {
+            return 1.0;
+        }
         match self.transition {
             Some((_, at)) => {
                 let p = at.elapsed().as_millis().min(TRANSITION_MS) as f32 / TRANSITION_MS as f32;
@@ -202,8 +206,7 @@ impl Presentation {
     }
 
     pub(crate) fn clock(&self) -> String {
-        let seconds = self.elapsed().as_secs();
-        format!("{}:{:02}", seconds / 60, seconds % 60)
+        ui::format::timecode(self.elapsed().as_secs())
     }
 
     pub(crate) fn is_paused(&self) -> bool {
@@ -439,7 +442,7 @@ impl Presentation {
         let y = area.y0 + (area.height() - height) / 2.0;
         let destination = Rect::new(x, y, x + width, y + height);
 
-        let alpha = self.transition_alpha();
+        let alpha = self.transition_alpha(theme.reduce_motion);
         if let Some((from, _)) = self.transition
             && alpha < 1.0
             && let Some(previous) = frame.deck.slides.get(from)
