@@ -63,8 +63,13 @@ def cargo_metadata(root: Path) -> dict:
 
 def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path, str]]:
     packages = {p["name"]: p for p in metadata["packages"]}
+    # Cargo may canonicalize a host-mounted checkout to a different absolute
+    # prefix (for example /tmp/... -> /run/host/tmp/...). Package ownership is
+    # repository-relative, so derive it from Cargo's own workspace root rather
+    # than mixing those two absolute namespaces.
+    metadata_root = Path(metadata.get("workspace_root", root)).resolve()
     by_dir = {
-        Path(p["manifest_path"]).resolve().parent.relative_to(root.resolve()): p["name"]
+        Path(p["manifest_path"]).resolve().parent.relative_to(metadata_root): p["name"]
         for p in metadata["packages"]
     }
     return packages, by_dir
