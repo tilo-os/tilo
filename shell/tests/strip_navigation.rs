@@ -830,6 +830,8 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         h.host.close_tab_in_group(h.groups[0], Some(opened)),
         "the shared durable close action removes the freshly opened tab"
     );
+    // Rebuild the live row from that revision before probing another pill.
+    let _ = h.host.take_structure_dirty();
     h.tick();
     assert!(
         h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
