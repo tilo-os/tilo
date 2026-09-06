@@ -19,7 +19,7 @@ use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
 use shell::onboarding_view::{
     KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CONNECT, KEY_CREATE,
-    KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
+    KEY_IMPORT, KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
@@ -35,7 +35,7 @@ const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
 
 fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
-    shoot_in_context(theme, out, steps, width, height, false)
+    shoot_in_context(theme, out, steps, width, height, false, false)
 }
 
 fn shoot_host(
@@ -45,7 +45,17 @@ fn shoot_host(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    shoot_in_context(theme, out, steps, width, height, true)
+    shoot_in_context(theme, out, steps, width, height, true, false)
+}
+
+fn shoot_host_mint_error(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&str],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    shoot_in_context(theme, out, steps, width, height, true, true)
 }
 
 #[allow(
@@ -59,14 +69,20 @@ fn shoot_in_context(
     width: u32,
     height: u32,
     host_desktop: bool,
+    mint_error: bool,
 ) -> Result<(), String> {
     let mut state = State::new();
-    let minter = Box::new(|| {
-        Ok(MintedIdentity {
-            fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
-                .to_string(),
-            path: PathBuf::from("/home/user/.config/qos/identity/primary.json"),
-        })
+    let minter = Box::new(move || {
+        if mint_error {
+            Err("The identity store is unavailable. Check free space and permissions, then try again."
+                .to_string())
+        } else {
+            Ok(MintedIdentity {
+                fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
+                    .to_string(),
+                path: PathBuf::from("/home/user/.config/qos/identity/primary.json"),
+            })
+        }
     });
     let mut view = if host_desktop {
         OnboardingView::with_minter_for_host_desktop(minter)
@@ -135,7 +151,7 @@ fn main() -> Result<(), String> {
     // laptop sizes that motivated this harness. Include the acknowledgement
     // state separately because it changes both the checkbox and primary
     // action, and must not shift either one.
-    for (width, height) in [(1600, 900), (1366, 768), (1280, 720)] {
+    for (width, height) in [(1600, 900), (1366, 768), (1280, 720), (800, 600)] {
         let size = format!("{width}x{height}");
         shoot_host(
             &Theme::dark(),
@@ -153,6 +169,13 @@ fn main() -> Result<(), String> {
         )?;
         shoot_host(
             &Theme::dark(),
+            &dir.join(format!("host-2-connect-error-{size}.png")),
+            &[KEY_CONNECT, KEY_IMPORT],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
             &dir.join(format!("host-2-protect-{size}.png")),
             &[KEY_BEGIN],
             width,
@@ -162,6 +185,13 @@ fn main() -> Result<(), String> {
             &Theme::dark(),
             &dir.join(format!("host-2-protect-acknowledged-{size}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD],
+            width,
+            height,
+        )?;
+        shoot_host_mint_error(
+            &Theme::dark(),
+            &dir.join(format!("host-2-create-error-{size}.png")),
+            &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
             width,
             height,
         )?;
@@ -214,6 +244,51 @@ fn main() -> Result<(), String> {
         1280,
         720,
     )?;
+
+    let accessibility_states: &[(&str, &[&str])] = &[
+        ("choose", &[]),
+        ("connect", &[KEY_CONNECT]),
+        ("protect", &[KEY_BEGIN]),
+        ("protect-acknowledged", &[KEY_BEGIN, KEY_UNDERSTOOD]),
+        ("backup", &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE]),
+        (
+            "backup-acknowledged",
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            ],
+        ),
+        (
+            "ready",
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
+            ],
+        ),
+    ];
+    for (name, steps) in accessibility_states {
+        shoot_host(
+            &Theme::dark().with_text_scale(1.3),
+            &dir.join(format!("host-{name}-large-text-1280x720.png")),
+            steps,
+            1280,
+            720,
+        )?;
+        shoot_host(
+            &Theme::high_contrast()
+                .with_ui_scale(1.25)
+                .with_reduce_motion(true),
+            &dir.join(format!("host-{name}-high-contrast-1280x720.png")),
+            steps,
+            1280,
+            720,
+        )?;
+    }
 
     if std::env::var_os("ONBOARDING_SHOTS_HOST_ONLY").is_some() {
         return Ok(());
