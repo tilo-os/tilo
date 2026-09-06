@@ -90,6 +90,13 @@ impl SearchBox {
         self.debounce.is_some()
     }
 
+    /// Stable identity for a visible suggestion. The canvas uses this to give
+    /// its semantic result node a durable address rather than a frame-local
+    /// result index.
+    pub(crate) fn result_id(&self, index: usize) -> Option<&str> {
+        self.results.get(index).map(|place| place.id.as_str())
+    }
+
     #[cfg(test)]
     pub(crate) fn results(&self) -> &[Place] {
         &self.results
