@@ -1139,7 +1139,7 @@ impl MusicApp {
     /// inert stub, so no code path branches on whether MPRIS is present.
     pub fn enable_mpris(&mut self) {
         let snap = self.mpris_snapshot();
-        self.mpris = MprisHandle::spawn(snap.clone());
+        self.mpris = MprisHandle::spawn(&snap);
         self.mpris_last = Some(snap);
     }
 
@@ -1185,7 +1185,7 @@ impl MusicApp {
             return;
         }
         let snap = self.mpris_snapshot();
-        self.mpris.publish(snap);
+        self.mpris.publish(&snap);
     }
 
     /// Drain external MPRIS control commands (media keys, the desktop media

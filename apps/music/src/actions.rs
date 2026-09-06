@@ -80,8 +80,9 @@ pub fn open_playlist_address(id: &str) -> ActionAddress {
 }
 
 /// Non-document operations exported by Music. Navigation changes only the
-/// local presentation, and playback is a transient device effect; neither is
-/// replayed into collaborative library history.
+/// local presentation. Playback is intentionally absent: its durable controls
+/// are collaborative [`MusicAction`] values, while stream resolution and audio
+/// output remain device effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
     PlayTrack { id: String },
@@ -90,6 +91,12 @@ pub enum MusicOperation {
     OpenPlaylist { id: String },
 }
 
+/// Decode a host-routed Music operation.
+///
+/// # Errors
+///
+/// Returns the JSON decoding error for a payload addressed to Music's
+/// operation type. Payloads for other operation types return `Ok(None)`.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MusicOperation>, String> {
     if type_id != MUSIC_OPERATION_TYPE {
         return Ok(None);
@@ -451,6 +458,10 @@ fn operation_spec(
     kind: OperationKind,
     operation: &MusicOperation,
 ) -> ActionSpec {
+    #[allow(
+        clippy::expect_used,
+        reason = "MusicOperation contains only serde-supported owned values and is covered by operation round-trip tests"
+    )]
     let spec = ActionSpec::operation(id, label, kind, MUSIC_OPERATION_TYPE, operation)
         .expect("encode music operation");
     if kind == OperationKind::View {
@@ -469,26 +480,16 @@ fn playlist_label(p: &PlaylistResource) -> String {
     }
 }
 
-/// Build the resource tree Music currently has open: the library (with a "New
-/// playlist" action), each playlist (rename + delete), and each track within a
-/// playlist (remove + toggle-like). Every document-mutating operation is
-/// exported as the same action the on-screen affordance dispatches.
-pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("music.library", "music.library", "Library");
-
-    if ctx.playback.current.is_some() {
-        let mut toggled = ctx.playback.clone();
+fn with_playback_actions(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+    if playback.current.is_some() {
+        let mut toggled = playback.clone();
         toggled.playing = !toggled.playing;
         root = root.with_action(immediate_spec(
             "play-pause",
-            if ctx.playback.playing {
-                "Pause"
-            } else {
-                "Play"
-            },
+            if playback.playing { "Pause" } else { "Play" },
             &MusicAction::SetPlayback(toggled),
         ));
-        let seek = ctx.playback.clone();
+        let seek = playback.clone();
         root = root.with_action(
             ActionSpec::typed(
                 "seek",
@@ -509,7 +510,7 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             .reversible(),
         );
     }
-    let volume = ctx.playback.clone();
+    let volume = playback.clone();
     root = root.with_action(
         ActionSpec::typed(
             "set-volume",
@@ -524,21 +525,25 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 let mut next = volume.clone();
                 next.volume = args
                     .integer("volume")
-                    .unwrap_or(i64::from(next.volume))
+                    .unwrap_or_else(|| i64::from(next.volume))
                     .clamp(0, 100) as u8;
                 encode(&MusicAction::SetPlayback(next))
             },
         )
         .reversible(),
     );
-    let mut muted = ctx.playback.clone();
+    let mut muted = playback.clone();
     muted.volume = if muted.volume == 0 { 80 } else { 0 };
     root = root.with_action(immediate_spec(
         "toggle-mute",
         "Toggle mute",
         &MusicAction::SetPlayback(muted),
     ));
-    let add_queue = ctx.playback.clone();
+    with_queue_actions(root, playback)
+}
+
+fn with_queue_actions(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+    let add_queue = playback.clone();
     root = root.with_action(ActionSpec::typed(
         "queue-add",
         "Add track to queue",
@@ -557,7 +562,7 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             encode(&MusicAction::SetPlayback(next))
         },
     ));
-    let remove_queue = ctx.playback.clone();
+    let remove_queue = playback.clone();
     let remove = ActionSpec::typed(
         "queue-remove",
         "Remove track from queue",
@@ -580,11 +585,111 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     )
     .destructive()
     .reversible();
-    root = root.with_action(if ctx.playback.queue.is_empty() {
+    root = root.with_action(if playback.queue.is_empty() {
         remove.unavailable("empty_queue", "There are no queued tracks to remove")
     } else {
         remove
     });
+    root
+}
+
+fn playlist_resource(playlist: &PlaylistResource) -> Resource {
+    let mut resource = Resource::new(
+        playlist_resource_id(&playlist.id),
+        "music.playlist",
+        playlist_label(playlist),
+    )
+    .with_action(operation_spec(
+        "open",
+        "Open playlist",
+        OperationKind::View,
+        &MusicOperation::OpenPlaylist {
+            id: playlist.id.clone(),
+        },
+    ));
+    let playlist_id = playlist.id.clone();
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "rename",
+            "Rename playlist",
+            "Name",
+            "playlist name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_playlist_action(&playlist_id, name.trim())),
+        )
+        .reversible(),
+    );
+    resource = resource.with_action(
+        immediate_spec(
+            "delete",
+            "Delete playlist",
+            &delete_playlist_action(&playlist.id),
+        )
+        .destructive(),
+    );
+    for track in &playlist.tracks {
+        resource = resource.with_child(
+            Resource::new(
+                format!("music.track:{}:{}", playlist.id, track.id),
+                "music.track",
+                track.label.clone(),
+            )
+            .with_action(immediate_spec(
+                "remove",
+                "Remove from playlist",
+                &remove_track_action(&playlist.id, &track.id),
+            ))
+            .with_action(immediate_spec(
+                "toggle-like",
+                "Toggle like",
+                &toggle_liked_action(&track.id),
+            )),
+        );
+    }
+    resource
+}
+
+fn catalog_track_resource(track: &CatalogResource, playback: &crate::model::Playback) -> Resource {
+    let mut next = playback.clone();
+    next.queue = vec![track.id.clone()];
+    next.queue_index = 0;
+    next.current = Some(track.id.clone());
+    next.position_ms = 0;
+    next.playing = true;
+    Resource::new(
+        track_resource_id(&track.id),
+        "music.track",
+        track.label.clone(),
+    )
+    .with_action(immediate_spec(
+        "play",
+        "Play track",
+        &MusicAction::SetPlayback(next),
+    ))
+    .with_action(immediate_spec(
+        if track.offline {
+            "remove-offline"
+        } else {
+            "keep-offline"
+        },
+        if track.offline {
+            "Remove from offline cache"
+        } else {
+            "Keep offline"
+        },
+        &set_offline_action(std::slice::from_ref(&track.id), !track.offline),
+    ))
+}
+
+/// Build the resource tree Music currently has open: the library (with a "New
+/// playlist" action), each playlist (rename + delete), and each track within a
+/// playlist (remove + toggle-like). Every document-mutating operation is
+/// exported as the same action the on-screen affordance dispatches.
+pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = with_playback_actions(
+        Resource::new("music.library", "music.library", "Library"),
+        &ctx.playback,
+    );
 
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
@@ -608,94 +713,12 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         .reversible(),
     );
 
-    for pl in &ctx.playlists {
-        let mut child = Resource::new(
-            playlist_resource_id(&pl.id),
-            "music.playlist",
-            playlist_label(pl),
-        )
-        .with_action(operation_spec(
-            "open",
-            "Open playlist",
-            OperationKind::View,
-            &MusicOperation::OpenPlaylist { id: pl.id.clone() },
-        ));
-
-        // Rename — a prompted action.
-        let pid = pl.id.clone();
-        child = child.with_action(
-            ActionSpec::prompted(
-                "rename",
-                "Rename playlist",
-                "Name",
-                "playlist name…",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&rename_playlist_action(&pid, name.trim())),
-            )
-            .reversible(),
-        );
-        // Delete the whole playlist.
-        child = child.with_action(
-            immediate_spec("delete", "Delete playlist", &delete_playlist_action(&pl.id))
-                .destructive(),
-        );
-
-        // Each track in the playlist → its own resource (remove + toggle-like).
-        for tk in &pl.tracks {
-            let track = Resource::new(
-                format!("music.track:{}:{}", pl.id, tk.id),
-                "music.track",
-                tk.label.clone(),
-            )
-            .with_action(immediate_spec(
-                "remove",
-                "Remove from playlist",
-                &remove_track_action(&pl.id, &tk.id),
-            ))
-            .with_action(immediate_spec(
-                "toggle-like",
-                "Toggle like",
-                &toggle_liked_action(&tk.id),
-            ));
-            child = child.with_child(track);
-        }
-
-        root = root.with_child(child);
+    for playlist in &ctx.playlists {
+        root = root.with_child(playlist_resource(playlist));
     }
 
     for track in &ctx.tracks {
-        let mut playback = ctx.playback.clone();
-        playback.queue = vec![track.id.clone()];
-        playback.queue_index = 0;
-        playback.current = Some(track.id.clone());
-        playback.position_ms = 0;
-        playback.playing = true;
-        let offline = set_offline_action(std::slice::from_ref(&track.id), !track.offline);
-        root = root.with_child(
-            Resource::new(
-                track_resource_id(&track.id),
-                "music.track",
-                track.label.clone(),
-            )
-            .with_action(immediate_spec(
-                "play",
-                "Play track",
-                &MusicAction::SetPlayback(playback),
-            ))
-            .with_action(immediate_spec(
-                if track.offline {
-                    "remove-offline"
-                } else {
-                    "keep-offline"
-                },
-                if track.offline {
-                    "Remove from offline cache"
-                } else {
-                    "Keep offline"
-                },
-                &offline,
-            )),
-        );
+        root = root.with_child(catalog_track_resource(track, &ctx.playback));
     }
     for album in &ctx.albums {
         root = root.with_child(

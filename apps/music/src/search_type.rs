@@ -417,25 +417,29 @@ fn library_hits_limited(lib: &Library, query: &str, limit: usize) -> Vec<SearchH
             return hits;
         }
     }
-    // Personal playlists match by name (the library search buckets don't cover
-    // playlists; the user's own playlists are still worth finding OS-wide).
-    let ql = q.to_lowercase();
-    for pl in &lib.playlists {
-        if pl.name.to_lowercase().contains(&ql) {
+    append_matching_playlists(lib, q, limit, &mut hits);
+    hits
+}
+
+fn append_matching_playlists(lib: &Library, query: &str, limit: usize, hits: &mut Vec<SearchHit>) {
+    // Library::search does not include playlists, but the user's own synced
+    // playlists should still be discoverable OS-wide.
+    let query = query.to_lowercase();
+    for playlist in &lib.playlists {
+        if playlist.name.to_lowercase().contains(&query) {
             hits.push(SearchHit {
                 type_id: PLAYLIST_TYPE_ID,
-                title: pl.name.clone(),
-                subtitle: playlist_subtitle("Your library", pl.track_ids.len() as u64),
-                cover_url: pl.cover.clone(),
-                thumbnail_seed: pl.id.clone(),
-                deep_link: SearchHit::playlist_link(&pl.id),
+                title: playlist.name.clone(),
+                subtitle: playlist_subtitle("Your library", playlist.track_ids.len() as u64),
+                cover_url: playlist.cover.clone(),
+                thumbnail_seed: playlist.id.clone(),
+                deep_link: SearchHit::playlist_link(&playlist.id),
             });
             if hits.len() == limit {
                 break;
             }
         }
     }
-    hits
 }
 
 fn song_subtitle(artist: &str, duration_s: u32) -> String {
