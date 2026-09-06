@@ -11199,7 +11199,10 @@ mod interaction_tests {
                 return;
             }
         };
-        let actual = renderer.render_rgba(&scene);
+        // A typography-heavy first submission can grow Vello's bump budget;
+        // compare only the confirmed-fit frame so missing glyph-atlas spans
+        // cannot masquerade as a legitimate baseline change.
+        let actual = renderer.render_rgba_resilient(&scene);
         let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/typography/serif-reader.png");
         if std::env::var_os("UPDATE_EBOOK_TYPOGRAPHY_BASELINE").is_some() {
@@ -11249,7 +11252,7 @@ mod interaction_tests {
                 return;
             }
         };
-        let actual = renderer.render_rgba(&scene);
+        let actual = renderer.render_rgba_resilient(&scene);
         let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/typography/math-reader.png");
         if std::env::var_os("UPDATE_EBOOK_MATH_BASELINE").is_some() {
