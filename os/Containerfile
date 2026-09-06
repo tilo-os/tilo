@@ -1997,8 +1997,10 @@ COPY os/dev/uki.sh /usr/local/bin/uki.sh
 COPY os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py
 
 FROM uki-tools AS uki
-# Set to the digest `bootc install` asked for, to close the seal in a second pass
-# (bootc#2334). Empty on a first pass; see os/dev/uki.sh.
+# The first pass uses a deterministic all-zero placeholder. `bootc install`
+# computes the authoritative digest and os/dev/build-image.sh rewrites only the
+# UKI under /boot before retrying. This avoids constructing a rootfs-sized
+# composefs scratch repository merely to obtain a provisional value.
 ARG QOS_CFS_DIGEST=
 ENV CFS_DIGEST=${QOS_CFS_DIGEST}
 # The negative control: 0 builds a UKI that measures perfectly and carries no
@@ -2006,18 +2008,10 @@ ENV CFS_DIGEST=${QOS_CFS_DIGEST}
 # assertions rather than on "nothing measured". Always 1 for a real image.
 ARG QOS_SEAL_GENERATION=1
 ENV QOS_SEAL_GENERATION=${QOS_SEAL_GENERATION}
-# The cache mount on /var/tmp is not an optimisation, it is required. Computing
-# the composefs digest builds a temporary composefs repository there, and writing
-# an object into it needs O_TMPFILE — which overlayfs, the filesystem a build
-# stage's root is, does not support. The failure is "Creating object tmpfile: ...
-# Operation not supported (os error 95)" and it names neither /var/tmp nor
-# overlayfs. A cache mount is host-backed and supports O_TMPFILE. Give this
-# workspace an explicit generation: interrupted seal attempts can strand a
-# rootfs-sized repository in the default anonymous cache, leaving no room for
-# every later retry before the accessibility/installed-image gates can run.
-# Rotating the id is recoverable and affects only disposable build scratch.
-RUN --mount=type=cache,id=qos-composefs-v2,target=/var/tmp,sharing=locked \
-    --mount=type=tmpfs,target=/tmp \
+# /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
+# it belongs in the image layer. The authoritative composefs digest comes from
+# the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
+RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
