@@ -1436,7 +1436,8 @@ pub mod rich_text_editor;
 pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
-    Block, BlockEditor, BlockKind, CursorPlacement, DocumentPosition, DocumentSelection,
+    Block, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
+    DocumentSelection, legacy_block_id,
 };
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;
