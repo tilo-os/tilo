@@ -473,6 +473,11 @@ pub enum AccelProfile {
 // document's JSON shape and field names are load-bearing across `apps/settings`
 // and `shell`, so folding them into a bitflags type ripples well outside this
 // crate.
+/// Fedora GNOME-compatible defaults: touchpads move content with the fingers,
+/// while physical mouse wheels retain their conventional direction.
+pub const DEFAULT_TOUCHPAD_NATURAL_SCROLL: bool = true;
+pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent input-device toggles serialised by field name; consumers in other \
@@ -520,8 +525,8 @@ impl Default for RichInputConfig {
             touchpad_pointer_speed: None,
             mouse_pointer_speed: None,
             natural_scroll: false,
-            touchpad_natural_scroll: None,
-            mouse_natural_scroll: None,
+            touchpad_natural_scroll: Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL),
+            mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             tap_drag: true,
             disable_while_typing: true,
@@ -596,6 +601,23 @@ impl RichInputConfig {
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let mut config: Self =
             serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
+        // `natural_scroll` predates per-device preferences.  It must still
+        // win for an old document, but an unset document gets the distinct
+        // platform defaults rather than one global direction for every device.
+        let legacy_natural_scroll = section
+            .get("natural_scroll")
+            .and_then(serde_json::Value::as_bool);
+        config.natural_scroll = legacy_natural_scroll.unwrap_or(false);
+        config.touchpad_natural_scroll = section
+            .get("touchpad_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL));
+        config.mouse_natural_scroll = section
+            .get("mouse_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(DEFAULT_MOUSE_NATURAL_SCROLL));
         // Read the keyboard fields independently as well: a wrong-typed
         // pointer field must not discard an otherwise valid input-source
         // list merely because serde rejected the whole rich object.
@@ -1206,6 +1228,21 @@ mod tests {
         assert_eq!(cfg.keyboard_layout, "de");
         assert_eq!(cfg.keyboard_layouts, ["de"]);
         assert_eq!(cfg.active_source_index(), 0);
+    }
+
+    #[test]
+    fn scroll_defaults_match_gnome_and_keep_legacy_global_documents() {
+        let empty = RichInputConfig::from_section(&serde_json::Map::new());
+        assert_eq!(empty.touchpad_natural_scroll, Some(true));
+        assert_eq!(empty.mouse_natural_scroll, Some(false));
+
+        let legacy = serde_json::json!({ "natural_scroll": false })
+            .as_object()
+            .unwrap()
+            .clone();
+        let legacy = RichInputConfig::from_section(&legacy);
+        assert_eq!(legacy.touchpad_natural_scroll, Some(false));
+        assert_eq!(legacy.mouse_natural_scroll, Some(false));
     }
 
     #[test]
