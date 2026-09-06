@@ -51,11 +51,16 @@ pub(crate) struct Presentation {
     transition: Option<(usize, Instant)>,
     blank: Blank,
     presenter_view: bool,
+    /// A real, host-owned audience toplevel is live. The app's original
+    /// window stays local and renders the dashboard in this state.
+    external_audience: bool,
     show_notes: bool,
     /// Shaped settled audience slide. Presentation frames keep painting live
     /// chrome (timer, notes, progress), but the authored slide only needs to be
     /// reshaped when its cache key changes.
     cache: Option<PresentCache>,
+    /// Separate cache because the audience has its own output dimensions.
+    audience_cache: Option<PresentCache>,
 }
 
 /// Read-only app state needed to render one presentation frame. Deck mutation
@@ -137,8 +142,10 @@ impl Default for Presentation {
             transition: None,
             blank: Blank::None,
             presenter_view: false,
+            external_audience: false,
             show_notes: false,
             cache: None,
+            audience_cache: None,
         }
     }
 }
@@ -155,6 +162,7 @@ impl Presentation {
     pub(crate) fn leave(&mut self) {
         self.blank = Blank::None;
         self.presenter_view = false;
+        self.external_audience = false;
         self.transition = None;
     }
 
@@ -162,6 +170,7 @@ impl Presentation {
     /// without changing the deck revision/cache key.
     pub(crate) fn invalidate_cache(&mut self) {
         self.cache = None;
+        self.audience_cache = None;
     }
 
     pub(crate) fn start_transition(&mut self, from: usize) {
@@ -226,6 +235,17 @@ impl Presentation {
         self.presenter_view = show;
     }
 
+    pub(crate) fn set_external_audience(&mut self, active: bool) {
+        self.external_audience = active;
+        if !active {
+            self.audience_cache = None;
+        }
+    }
+
+    pub(crate) fn has_external_audience(&self) -> bool {
+        self.external_audience
+    }
+
     pub(crate) fn set_blank(&mut self, blank: Blank) {
         self.blank = blank;
     }
@@ -239,7 +259,7 @@ impl Presentation {
         if self.blank.is_blanked() {
             self.blank = Blank::None;
             Command::None
-        } else if self.presenter_view {
+        } else if self.presenter_view || self.external_audience {
             Command::None
         } else {
             Command::Advance
@@ -347,7 +367,7 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
     ) {
         let palette = Palette::resolve(frame.deck.palette, theme);
-        if self.presenter_view {
+        if self.presenter_view || self.external_audience {
             self.draw_presenter(scene, transform, text, theme, frame, &palette);
             return;
         }
@@ -420,7 +440,16 @@ impl Presentation {
                 scene.pop_layer();
             }
         } else {
-            self.append_settled_slide(scene, transform, text, theme, frame, &palette, destination);
+            Self::append_settled_slide(
+                &mut self.cache,
+                scene,
+                transform,
+                text,
+                theme,
+                frame,
+                &palette,
+                destination,
+            );
         }
 
         if let Some(panel) = notes_panel {
@@ -433,7 +462,7 @@ impl Presentation {
         reason = "render target, shared text/theme state, presentation frame, palette and destination are independent inputs"
     )]
     fn append_settled_slide(
-        &mut self,
+        cache_slot: &mut Option<PresentCache>,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -442,7 +471,7 @@ impl Presentation {
         palette: &Palette,
         destination: Rect,
     ) -> bool {
-        let stale = self.cache.as_ref().is_none_or(|cache| {
+        let stale = cache_slot.as_ref().is_none_or(|cache| {
             !cache.matches(
                 destination,
                 frame.current,
@@ -471,7 +500,7 @@ impl Presentation {
                 frame.revision,
                 frame.deck.palette,
             );
-            self.cache = Some(PresentCache {
+            *cache_slot = Some(PresentCache {
                 slide: frame.current,
                 revision: frame.revision,
                 palette: frame.deck.palette,
@@ -479,10 +508,87 @@ impl Presentation {
                 scene: fragment,
             });
         }
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = cache_slot {
             scene.append(&cache.scene, Some(transform));
         }
         stale
+    }
+
+    /// Paint the clean audience projection for the dedicated toplevel. It
+    /// deliberately bypasses presenter/notes toggles: those are local control
+    /// state and must never leak onto the room display.
+    pub(crate) fn draw_audience(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        frame: &PresentationFrame<'_>,
+    ) {
+        let palette = Palette::resolve(frame.deck.palette, theme);
+        chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
+        if self.draw_blank(scene, transform, frame.rect) {
+            return;
+        }
+        let available_width = frame.rect.width() - 48.0;
+        let available_height = frame.rect.height() - 48.0;
+        let scale = (available_width / SLIDE_W).min(available_height / SLIDE_H);
+        let width = SLIDE_W * scale;
+        let height = SLIDE_H * scale;
+        let x = frame.rect.x0 + (frame.rect.width() - width) / 2.0;
+        let y = frame.rect.y0 + (frame.rect.height() - height) / 2.0;
+        let destination = Rect::new(x, y, x + width, y + height);
+        let alpha = self.transition_alpha(theme.reduce_motion);
+        if let Some((from, _)) = self.transition
+            && alpha < 1.0
+            && let Some(previous) = frame.deck.slides.get(from)
+        {
+            render::draw_slide(
+                scene,
+                transform,
+                text,
+                theme,
+                &palette,
+                previous,
+                destination,
+                0.0,
+                frame.images,
+            );
+        }
+        if alpha < 1.0 {
+            if let Some(slide) = frame.slide() {
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    transform,
+                    &destination,
+                );
+                render::draw_slide(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &palette,
+                    slide,
+                    destination,
+                    0.0,
+                    frame.images,
+                );
+                scene.pop_layer();
+            }
+        } else {
+            Self::append_settled_slide(
+                &mut self.audience_cache,
+                scene,
+                transform,
+                text,
+                theme,
+                frame,
+                &palette,
+                destination,
+            );
+        }
     }
 
     #[allow(
@@ -989,7 +1095,8 @@ mod tests {
         let mut presentation = Presentation::default();
         let mut text = TextRenderer::new();
 
-        assert!(presentation.append_settled_slide(
+        assert!(Presentation::append_settled_slide(
+            &mut presentation.cache,
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -998,7 +1105,8 @@ mod tests {
             &palette,
             destination,
         ));
-        assert!(!presentation.append_settled_slide(
+        assert!(!Presentation::append_settled_slide(
+            &mut presentation.cache,
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -1009,7 +1117,8 @@ mod tests {
         ));
 
         presentation.invalidate_cache();
-        assert!(presentation.append_settled_slide(
+        assert!(Presentation::append_settled_slide(
+            &mut presentation.cache,
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
