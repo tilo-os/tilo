@@ -918,12 +918,20 @@ impl StoreApp {
             crate::StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
             crate::StoreSource::Flathub => "Flatpak · Flathub".to_string(),
         };
-        let trust_summary = match item.trust {
-            crate::StoreTrust::PublisherSigned => {
-                "Identity and package integrity verified. The registry owner allowed this publisher. This is not an independent quality or safety review."
-            }
-            crate::StoreTrust::Flathub => {
-                "Distributed by Flathub. qOS has not independently reviewed this app, and Flatpak apps run under their own sandbox policy."
+        let locally_retained = matches!(
+            &item.source,
+            crate::StoreSource::Qos { registry_name } if registry_name == "Installed on this device"
+        );
+        let trust_summary = if locally_retained {
+            "Verified when installed. This local app remains manageable, but the registry's current metadata is unavailable, so update availability is unknown."
+        } else {
+            match item.trust {
+                crate::StoreTrust::PublisherSigned => {
+                    "Identity and package integrity verified. The registry owner allowed this publisher. This is not an independent quality or safety review."
+                }
+                crate::StoreTrust::Flathub => {
+                    "Distributed by Flathub. qOS has not independently reviewed this app, and Flatpak apps run under their own sandbox policy."
+                }
             }
         };
         let mut column = Column::new()
@@ -1965,6 +1973,9 @@ impl Widget for StoreApp {
             "store.remote",
             "store.view",
             "store.report-export",
+            "store.moderation",
+            "store.moderation-status",
+            "store.moderation-appeal",
         ]
     }
 
@@ -3083,5 +3094,21 @@ mod tests {
         let status = node.children.first().expect("status live region");
         assert_eq!(status.name.as_deref(), Some("Installing Notes…"));
         assert_eq!(status.live, Some(Politeness::Polite));
+    }
+
+    #[test]
+    fn every_published_moderation_effect_has_a_local_operation_handler() {
+        let app = seeded_app();
+        let handlers = Widget::local_resource_operation_handlers(&app);
+        for type_id in [
+            "store.moderation",
+            "store.moderation-status",
+            "store.moderation-appeal",
+        ] {
+            assert!(
+                handlers.contains(&type_id),
+                "published {type_id} action must be callable by agents and collaboration"
+            );
+        }
     }
 }
