@@ -41,12 +41,41 @@ impl OutputMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
-    /// Connector name exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
+    /// Collision-free output key used by persisted display intent. This is
+    /// the familiar DRM connector label when it is unique, and a
+    /// card-qualified key only when another card exposes the same label.
     pub connector: String,
+    /// Raw connector label exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
+    /// Older compositor snapshots omit this field; consumers must then use
+    /// [`Self::connector`] as the user-facing fallback.
+    #[serde(default)]
+    pub connector_label: String,
     pub modes: Vec<OutputMode>,
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+}
+
+impl OutputDescriptor {
+    /// Connector label suitable for a compact user-facing description. The
+    /// persisted key stays available in [`Self::connector`] for selections,
+    /// mirrors and widget ids.
+    pub fn label(&self) -> &str {
+        if self.connector_label.is_empty() {
+            &self.connector
+        } else {
+            &self.connector_label
+        }
+    }
+
+    /// The card portion of a collision-resolved key, if this descriptor had
+    /// to be qualified. Keys use `card-identity/raw-connector`; a raw
+    /// connector label never contains `/` in DRM's connector-name grammar.
+    pub fn card_qualifier(&self) -> Option<&str> {
+        self.connector
+            .strip_suffix(self.label())
+            .and_then(|prefix| prefix.strip_suffix('/'))
+    }
 }
 
 /// One compositor-published output capability snapshot.  Settings consumes
@@ -324,6 +353,14 @@ pub enum DisplayConfigError {
 }
 
 impl DisplayConfig {
+    /// Look up intent by the compositor-published collision-free output key.
+    /// A legacy raw connector entry is deliberately not a fallback for a
+    /// card-qualified key: applying it to both same-named GPU connectors
+    /// would turn one user's layout into two conflicting layouts.
+    pub fn output_for(&self, connector: &str) -> Option<&OutputConfig> {
+        self.outputs.get(connector)
+    }
+
     /// Validate intent against a fresh hardware snapshot. Unknown/disconnected
     /// configured outputs are retained for re-plug but ignored in this plan.
     ///
@@ -1064,6 +1101,7 @@ mod tests {
     fn display(name: &str) -> OutputDescriptor {
         OutputDescriptor {
             connector: name.into(),
+            connector_label: name.into(),
             modes: vec![OutputMode {
                 width: 1920,
                 height: 1080,
@@ -1092,6 +1130,49 @@ mod tests {
             cfg.validate_for(&[display("DP-1")]),
             Err(DisplayConfigError::UnsupportedMode { .. })
         ));
+    }
+
+    #[test]
+    fn legacy_unqualified_connector_never_cross_targets_qualified_duplicates() {
+        let first = OutputDescriptor {
+            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        let second = OutputDescriptor {
+            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+
+        assert!(config.output_for(&first.connector).is_none());
+        assert!(config.output_for(&second.connector).is_none());
+        assert_eq!(first.label(), "HDMI-A-1");
+        assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
+
+        // Snapshots written before `connector_label` existed remain readable
+        // and continue to present the historical raw connector label.
+        let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
+            "connector": "HDMI-A-1",
+            "modes": [], "hdr": false, "vrr": false, "color_profiles": []
+        }))
+        .expect("old snapshot remains compatible");
+        assert_eq!(legacy.label(), "HDMI-A-1");
+        assert_eq!(legacy.card_qualifier(), None);
     }
     #[test]
     fn rejects_mirror_cycles() {
