@@ -92,11 +92,14 @@ if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile"; then
-  ok 'OS release VM invokes real AT-SPI actions and carries its session bus provider'
+  ok 'OS release VM proves real AT-SPI actions, focus, text values, and its session bus provider'
 else
-  bad 'AT-SPI release gate can ship an unreadable or actionless desktop'
+  bad 'AT-SPI release gate can ship an unreadable, actionless, or non-editable desktop'
 fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
