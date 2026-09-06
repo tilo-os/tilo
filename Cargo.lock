@@ -2477,6 +2477,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tracing",
+ "unicode-normalization",
  "uuid",
  "vello",
  "winit",
