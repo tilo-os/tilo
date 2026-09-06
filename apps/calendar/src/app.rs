@@ -1549,6 +1549,50 @@ impl CalendarApp {
             can_sync: self.demo || !self.accounts.is_empty(),
             syncing: self.syncing,
             can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
+            next_project_order: self
+                .model
+                .projects
+                .last()
+                .map_or(1, |project| project.order.saturating_add(1)),
+        }
+    }
+
+    /// Build only the root metadata the pull directory needs.  In particular,
+    /// do not materialise events/tasks (which may number in the hundreds of
+    /// thousands) merely to expose Calendar's stable root actions.
+    fn calendar_directory_root_ctx(&self) -> crate::actions::CalendarResourceCtx {
+        let start = self
+            .anchor
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
+        let template = Event {
+            id: Uuid::nil(),
+            title: String::new(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: String::new(),
+            color: self.model.next_event_order_color(),
+            recurrence: Recurrence::None,
+            reminder_min: Some(10),
+            calendar_id: None,
+            project: None,
+        };
+        crate::actions::CalendarResourceCtx {
+            new_event: crate::actions::EventData::from_event(&template),
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: Vec::new(),
+            calendar_targets: Vec::new(),
+            task_project_targets: Vec::new(),
+            can_sync: self.demo || !self.accounts.is_empty(),
+            syncing: self.syncing,
+            can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
+            next_project_order: self
+                .model
+                .projects
+                .last()
+                .map_or(1, |project| project.order.saturating_add(1)),
         }
     }
 
@@ -5231,6 +5275,26 @@ impl Widget for CalendarApp {
 
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| crate::actions::calendar_root(&self.calendar_directory_root_ctx()))
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

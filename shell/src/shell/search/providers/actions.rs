@@ -1031,6 +1031,7 @@ impl SearchProvider for ActionsProvider {
                         outcome
                     }),
                     on_invoke: None,
+                    on_begin_invoke: None,
                 });
             }
         }
@@ -1070,6 +1071,7 @@ impl SearchProvider for ActionsProvider {
                             Ok(())
                         }),
                         on_invoke: None,
+                        on_begin_invoke: None,
                     });
                 }
             }

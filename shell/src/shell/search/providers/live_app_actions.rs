@@ -1,15 +1,92 @@
 //! Dynamic provider backed by the resource/action surfaces live qOS apps
 //! publish through the session collaboration broker.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    InvocationDisposition, PendingInvocation, ResourceKind, SearchContext, SearchProvider,
+    SearchResult,
+};
 
-use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
+use crate::shell::collab_broker_capnp::{
+    ActionDirectoryBridgeResponse, ActionDirectoryRequestQueue, BrokerActor,
+    DirectoryActionConfirmation, PublishedAction, PublishedInput, PublishedSurface,
+};
 
 pub const PROVIDER_ID: &str = "app-actions";
 const ID_SEPARATOR: char = '\u{1f}';
+const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
+/// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
+/// forever. Retrying after this deadline remains bounded by the bridge queue.
+const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+type DirectoryCacheKey = (u64, String, String);
+
+struct PendingDirectoryPage {
+    receiver: tokio::sync::oneshot::Receiver<
+        crate::shell::collab_broker_capnp::ActionDirectoryBridgeReply,
+    >,
+    deadline: Instant,
+}
+
+fn invalidates_directory_cache(
+    error: crate::shell::collab_broker_capnp::ActionDirectoryBridgeError,
+) -> bool {
+    matches!(
+        error,
+        crate::shell::collab_broker_capnp::ActionDirectoryBridgeError::StaleRevision
+            | crate::shell::collab_broker_capnp::ActionDirectoryBridgeError::NotFound
+            | crate::shell::collab_broker_capnp::ActionDirectoryBridgeError::Unavailable
+    )
+}
+
+fn directory_start_ticket(
+    receiver: tokio::sync::oneshot::Receiver<
+        crate::shell::collab_broker_capnp::ActionDirectoryBridgeReply,
+    >,
+    invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
+    cache_key: DirectoryCacheKey,
+    deadline: Instant,
+) -> PendingInvocation {
+    let receiver = Rc::new(RefCell::new(receiver));
+    Rc::new(move || {
+        let reply = receiver.borrow_mut().try_recv();
+        match reply {
+            Ok(Ok(ActionDirectoryBridgeResponse::StartedDirectoryAction(started))) => {
+                Ok(Some(ActionReceipt {
+                    broker_invocation_id: Some(started.invocation_id),
+                    update: started.initial_update,
+                }))
+            }
+            Ok(Err(error)) => {
+                if invalidates_directory_cache(error) {
+                    invalidations.borrow_mut().insert(cache_key.clone());
+                }
+                Err(ActionError::Refused(format!(
+                    "directory action refused: {error:?}"
+                )))
+            }
+            Ok(Ok(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Err(
+                ActionError::Refused("directory action response was unavailable".into()),
+            ),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) if Instant::now() >= deadline => {
+                receiver.borrow_mut().close();
+                invalidations.borrow_mut().insert(cache_key.clone());
+                Err(ActionError::Refused(
+                    "directory action admission timed out".into(),
+                ))
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(None),
+        }
+    })
+}
 
 pub fn job_status_id(id: u64) -> String {
     format!("job{ID_SEPARATOR}{id}")
@@ -21,6 +98,15 @@ pub fn job_cancel_id(id: u64) -> String {
 
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
+    directory_queue: ActionDirectoryRequestQueue,
+    directory_pages: RefCell<HashMap<DirectoryCacheKey, runtime_collab::ActionDirectoryPage>>,
+    directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// The palette owns at most one needle's directory projection.
+    /// Keeping previous query terms made rapid typing retain unbounded pages
+    /// and receivers even though no result could ever be rendered again.
+    directory_query: RefCell<Option<String>>,
+    directory_invalidations: Rc<RefCell<HashSet<(u64, String, String)>>>,
+    directory_epoch: AtomicU64,
 }
 
 struct PeerInvocation<'a> {
@@ -140,7 +226,111 @@ fn invocation_argument(
 
 impl LiveAppActionsProvider {
     pub fn new(broker: AppActionBroker) -> Self {
-        Self { broker }
+        let directory_queue = broker.action_directory_request_queue();
+        Self {
+            broker,
+            directory_queue,
+            directory_pages: RefCell::new(HashMap::new()),
+            directory_pending: RefCell::new(HashMap::new()),
+            directory_query: RefCell::new(None),
+            directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
+            directory_epoch: AtomicU64::new(0),
+        }
+    }
+
+    fn poll_directory_pages_at(&self, now: Instant) {
+        let mut ready = Vec::new();
+        self.directory_pending.borrow_mut().retain(|key, pending| {
+            if pending.deadline <= now {
+                return false;
+            }
+            match pending.receiver.try_recv() {
+                Ok(Ok(ActionDirectoryBridgeResponse::Page(page))) if !page.stale_cursor => {
+                    ready.push((key.clone(), page));
+                    false
+                }
+                Ok(Err(_)) | Ok(Ok(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    false
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+            }
+        });
+        if !ready.is_empty() {
+            let mut pages = self.directory_pages.borrow_mut();
+            for (key, page) in ready {
+                pages.insert(key, page);
+            }
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn poll_directory_pages(&self) {
+        self.poll_directory_pages_at(Instant::now());
+    }
+
+    fn set_directory_query(&self, needle: &str) {
+        let next = needle.to_string();
+        let mut current = self.directory_query.borrow_mut();
+        if current.as_ref() == Some(&next) {
+            return;
+        }
+        *current = Some(next.clone());
+        // Dropping stale receivers explicitly cancels their shell-side
+        // tickets. The LocalSet may still finish its bounded work, but cannot
+        // grow this UI cache or revive an old query's results.
+        self.directory_pages
+            .borrow_mut()
+            .retain(|(_, _, cached_needle), _| cached_needle == &next);
+        self.directory_pending
+            .borrow_mut()
+            .retain(|(_, _, cached_needle), _| cached_needle == &next);
+        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn apply_directory_invalidations(&self) {
+        let invalidated = std::mem::take(&mut *self.directory_invalidations.borrow_mut());
+        if invalidated.is_empty() {
+            return;
+        }
+        let mut pages = self.directory_pages.borrow_mut();
+        let mut pending = self.directory_pending.borrow_mut();
+        for key in invalidated {
+            pages.remove(&key);
+            pending.remove(&key);
+        }
+        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn request_directory_page(&self, peer_id: u64, cluster_id: &str, actor: &str, needle: &str) {
+        let key = (peer_id, actor.to_string(), needle.to_string());
+        if self.directory_pages.borrow().contains_key(&key)
+            || self.directory_pending.borrow().contains_key(&key)
+        {
+            return;
+        }
+        let query = runtime_collab::ActionDirectoryQuery {
+            peer_id,
+            revision: String::new(),
+            cursor: Vec::new(),
+            needle: needle.to_string(),
+            parent_resource: String::new(),
+            max_results: 48,
+            max_bytes: 48 * 1024,
+            max_work: 4_096,
+            max_depth: 1,
+        };
+        if let Ok(receiver) =
+            self.directory_queue
+                .try_query(BrokerActor::person(actor), cluster_id, query)
+        {
+            self.directory_pending.borrow_mut().insert(
+                key,
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                },
+            );
+        }
     }
 
     fn result_parts(id: &str) -> Option<(&str, &str, &str, &str, &str, &str)> {
@@ -267,6 +457,115 @@ impl LiveAppActionsProvider {
         }
         params
     }
+
+    fn directory_action_result(
+        &self,
+        root: &crate::shell::collab_broker_capnp::ActionDirectoryRoot,
+        revision: &str,
+        descriptor: &runtime_collab::ExportedAction,
+        needle: &str,
+        actor: &str,
+    ) -> Option<SearchResult> {
+        let searchable = format!(
+            "{} {} {} {}",
+            descriptor.action_label, descriptor.resource_label, descriptor.action, root.app_id
+        )
+        .to_lowercase();
+        let score = if needle.is_empty() {
+            0
+        } else if descriptor.action_label.to_lowercase().starts_with(needle) {
+            100
+        } else if searchable.contains(needle) {
+            50
+        } else {
+            return None;
+        };
+        let contract =
+            serde_json::from_str::<qos_actions::ActionContract>(&descriptor.contract_json).ok()?;
+        let mut params = serde_json::from_str::<Vec<ActionParam>>(&descriptor.params_json).ok()?;
+        match &contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => {}
+            qos_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
+                "confirm",
+                ParamType::Boolean,
+                "Explicitly confirm this consequential action",
+            )),
+            qos_actions::ConfirmationPolicy::Phrase { .. } => params.push(ActionParam::required(
+                "confirmation_phrase",
+                ParamType::Text,
+                "Type the action's confirmation phrase exactly",
+            )),
+        }
+        let queue = self.directory_queue.clone();
+        let peer_id = root.peer_id;
+        let cluster_id = root.cluster_id.clone();
+        let revision = revision.to_string();
+        let resource = descriptor.resource.clone();
+        let action = descriptor.action.clone();
+        let actor = actor.to_string();
+        let invalidations = Rc::clone(&self.directory_invalidations);
+        let cache_key = (peer_id, actor.clone(), needle.to_string());
+        let typed =
+            !descriptor.params_json.trim().is_empty() && descriptor.params_json.trim() != "[]";
+        Some(SearchResult {
+            kind: ResourceKind::Action,
+            provider_id: PROVIDER_ID.into(),
+            id: format!(
+                "directory{ID_SEPARATOR}{peer_id}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
+            ),
+            title: descriptor.action_label.clone(),
+            subtitle: descriptor
+                .description
+                .clone()
+                .or_else(|| Some(format!("{} · {}", descriptor.resource_label, root.app_id))),
+            score,
+            params,
+            contract: Some(contract),
+            on_open: std::rc::Rc::new(|_, _, _, _| Ok(())),
+            on_invoke: None,
+            on_begin_invoke: Some(std::rc::Rc::new(move |_, _, _, args| {
+                let argument = if typed {
+                    let mut values = args.to_json();
+                    values.remove("confirm");
+                    values.remove("confirmation_phrase");
+                    Some(format!(
+                        "{}{}",
+                        qos_actions::ARGUMENTS_JSON_PREFIX,
+                        serde_json::Value::Object(values)
+                    ))
+                } else {
+                    args.text("argument").map(str::to_owned)
+                };
+                let confirmation = if args.boolean("confirm") == Some(true) {
+                    Some(DirectoryActionConfirmation::Confirmed)
+                } else {
+                    args.text("confirmation_phrase")
+                        .map(|value| DirectoryActionConfirmation::Phrase(value.to_owned()))
+                };
+                let receiver = queue
+                    .try_start_resolved(
+                        BrokerActor::person(&actor),
+                        &cluster_id,
+                        peer_id,
+                        &revision,
+                        &resource,
+                        &action,
+                        argument,
+                        confirmation,
+                    )
+                    .map_err(|error| {
+                        ActionError::Refused(format!("directory action unavailable: {error:?}"))
+                    })?;
+                let ticket = directory_start_ticket(
+                    receiver,
+                    Rc::clone(&invalidations),
+                    cache_key.clone(),
+                    deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                );
+                Ok(InvocationDisposition::Pending(ticket))
+            })),
+        })
+    }
 }
 
 impl SearchProvider for LiveAppActionsProvider {
@@ -300,6 +599,62 @@ impl SearchProvider for LiveAppActionsProvider {
         let needle = ctx.needle.trim().to_lowercase();
         let actor = ctx.chrome.active_local_user();
         let mut results = Vec::new();
+        self.set_directory_query(&needle);
+        self.apply_directory_invalidations();
+        self.poll_directory_pages();
+        for root in self
+            .broker
+            .action_directory_root_page(None, MAX_DIRECTORY_ROOTS_PER_QUERY)
+            .roots
+        {
+            if !matches!(
+                ctx.chrome.search_scope,
+                crate::shell::chrome_state::SearchScope::All
+            ) && ctx
+                .chrome
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+                != Some(root.cluster_id.clone())
+            {
+                continue;
+            }
+            // A directory is scoped to the room that certified its route.
+            // Never reuse the active-room principal for another room: an
+            // actor must be derived from that exact room or this root fails
+            // closed.
+            let root_actor = ctx
+                .chrome
+                .tree()
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == root.cluster_id)
+                .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+            let Some(root_actor) = root_actor else {
+                continue;
+            };
+            self.request_directory_page(root.peer_id, &root.cluster_id, &root_actor, &needle);
+            let page = self
+                .directory_pages
+                .borrow()
+                .get(&(root.peer_id, root_actor.clone(), needle.clone()))
+                .cloned();
+            if let Some(page) = page {
+                for row in page.rows {
+                    if let Some(descriptor) = row.descriptor {
+                        if let Some(result) = self.directory_action_result(
+                            &root,
+                            &page.revision,
+                            &descriptor,
+                            &needle,
+                            &root_actor,
+                        ) {
+                            results.push(result);
+                        }
+                    }
+                }
+            }
+        }
         if needle.is_empty() || "jobs status progress".contains(&needle) {
             for (id, update) in self.broker.statuses(&actor) {
                 let state = match &update {
@@ -330,6 +685,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             update,
                         })
                     })),
+                    on_begin_invoke: None,
                 });
                 if self.broker.can_cancel(id, &actor) {
                     let broker = self.broker.clone();
@@ -360,6 +716,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                 update,
                             })
                         })),
+                        on_begin_invoke: None,
                     });
                 }
             }
@@ -653,16 +1010,164 @@ impl SearchProvider for LiveAppActionsProvider {
                         .map_err(ActionError::Refused)?;
                         Ok(receipt_for_job(&invoke_broker, job))
                     })),
+                    on_begin_invoke: None,
                 });
             }
         }
+        // The provider itself also caps its merged output: the legacy
+        // trait adapter is a second guard, not permission to materialize an
+        // unbounded number of per-app directory rows first.
+        results.truncate(48);
         results
+    }
+
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        self.directory_epoch.load(Ordering::Relaxed).to_string()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ID_SEPARATOR, LiveAppActionsProvider};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    use super::{
+        DIRECTORY_PAGE_REPLY_TIMEOUT, DirectoryCacheKey, ID_SEPARATOR, LiveAppActionsProvider,
+        PendingDirectoryPage, directory_start_ticket, invalidates_directory_cache,
+    };
+    use crate::shell::collab_broker_capnp::ActionDirectoryBridgeError;
+
+    #[test]
+    fn directory_lifecycle_invalidates_only_lost_current_authority() {
+        for error in [
+            ActionDirectoryBridgeError::StaleRevision,
+            ActionDirectoryBridgeError::NotFound,
+            ActionDirectoryBridgeError::Unavailable,
+        ] {
+            assert!(invalidates_directory_cache(error));
+        }
+        for error in [
+            ActionDirectoryBridgeError::Busy,
+            ActionDirectoryBridgeError::InvalidRequest,
+            ActionDirectoryBridgeError::TimedOut,
+            ActionDirectoryBridgeError::ConfirmationRequired,
+        ] {
+            assert!(!invalidates_directory_cache(error));
+        }
+    }
+
+    #[test]
+    fn directory_cache_bounds_rapid_queries_and_expires_stalled_page_and_start_tickets() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let mut prior_sender: Option<
+            tokio::sync::oneshot::Sender<
+                crate::shell::collab_broker_capnp::ActionDirectoryBridgeReply,
+            >,
+        > = None;
+        for index in 0..10_000_usize {
+            let needle = format!("needle-{index}");
+            provider.set_directory_query(&needle);
+            if let Some(sender) = prior_sender.take() {
+                assert!(
+                    sender.is_closed(),
+                    "changing a query must close the prior palette receiver"
+                );
+            }
+            let key: DirectoryCacheKey = (7, "actor-a".into(), needle);
+            provider.directory_pages.borrow_mut().insert(
+                key.clone(),
+                runtime_collab::ActionDirectoryPage {
+                    revision: "r1".into(),
+                    rows: Vec::new(),
+                    next_cursor: Vec::new(),
+                    exhausted: true,
+                    stale_cursor: false,
+                    budget_exhausted: false,
+                },
+            );
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            provider.directory_pending.borrow_mut().insert(
+                key,
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                },
+            );
+            prior_sender = Some(sender);
+            assert!(provider.directory_pages.borrow().len() <= 1);
+            assert!(provider.directory_pending.borrow().len() <= 1);
+        }
+        provider.set_directory_query("new-needle");
+        assert!(prior_sender.expect("final sender").is_closed());
+        assert!(provider.directory_pages.borrow().is_empty());
+        assert!(provider.directory_pending.borrow().is_empty());
+
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        let (page_sender, page_receiver) = tokio::sync::oneshot::channel();
+        provider.directory_pending.borrow_mut().insert(
+            (7, "actor-a".into(), "new-needle".into()),
+            PendingDirectoryPage {
+                receiver: page_receiver,
+                deadline: expired,
+            },
+        );
+        provider.poll_directory_pages_at(Instant::now());
+        assert!(
+            page_sender.is_closed(),
+            "expired directory page ticket is cancelled"
+        );
+        assert!(provider.directory_pending.borrow().is_empty());
+
+        let invalidations: Rc<RefCell<std::collections::HashSet<DirectoryCacheKey>>> =
+            Rc::new(RefCell::new(Default::default()));
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
+        let key = (7, "actor-a".into(), "new-needle".into());
+        let ticket = directory_start_ticket(
+            start_receiver,
+            Rc::clone(&invalidations),
+            key.clone(),
+            expired,
+        );
+        assert!(
+            ticket().is_err(),
+            "expired action admission is refused rather than retained"
+        );
+        assert!(
+            start_sender.is_closed(),
+            "expired action ticket closes its broker reply receiver"
+        );
+        assert!(invalidations.borrow().contains(&key));
+    }
+
+    #[test]
+    fn directory_cache_keeps_room_actors_separate_for_the_current_needle() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        provider.set_directory_query("open");
+        for actor in ["room-a-user", "room-b-user"] {
+            provider.directory_pages.borrow_mut().insert(
+                (7, actor.into(), "open".into()),
+                runtime_collab::ActionDirectoryPage {
+                    revision: "r1".into(),
+                    rows: Vec::new(),
+                    next_cursor: Vec::new(),
+                    exhausted: true,
+                    stale_cursor: false,
+                    budget_exhausted: false,
+                },
+            );
+        }
+        provider.set_directory_query("open");
+        assert_eq!(provider.directory_pages.borrow().len(), 2);
+        provider.set_directory_query("other");
+        assert!(provider.directory_pages.borrow().is_empty());
+    }
 
     #[test]
     fn hierarchy_decodes_the_address_shape_minted_by_the_provider() {

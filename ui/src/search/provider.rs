@@ -217,6 +217,7 @@ impl std::error::Error for SearchCatalogError {}
 struct CatalogEntry {
     normalized: String,
     grams: Vec<String>,
+    tokens: Vec<String>,
     result: SearchResult,
     browse_ordinal: u64,
 }
@@ -226,6 +227,10 @@ struct SearchCatalogInner {
     entries: BTreeMap<Arc<str>, CatalogEntry>,
     browse_order: BTreeMap<u64, Arc<str>>,
     postings: HashMap<String, BTreeSet<Arc<str>>>,
+    /// Complete whitespace-delimited terms complement the compact n-gram
+    /// index.  An exact long identifier (mail id, filename, video id) can
+    /// then find a late record without walking every shared short trigram.
+    tokens: HashMap<String, BTreeSet<Arc<str>>>,
     normalized_scalars: usize,
     posting_count: usize,
     generation: u64,
@@ -240,7 +245,7 @@ struct SearchCatalogInner {
 /// count and candidate-inspection budget; result objects are cloned only for
 /// exact matches in the requested page.
 ///
-/// The index uses Unicode 1/2/3-gram postings plus exact verification. A unique
+/// The index uses Unicode 1/2/3-gram and complete-term postings plus exact verification. A unique
 /// item remains directly findable even in a corpus larger than 100,000 rows;
 /// broad or adversarial queries can continue through `SearchCursor` pages
 /// without blocking one UI turn on the whole corpus.
@@ -286,6 +291,7 @@ impl SearchCatalog {
         let resource_id: Arc<str> = resource_id.into();
         let normalized = normalize_search_text(searchable_text.as_ref());
         let grams = index_grams(&normalized);
+        let tokens = index_tokens(&normalized);
         let scalar_count = normalized.chars().count();
         let mut inner = self
             .inner
@@ -318,12 +324,23 @@ impl SearchCatalog {
                 inner.posting_count = inner.posting_count.saturating_add(1);
             }
         }
+        for token in &tokens {
+            if inner
+                .tokens
+                .entry(token.clone())
+                .or_default()
+                .insert(Arc::clone(&resource_id))
+            {
+                inner.posting_count = inner.posting_count.saturating_add(1);
+            }
+        }
         inner.normalized_scalars = inner.normalized_scalars.saturating_add(scalar_count);
         inner.entries.insert(
             resource_id,
             CatalogEntry {
                 normalized,
                 grams,
+                tokens,
                 result,
                 browse_ordinal,
             },
@@ -365,6 +382,14 @@ impl SearchCatalog {
         stats
     }
 
+    /// Whether a prior cursor belongs to this exact retained-index
+    /// generation. The pull directory must turn a mismatch into a stale
+    /// cursor response, never reinterpret it as an exhausted result set.
+    #[must_use]
+    pub fn cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.stats().generation == cursor.generation
+    }
+
     /// Query one deterministic page. Both budgets are hard ceilings. Continue
     /// with the returned cursor from an idle task/worker when `next` is set.
     #[must_use]
@@ -391,6 +416,8 @@ impl SearchCatalog {
         let generation = inner.generation;
         let candidates = if query.is_empty() {
             CandidateRows::Browse(&inner.browse_order)
+        } else if let Some(posting) = inner.tokens.get(&query) {
+            CandidateRows::Posting(posting)
         } else if let Some(posting) = rarest_posting(&inner.postings, &grams) {
             CandidateRows::Posting(posting)
         } else {
@@ -500,6 +527,28 @@ fn remove_postings(inner: &mut SearchCatalogInner, resource_id: &str, entry: &Ca
             inner.postings.remove(gram);
         }
     }
+    for token in &entry.tokens {
+        let mut empty = false;
+        if let Some(posting) = inner.tokens.get_mut(token) {
+            if posting.remove(resource_id) {
+                inner.posting_count = inner.posting_count.saturating_sub(1);
+            }
+            empty = posting.is_empty();
+        }
+        if empty {
+            inner.tokens.remove(token);
+        }
+    }
+}
+
+fn index_tokens(normalized: &str) -> Vec<String> {
+    normalized
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
@@ -633,6 +682,23 @@ pub trait SearchProvider {
     /// [`SearchResult::kind`].
     fn name(&self) -> &str;
 
+    /// Monotonic retained-index generation for the broker pull directory.
+    /// `None` means the provider has not proved that a continuation cursor is
+    /// safe across mutation, so remote directory discovery must omit it
+    /// rather than silently advertise mutable rows as revision-stable.
+    /// Providers backed by [`SearchCatalog`] should return
+    /// `Some(catalog.stats().generation)`.
+    fn action_directory_generation(&self) -> Option<u64> {
+        None
+    }
+
+    /// Validate a continuation token before it is used by a remote pull
+    /// directory. The conservative default refuses it: only providers that
+    /// expose a retained generation may claim continuation safety.
+    fn action_directory_cursor_is_current(&self, _cursor: &SearchCursor) -> bool {
+        false
+    }
+
     /// Return the matching results for `query`. An empty query conventionally
     /// returns a provider's "browse" set (recents / favourites / all), or an
     /// empty vec if browsing makes no sense for the source.
@@ -687,6 +753,14 @@ pub trait SearchProvider {
 impl SearchProvider for SearchCatalog {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -951,7 +1025,7 @@ mod tests {
         let stats = catalog.stats();
         assert_eq!(stats.records, 100_001);
         assert!(
-            stats.postings <= stats.normalized_scalars.saturating_mul(3),
+            stats.postings <= stats.normalized_scalars.saturating_mul(4),
             "posting storage stays linear: {stats:?}"
         );
     }
