@@ -95,7 +95,13 @@ private_manager() {
     ln -s ../gnome-portal.service \
         "$XDG_CONFIG_HOME/systemd/user/graphical-session.target.wants/gnome-portal.service"
 
-    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "$1" >>"$QOS_SESSION_TEST_LOG"' \
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ "$1" = gnome-portal-stop ]; then' \
+        '    printf "%s:%s:%s\\n" "$1" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$QOS_SESSION_TEST_LOG"' \
+        'else' \
+        '    printf "%s\\n" "$1" >>"$QOS_SESSION_TEST_LOG"' \
+        'fi' \
         >"$root/record-event"
     printf '%s\n' \
         '#!/bin/sh' \
@@ -149,11 +155,11 @@ private_manager() {
     managerctl import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
     managerctl start graphical-session.target
     managerctl is-active --quiet gnome-portal.service
-    managerctl stop graphical-session.target
-    managerctl is-active --quiet gnome-portal.service && exit 1 || true
 
-    # qOS is a real child process here: its qOS portal fixture stays alive
-    # while the target is active, and the test queries the manager directly.
+    # qOS is a real child process here. Deliberately leave GNOME's standard
+    # graphical target and portal fixture active to model a killed wrapper or
+    # incomplete prior logout: the qOS handoff must stop that stale lifecycle
+    # before publishing its own desktop identity and starting its target.
     "$root/qos-session" &
     wrapper_pid=$!
     for _ in $(seq 1 100); do
@@ -163,6 +169,12 @@ private_manager() {
     grep -Fqx 'qos-portal-start:nirios:wayland' "$QOS_SESSION_TEST_LOG"
     managerctl is-active --quiet qos-graphical-session.target
     ! managerctl is-active --quiet gnome-portal.service
+    # The stop hook must still see GNOME's identity, proving qOS did not
+    # change the shared user-manager environment before tearing it down.
+    grep -Fqx 'gnome-portal-stop:GNOME:wayland' "$QOS_SESSION_TEST_LOG"
+    gnome_stop_line=$(grep -n -m1 -F 'gnome-portal-stop' "$QOS_SESSION_TEST_LOG" | cut -d: -f1)
+    qos_start_line=$(grep -n -m1 -F 'qos-portal-start:nirios:wayland' "$QOS_SESSION_TEST_LOG" | cut -d: -f1)
+    [[ $gnome_stop_line -lt $qos_start_line ]]
     managerctl show-environment | grep -Fqx 'XDG_CURRENT_DESKTOP=nirios'
     managerctl show-environment | grep -Fqx 'XDG_SESSION_TYPE=wayland'
     ! managerctl show-environment | grep -Fq 'DISPLAY='
