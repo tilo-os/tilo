@@ -1,3 +1,12 @@
+#![allow(
+    clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::unwrap_used,
+    reason = "diagnostic export probe intentionally exits loudly on invalid command-line input"
+)]
+
 //! Export a real clip through the editor's own pipeline and report where it
 //! landed — the evidence behind any claim that the export carries the user's
 //! footage, in a form a human can check with their own tools.
