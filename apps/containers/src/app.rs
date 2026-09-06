@@ -201,6 +201,9 @@ enum Bg {
 pub struct ContainersApp {
     /// The live (or sample) engine projection.
     pub(crate) engine: Engine,
+    /// Retained, revision-gated search projection. Queries page this index
+    /// instead of rescanning the engine snapshot on every keystroke.
+    search_index: crate::search_provider::ContainerSearchIndex,
     rect: Rect,
     /// Mouse position in logical coords (for hover + hit-testing).
     pub(crate) cursor: Point,
@@ -297,6 +300,7 @@ impl ContainersApp {
         } else {
             (None, None)
         };
+        let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
         let create_inputs = std::array::from_fn(|index| {
             let field = CreateField::ALL
                 .get(index)
@@ -313,6 +317,7 @@ impl ContainersApp {
         });
         Self {
             engine,
+            search_index,
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             hits: Vec::new(),
@@ -407,6 +412,7 @@ impl ContainersApp {
                 }
             }
             self.engine = fresh;
+            self.search_index.sync(&self.engine);
         }
     }
 
@@ -430,6 +436,7 @@ impl ContainersApp {
             if !logs.is_empty() {
                 c.logs = logs;
             }
+            self.search_index.sync(&self.engine);
         }
     }
 
@@ -490,6 +497,7 @@ impl ContainersApp {
                 }
             }
         }
+        self.search_index.sync(&self.engine);
         self.structure_dirty = true;
     }
 
@@ -574,6 +582,7 @@ impl ContainersApp {
             self.show_toast(format!("Remove {reference} requested"), false);
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
+            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed {reference}"), false);
             self.structure_dirty = true;
         } else {
@@ -621,6 +630,7 @@ impl ContainersApp {
                 in_use_by: 0,
             });
             self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
+            self.search_index.sync(&self.engine);
             self.show_toast(format!("Created volume {name}"), false);
             self.structure_dirty = true;
         }
@@ -636,6 +646,7 @@ impl ContainersApp {
             self.show_toast(format!("Remove volume {name} requested"), false);
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
+            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed volume {name}"), false);
             self.structure_dirty = true;
         } else {
@@ -1278,6 +1289,193 @@ impl ContainersApp {
 // Widget impl
 // =====================================================================
 
+/// Keep palette authority refreshes proportional to the visible context.
+/// Search retains the complete engine catalogue and `Widget::resource`
+/// materialises an omitted stable identity only when a result is activated.
+const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
+
+fn container_resource(container: &crate::model::Container, engine_live: bool) -> Resource {
+    let mut resource = Resource::new(
+        format!("container:{}", container.id),
+        "containers.container",
+        container.name.clone(),
+    );
+    let selection = vec!["select".to_string(), container.id.clone()];
+    if let Ok(spec) = ActionSpec::operation(
+        "select",
+        format!("Open {}", container.name),
+        OperationKind::View,
+        "containers.container",
+        &selection,
+    ) {
+        resource.actions.push(spec);
+    }
+    let verbs: &[(&str, &str)] = match container.status {
+        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => &[
+            ("stop", "Stop"),
+            ("restart", "Restart"),
+            ("pause", "Pause"),
+            ("shell", "Open shell"),
+        ],
+        crate::model::ContainerStatus::Paused => &[
+            ("unpause", "Resume"),
+            ("stop", "Stop"),
+            ("remove", "Remove"),
+            ("shell", "Open shell"),
+        ],
+        _ => &[("start", "Start"), ("remove", "Remove")],
+    };
+    for (verb, label) in verbs {
+        let payload = vec![(*verb).to_string(), container.id.clone()];
+        if let Ok(spec) = ActionSpec::operation(
+            *verb,
+            *label,
+            OperationKind::Effect,
+            "containers.container",
+            &payload,
+        ) {
+            let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
+            if *verb == "remove" {
+                spec = spec.destructive();
+            } else if *verb != "restart" && *verb != "shell" {
+                spec = spec.retry_policy(RetryPolicy::Idempotent);
+            }
+            if !engine_live {
+                spec = spec.unavailable(
+                    "engine_offline",
+                    "Container engine actions are unavailable in demo mode",
+                );
+            }
+            resource.actions.push(spec);
+        }
+    }
+    let mut logs = Resource::new(
+        format!("container:{}:logs", container.id),
+        "containers.logs",
+        format!("{} logs", container.name),
+    );
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Open logs",
+        OperationKind::View,
+        "containers.logs",
+        &["logs", container.id.as_str()],
+    ) {
+        logs.actions.push(spec);
+    }
+    resource.children.push(logs);
+    resource
+}
+
+fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {
+    let reference = image.reference();
+    let mut resource = Resource::new(
+        format!("image:{reference}"),
+        "containers.image",
+        reference.clone(),
+    );
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Show image",
+        OperationKind::View,
+        "containers.image",
+        &["open", reference.as_str()],
+    ) {
+        resource.actions.push(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "remove",
+        "Remove image",
+        OperationKind::Effect,
+        "containers.image",
+        &["remove", reference.as_str()],
+    ) {
+        let mut spec = spec
+            .requiring(PermissionRequirement::Admin)
+            .privileged()
+            .destructive();
+        if !engine_live {
+            spec = spec.unavailable(
+                "engine_offline",
+                "Container engine actions are unavailable in demo mode",
+            );
+        }
+        resource.actions.push(spec);
+    }
+    resource
+}
+
+fn volume_resource(volume: &crate::model::Volume, engine_live: bool) -> Resource {
+    let mut resource = Resource::new(
+        format!("volume:{}", volume.name),
+        "containers.volume",
+        volume.name.clone(),
+    );
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Show volume",
+        OperationKind::View,
+        "containers.volume",
+        &["open", volume.name.as_str()],
+    ) {
+        resource.actions.push(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "remove",
+        "Remove volume",
+        OperationKind::Effect,
+        "containers.volume",
+        &["remove", volume.name.as_str()],
+    ) {
+        let mut spec = spec
+            .requiring(PermissionRequirement::Admin)
+            .privileged()
+            .destructive();
+        if !engine_live {
+            spec = spec.unavailable(
+                "engine_offline",
+                "Container engine actions are unavailable in demo mode",
+            );
+        }
+        resource.actions.push(spec);
+    }
+    resource
+}
+
+fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) -> Resource {
+    let mut resource = Resource::new(
+        format!("distrobox:{}", distrobox.name),
+        "containers.distrobox",
+        distrobox.name.clone(),
+    );
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Show distrobox",
+        OperationKind::View,
+        "containers.distrobox",
+        &["open", distrobox.name.as_str()],
+    ) {
+        resource.actions.push(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "enter",
+        "Enter distrobox",
+        OperationKind::Effect,
+        "containers.distrobox",
+        &["enter", distrobox.name.as_str()],
+    ) {
+        let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
+        if !engine_live {
+            spec = spec.unavailable(
+                "engine_offline",
+                "Distrobox actions are unavailable in demo mode",
+            );
+        }
+        resource.actions.push(spec);
+    }
+    resource
+}
+
 impl Widget for ContainersApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -1310,193 +1508,87 @@ impl Widget for ContainersApp {
             root.actions.push(spec);
         }
         for container in &self.engine.containers {
-            let mut resource = Resource::new(
-                format!("container:{}", container.id),
-                "containers.container",
-                container.name.clone(),
-            );
-            let selection = vec!["select".to_string(), container.id.clone()];
-            if let Ok(spec) = ActionSpec::operation(
-                "select",
-                format!("Open {}", container.name),
-                OperationKind::View,
-                "containers.container",
-                &selection,
-            ) {
-                resource.actions.push(spec);
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
             }
-            let verbs: &[(&str, &str)] = match container.status {
-                crate::model::ContainerStatus::Running
-                | crate::model::ContainerStatus::Restarting => &[
-                    ("stop", "Stop"),
-                    ("restart", "Restart"),
-                    ("pause", "Pause"),
-                    ("shell", "Open shell"),
-                ],
-                crate::model::ContainerStatus::Paused => &[
-                    ("unpause", "Resume"),
-                    ("stop", "Stop"),
-                    ("remove", "Remove"),
-                    ("shell", "Open shell"),
-                ],
-                _ => &[("start", "Start"), ("remove", "Remove")],
-            };
-            for (verb, label) in verbs {
-                let payload = vec![(*verb).to_string(), container.id.clone()];
-                if let Ok(spec) = ActionSpec::operation(
-                    *verb,
-                    *label,
-                    OperationKind::Effect,
-                    "containers.container",
-                    &payload,
-                ) {
-                    let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-                    if *verb == "remove" {
-                        spec = spec.destructive();
-                    } else if *verb != "restart" && *verb != "shell" {
-                        spec = spec.retry_policy(RetryPolicy::Idempotent);
-                    }
-                    if !self.engine.live {
-                        spec = spec.unavailable(
-                            "engine_offline",
-                            "Container engine actions are unavailable in demo mode",
-                        );
-                    }
-                    resource.actions.push(spec);
-                }
-            }
-            let mut logs = Resource::new(
-                format!("container:{}:logs", container.id),
-                "containers.logs",
-                format!("{} logs", container.name),
-            );
-            if let Ok(spec) = ActionSpec::operation(
-                "open",
-                "Open logs",
-                OperationKind::View,
-                "containers.logs",
-                &["logs", container.id.as_str()],
-            ) {
-                logs.actions.push(spec);
-            }
-            resource.children.push(logs);
-            root.children.push(resource);
+            root.children
+                .push(container_resource(container, self.engine.live));
         }
         for image in &self.engine.images {
-            let reference = image.reference();
-            let payload = vec!["remove".to_string(), reference.clone()];
-            let mut resource = Resource::new(
-                format!("image:{reference}"),
-                "containers.image",
-                reference.clone(),
-            );
-            if let Ok(spec) = ActionSpec::operation(
-                "open",
-                "Show image",
-                OperationKind::View,
-                "containers.image",
-                &["open", reference.as_str()],
-            ) {
-                resource.actions.push(spec);
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
             }
-            if let Ok(spec) = ActionSpec::operation(
-                "remove",
-                "Remove image",
-                OperationKind::Effect,
-                "containers.image",
-                &payload,
-            ) {
-                let mut spec = spec
-                    .requiring(PermissionRequirement::Admin)
-                    .privileged()
-                    .destructive();
-                if !self.engine.live {
-                    spec = spec.unavailable(
-                        "engine_offline",
-                        "Container engine actions are unavailable in demo mode",
-                    );
-                }
-                resource.actions.push(spec);
-            }
-            root.children.push(resource);
+            root.children.push(image_resource(image, self.engine.live));
         }
         for volume in &self.engine.volumes {
-            let payload = vec!["remove".to_string(), volume.name.clone()];
-            let mut resource = Resource::new(
-                format!("volume:{}", volume.name),
-                "containers.volume",
-                volume.name.clone(),
-            );
-            if let Ok(spec) = ActionSpec::operation(
-                "open",
-                "Show volume",
-                OperationKind::View,
-                "containers.volume",
-                &["open", volume.name.as_str()],
-            ) {
-                resource.actions.push(spec);
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
             }
-            if let Ok(spec) = ActionSpec::operation(
-                "remove",
-                "Remove volume",
-                OperationKind::Effect,
-                "containers.volume",
-                &payload,
-            ) {
-                let mut spec = spec
-                    .requiring(PermissionRequirement::Admin)
-                    .privileged()
-                    .destructive();
-                if !self.engine.live {
-                    spec = spec.unavailable(
-                        "engine_offline",
-                        "Container engine actions are unavailable in demo mode",
-                    );
-                }
-                resource.actions.push(spec);
-            }
-            root.children.push(resource);
+            root.children
+                .push(volume_resource(volume, self.engine.live));
         }
         for distrobox in &self.engine.distroboxes {
-            let mut resource = Resource::new(
-                format!("distrobox:{}", distrobox.name),
-                "containers.distrobox",
-                distrobox.name.clone(),
-            );
-            if let Ok(spec) = ActionSpec::operation(
-                "open",
-                "Show distrobox",
-                OperationKind::View,
-                "containers.distrobox",
-                &["open", distrobox.name.as_str()],
-            ) {
-                resource.actions.push(spec);
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
             }
-            if let Ok(spec) = ActionSpec::operation(
-                "enter",
-                "Enter distrobox",
-                OperationKind::Effect,
-                "containers.distrobox",
-                &["enter", distrobox.name.as_str()],
-            ) {
-                let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-                if !self.engine.live {
-                    spec = spec.unavailable(
-                        "engine_offline",
-                        "Distrobox actions are unavailable in demo mode",
-                    );
-                }
-                resource.actions.push(spec);
-            }
-            root.children.push(resource);
+            root.children
+                .push(distrobox_resource(distrobox, self.engine.live));
         }
         vec![root]
     }
 
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            let container = self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)?;
+            return container_resource(container, self.engine.live)
+                .children
+                .into_iter()
+                .find(|child| child.id.0 == id);
+        }
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)
+                .map(|item| container_resource(item, self.engine.live));
+        }
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_resource(item, self.engine.live));
+        }
+        None
+    }
+
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ContainerSearchProvider::new(&self.engine),
-        )]
+        vec![Box::new(self.search_index.provider())]
     }
 
     fn invoke_resource_operation(
@@ -1648,6 +1740,7 @@ impl Widget for ContainersApp {
                         live: false,
                         ..Engine::default()
                     };
+                    self.search_index.sync(&self.engine);
                 }
                 // Open the shared Ctrl+K palette (seeded with the sample
                 // containers) so `--shots` can capture the search surface.
@@ -2967,6 +3060,46 @@ mod palette_launcher_tests {
             app.engine.find(&id).map(|container| container.status),
             Some(crate::model::ContainerStatus::Running),
             "the control does not mutate the engine before host authorization"
+        );
+    }
+
+    #[test]
+    fn resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily() {
+        let mut app = ContainersApp::new(false);
+        let template = app.engine.containers[0].clone();
+        app.engine.containers.clear();
+        for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
+            let mut container = template.clone();
+            container.id = format!("durable-{index:03}");
+            container.name = format!("Container {index:03}");
+            app.engine.containers.push(container);
+        }
+        app.search_index.sync(&app.engine);
+
+        let doc = AutoCommit::new();
+        let root = Widget::resources(&app, &doc).remove(0);
+        assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
+        let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
+        assert!(
+            root.children
+                .iter()
+                .all(|resource| resource.id.0 != omitted)
+        );
+        assert_eq!(
+            Widget::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
+            Some(omitted.clone())
+        );
+
+        app.engine
+            .containers
+            .retain(|container| format!("container:{}", container.id) != omitted);
+        app.search_index.sync(&app.engine);
+        assert!(
+            Widget::resource(&app, &doc, &omitted).is_none(),
+            "a stale palette address cannot recreate removed authority"
+        );
+        assert!(
+            ui::search::SearchProvider::search(&app.search_index.provider(), &omitted,).is_empty()
         );
     }
 }
