@@ -377,10 +377,16 @@ fn mix_core(
         // A short read means the source ran out; the rest of the block stays
         // silent rather than repeating whatever was last there.
         for (i, s) in samples.iter().enumerate().take(out.len()) {
-            let v = s * g[i % CHANNELS];
-            out[i] += v;
+            let v = s * g.get(i % CHANNELS).copied().unwrap_or_default();
+            if let Some(output) = out.get_mut(i) {
+                *output += v;
+            }
             if let (Some(idx), Some(buckets)) = (bucket, per_track.as_deref_mut()) {
-                buckets[idx].1[i] += v;
+                if let Some((_, samples)) = buckets.get_mut(idx)
+                    && let Some(sample) = samples.get_mut(i)
+                {
+                    *sample += v;
+                }
             }
         }
     }
@@ -1103,9 +1109,15 @@ impl AudioMonitor {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
-                    let at = *state.position.lock().unwrap();
+                    let at = *state
+                        .position
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner());
                     let (block, report) = {
-                        let project = state.project.lock().unwrap();
+                        let project = state
+                            .project
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
                         mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
                     };
                     // Recorded before the push, so a device that goes away
@@ -1118,7 +1130,10 @@ impl AudioMonitor {
                     // Advance by exactly what was mixed, so the audio clock
                     // is the sample count rather than wall time and cannot
                     // drift away from the picture.
-                    *state.position.lock().unwrap() = at + block_secs;
+                    *state
+                        .position
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner()) = at + block_secs;
                 }
             })
             .ok();

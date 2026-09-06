@@ -1,3 +1,13 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "the isolated performance probe intentionally uses direct percentile indexes and timing conversions"
+)]
+
 //! What one editor frame costs on the CPU, measured on the real path.
 //!
 //! `shot::compose` is the same sync → layout → draw the live app runs every
