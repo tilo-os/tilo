@@ -1122,6 +1122,12 @@ impl Widget for DocumentViewport {
         }
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Content::Widget(child) = &self.content {
+            visitor(child.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match &mut self.content {
             Content::Widget(c) => vec![c.as_mut()],

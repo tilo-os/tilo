@@ -824,6 +824,11 @@ impl Widget for NavSplit {
         vec![self.sidebar.as_ref(), self.content.as_ref()]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.sidebar.as_ref());
+        visitor(self.content.as_ref());
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.sidebar.as_mut(), self.content.as_mut()]
     }

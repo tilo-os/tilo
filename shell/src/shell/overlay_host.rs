@@ -601,6 +601,10 @@ pub struct ShellOverlayHost {
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
     content: Box<dyn Widget>,
+    /// Exact production root layers, supplied only by `build_workspace_root`. This is a
+    /// capability, not an invalidation hint: section drawing invokes these same widgets in their
+    /// established backdrop → topbar → workspace order.
+    workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -721,6 +725,9 @@ pub struct ShellOverlayHost {
     /// zero/one-window boundary requires a rebuild even though the strip set
     /// itself did not change.
     content_built_empty: Option<bool>,
+    /// A workspace-root swap happened during `update`; the following relayout must rebuild its
+    /// Taffy nodes before reading geometry from the replacement widgets.
+    workspace_content_layout_dirty: bool,
     /// Per-strip last active-group id that
     /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
     /// focus-follow scroll is edge-triggered and doesn't fight a user who
@@ -867,6 +874,21 @@ pub struct ShellOverlayHost {
     /// widget tree instead of reaching into individual app implementations.
     pending_floating_surfaces: Vec<ui::floating_surface::FloatingSurfaceRequest>,
     pending_floating_surface_updates: Vec<(String, Rect)>,
+}
+
+/// Ordered shell scene recordings used by the compositor's retained-damage path.
+///
+/// `TopBar` and Quick Settings have bounded visual footprints. The remaining recordings are
+/// deliberately opaque to damage selection: callers may use them only after exact encoded-scene
+/// equality proves they did not change.
+pub struct ShellSceneSections {
+    pub backdrop: Scene,
+    pub topbar: Scene,
+    pub workspace: Scene,
+    pub topbar_bounds: Option<Rect>,
+    pub quick_settings: Scene,
+    pub above_quick_settings: Scene,
+    pub quick_settings_bounds: Option<Rect>,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -1352,6 +1374,133 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered section recording mirrors the established draw pass exactly"
+    )]
+    /// Record the shell in ordered sections for retained damage. The first and last sections are
+    /// intentionally opaque: a caller must establish exact encoded equality before it may reuse
+    /// pixels beneath a bounded section.
+    pub fn draw_scene_sections(
+        &mut self,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> ShellSceneSections {
+        let mut backdrop = Scene::new();
+        let mut topbar = Scene::new();
+        let mut workspace = Scene::new();
+        let mut quick_settings = Scene::new();
+        let mut above_quick_settings = Scene::new();
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
+            return ShellSceneSections {
+                backdrop,
+                topbar,
+                workspace,
+                topbar_bounds: None,
+                quick_settings,
+                above_quick_settings,
+                quick_settings_bounds: None,
+            };
+        }
+
+        let flags = self.overlay_flags();
+        let topbar_bounds = self.draw_workspace_sections(
+            &mut backdrop,
+            &mut topbar,
+            &mut workspace,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        self.draw_desktop_extras(&mut workspace, transform, text_renderer, theme, presence);
+        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        for row in rows {
+            // SAFETY: identical sequential traversal to `Widget::draw` above.
+            unsafe {
+                (&mut *row).draw_floating_surfaces(
+                    &mut workspace,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
+        }
+        self.draw_overview_and_ws_settings_overlays(
+            &mut workspace,
+            transform,
+            text_renderer,
+            theme,
+            flags,
+        );
+        self.draw_strip_chrome(&mut workspace, transform, theme);
+        let quick_settings_bounds = self.draw_quick_settings_dropdown(
+            &mut quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            flags,
+        );
+        self.power_menu.draw(
+            self.rect,
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+        );
+        self.draw_collaborators_dropdown(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            flags,
+        );
+        self.draw_room_activity_sheet(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            flags,
+        );
+        self.draw_projection_sheet(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            flags,
+        );
+        self.draw_top_overlays(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        self.capture_studio.draw(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        ShellSceneSections {
+            backdrop,
+            topbar,
+            workspace,
+            topbar_bounds,
+            quick_settings,
+            above_quick_settings,
+            quick_settings_bounds,
+        }
+    }
+
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(5);
         if self.workspace_settings_overlay.member_sheet_is_open() {
@@ -1456,6 +1605,7 @@ impl ShellOverlayHost {
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
             content,
+            workspace_scene_parts: None,
             onboarding: None,
             onboarding_released: false,
             onboarding_focus_reset: false,
@@ -1497,6 +1647,7 @@ impl ShellOverlayHost {
             group_row_ptrs: HashMap::new(),
             content_built_for_ws: None,
             content_built_empty: None,
+            workspace_content_layout_dirty: false,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
@@ -2582,6 +2733,15 @@ impl ShellOverlayHost {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_workspace_scene_parts(
+        mut self,
+        parts: crate::shell::WorkspaceSceneParts,
+    ) -> Self {
+        self.workspace_scene_parts = Some(parts);
+        self
+    }
+
     /// Record which workspace the injected content was built for, so
     /// [`Self::resync_workspace_content`] can detect the first switch away.
     #[must_use]
@@ -2643,11 +2803,13 @@ impl ShellOverlayHost {
             tree.clone()
         };
         let records = chrome.borrow().records().clone();
-        let (root, ptrs) = crate::shell::build_workspace_root(&snapshot, &records, &chrome);
+        let (root, ptrs, scene_parts) =
+            crate::shell::build_workspace_root_with_scene_parts(&snapshot, &records, &chrome);
         // Replace content and pointer map in one step: dropping the old
         // root frees every old GroupRow, and the map must never outlive
         // the rows it points into.
         self.content = root;
+        self.workspace_scene_parts = Some(scene_parts);
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
         self.content_built_empty = snapshot.active_workspace().map(|workspace| {
@@ -2656,6 +2818,7 @@ impl ShellOverlayHost {
                 .iter()
                 .all(|strip| strip.window_groups.is_empty())
         });
+        self.workspace_content_layout_dirty = true;
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
@@ -2714,6 +2877,10 @@ impl ShellOverlayHost {
     /// Replace one matching peer-window card with a live, session-local
     /// decoder. Returns false when the remote app has no corresponding tab;
     /// the caller may retry when the replicated window description arrives.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stream negotiation fields are supplied together by the authenticated wire event"
+    )]
     pub fn mount_peer_stream(
         &mut self,
         source_peer: u64,
@@ -3294,7 +3461,6 @@ impl ShellOverlayHost {
             for tab in activated_file_tabs {
                 let _ = crate::shell::doc_open::activate_continuity_file_tab(&chrome, tab);
             }
-            return;
         }
     }
 
@@ -4214,13 +4380,18 @@ impl ShellOverlayHost {
             if len == 0 {
                 return None;
             }
-            let next =
-                (isize::try_from(current).ok()? + isize::try_from(steps).ok()?).rem_euclid(len);
-            Some((
+            let next = isize::try_from(current)
+                .ok()?
+                .checked_add(isize::try_from(steps).ok()?)?
+                .rem_euclid(len);
+            let target = (
                 strip,
                 group_id,
                 group.tabs.get(usize::try_from(next).ok()?)?.id,
-            ))
+            );
+            drop(tree);
+            drop(st);
+            Some(target)
         })();
         let Some(target) = target else {
             return false;
@@ -4257,17 +4428,23 @@ impl ShellOverlayHost {
             else {
                 return false;
             };
-            let next = i32::from(group.width.permille())
-                .saturating_add(i32::from(delta_permille))
-                .clamp(
-                    i32::from(ui::widget::WIDTH_MIN_PERMILLE),
-                    i32::from(ui::widget::WIDTH_MAX_PERMILLE),
-                ) as u16;
+            let next = u16::try_from(
+                i32::from(group.width.permille())
+                    .saturating_add(i32::from(delta_permille))
+                    .clamp(
+                        i32::from(ui::widget::WIDTH_MIN_PERMILLE),
+                        i32::from(ui::widget::WIDTH_MAX_PERMILLE),
+                    ),
+            )
+            .unwrap_or(ui::widget::WIDTH_MAX_PERMILLE);
             if next == group.width.permille() {
                 return false;
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
-            (group_id, next)
+            let result = (group_id, next);
+            drop(tree);
+            drop(st);
+            result
         };
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -5425,6 +5602,17 @@ impl ShellOverlayHost {
         }
         self.qs_was_open = true;
         self.qs_transition = ui::Transition::open();
+    }
+
+    /// Fixes the quick-settings visual to an in-flight opening pose for a
+    /// deterministic capture. Ordinary UI paths must use the live transition.
+    #[doc(hidden)]
+    pub fn set_quick_settings_capture_openness(&mut self, permille: u16) {
+        if !self.overlay_flags().quick_settings {
+            return;
+        }
+        self.qs_was_open = true;
+        self.qs_transition = ui::Transition::capture_open_at(permille);
     }
 
     /// Folds every reading the quick-settings workers delivered into
@@ -6911,6 +7099,10 @@ impl ShellOverlayHost {
         }
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a host helper alongside the focus state it describes"
+    )]
     fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
         use settings_store::hardware::ShortcutAction as A;
         let config = settings_store::hardware::ShortcutConfig::load();
@@ -6946,7 +7138,10 @@ impl ShellOverlayHost {
         let next = match (current, backwards) {
             (Some(0) | None, true) => controls.len().saturating_sub(1),
             (Some(index), true) => index.saturating_sub(1),
-            (Some(index), false) => (index + 1) % controls.len(),
+            (Some(index), false) => index
+                .saturating_add(1)
+                .checked_rem(controls.len())
+                .unwrap_or_default(),
             (None, false) => 0,
         };
         self.shortcut_guide_focus = controls.get(next).copied();
@@ -6990,6 +7185,7 @@ impl ShellOverlayHost {
     }
 
     #[allow(
+        clippy::items_after_statements,
         clippy::too_many_lines,
         reason = "central keyboard dispatcher keeps shortcut precedence visible in one ordered match"
     )]
@@ -7902,6 +8098,10 @@ impl ShellOverlayHost {
     /// lines of one `handle_event`; the flag-gated per-overlay handlers
     /// always end in `*handled = true`, so once inside one this always
     /// returns.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered modal hit testing is intentionally centralized"
+    )]
     fn handle_shell_mouse_click_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -10249,6 +10449,7 @@ impl Widget for ShellOverlayHost {
         // `update()`; `last_chrome_revision` makes both call sites idempotent.
         let ws_swapped = self.resync_workspace_content();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
+        let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
         let sidebar = self
             .sidebar
@@ -10256,7 +10457,7 @@ impl Widget for ShellOverlayHost {
             .is_some_and(|s| s.take_structure_dirty());
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
-        content | sidebar | palette | capture_mirrors | resynced
+        content | sidebar | palette | capture_mirrors | resynced | workspace_layout
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -10699,8 +10900,20 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Keep dense painting independent from segmented retained drawing: this is the oracle.
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_desktop_extras(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Sidebar wheel: above desktop content, below every overlay
@@ -10761,6 +10974,46 @@ impl ShellOverlayHost {
                 None,
                 &edge,
             );
+        }
+    }
+
+    /// The production root has no painting container of its own, so its three typed children
+    /// may be recorded separately without changing the dense draw order. Unrecognised roots are
+    /// recorded as one opaque section.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the three ordered recordings share one widget draw context without reordering"
+    )]
+    fn draw_workspace_sections(
+        &mut self,
+        backdrop_scene: &mut Scene,
+        topbar_scene: &mut Scene,
+        workspace_scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
+        let Some(parts) = self.workspace_scene_parts else {
+            self.content
+                .draw(backdrop_scene, transform, text_renderer, theme, presence);
+            return None;
+        };
+        // SAFETY: `WorkspaceSceneParts` points into boxes owned by `content` and is replaced
+        // with that root on rebuild. Each part is drawn once in Container → Stack → Column order.
+        unsafe {
+            (&mut *parts.backdrop).draw(backdrop_scene, transform, text_renderer, theme, presence);
+            let topbar = &mut *parts.topbar;
+            let rect = topbar.get_rect();
+            topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
+            (&mut *parts.workspace).draw(
+                workspace_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+            Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
         }
     }
 
@@ -10901,16 +11154,9 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        // Both drawn under the popovers, hidden under the overview since
-        // it isn't showing strips.
-        if !self.overlay_flags().overview {
-            let ribbon = self.strip_ribbon();
-            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
-            let rail = self.strip_rail();
-            rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
-        }
+        self.draw_strip_chrome(scene, transform, theme);
 
-        self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme, flags);
+        let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme, flags);
 
         self.power_menu
             .draw(self.rect, scene, transform, text_renderer, theme);
@@ -10918,6 +11164,16 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+    }
+
+    /// Ribbon and rail sit below Quick Settings and every popover.
+    fn draw_strip_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if !self.overlay_flags().overview {
+            let ribbon = self.strip_ribbon();
+            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            let rail = self.strip_rail();
+            rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
+        }
     }
 
     fn draw_collaborators_dropdown(
@@ -11060,7 +11316,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
-    ) {
+    ) -> Option<Rect> {
         if flags.quick_settings && !self.qs_was_open {
             // Rising edge: ask for fresh OS state without waiting — the
             // panel opens with last-known values and updates as readings
@@ -11129,7 +11385,15 @@ impl ShellOverlayHost {
             if in_flight {
                 scene.pop_layer();
             }
+            // The in-flight layer clips every QS command to `clip`. Once settled, account for
+            // both `soft_shadow` and the card background's theme-derived panel-shadow ring.
+            return Some(if in_flight {
+                transform.transform_rect_bbox(clip)
+            } else {
+                quick_settings_settled_bounds(qs_rect, theme, transform)
+            });
         }
+        None
     }
 
     /// Wireless projection is an OS-owned edge sheet. Discovery and
@@ -11228,6 +11492,11 @@ impl ShellOverlayHost {
         );
     }
 
+    #[allow(
+        clippy::items_after_statements,
+        clippy::too_many_lines,
+        reason = "the shortcut guide is one cohesive modal rendering pass"
+    )]
     fn draw_shortcut_help(
         &mut self,
         scene: &mut Scene,
@@ -14096,6 +14365,23 @@ impl ShellOverlayHost {
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
         QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
     }
+}
+
+/// Exact conservative extent of Quick Settings after its animation layer has settled. This must
+/// track both shadows that `draw_quick_settings` emits, rather than a theme-independent margin.
+fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
+    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
+        + f64::from(theme.tokens.elevation.e4.offset_y)
+        + 0.5; // one-pixel card stroke centred on its edge
+    let left_right = 34.0_f64.max(panel_reach);
+    let top = 22.0_f64.max(panel_reach);
+    let bottom = 46.0_f64.max(panel_reach);
+    transform.transform_rect_bbox(Rect::new(
+        rect.x0 - left_right,
+        rect.y0 - top,
+        rect.x1 + left_right,
+        rect.y1 + bottom,
+    ))
 }
 
 #[cfg(test)]
@@ -18999,10 +19285,12 @@ mod peer_cursor_tests {
 /// immediate presence never invents an idle session.
 #[cfg(test)]
 mod roster_rows {
-    use super::collaborator_roster_rows;
+    use super::{collaborator_roster_rows, quick_settings_settled_bounds};
     use crate::shell::state::{
         CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
     };
+    use ui::theme::Theme;
+    use vello::kurbo::{Affine, Rect};
 
     fn tree_with_room() -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
@@ -19073,6 +19361,22 @@ mod roster_rows {
             "a connected headless agent has no viewport to follow"
         );
         assert_eq!(rows[0].activity.as_deref(), Some("Connected"));
+    }
+
+    #[test]
+    fn settled_quick_settings_bounds_cover_a_high_elevation_panel_shadow() {
+        let mut theme = Theme::dark();
+        theme.tokens.elevation.e4.blur = 96.0;
+        theme.tokens.elevation.e4.offset_y = 24.0;
+        let rect = Rect::new(100.0, 200.0, 500.0, 700.0);
+        let bounds = quick_settings_settled_bounds(rect, &theme, Affine::IDENTITY);
+        let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
+            + f64::from(theme.tokens.elevation.e4.offset_y)
+            + 0.5;
+        assert!(bounds.x0 <= rect.x0 - panel_reach);
+        assert!(bounds.y0 <= rect.y0 - panel_reach);
+        assert!(bounds.x1 >= rect.x1 + panel_reach);
+        assert!(bounds.y1 >= rect.y1 + panel_reach);
     }
 
     /// A row shows what its participant may do here, and nothing where

@@ -481,6 +481,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         vec![&self.left, &self.right]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.left);
+        visitor(&self.right);
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![
             &mut self.left as &mut (dyn Widget + '_),
