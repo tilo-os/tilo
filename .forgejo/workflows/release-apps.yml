@@ -109,6 +109,12 @@ jobs:
                 args+=(--apps "$REQUESTED_APPS")
               elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
                 args+=(--collection "${REQUESTED_COLLECTION:-default}")
+              elif [[ $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ]]; then
+                # A published collection is one atomic runtime ABI boundary.
+                # Rebuild every member on main so a failed earlier publication
+                # cannot leave the channel permanently incompatible with later
+                # partial app updates.
+                args+=(--collection default)
               else
                 base='${{ github.event.pull_request.base.sha }}'
                 [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
