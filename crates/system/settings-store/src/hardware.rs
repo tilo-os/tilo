@@ -496,6 +496,10 @@ pub struct RichInputConfig {
     pub left_handed: bool,
     pub accel_profile: AccelProfile,
     pub key_repeat: f64,
+    /// Exact physical repeat values imported from the host desktop. A qOS
+    /// repeat-slider choice clears both and resumes using `key_repeat`.
+    pub key_repeat_delay_ms: Option<u32>,
+    pub key_repeat_rate_hz: Option<u32>,
     /// Active source id (`layout` or `layout:variant`). Kept under the
     /// historic key so a current compositor and older Settings builds agree
     /// on the user's primary layout.
@@ -525,6 +529,8 @@ impl Default for RichInputConfig {
             left_handed: false,
             accel_profile: AccelProfile::Adaptive,
             key_repeat: 0.5,
+            key_repeat_delay_ms: None,
+            key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             compose_key: None,

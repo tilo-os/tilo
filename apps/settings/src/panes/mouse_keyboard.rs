@@ -317,6 +317,8 @@ impl MouseKeyboardPane {
                                 "Right Alt".into(),
                                 "Menu".into(),
                                 "Caps Lock".into(),
+                                "Right Super".into(),
+                                "Left Super".into(),
                             ],
                             COMPOSE_KEY,
                         )
@@ -326,6 +328,8 @@ impl MouseKeyboardPane {
                                 Some("ralt") => "Right Alt",
                                 Some("menu") => "Menu",
                                 Some("caps") => "Caps Lock",
+                                Some("rwin") => "Right Super",
+                                Some("lwin") => "Left Super",
                                 _ => "Disabled",
                             },
                         ),
@@ -616,7 +620,11 @@ impl MouseKeyboardPane {
             && (v - self.last.key_repeat).abs() > 0.001
         {
             self.last.key_repeat = v;
-            Self::persist_input(|i| i.key_repeat = v);
+            Self::persist_input(|i| {
+                i.key_repeat = v;
+                i.key_repeat_delay_ms = None;
+                i.key_repeat_rate_hz = None;
+            });
         }
         if let Some(b) = read_bool(state, root, TOUCHPAD_NATURAL_SCROLL_KEY)
             && Some(b) != self.last.touchpad_natural_scroll
@@ -685,6 +693,8 @@ impl MouseKeyboardPane {
                 "Right Alt" => Some("ralt"),
                 "Menu" => Some("menu"),
                 "Caps Lock" => Some("caps"),
+                "Right Super" => Some("rwin"),
+                "Left Super" => Some("lwin"),
                 _ => None,
             };
             if compose != self.last.compose_key.as_deref() {
