@@ -6067,20 +6067,54 @@ impl ShellOverlayHost {
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
-            let quick_settings = &chrome.borrow().quick_settings;
-            if matches!(
-                quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            ) {
-                self.qs_root.preferred_height(quick_settings)
-            } else {
-                // Discovery/detail lists have their own variable content;
-                // never shrink them to the compact root's height.
-                552.0
-            }
+            let state = chrome.borrow();
+            self.quick_settings_preferred_height(&state)
         });
         let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// A drill-in is a compact continuation of Quick Settings, not a blank
+    /// fixed-height sheet. Its height follows the actual rows and grows only
+    /// when discovery gives us something to show. This keeps an empty Wi-Fi
+    /// scan, Bluetooth list or VPN list from visually swallowing the desktop
+    /// while retaining room for a useful bounded set of results.
+    fn quick_settings_preferred_height(
+        &self,
+        state: &crate::shell::chrome_state::ChromeState,
+    ) -> f64 {
+        use crate::shell::quick_settings::QsLevel;
+        match state.quick_settings.current_level() {
+            QsLevel::Root => self.qs_root.preferred_height(&state.quick_settings),
+            QsLevel::Wifi | QsLevel::WifiDetails(_) => {
+                if state.quick_settings.wifi_password.is_some() {
+                    // Header, explanation, field/status and a comfortable
+                    // footer for Cancel/Connect.
+                    244.0
+                } else {
+                    let rows = state.quick_settings.wifi_networks.len();
+                    // The Hotspot card occupies 56..108, then discovery rows
+                    // are 52 high on a 56px rhythm.
+                    (124.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(192.0, 552.0)
+                }
+            }
+            QsLevel::Bluetooth | QsLevel::BluetoothDetails(_) => {
+                let rows = state.quick_settings.bt_devices.len();
+                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+            QsLevel::Vpn => {
+                let rows = state.quick_settings.vpns.len();
+                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+            QsLevel::Notifications => {
+                let rows = state.notification_history().len().min(7);
+                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+        }
     }
 
     /// The strip ribbon for the active workspace, anchored to the content
