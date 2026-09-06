@@ -12,12 +12,11 @@
 //! synchronous.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use ui::qos_actions::ActionAddress;
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-    SearchTextIndex,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult, SearchTextIndex,
 };
 
 use crate::favorites::Favorite;
@@ -155,45 +154,45 @@ impl SearchProvider for PlacesSearchProvider {
 /// UUIDs, rather than paths, are action identity: paths are mutable provenance
 /// used only for matching and presentation.
 pub struct CollaborativeRecordSearchProvider {
-    records: Vec<CollaborativeSearchRecord>,
-    index: SearchTextIndex,
+    catalog: SearchCatalog,
     kind: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CollaborativeSearchRecord {
-    record_id: uuid::Uuid,
-    name: String,
-    provenance: PathBuf,
-    is_dir: bool,
-}
-
 impl CollaborativeRecordSearchProvider {
-    pub fn new(entries: &[WorkspaceRecord]) -> Self {
+    #[allow(
+        clippy::expect_used,
+        reason = "the action address and catalogue key are derived from the same immutable record UUID"
+    )]
+    pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
         let mut seen = BTreeSet::new();
-        let records: Vec<_> = entries
-            .iter()
-            .filter_map(|entry| {
-                let record_id = entry.record_id;
-                seen.insert(record_id).then(|| CollaborativeSearchRecord {
-                    record_id,
-                    name: entry.name.clone(),
-                    provenance: entry.path.clone(),
-                    is_dir: entry.is_dir,
-                })
-            })
-            .collect();
-        let index = SearchTextIndex::new(records.iter().map(|record| {
-            searchable_fields([
-                record.name.clone(),
-                record.provenance.to_string_lossy().into_owned(),
-            ])
-        }));
-        Self {
-            records,
-            index,
-            kind: crate::i18n::t("files-search-collaborative-records"),
+        let kind = crate::i18n::t("files-search-collaborative-records");
+        let catalog = SearchCatalog::new(kind.clone());
+        for entry in entries.iter().filter(|entry| seen.insert(entry.record_id)) {
+            let address = record_reveal_address(entry.record_id);
+            let result = SearchResult::for_action(&kind, entry.name.clone(), &address)
+                .with_subtitle(crate::i18n::t_args(
+                    "files-search-record-provenance",
+                    &[
+                        crate::i18n::arg("path", entry.path.display().to_string()),
+                        crate::i18n::arg("record", entry.record_id.to_string()),
+                    ],
+                ))
+                .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir));
+            // `address` is constructed from the same immutable record id as
+            // the catalogue key, so a failed insert would be a programmer
+            // error rather than a recoverable data condition.
+            catalog
+                .upsert(
+                    address.resource,
+                    searchable_fields([
+                        entry.name.clone(),
+                        entry.path.to_string_lossy().into_owned(),
+                    ]),
+                    result,
+                )
+                .expect("collaborative search result addresses its record resource");
         }
+        Self { catalog, kind }
     }
 }
 
@@ -207,27 +206,19 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.index
-            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
-            .into_iter()
-            .filter_map(|entry_id| self.records.get(entry_id))
-            .map(|record| {
-                SearchResult::for_action(
-                    &self.kind,
-                    record.name.clone(),
-                    record_reveal_address(record.record_id),
-                )
-                .with_subtitle(crate::i18n::t_args(
-                    "files-search-record-provenance",
-                    &[
-                        crate::i18n::arg("path", record.provenance.display().to_string()),
-                        crate::i18n::arg("record", record.record_id.to_string()),
-                    ],
-                ))
-                .with_icon(ui::icons::icon_for_path(&record.provenance, record.is_dir))
-            })
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-            .collect()
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
@@ -307,6 +298,7 @@ impl SearchProvider for RemoteAccountSearchProvider {
 mod tests {
     use super::*;
     use crate::favorites::{FavKind, Favorite};
+    use std::path::PathBuf;
     use ui::search::SearchRegistry;
 
     fn places() -> Vec<Favorite> {
@@ -441,6 +433,47 @@ mod tests {
         // is complete: a match beyond the former 256-record snapshot limit is
         // still discoverable.
         assert_eq!(provider.search("file-275").len(), 1);
+    }
+
+    #[test]
+    fn collaborative_search_pages_a_late_hit_in_a_100k_record_catalog() {
+        const RECORD_COUNT: usize = 100_001;
+        let mut entries: Vec<_> = (0..RECORD_COUNT)
+            .map(|index| {
+                let mut entry = collaborative_entry(&format!("record-{index}"));
+                entry.record_id = uuid::Uuid::from_u128(index as u128 + 1);
+                entry.path = PathBuf::from(format!("/Workspace/record-{index}"));
+                entry
+            })
+            .collect();
+        // A unique late tail proves this is a complete index, not a first-page
+        // snapshot.  It also avoids making the test's query work proportional
+        // to the entire corpus.
+        entries[RECORD_COUNT - 1].name = "late-needle-文書".into();
+        entries[RECORD_COUNT - 1].path = PathBuf::from("/Workspace/late-needle-文書");
+        let provider = CollaborativeRecordSearchProvider::new(&entries);
+
+        let page = provider.search_page("needle-文書", None, 1, 1);
+        assert_eq!(page.inspected, 1);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "late-needle-文書");
+        assert!(
+            page.next.is_none(),
+            "the exact late hit exhausted its posting"
+        );
+
+        // Broad searches remain bounded and carry an explicit continuation.
+        let first = provider.search_page("record", None, 7, 7);
+        assert_eq!(first.inspected, 7);
+        assert_eq!(first.results.len(), 7);
+        let second = provider.search_page("record", first.next.as_ref(), 7, 7);
+        assert_eq!(second.inspected, 7);
+        assert!(
+            second
+                .results
+                .iter()
+                .all(|hit| !first.results.contains(hit))
+        );
     }
 
     #[test]
