@@ -115,6 +115,7 @@ impl CollabPlayback {
                 // Publish on a play/pause flip, or once the true playhead has
                 // drifted from what a follower would already project.
                 prev.playing != state.playing
+                    || (prev.rate - state.rate).abs() > f32::EPSILON
                     || prev.projected_position(now_ms).abs_diff(state.position_ms)
                         > REPUBLISH_DRIFT_MS
             }
@@ -193,5 +194,22 @@ mod tests {
             follower.host_step(&engine, 0).is_none(),
             "a follower never broadcasts"
         );
+    }
+
+    #[test]
+    fn host_rate_change_is_replicated_and_applied_by_follower() {
+        let mut host = CollabPlayback::new(Role::Host);
+        let mut follower = CollabPlayback::new(Role::Follower);
+        let mut host_engine = engine_at(4_000, false);
+        let initial = host.host_step(&host_engine, 100).expect("initial publish");
+        follower.ingest(&initial);
+        host_engine.set_rate(2.0);
+        let delta = host
+            .host_step(&host_engine, 100)
+            .expect("rate change publishes immediately");
+        follower.ingest(&delta);
+        let mut follower_engine = engine_at(4_000, false);
+        follower.follow_step(&mut follower_engine, 100);
+        assert!((follower_engine.rate() - 2.0).abs() < f32::EPSILON);
     }
 }
