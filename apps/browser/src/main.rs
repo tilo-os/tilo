@@ -152,7 +152,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.browser");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    browser::actions::register(app.action_registry_mut());
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
     // finish loading without waiting for user input.

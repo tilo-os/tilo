@@ -16,6 +16,19 @@ pub struct Bookmarks {
 }
 
 impl Bookmarks {
+    pub(crate) fn from_entries(entries: Vec<Bookmark>) -> Self {
+        Self { entries }
+    }
+
+    pub(crate) fn to_json(&self) -> String {
+        let rows: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| serde_json::json!({ "url": entry.url, "title": entry.title }))
+            .collect();
+        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+    }
+
     pub fn entries(&self) -> &[Bookmark] {
         &self.entries
     }
@@ -52,6 +65,12 @@ impl Bookmarks {
             .map_or_else(Self::default, |text| Self::from_json(&text))
     }
 
+    /// Saves the bookmark collection in the platform browser-data directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no platform data directory is available or when
+    /// the collection cannot be written there.
     pub fn save(&self) -> std::io::Result<()> {
         let path = Self::path().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "no browser data directory")
@@ -101,15 +120,6 @@ impl Bookmarks {
             .take(10_000)
             .collect();
         Self { entries }
-    }
-
-    pub(crate) fn to_json(&self) -> String {
-        let rows: Vec<_> = self
-            .entries
-            .iter()
-            .map(|entry| serde_json::json!({ "url": entry.url, "title": entry.title }))
-            .collect();
-        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
     }
 }
 
