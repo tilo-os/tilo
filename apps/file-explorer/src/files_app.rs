@@ -64,6 +64,22 @@ enum RemoteDavResult {
 type RemoteBrowseResult =
     Arc<std::sync::Mutex<Option<(String, Result<RemoteDavResult, crate::remote_dav::DavError>)>>>;
 
+/// The account projection is deliberately conservative only for an account
+/// Settings has explicitly disabled. `Offline` is last-observed reachability,
+/// not a live probe, so blocking a request on it would prevent the request
+/// that discovers a recovered server. Authentication and transport failures
+/// are likewise returned by the narrowly scoped DAV handoff as a useful,
+/// current outcome rather than guessed from stale metadata here.
+fn remote_dav_availability(health: crate::remote_accounts::RemoteAccountHealth) -> Availability {
+    match health {
+        crate::remote_accounts::RemoteAccountHealth::Disabled => Availability::Unavailable {
+            code: "account_disabled".into(),
+            reason: health.unavailable_reason().into(),
+        },
+        _ => Availability::Available,
+    }
+}
+
 fn format_duration(duration_ms: u64) -> String {
     let seconds = duration_ms / 1_000;
     let hours = seconds / 3_600;
@@ -171,6 +187,17 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+/// Opaque, bounded resource identity for a local Templates entry.
+///
+/// A resource tree is searchable and may be retained in activity/history, so
+/// it must not turn an absolute local template path into an identifier. The
+/// full path remains an invocation payload only and is revalidated against the
+/// current template catalogue before it is read.
+fn template_resource_id(path: &str) -> String {
+    let digest = blake3::hash(path.as_bytes());
+    format!("files.template:{}", hex_prefix(digest.as_bytes(), 12))
 }
 
 fn short_fingerprint(key: &[u8; 32]) -> String {
@@ -1063,6 +1090,14 @@ impl FileExplorerWidget {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
+    }
+
+    /// A narrow places drawer is a modal flap: the file view and every one of
+    /// its transient affordances live behind its scrim. The bubble is drawn by
+    /// this app (rather than by `NavShell`), so make that ownership boundary
+    /// explicit instead of accidentally painting it over the flap.
+    fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
+        self.nav.mode() == ShellMode::Narrow && self.nav.is_sidebar_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -5928,6 +5963,7 @@ impl Widget for FileExplorerWidget {
             "files.refresh",
             "files.new-folder",
             "files.paste",
+            "files.new-from-template",
             "files.navigate",
             "files.open",
             "files.reveal-record",
@@ -5935,6 +5971,7 @@ impl Widget for FileExplorerWidget {
             "files.entry-command",
             "files.rename",
             "files.share-link",
+            "files.remote-dav",
         ]
     }
 
@@ -6004,6 +6041,56 @@ impl Widget for FileExplorerWidget {
                 "hidden",
                 OperationKind::View,
             ),
+            ("list", "Use list view", "list", OperationKind::View),
+            ("grid", "Use grid view", "grid", OperationKind::View),
+            (
+                "sort-name",
+                "Sort by name",
+                "sort-name",
+                OperationKind::View,
+            ),
+            (
+                "sort-size",
+                "Sort by size",
+                "sort-size",
+                OperationKind::View,
+            ),
+            (
+                "sort-type",
+                "Sort by type",
+                "sort-type",
+                OperationKind::View,
+            ),
+            (
+                "sort-modified",
+                "Sort by modified date",
+                "sort-modified",
+                OperationKind::View,
+            ),
+            (
+                "sort-ascending",
+                "Sort ascending",
+                "sort-ascending",
+                OperationKind::View,
+            ),
+            (
+                "sort-descending",
+                "Sort descending",
+                "sort-descending",
+                OperationKind::View,
+            ),
+            (
+                "zoom-in",
+                "Increase item size",
+                "zoom-in",
+                OperationKind::View,
+            ),
+            (
+                "zoom-out",
+                "Decrease item size",
+                "zoom-out",
+                OperationKind::View,
+            ),
         ] {
             folder.actions.push(
                 ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
@@ -6015,6 +6102,44 @@ impl Widget for FileExplorerWidget {
                     }),
             );
         }
+        let current_is_favorite = self
+            .favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|favorite| favorite.path == self.current_path);
+        let (favorite_id, favorite_label, favorite_verb) = if current_is_favorite {
+            (
+                "remove-favorite",
+                "Remove from Favourites",
+                "remove-favorite",
+            )
+        } else {
+            ("add-favorite", "Add to Favourites", "add-favorite")
+        };
+        folder.actions.push(
+            ActionSpec::operation(
+                favorite_id,
+                favorite_label,
+                OperationKind::Effect,
+                "files.folder-command",
+                &favorite_verb,
+            )
+            .expect("favourite command is serializable")
+            .with_contract(ActionContract {
+                availability: if self.current_path.is_dir() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_unavailable".into(),
+                        reason: "The current location cannot be a favourite".into(),
+                    }
+                },
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }),
+        );
         let new_folder = ActionSpec::prompted_operation(
             "new-folder",
             "New folder",
@@ -6041,6 +6166,63 @@ impl Widget for FileExplorerWidget {
             ..ActionContract::default()
         });
         folder.actions.push(new_folder);
+        if self.is_trash_view() {
+            folder.actions.push(
+                ActionSpec::operation(
+                    "empty-trash",
+                    t("files-menu-empty-trash"),
+                    OperationKind::Effect,
+                    "files.folder-command",
+                    &"empty-trash",
+                )
+                .expect("empty-trash command is serializable")
+                .destructive()
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        } else if let Some(template_dir) = templates::templates_dir() {
+            // Each resource is an existing regular template, not an arbitrary
+            // local source path supplied by a caller. Invocation rechecks this
+            // bounded catalogue before copying, so a stale action cannot turn
+            // into an ambient file-read capability.
+            for template in templates::list_templates(&template_dir) {
+                let template_path = template.to_string_lossy().into_owned();
+                let mut template_resource = Resource::new(
+                    template_resource_id(&template_path),
+                    "files.template",
+                    templates::menu_label(&template),
+                );
+                template_resource.actions.push(
+                    ActionSpec::operation(
+                        "create",
+                        templates::menu_label(&template),
+                        OperationKind::Effect,
+                        "files.new-from-template",
+                        &template_path,
+                    )
+                    .expect("template path is serializable")
+                    .with_contract(ActionContract {
+                        availability: if self.current_path.is_dir() {
+                            Availability::Available
+                        } else {
+                            Availability::Unavailable {
+                                code: "location_unavailable".into(),
+                                reason: "The current location cannot contain a new file".into(),
+                            }
+                        },
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+                folder.children.push(template_resource);
+            }
+        }
         let paste =
             ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
                 .expect("file operation payload is serializable")
@@ -6125,6 +6307,7 @@ impl Widget for FileExplorerWidget {
                 .execution(ExecutionMode::Background { cancellable: false })
                 .returns(ResultSpec::Job)
                 .with_contract(ActionContract {
+                    availability: remote_dav_availability(account.health),
                     permission: PermissionRequirement::Write,
                     retry: RetryPolicy::AtMostOnce,
                     ..ActionContract::default()
@@ -6150,6 +6333,7 @@ impl Widget for FileExplorerWidget {
                 .execution(ExecutionMode::Background { cancellable: false })
                 .returns(ResultSpec::Job)
                 .with_contract(ActionContract {
+                    availability: remote_dav_availability(account.health),
                     permission: PermissionRequirement::Write,
                     retry: RetryPolicy::AtMostOnce,
                     ..ActionContract::default()
@@ -6168,15 +6352,7 @@ impl Widget for FileExplorerWidget {
                 .execution(ExecutionMode::Background { cancellable: false })
                 .returns(ResultSpec::Job)
                 .with_contract(ActionContract {
-                    availability: match account.health {
-                        crate::remote_accounts::RemoteAccountHealth::Disabled => {
-                            Availability::Unavailable {
-                                code: "account_disabled".into(),
-                                reason: account.health.unavailable_reason().into(),
-                            }
-                        }
-                        _ => Availability::Available,
-                    },
+                    availability: remote_dav_availability(account.health),
                     permission: PermissionRequirement::Read,
                     retry: RetryPolicy::Idempotent,
                     ..ActionContract::default()
@@ -6220,8 +6396,11 @@ impl Widget for FileExplorerWidget {
                         .execution(ExecutionMode::Background { cancellable: false })
                         .returns(ResultSpec::Job)
                         .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
                             permission: PermissionRequirement::Read,
-                            retry: RetryPolicy::Idempotent,
+                            // A prior attempt may already have written the
+                            // local destination before its result was lost.
+                            retry: RetryPolicy::AtMostOnce,
                             ..ActionContract::default()
                         }),
                     );
@@ -6249,6 +6428,7 @@ impl Widget for FileExplorerWidget {
                         .execution(ExecutionMode::Background { cancellable: false })
                         .returns(ResultSpec::Job)
                         .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
                             permission: PermissionRequirement::Write,
                             retry: RetryPolicy::AtMostOnce,
                             ..ActionContract::default()
@@ -6265,7 +6445,17 @@ impl Widget for FileExplorerWidget {
                         .expect("remote delete payload")
                         .destructive()
                         .execution(ExecutionMode::Background { cancellable: false })
-                        .returns(ResultSpec::Job),
+                        .returns(ResultSpec::Job)
+                        .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
+                            permission: PermissionRequirement::Write,
+                            risk: RiskLevel::Destructive,
+                            confirmation: ConfirmationPolicy::Confirm,
+                            retry: RetryPolicy::AtMostOnce,
+                            execution: ExecutionMode::Background { cancellable: false },
+                            result: ResultSpec::Job,
+                            ..ActionContract::default()
+                        }),
                     );
                     resource.children.push(remote_entry);
                 }
@@ -6428,6 +6618,87 @@ impl Widget for FileExplorerWidget {
                 }
                 resource.actions.push(spec);
             }
+            if let Some(availability) = entry.availability.as_ref() {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "availability",
+                        t("files-availability-title-short"),
+                        OperationKind::View,
+                        "files.entry-command",
+                        &vec!["availability".to_string(), path.clone()],
+                    )
+                    .expect("availability payload is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+                let mut availability_command =
+                    |id: &str, label: String, verb: &str, destructive: bool| {
+                        let mut spec = ActionSpec::operation(
+                            id,
+                            label,
+                            OperationKind::Effect,
+                            "files.entry-command",
+                            &vec![verb.to_string(), path.clone()],
+                        )
+                        .expect("availability command payload is serializable")
+                        .with_contract(ActionContract {
+                            permission: PermissionRequirement::Write,
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        });
+                        if destructive {
+                            spec = spec.destructive();
+                        }
+                        resource.actions.push(spec);
+                    };
+                if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+                    availability_command(
+                        "keep-offline",
+                        t("files-keep-offline"),
+                        "keep-offline",
+                        false,
+                    );
+                }
+                if availability.policy == crate::model::AvailabilityPolicy::Pinned
+                    && !availability.policy_inherited
+                {
+                    availability_command(
+                        "automatic-storage",
+                        t("files-use-automatic-storage"),
+                        "automatic-storage",
+                        false,
+                    );
+                }
+                let releasable = !entry.is_dir
+                    && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                    && !availability.policy_inherited
+                    && availability.transfer.phase == crate::model::TransferPhase::Idle
+                    && matches!(
+                        availability.residency,
+                        crate::model::Residency::Partial { .. }
+                            | crate::model::Residency::Resident { .. }
+                    );
+                if releasable {
+                    availability_command(
+                        "free-local-space",
+                        t("files-free-local-space"),
+                        "free-local-space",
+                        false,
+                    );
+                }
+                let retryable = !matches!(
+                    availability.residency,
+                    crate::model::Residency::Resident { .. }
+                ) && availability.transfer.phase
+                    == crate::model::TransferPhase::Idle;
+                if retryable {
+                    availability_command(
+                        "retry-download",
+                        t("files-retry-download"),
+                        "retry-transfer",
+                        false,
+                    );
+                }
+            }
             if entry.record_id.is_some() {
                 resource.actions.push(
                     ActionSpec::operation(
@@ -6464,6 +6735,21 @@ impl Widget for FileExplorerWidget {
             (OperationKind::Effect, "files.new-folder") => {
                 let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 fileops::new_folder(&self.current_path, &name)?;
+                self.refresh();
+            }
+            (OperationKind::Effect, "files.new-from-template") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = PathBuf::from(value);
+                let Some(template_dir) = templates::templates_dir() else {
+                    return Err("the Templates directory is unavailable".into());
+                };
+                if !templates::list_templates(&template_dir)
+                    .iter()
+                    .any(|candidate| candidate == &target)
+                {
+                    return Err("the template is no longer available".into());
+                }
+                templates::create_from_template(&target, &self.current_path)?;
                 self.refresh();
             }
             (OperationKind::Effect, "files.paste") => {
@@ -6522,8 +6808,37 @@ impl Widget for FileExplorerWidget {
                     "up" => self.go_up(),
                     "back" => self.history_back(),
                     "forward" => self.history_forward(),
+                    "list" => self.set_view_mode(ViewMode::List),
+                    "grid" => self.set_view_mode(ViewMode::Grid),
+                    "sort-name" => self.set_sort_by(SortBy::Name),
+                    "sort-size" => self.set_sort_by(SortBy::Size),
+                    "sort-type" => self.set_sort_by(SortBy::Type),
+                    "sort-modified" => self.set_sort_by(SortBy::Modified),
+                    "sort-ascending" => {
+                        self.apply_set_sort_order(SortOrder::Ascending);
+                    }
+                    "sort-descending" => {
+                        self.apply_set_sort_order(SortOrder::Descending);
+                    }
+                    "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
+                    "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
                     "hidden" => {
                         self.apply_command(FileCommand::ToggleHidden);
+                    }
+                    "add-favorite" => {
+                        if !self.current_path.is_dir() {
+                            return Err("the current location cannot be a favourite".into());
+                        }
+                        self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
+                    }
+                    "remove-favorite" => {
+                        self.apply_command(FileCommand::RemoveFavorite(self.current_path.clone()));
+                    }
+                    "empty-trash" if self.is_trash_view() => {
+                        // The action contract was confirmation-gated by the
+                        // resource broker; do not make an agent traverse an
+                        // inaccessible second UI-only confirmation sheet.
+                        self.perform_empty_trash();
                     }
                     "terminal" => self
                         .open_terminal(&mut SystemRunner)
@@ -6564,6 +6879,11 @@ impl Widget for FileExplorerWidget {
                     "properties" => FileCommand::ShowProperties,
                     "sharing" => FileCommand::ShowSharing,
                     "history" => FileCommand::ShowHistory,
+                    "availability" => FileCommand::ShowAvailability,
+                    "keep-offline" => FileCommand::KeepOffline,
+                    "automatic-storage" => FileCommand::RemoveOfflinePin,
+                    "free-local-space" => FileCommand::FreeLocalSpace,
+                    "retry-transfer" => FileCommand::RetryTransfer,
                     _ => return Ok(false),
                 };
                 if !self.apply_command(command) {
@@ -6761,7 +7081,6 @@ impl Widget for FileExplorerWidget {
     ) -> Option<qos_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
-        self.poll_remote_browse_result();
         self.poll_remote_browse_result();
         if self
             .resource_result
@@ -6991,8 +7310,11 @@ impl Widget for FileExplorerWidget {
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
+        // content but below any open menus / drag ghost. A narrow drawer is a
+        // modal flap and its scrim must occlude every content affordance.
+        if !self.status_bubble_is_occluded_by_places_drawer() {
+            self.draw_status_bubble(scene, transform, text_renderer, theme);
+        }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
@@ -7845,6 +8167,155 @@ mod command_path_tests {
             !labels.contains(&"Rename".to_string()),
             "no in-place editing in the trash"
         );
+    }
+
+    #[test]
+    fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let folder = home_dir.path().join("agent-folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("b.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(
+            Some(state_dir.path().to_path_buf()),
+            Some(home_dir.path().to_path_buf()),
+        );
+        w.navigate(folder.clone());
+        let initial_zoom = w.zoom_level();
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let folder_resource = &resources[0];
+        for action in [
+            "grid",
+            "list",
+            "sort-name",
+            "sort-size",
+            "sort-type",
+            "sort-modified",
+            "sort-ascending",
+            "sort-descending",
+            "zoom-in",
+            "zoom-out",
+            "add-favorite",
+        ] {
+            assert!(
+                folder_resource.actions.iter().any(|spec| spec.id == action),
+                "folder resource must export {action}"
+            );
+        }
+        assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
+
+        for command in ["grid", "sort-size", "zoom-in", "add-favorite"] {
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut w,
+                    if command == "grid" || command == "sort-size" || command == "zoom-in" {
+                        OperationKind::View
+                    } else {
+                        OperationKind::Effect
+                    },
+                    "files.folder-command",
+                    &serde_json::to_vec(command).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap(),
+                "{command} is routed through the canonical dispatcher"
+            );
+        }
+        assert_eq!(w.view_mode(), ViewMode::Grid);
+        assert_eq!(w.sort_by(), SortBy::Size);
+        assert!(w.zoom_level() > initial_zoom);
+        assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
+    }
+
+    #[test]
+    fn remote_dav_allows_recovery_from_stale_offline_but_honours_disabled() {
+        assert_eq!(
+            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Offline),
+            Availability::Available,
+            "Offline is last observed status, so the next DAV attempt may discover recovery"
+        );
+        assert!(matches!(
+            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Disabled),
+            Availability::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
+        let first = "/home/alice/Templates/Plan.md";
+        let second = "/home/alice/Templates/Notes.md";
+        let first_id = template_resource_id(first);
+        assert_eq!(first_id, template_resource_id(first));
+        assert_ne!(first_id, template_resource_id(second));
+        assert!(first_id.starts_with("files.template:"));
+        assert!(first_id.len() <= "files.template:".len() + 24);
+        assert!(!first_id.contains("alice"));
+        assert!(!first_id.contains("Templates"));
+    }
+
+    #[test]
+    fn projected_availability_controls_are_discoverable_and_use_the_entry_route() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("shared.txt");
+        std::fs::write(&path, b"x").unwrap();
+        let mut entry = ent("shared.txt", false, "text/plain");
+        entry.path = path.clone();
+        entry.availability = Some(crate::model::AvailabilityProjection {
+            schema_version: 1,
+            record_id: "record".into(),
+            current_version: Some("v1".into()),
+            residency: crate::model::Residency::Partial { resident_bytes: 1 },
+            transfer: crate::model::ProjectedTransfer {
+                phase: crate::model::TransferPhase::Idle,
+                progress: None,
+                last_error: None,
+                last_error_at_ms: None,
+                error_truncated: false,
+            },
+            policy: crate::model::AvailabilityPolicy::Automatic,
+            policy_inherited: false,
+            replicas: crate::model::ReplicaEvidence::Unknown,
+            freshness: crate::model::AvailabilityFreshness::default(),
+        });
+        let mut w = FileExplorerWidget::new();
+        w.current_path = d.path().to_path_buf();
+        w.entries = vec![entry];
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.label == "shared.txt")
+            .expect("the projected entry is a resource");
+        for action in [
+            "availability",
+            "keep-offline",
+            "free-local-space",
+            "retry-download",
+        ] {
+            assert!(
+                resource.actions.iter().any(|spec| spec.id == action),
+                "availability projection must expose {action}"
+            );
+        }
+        let payload = vec![
+            "availability".to_string(),
+            path.to_string_lossy().into_owned(),
+        ];
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::View,
+                "files.entry-command",
+                &serde_json::to_vec(&payload).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(w.collab_panel.is_some(), "availability route opens details");
     }
 
     #[test]
@@ -10187,6 +10658,10 @@ mod responsive_body_tests {
             h.w.debug_content_rect(),
             before,
             "the file view must not move or shrink when the drawer opens",
+        );
+        assert!(
+            h.w.status_bubble_is_occluded_by_places_drawer(),
+            "the item/status bubble belongs behind the modal drawer scrim"
         );
     }
 
