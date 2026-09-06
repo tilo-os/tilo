@@ -529,7 +529,12 @@ impl Namespace {
             };
             let record_id = self.record_id_for_id(&id);
             if let Some(record_id) = record_id {
-                *occurrences.entry(record_id).or_default() += 1;
+                let count = occurrences
+                    .get(&record_id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                occurrences.insert(record_id, count);
             }
             let is_dir = self.kind_of(&id) == NodeKind::Dir;
             raw.insert(
