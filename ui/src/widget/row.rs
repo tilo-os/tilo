@@ -53,6 +53,9 @@ pub struct Row {
     /// its parent (`flex_grow:1`) and stretches its children to its height —
     /// the right choice for a sidebar|content body row.
     fill_height: bool,
+    /// Optional explicit insets for toolbars and sticky action rows.
+    horizontal_padding: f32,
+    vertical_padding: f32,
     /// Subtree cache — same pattern as `Column::subtree_cache`.
     /// See that field for the gory rationale.
     subtree_cache: Scene,
@@ -77,6 +80,8 @@ impl Row {
             permission_scope: None,
             no_wrap: false,
             fill_height: false,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
@@ -99,6 +104,14 @@ impl Row {
     #[must_use]
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_height = true;
+        self
+    }
+
+    /// Inset row contents without introducing a second layout wrapper.
+    #[must_use]
+    pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.horizontal_padding = horizontal.max(0.0);
+        self.vertical_padding = vertical.max(0.0);
         self
     }
 
@@ -173,6 +186,15 @@ impl Widget for Row {
                 size: taffy::Size {
                     width: percent(1.0_f32),
                     height: taffy::Dimension::auto(),
+                },
+                // Keep optional toolbar padding inside the row's percentage
+                // width instead of growing the parent's content bounds.
+                box_sizing: taffy::BoxSizing::BorderBox,
+                padding: taffy::Rect {
+                    left: length(self.horizontal_padding),
+                    right: length(self.horizontal_padding),
+                    top: length(self.vertical_padding),
+                    bottom: length(self.vertical_padding),
                 },
                 ..Default::default()
             },

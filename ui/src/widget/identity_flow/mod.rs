@@ -1,7 +1,12 @@
 //! The identity ceremony: a state machine of screens for bootstrapping
-//! an identity, sharing/verifying recovery words, pairing a second
-//! device via DKG, and minting/accepting channel invites, over the
-//! `threshold-identity` engine.
+//! an identity, pairing a second device via DKG, handling a genuine
+//! threshold recovery share, and minting/accepting channel invites over
+//! the `threshold-identity` engine.
+//!
+//! A new single-device identity intentionally skips the recovery-word
+//! screens. The production OOBE keeps that identity's secret behind the
+//! runtime provider boundary and recovers it with the authenticated encrypted
+//! portable backup instead.
 //!
 //! Screens are boxed and pre-built rather than one inline enum, so a
 //! transition is a constant-time `Box::new` swap.
@@ -2589,8 +2594,16 @@ impl IdentityFlow {
         let next = match (self.current, outcome) {
             (_, ScreenOutcome::Stay) => self.current,
             (_, ScreenOutcome::JumpTo(s)) => s,
-            (IdentityFlowScreen::CreateIdentity, ScreenOutcome::Advance)
-            | (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Back) => {
+            // A newly created 1-of-1 identity has no threshold recovery
+            // share. Older builds routed it through RecoveryShare with words
+            // derived from its public key; those words were non-secret and
+            // could not recover anything. Finish creation instead. The real
+            // RecoveryShare screens remain available to the explicit
+            // multi-device ceremony once DKG has produced a genuine share.
+            (IdentityFlowScreen::CreateIdentity, ScreenOutcome::Advance) => {
+                IdentityFlowScreen::Done
+            }
+            (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Back) => {
                 IdentityFlowScreen::RecoveryShare
             }
             (IdentityFlowScreen::RecoveryShare, ScreenOutcome::Advance) => {
@@ -2840,15 +2853,6 @@ impl Widget for IdentityFlow {
             ),
             IdentityFlowScreen::Done => ScreenOutcome::Stay,
         };
-        // Seed the recovery-share screen's mnemonic display from the new record.
-        if matches!(self.current, IdentityFlowScreen::CreateIdentity)
-            && matches!(outcome, ScreenOutcome::Advance)
-            && let Some(record) = self.create_identity.last_record()
-        {
-            self.recovery_share.seed_from_record(record);
-            self.recovery_verify
-                .seed_mnemonic(self.recovery_share.mnemonic().to_string());
-        }
         self.advance(outcome);
     }
 
@@ -2881,6 +2885,18 @@ mod tests {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn single_device_creation_never_enters_a_fake_recovery_word_screen() {
+        let store: Arc<dyn IdentityStore> = Arc::new(MemoryIdentityStore::new());
+        let mut flow = IdentityFlow::new(store);
+
+        assert_eq!(flow.current_screen(), IdentityFlowScreen::CreateIdentity);
+        flow.advance(ScreenOutcome::Advance);
+
+        assert_eq!(flow.current_screen(), IdentityFlowScreen::Done);
+        assert!(flow.recovery_share.mnemonic().is_empty());
     }
 
     #[test]
