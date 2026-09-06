@@ -375,6 +375,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
 #[test]
 fn a_corrupted_download_never_becomes_an_installed_app() {
     let publisher = test_publisher();
+    let owner = SigningKey::from_bytes(&[12; 32]);
     let good = author_qpkg("dev.qos.catalogue-corrupt", &publisher);
     // Serve a truncated archive under the same entry.
     let corrupted = good[..good.len() / 2].to_vec();
@@ -382,17 +383,22 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     let registry = Registry::start(String::new(), corrupted.clone());
     let url = format!("http://127.0.0.1:{}/sheets.qpkg", registry.port);
     let entry = signed_entry("dev.qos.catalogue-corrupt", &url, &good);
-    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), corrupted);
+    let registry = Registry::start(signed_snapshot_json(entry, &owner), corrupted);
 
     let config_dir = tempfile::tempdir().unwrap();
     let cache_dir = tempfile::tempdir().unwrap();
     let apps_dir = tempfile::tempdir().unwrap();
     std::fs::write(
         config_dir.path().join("registries.toml"),
-        format!(
-            "[[registry]]\nname = \"local\"\nbase_url = \"{}\"\n",
-            registry.base_url()
-        ),
+        toml::to_string_pretty(&RegistriesFile {
+            registries: vec![RegistryConfig {
+                name: "local".into(),
+                base_url: registry.base_url(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                enabled: true,
+            }],
+        })
+        .unwrap(),
     )
     .unwrap();
 
@@ -486,6 +492,7 @@ fn publish_and_install(
     apps_dir: &Path,
     runtime_dir: &Path,
 ) -> launcher::registry::InstalledPackage {
+    let owner = SigningKey::from_bytes(&[12; 32]);
     let registry = Registry::start(String::new(), qpkg.clone());
     let url = format!("http://127.0.0.1:{}/app.qpkg", registry.port);
     let mut entry = signed_entry(package_id, &url, &qpkg);
@@ -493,16 +500,21 @@ fn publish_and_install(
     let key = SigningKey::from_bytes(&[11u8; 32]);
     entry.signature_hex = String::new();
     sign_entry(&mut entry, &key);
-    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg);
+    let registry = Registry::start(signed_snapshot_json(entry, &owner), qpkg);
 
     let config_dir = tempfile::tempdir().unwrap();
     let cache_dir = tempfile::tempdir().unwrap();
     std::fs::write(
         config_dir.path().join("registries.toml"),
-        format!(
-            "[[registry]]\nname = \"local\"\nbase_url = \"{}\"\n",
-            registry.base_url()
-        ),
+        toml::to_string_pretty(&RegistriesFile {
+            registries: vec![RegistryConfig {
+                name: "local".into(),
+                base_url: registry.base_url(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                enabled: true,
+            }],
+        })
+        .unwrap(),
     )
     .unwrap();
 
