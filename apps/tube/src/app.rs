@@ -2325,14 +2325,14 @@ impl Widget for TubeApp {
         let mut changed = false;
         for a in actions {
             let document_action = match &a {
-                Action::ToggleLike(id) => Some(crate::actions::TubeAction::LikeVideo {
+                Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
                     video_id: id.clone(),
+                    liked: !self.model.is_liked(id),
                 }),
-                Action::ToggleSubscribe(id) => {
-                    Some(crate::actions::TubeAction::ToggleSubscription {
-                        channel_id: id.clone(),
-                    })
-                }
+                Action::ToggleSubscribe(id) => Some(crate::actions::TubeAction::SetSubscription {
+                    channel_id: id.clone(),
+                    subscribed: !self.model.is_subscribed(id),
+                }),
                 Action::ToggleSetting(setting) => {
                     let enabled = match setting {
                         SettingFlag::SponsorBlock => !self.model.settings.sponsorblock_enabled,
