@@ -75,6 +75,12 @@ pub enum NotesOperation {
     },
 }
 
+/// Decode an operation payload owned by Notes.
+///
+/// # Errors
+///
+/// Returns an error when `payload` is not valid JSON for [`NotesOperation`].
+/// Unknown operation types return `Ok(None)`.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<NotesOperation>, String> {
     if type_id != NOTES_OPERATION_TYPE {
         return Ok(None);
@@ -347,6 +353,23 @@ fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
         .map_or(0, |o| o + 1)
 }
 
+/// Build a view-operation spec from Notes' serializable operation enum.
+///
+/// Resource publication is best-effort: should a future operation become
+/// unserializable, omit that action rather than publishing a malformed command
+/// or crashing while rebuilding the resource tree.
+fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        NOTES_OPERATION_TYPE,
+        operation,
+    )
+    .ok()
+    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
+}
+
 /// Build one page resource and, recursively, its child pages.
 fn page_resource(
     m: &PageMeta,
@@ -355,20 +378,16 @@ fn page_resource(
 ) -> Resource {
     let mut res = Resource::new(page_resource_id(m.id), "notes.page", page_label(m));
 
-    res = res.with_action(
-        ActionSpec::operation(
-            "open",
-            "Open page",
-            OperationKind::View,
-            NOTES_OPERATION_TYPE,
-            &NotesOperation::OpenPage {
-                page: m.id,
-                block_id: None,
-            },
-        )
-        .expect("NotesOperation is always serializable")
-        .retry_policy(RetryPolicy::Idempotent),
-    );
+    if let Some(open) = view_operation_spec(
+        "open",
+        "Open page",
+        &NotesOperation::OpenPage {
+            page: m.id,
+            block_id: None,
+        },
+    ) {
+        res = res.with_action(open);
+    }
 
     for block in blocks.get(&m.id).into_iter().flatten() {
         if let Some(resource) = block_resource(m.id, block) {
@@ -426,22 +445,12 @@ pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<
     if label.is_empty() {
         return None;
     }
-    Some(
-        Resource::new(block_resource_id(page, &block.id), "notes.block", label).with_action(
-            ActionSpec::operation(
-                "open",
-                "Reveal block",
-                OperationKind::View,
-                NOTES_OPERATION_TYPE,
-                &NotesOperation::OpenPage {
-                    page,
-                    block_id: Some(block.id.clone()),
-                },
-            )
-            .expect("NotesOperation is always serializable")
-            .retry_policy(RetryPolicy::Idempotent),
-        ),
-    )
+    let operation = NotesOperation::OpenPage {
+        page,
+        block_id: Some(block.id.clone()),
+    };
+    let open = view_operation_spec("open", "Reveal block", &operation)?;
+    Some(Resource::new(block_resource_id(page, &block.id), "notes.block", label).with_action(open))
 }
 
 /// Build the resource tree Notes currently has open: the notebook (always
