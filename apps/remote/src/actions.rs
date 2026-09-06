@@ -37,9 +37,10 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
+    ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    RiskLevel,
 };
 
 use crate::doc::RemoteDoc;
@@ -107,10 +108,10 @@ fn operation_spec(
     id: &str,
     label: &str,
     kind: OperationKind,
-    operation: RemoteOperation,
+    operation: &RemoteOperation,
 ) -> ActionSpec {
     let fallback = operation.clone();
-    ActionSpec::operation(id, label, kind, REMOTE_OPERATION_TYPE, &operation).unwrap_or_else(|_| {
+    ActionSpec::operation(id, label, kind, REMOTE_OPERATION_TYPE, operation).unwrap_or_else(|_| {
         ActionSpec::typed_operation(
             id,
             label,
@@ -128,27 +129,38 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
         "connect",
         "Connect",
         OperationKind::Effect,
-        RemoteOperation::Connect {
+        &RemoteOperation::Connect {
             connection_id: connection.id,
         },
     )
     .with_description(format!(
         "Open a live session to this saved connection. {}",
-        crate::session::transport_readiness(connection.kind).detail(connection.kind)
+        crate::session::connection_readiness(connection).detail(connection.kind)
     ))
     .with_contract(ActionContract {
+        permission: PermissionRequirement::Read,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
         retry: RetryPolicy::AtMostOnce,
         execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Job,
         tags: vec!["network".into(), "session".into()],
         ..ActionContract::default()
     });
-    let readiness = crate::session::transport_readiness(connection.kind);
-    if !readiness.can_connect() {
-        spec.unavailable(readiness.code(), readiness.detail(connection.kind))
-    } else if connection.presence == Presence::Offline {
-        spec.unavailable("host_offline", "The saved host is currently offline")
-    } else {
+    let readiness = crate::session::connection_readiness(connection);
+    if readiness.can_connect() {
         spec
+    } else {
+        spec.unavailable(
+            readiness.code(),
+            if readiness == crate::session::TransportReadiness::InvalidProfile {
+                connection
+                    .profile_issue()
+                    .unwrap_or_else(|| readiness.detail(connection.kind))
+            } else {
+                readiness.detail(connection.kind)
+            },
+        )
     }
 }
 
@@ -197,8 +209,11 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
     )
     .with_contract(ActionContract {
         permission: PermissionRequirement::Write,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
         retry: RetryPolicy::AtMostOnce,
         execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Job,
         tags: vec!["remote-input".into(), "session".into()],
         ..ActionContract::default()
     });
@@ -407,7 +422,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 "open",
                 "Open connection settings",
                 OperationKind::View,
-                RemoteOperation::EditConnection { connection_id: id },
+                &RemoteOperation::EditConnection { connection_id: id },
             ))
             .with_action(connect_spec(&c))
             .with_action(
@@ -449,13 +464,13 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         "open",
         "Show connections",
         OperationKind::View,
-        RemoteOperation::ShowConnections,
+        &RemoteOperation::ShowConnections,
     ))
     .with_action(operation_spec(
         "new",
         "New connection",
         OperationKind::View,
-        RemoteOperation::NewConnectionForm,
+        &RemoteOperation::NewConnectionForm,
     ))
     .with_children(connections);
     vec![workspace]
@@ -657,15 +672,15 @@ mod tests {
             connect.contract.execution,
             qos_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(connect.contract.result, qos_actions::ResultSpec::None);
-        assert!(
+        assert_eq!(connect.contract.result, qos_actions::ResultSpec::Job);
+        assert_ne!(
             r.actions
                 .iter()
                 .find(|a| a.id == "delete")
                 .unwrap()
                 .contract
-                .confirmation
-                != qos_actions::ConfirmationPolicy::None
+                .confirmation,
+            qos_actions::ConfirmationPolicy::None
         );
         let encoded = immediate_encode(connect);
         assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
@@ -701,6 +716,8 @@ mod tests {
         let id = Uuid::new_v4();
         let mut connection = sample(id, "qOS device");
         connection.kind = ConnectionKind::Qos;
+        connection.auth = AuthMethod::DeviceIdentity;
+        connection.host = iroh::SecretKey::generate().public().to_string();
         connection.presence = Presence::Online;
         assert!(
             connect_spec(&connection)
@@ -708,6 +725,48 @@ mod tests {
                 .availability
                 .is_available()
         );
+    }
+
+    #[test]
+    fn malformed_q_os_profile_is_not_offered_as_a_connectable_resource() {
+        let id = Uuid::new_v4();
+        let mut connection = sample(id, "qOS device");
+        connection.kind = ConnectionKind::Qos;
+        connection.auth = AuthMethod::DeviceIdentity;
+        connection.host = "friendly-name".into();
+        let spec = connect_spec(&connection);
+        assert!(matches!(
+            &spec.contract.availability,
+            qos_actions::Availability::Unavailable { code, reason }
+                if code == "invalid_connection_profile"
+                    && reason.contains("exact certified endpoint")
+        ));
+    }
+
+    #[test]
+    fn remote_effects_declare_confirmation_permissions_and_non_repeatability() {
+        let id = Uuid::new_v4();
+        let mut connection = sample(id, "qOS device");
+        connection.kind = ConnectionKind::Qos;
+        connection.auth = AuthMethod::DeviceIdentity;
+        connection.host = iroh::SecretKey::generate().public().to_string();
+        let connect = connect_spec(&connection);
+        assert_eq!(connect.contract.permission, PermissionRequirement::Read);
+        assert_eq!(connect.contract.risk, RiskLevel::Privileged);
+        assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
+        assert_eq!(connect.contract.result, ResultSpec::Job);
+
+        let input = session_resource(&connection, true)
+            .actions
+            .into_iter()
+            .find(|action| action.id == "send-text")
+            .expect("typed input action");
+        assert_eq!(input.contract.permission, PermissionRequirement::Write);
+        assert_eq!(input.contract.risk, RiskLevel::Privileged);
+        assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
+        assert_eq!(input.contract.result, ResultSpec::Job);
     }
 
     #[test]
