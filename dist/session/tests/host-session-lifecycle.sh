@@ -12,6 +12,9 @@ log=$work/log
 cat >"$work/systemctl" <<'SH'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+if [ "${QOS_SESSION_TEST_FAIL_IMPORT:-0}" = 1 ] && [ "${2:-}" = import-environment ]; then
+    exit 1
+fi
 if [ "${QOS_SESSION_TEST_FAIL_START:-0}" = 1 ] && [ "${2:-}" = start ]; then
     exit 1
 fi
@@ -20,6 +23,10 @@ SH
 cat >"$work/dbus-update-activation-environment" <<'SH'
 #!/bin/sh
 printf 'dbus-update %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+if [ "${QOS_SESSION_TEST_FAIL_DBUS:-0}" = 1 ] \
+    && [ "${2:-}" = XDG_CURRENT_DESKTOP ] && [ "${3:-}" = XDG_SESSION_TYPE ]; then
+    exit 1
+fi
 exit 0
 SH
 cat >"$work/shell" <<'SH'
@@ -34,6 +41,10 @@ SH
 cat >"$work/systemd-cat" <<'SH'
 #!/bin/sh
 printf 'systemd-cat %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+if [ "${2:-}" = --priority=err ]; then
+    cat >>"$QOS_SESSION_TEST_LOG"
+    exit 0
+fi
 shift 2
 exec "$@"
 SH
@@ -88,6 +99,32 @@ set -e
 [[ $status == 1 ]]
 grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
 grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
-! grep -Fq 'systemd-cat ' "$log"
+grep -Fqx 'systemd-cat --identifier=qos-session --priority=err --level-prefix=false' "$log"
+grep -Fqx 'qos-session: startup failed during qOS graphical session target start (exit status 1)' "$log"
+! grep -Fq "systemd-cat --identifier=qos-session --level-prefix=false $work/shell" "$log"
+
+for failure in dbus import; do
+    : >"$log"
+    set +e
+    case "$failure" in
+        dbus) QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_FAIL_DBUS=1 "$work/qos-session" ;;
+        import) QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_FAIL_IMPORT=1 "$work/qos-session" ;;
+    esac
+    status=$?
+    set -e
+    [[ $status == 1 ]]
+    grep -Fqx 'systemd-cat --identifier=qos-session --priority=err --level-prefix=false' "$log"
+    case "$failure" in
+        dbus)
+            grep -Fqx 'qos-session: startup failed during D-Bus activation environment update (exit status 1)' "$log"
+            ;;
+        import)
+            grep -Fqx 'qos-session: startup failed during systemd user environment import (exit status 1)' "$log"
+            ;;
+    esac
+    grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
+    grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
+    ! grep -Fq 'shell --host-desktop-session' "$log"
+done
 
 echo 'host session lifecycle: PASS'
