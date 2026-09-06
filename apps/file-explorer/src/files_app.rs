@@ -5985,6 +5985,7 @@ impl Widget for FileExplorerWidget {
             "files.entry-command",
             "files.rename",
             "files.share-link",
+            "files.remote-account",
             "files.remote-dav",
         ]
     }
@@ -6176,7 +6177,10 @@ impl Widget for FileExplorerWidget {
                 }
             },
             permission: PermissionRequirement::Write,
-            reversible: true,
+            // Creation is a host-filesystem effect. The app does not retain a
+            // durable inverse, so advertising an undo boundary here would let
+            // the shared history promise something it cannot perform.
+            reversible: false,
             ..ActionContract::default()
         });
         folder.actions.push(new_folder);
@@ -6791,9 +6795,28 @@ impl Widget for FileExplorerWidget {
                     return Err(format!("paste failed: {}", failures.join("; ")));
                 }
             }
-            (OperationKind::View, "files.navigate" | "files.open") => {
+            (OperationKind::View, "files.navigate") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
+            }
+            (OperationKind::View, "files.open") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = PathBuf::from(value);
+                // `open` is an action on an already-published place or entry,
+                // not a general ambient-path launcher. Re-check the live
+                // catalogue at execution time so a deleted/renamed row, or a
+                // replayed action from another folder, cannot gain authority.
+                let still_exported = self.entries.iter().any(|entry| entry.path == target)
+                    || self
+                        .favs
+                        .borrow()
+                        .favorites
+                        .iter()
+                        .any(|favorite| favorite.path == target);
+                if !still_exported {
+                    return Err("file location is no longer available".into());
+                }
+                self.open_path(target);
             }
             (OperationKind::View, "files.reveal-record") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -8597,6 +8620,52 @@ mod command_path_tests {
         );
         assert!(d.path().join("Agent Created").is_dir());
         assert!(!w.is_renaming());
+    }
+
+    #[test]
+    fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("transient.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let doc = automerge::AutoCommit::new();
+        let payload = serde_json::to_vec(file.to_string_lossy().as_ref()).unwrap();
+
+        std::fs::remove_file(&file).unwrap();
+        w.refresh();
+        let error = Widget::invoke_resource_operation(
+            &mut w,
+            OperationKind::View,
+            "files.open",
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .expect_err("a stale entry action must be refused");
+        assert!(error.contains("no longer available"));
+    }
+
+    #[test]
+    fn every_exported_local_file_handler_is_declared_for_the_broker() {
+        let handlers = Widget::local_resource_operation_handlers(&FileExplorerWidget::new());
+        for handler in [
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.new-from-template",
+            "files.navigate",
+            "files.open",
+            "files.reveal-record",
+            "files.folder-command",
+            "files.entry-command",
+            "files.rename",
+            "files.share-link",
+            "files.remote-account",
+            "files.remote-dav",
+        ] {
+            assert!(handlers.contains(&handler), "missing handler {handler}");
+        }
     }
 
     #[test]
