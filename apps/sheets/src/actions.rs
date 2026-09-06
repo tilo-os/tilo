@@ -25,20 +25,21 @@
 //!
 //! ## Determinism contract
 //!
-//! Sheets are addressed by index and cells by `(col, row)`; a payload carries
-//! the exact coordinates and the exact value, so [`Action::apply`] is a pure
+//! Sheets are addressed by both their current index and a durable sheet id;
+//! cells carry the exact coordinates and values, so [`Action::apply`] is a pure
 //! function of `(payload, base document)` — no RNG, no wall-clock, no app state.
 //! Where an operation restructures a whole sheet (row/column insert + delete) it
 //! recomputes the moved cells from the document at the replay's base state and
 //! emits its ops in a **sorted** order (a `HashMap`'s iteration order is not
 //! stable across replicas), so two replicas at the same heads land on the
-//! byte-identical result. A malformed payload is a **no-op**, never an error, so
-//! a bad replay can't wedge a peer.
+//! byte-identical result. A malformed or stale payload is **refused before any
+//! CRDT write**, so it cannot partially change a workbook or wedge a peer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
@@ -123,6 +124,9 @@ pub fn open_cell_address(sheet_id: &str, col: u32, row: u32) -> ActionAddress {
     ActionAddress::new(cell_resource_id(sheet_id, col, row), "open")
 }
 
+/// # Errors
+///
+/// Returns the JSON decoding error when `payload` is not a Sheets operation.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
     if type_id != SHEETS_OPERATION_TYPE {
         return Ok(None);
@@ -132,6 +136,11 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOp
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    reason = "operation values are immediately serialized and every enum variant is serializable"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: SheetsOperation) -> ActionSpec {
     let spec = ActionSpec::operation(id, label, kind, SHEETS_OPERATION_TYPE, &value)
         .expect("SheetsOperation is always serializable");
@@ -149,6 +158,16 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SheetsOperation)
 /// [`Action::apply`] independent of the app's live locale, so replay is
 /// deterministic.
 const APPLY_CURRENCY: Currency = Currency::USD;
+
+/// Excel-compatible grid bounds. Besides matching the visible grid these keep
+/// a hostile action from constructing an unrenderable sparse coordinate or
+/// overflowing an insert shift at `u32::MAX`.
+const MAX_COLUMN: u32 = 16_383;
+const MAX_ROW: u32 = 1_048_575;
+const MAX_CELL_INPUT_BYTES: usize = 32 * 1024;
+const MAX_WRITES_PER_ACTION: usize = 16 * 1024;
+const MAX_SHEET_NAME_CHARS: usize = 100;
+const TAB_COLOR_COUNT: u32 = 6;
 
 /// One cell's write within a batched [`SheetsAction::SetCells`]: its raw
 /// value/formula and, when `fmt` is `Some`, the format to set alongside it. An
@@ -173,7 +192,8 @@ pub struct FormatWrite {
 ///
 /// Determinism contract: coordinates and values are carried in the payload;
 /// [`Action::apply`] never touches the RNG or the wall-clock and emits its ops
-/// in a stable order. A malformed payload is a **no-op** rather than an error.
+/// in a stable order. A malformed or stale payload is refused atomically rather
+/// than partially applying its valid prefix.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SheetsAction {
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
@@ -183,6 +203,7 @@ pub enum SheetsAction {
     /// not a flowing rich-text body, so a whole-cell write is the correct grain.
     SetCell {
         sheet: usize,
+        sheet_id: String,
         col: u32,
         row: u32,
         raw: String,
@@ -192,6 +213,7 @@ pub enum SheetsAction {
     /// clears the format.
     SetFormat {
         sheet: usize,
+        sheet_id: String,
         col: u32,
         row: u32,
         fmt: String,
@@ -200,41 +222,86 @@ pub enum SheetsAction {
     /// `AutoSum` totals row. One action per bulk operation keeps it a single undo
     /// boundary, a single actor-pinned change, and a byte-identical replay,
     /// rather than a change per cell.
-    SetCells { sheet: usize, cells: Vec<CellWrite> },
+    SetCells {
+        sheet: usize,
+        sheet_id: String,
+        cells: Vec<CellWrite>,
+    },
     /// Set the format of a batch of cells in one change — range formatting from
     /// the Format menu or the palette. One undo boundary for the whole range.
     SetFormats {
         sheet: usize,
+        sheet_id: String,
         cells: Vec<FormatWrite>,
     },
     /// Append a new blank sheet named `name`.
-    AddSheet { name: String },
-    /// Insert a new blank sheet named `name` at index `at` (clamped to the end).
-    InsertSheet { at: usize, name: String },
+    AddSheet { name: String, new_sheet_id: String },
+    /// Insert a new blank sheet named `name` at the anchored slot `at`.
+    InsertSheet {
+        at: usize,
+        before_sheet_id: Option<String>,
+        after_sheet_id: Option<String>,
+        name: String,
+        new_sheet_id: String,
+    },
     /// Delete sheet `idx`. A no-op when it is the workbook's last sheet.
-    DeleteSheet { idx: usize },
+    DeleteSheet { idx: usize, sheet_id: String },
     /// Rename sheet `idx`.
-    RenameSheet { idx: usize, name: String },
+    RenameSheet {
+        idx: usize,
+        sheet_id: String,
+        name: String,
+    },
     /// Move sheet `from` so it lands at index `to`, carrying its cells, formats
     /// and colour. Recomputed from the document's base state.
-    MoveSheet { from: usize, to: usize },
+    MoveSheet {
+        from: usize,
+        sheet_id: String,
+        to: usize,
+        before_sheet_id: Option<String>,
+        after_sheet_id: Option<String>,
+    },
     /// Duplicate sheet `idx` into a new sheet inserted immediately after it.
     /// Recomputed from the document's base state.
-    DuplicateSheet { idx: usize },
+    DuplicateSheet {
+        idx: usize,
+        sheet_id: String,
+        new_sheet_id: String,
+    },
     /// Set (or clear, with `None`) sheet `idx`'s tab colour palette index.
-    SetSheetColor { idx: usize, color: Option<u32> },
+    SetSheetColor {
+        idx: usize,
+        sheet_id: String,
+        color: Option<u32>,
+    },
     /// Insert a blank row above row `at` on `sheet`, shifting cells at or below
     /// it down. Recomputed from the document's base state.
-    InsertRow { sheet: usize, at: u32 },
+    InsertRow {
+        sheet: usize,
+        sheet_id: String,
+        at: u32,
+    },
     /// Delete row `at` on `sheet`, shifting the rows below it up. Recomputed
     /// from the document's base state.
-    DeleteRow { sheet: usize, at: u32 },
+    DeleteRow {
+        sheet: usize,
+        sheet_id: String,
+        at: u32,
+    },
     /// Insert a blank column left of column `at` on `sheet`, shifting cells at
     /// or after it right. Recomputed from the document's base state.
-    InsertColumn { sheet: usize, at: u32 },
+    InsertColumn {
+        sheet: usize,
+        sheet_id: String,
+        at: u32,
+    },
     /// Delete column `at` on `sheet`, shifting the columns after it left.
     /// Recomputed from the document's base state.
-    DeleteColumn { sheet: usize, at: u32 },
+    DeleteColumn {
+        sheet: usize,
+        sheet_id: String,
+        at: u32,
+    },
     /// Persist the workbook's per-document locale overrides (currency / date /
     /// time). A `None` field clears the stored override so the document falls
     /// back to the global default.
@@ -260,19 +327,19 @@ pub fn history_context(action: &SheetsAction) -> qos_actions::ActionContext {
 
 type HistoryResource = (&'static str, String, &'static str, String);
 
-fn cell_resource(label: &'static str, sheet: usize, col: u32, row: u32) -> HistoryResource {
+fn cell_resource(label: &'static str, sheet_id: &str, col: u32, row: u32) -> HistoryResource {
     (
         label,
-        format!("sheets.cell:{sheet}:{col}:{row}"),
+        format!("sheets.cell:{sheet_id}:{col}:{row}"),
         "sheets.cell",
         format!("{}{}", column_label(col), row + 1),
     )
 }
 
-fn range_resource(label: &'static str, sheet: usize, cells: usize) -> HistoryResource {
+fn range_resource(label: &'static str, sheet_id: &str, cells: usize) -> HistoryResource {
     (
         label,
-        format!("sheets.range:{sheet}"),
+        format!("sheets.range:{sheet_id}"),
         "sheets.range",
         format!("{cells} cells"),
     )
@@ -281,80 +348,82 @@ fn range_resource(label: &'static str, sheet: usize, cells: usize) -> HistoryRes
 fn history_resource(action: &SheetsAction) -> HistoryResource {
     match action {
         SheetsAction::SetCell {
-            sheet, col, row, ..
-        } => cell_resource("Edit cell", *sheet, *col, *row),
+            sheet_id, col, row, ..
+        } => cell_resource("Edit cell", sheet_id, *col, *row),
         SheetsAction::SetFormat {
-            sheet, col, row, ..
-        } => cell_resource("Format cell", *sheet, *col, *row),
-        SheetsAction::SetCells { sheet, cells } => {
-            range_resource("Edit range", *sheet, cells.len())
-        }
-        SheetsAction::SetFormats { sheet, cells } => {
-            range_resource("Format range", *sheet, cells.len())
-        }
-        SheetsAction::AddSheet { name } => (
+            sheet_id, col, row, ..
+        } => cell_resource("Format cell", sheet_id, *col, *row),
+        SheetsAction::SetCells {
+            sheet_id, cells, ..
+        } => range_resource("Edit range", sheet_id, cells.len()),
+        SheetsAction::SetFormats {
+            sheet_id, cells, ..
+        } => range_resource("Format range", sheet_id, cells.len()),
+        SheetsAction::AddSheet { name, new_sheet_id } => (
             "Add sheet",
-            format!("sheets.sheet:{name}"),
+            format!("sheets.sheet:{new_sheet_id}"),
             "sheets.sheet",
             name.clone(),
         ),
-        SheetsAction::InsertSheet { at, name } => (
+        SheetsAction::InsertSheet {
+            name, new_sheet_id, ..
+        } => (
             "Insert sheet",
-            format!("sheets.sheet:{at}"),
+            format!("sheets.sheet:{new_sheet_id}"),
             "sheets.sheet",
             name.clone(),
         ),
-        SheetsAction::DeleteSheet { idx } => (
+        SheetsAction::DeleteSheet { sheet_id, .. } => (
             "Delete sheet",
-            format!("sheets.sheet:{idx}"),
+            format!("sheets.sheet:{sheet_id}"),
             "sheets.sheet",
-            format!("Sheet {}", idx + 1),
+            "Sheet".into(),
         ),
-        SheetsAction::RenameSheet { idx, name } => (
+        SheetsAction::RenameSheet { sheet_id, name, .. } => (
             "Rename sheet",
-            format!("sheets.sheet:{idx}"),
+            format!("sheets.sheet:{sheet_id}"),
             "sheets.sheet",
             name.clone(),
         ),
-        SheetsAction::MoveSheet { from, .. } => (
+        SheetsAction::MoveSheet { sheet_id, .. } => (
             "Move sheet",
-            format!("sheets.sheet:{from}"),
+            format!("sheets.sheet:{sheet_id}"),
             "sheets.sheet",
-            format!("Sheet {}", from + 1),
+            "Sheet".into(),
         ),
-        SheetsAction::DuplicateSheet { idx } => (
+        SheetsAction::DuplicateSheet { new_sheet_id, .. } => (
             "Duplicate sheet",
-            format!("sheets.sheet:{idx}"),
+            format!("sheets.sheet:{new_sheet_id}"),
             "sheets.sheet",
-            format!("Sheet {}", idx + 1),
+            "Sheet".into(),
         ),
-        SheetsAction::SetSheetColor { idx, .. } => (
+        SheetsAction::SetSheetColor { sheet_id, .. } => (
             "Change sheet color",
-            format!("sheets.sheet:{idx}"),
+            format!("sheets.sheet:{sheet_id}"),
             "sheets.sheet",
-            format!("Sheet {}", idx + 1),
+            "Sheet".into(),
         ),
-        SheetsAction::InsertRow { sheet, at } => (
+        SheetsAction::InsertRow { sheet_id, at, .. } => (
             "Insert row",
-            format!("sheets.row:{sheet}:{at}"),
+            format!("sheets.row:{sheet_id}:{at}"),
             "sheets.row",
             format!("Row {}", at + 1),
         ),
-        SheetsAction::DeleteRow { sheet, at } => (
+        SheetsAction::DeleteRow { sheet_id, at, .. } => (
             "Delete row",
-            format!("sheets.row:{sheet}:{at}"),
+            format!("sheets.row:{sheet_id}:{at}"),
             "sheets.row",
             format!("Row {}", at + 1),
         ),
-        SheetsAction::InsertColumn { sheet, at } => (
+        SheetsAction::InsertColumn { sheet_id, at, .. } => (
             "Insert column",
-            format!("sheets.column:{sheet}:{at}"),
+            format!("sheets.column:{sheet_id}:{at}"),
             "sheets.column",
             column_label(*at),
         ),
-        SheetsAction::DeleteColumn { sheet, at } => (
+        SheetsAction::DeleteColumn { sheet_id, at, .. } => (
             "Delete column",
-            format!("sheets.column:{sheet}:{at}"),
+            format!("sheets.column:{sheet_id}:{at}"),
             "sheets.column",
             column_label(*at),
         ),
@@ -367,108 +436,127 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
     }
 }
 
-/// Enrich direct UI actions with the sheet's durable document identity. The
-/// action payload still uses the current index for deterministic replay, while
-/// History and resource browsing remain attached across rename and move.
+/// Compatibility wrapper for call sites that already have the document. Every
+/// sheet-scoped action now carries its durable identity in the envelope, so
+/// history never needs to re-resolve an author-time numeric position.
 pub fn history_context_for_doc(
-    doc: &AutoCommit,
+    _doc: &AutoCommit,
     action: &SheetsAction,
 ) -> qos_actions::ActionContext {
-    let mut context = history_context(action);
-    let sheet = match action {
-        SheetsAction::SetCell { sheet, .. }
-        | SheetsAction::SetFormat { sheet, .. }
-        | SheetsAction::SetCells { sheet, .. }
-        | SheetsAction::SetFormats { sheet, .. }
-        | SheetsAction::InsertRow { sheet, .. }
-        | SheetsAction::DeleteRow { sheet, .. }
-        | SheetsAction::InsertColumn { sheet, .. }
-        | SheetsAction::DeleteColumn { sheet, .. } => Some(*sheet),
-        SheetsAction::DeleteSheet { idx }
-        | SheetsAction::RenameSheet { idx, .. }
-        | SheetsAction::DuplicateSheet { idx }
-        | SheetsAction::SetSheetColor { idx, .. } => Some(*idx),
-        SheetsAction::MoveSheet { from, .. } => Some(*from),
-        SheetsAction::AddSheet { .. }
-        | SheetsAction::InsertSheet { .. }
-        | SheetsAction::SetDocSettings { .. } => None,
-    };
-    let Some(stable) = sheet.and_then(|idx| SheetsDoc::sheet_resource_id(doc, idx)) else {
-        return context;
-    };
-    let Some(resource) = context.resource.as_mut() else {
-        return context;
-    };
-    resource.id = match action {
-        SheetsAction::SetCell { col, row, .. } | SheetsAction::SetFormat { col, row, .. } => {
-            format!("sheets.cell:{stable}:{col}:{row}")
-        }
-        SheetsAction::SetCells { .. } | SheetsAction::SetFormats { .. } => {
-            format!("sheets.range:{stable}")
-        }
-        SheetsAction::InsertRow { at, .. } | SheetsAction::DeleteRow { at, .. } => {
-            format!("sheets.row:{stable}:{at}")
-        }
-        SheetsAction::InsertColumn { at, .. } | SheetsAction::DeleteColumn { at, .. } => {
-            format!("sheets.column:{stable}:{at}")
-        }
-        _ => format!("sheets.sheet:{stable}"),
-    };
-    context
+    history_context(action)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive action apply stays adjacent to action enum"
+)]
 impl Action for SheetsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        // Validate the entire payload before touching the CRDT. In particular,
+        // a batched paste must never leave its first few cells committed when a
+        // later coordinate/format is malformed or stale.
+        validate_action(doc, self)?;
         match self {
             SheetsAction::SetCell {
-                sheet,
+                sheet: _,
+                sheet_id,
                 col,
                 row,
                 raw,
                 fmt,
-            } => apply_set_cell(doc, *sheet, (*col, *row), raw, fmt.as_deref()),
+            } => apply_set_cell(
+                doc,
+                resolve_sheet(doc, sheet_id)?,
+                (*col, *row),
+                raw,
+                fmt.as_deref(),
+            ),
             SheetsAction::SetFormat {
-                sheet,
+                sheet: _,
+                sheet_id,
                 col,
                 row,
                 fmt,
             } => {
-                SheetsDoc::set_cell_format(doc, *sheet, (*col, *row), CellFormat::from_str(fmt));
+                SheetsDoc::set_cell_format(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    (*col, *row),
+                    CellFormat::from_str(fmt),
+                );
             }
-            SheetsAction::SetCells { sheet, cells } => apply_set_cells(doc, *sheet, cells),
-            SheetsAction::SetFormats { sheet, cells } => apply_set_formats(doc, *sheet, cells),
-            SheetsAction::AddSheet { name } => {
-                SheetsDoc::add_sheet(doc, name);
+            SheetsAction::SetCells {
+                sheet_id, cells, ..
+            } => apply_set_cells(doc, resolve_sheet(doc, sheet_id)?, cells),
+            SheetsAction::SetFormats {
+                sheet_id, cells, ..
+            } => apply_set_formats(doc, resolve_sheet(doc, sheet_id)?, cells),
+            SheetsAction::AddSheet { name, new_sheet_id } => {
+                SheetsDoc::add_sheet_with_id(doc, name, new_sheet_id);
             }
-            SheetsAction::InsertSheet { at, name } => {
-                SheetsDoc::insert_sheet(doc, *at, name);
+            SheetsAction::InsertSheet {
+                before_sheet_id,
+                after_sheet_id,
+                name,
+                new_sheet_id,
+                ..
+            } => {
+                let at = resolve_slot(
+                    doc,
+                    before_sheet_id.as_deref(),
+                    after_sheet_id.as_deref(),
+                    None,
+                )?;
+                SheetsDoc::insert_sheet_with_id(doc, at, name, new_sheet_id);
             }
-            SheetsAction::DeleteSheet { idx } => {
-                SheetsDoc::delete_sheet(doc, *idx);
+            SheetsAction::DeleteSheet { sheet_id, .. } => {
+                SheetsDoc::delete_sheet(doc, resolve_sheet(doc, sheet_id)?);
             }
-            SheetsAction::RenameSheet { idx, name } => {
-                SheetsDoc::rename_sheet(doc, *idx, name);
+            SheetsAction::RenameSheet { sheet_id, name, .. } => {
+                SheetsDoc::rename_sheet(doc, resolve_sheet(doc, sheet_id)?, name);
             }
-            SheetsAction::MoveSheet { from, to } => {
-                SheetsDoc::move_sheet(doc, *from, *to);
+            SheetsAction::MoveSheet {
+                sheet_id,
+                before_sheet_id,
+                after_sheet_id,
+                ..
+            } => {
+                let from = resolve_sheet(doc, sheet_id)?;
+                let to = resolve_slot(
+                    doc,
+                    before_sheet_id.as_deref(),
+                    after_sheet_id.as_deref(),
+                    Some(sheet_id),
+                )?;
+                SheetsDoc::move_sheet(doc, from, to);
             }
-            SheetsAction::DuplicateSheet { idx } => {
-                SheetsDoc::duplicate_sheet(doc, *idx);
+            SheetsAction::DuplicateSheet {
+                sheet_id,
+                new_sheet_id,
+                ..
+            } => {
+                SheetsDoc::duplicate_sheet_with_id(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    new_sheet_id,
+                );
             }
-            SheetsAction::SetSheetColor { idx, color } => {
-                SheetsDoc::set_sheet_color(doc, *idx, *color);
+            SheetsAction::SetSheetColor {
+                sheet_id, color, ..
+            } => {
+                SheetsDoc::set_sheet_color(doc, resolve_sheet(doc, sheet_id)?, *color);
             }
-            SheetsAction::InsertRow { sheet, at } => {
-                restructure(doc, *sheet, insert_row_map(*at));
+            SheetsAction::InsertRow { sheet_id, at, .. } => {
+                restructure(doc, resolve_sheet(doc, sheet_id)?, insert_row_map(*at));
             }
-            SheetsAction::DeleteRow { sheet, at } => {
-                restructure(doc, *sheet, delete_row_map(*at));
+            SheetsAction::DeleteRow { sheet_id, at, .. } => {
+                restructure(doc, resolve_sheet(doc, sheet_id)?, delete_row_map(*at));
             }
-            SheetsAction::InsertColumn { sheet, at } => {
-                restructure(doc, *sheet, insert_column_map(*at));
+            SheetsAction::InsertColumn { sheet_id, at, .. } => {
+                restructure(doc, resolve_sheet(doc, sheet_id)?, insert_column_map(*at));
             }
-            SheetsAction::DeleteColumn { sheet, at } => {
-                restructure(doc, *sheet, delete_column_map(*at));
+            SheetsAction::DeleteColumn { sheet_id, at, .. } => {
+                restructure(doc, resolve_sheet(doc, sheet_id)?, delete_column_map(*at));
             }
             SheetsAction::SetDocSettings {
                 currency,
@@ -517,6 +605,320 @@ fn apply_set_formats(doc: &mut Doc, sheet: usize, cells: &[FormatWrite]) {
     }
 }
 
+fn refuse(message: impl Into<String>) -> Result<(), ActionError> {
+    Err(ActionError::Refused(message.into()))
+}
+
+fn valid_format(value: &str) -> bool {
+    // Actions always carry the canonical serialized spelling. Accepting an
+    // unknown string and silently degrading it to General would make an
+    // attacker-controlled envelope change formatting in surprising ways.
+    CellFormat::from_str(value).as_str() == value
+}
+
+fn valid_sheet_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.chars().count() <= MAX_SHEET_NAME_CHARS
+        && !name.chars().any(char::is_control)
+}
+
+fn validate_new_sheet_id(doc: &Doc, sheet_id: &str) -> Result<(), ActionError> {
+    if Uuid::parse_str(sheet_id).is_err() {
+        return refuse("new sheet identity is not a UUID");
+    }
+    if SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).is_some() {
+        return refuse("new sheet identity already exists");
+    }
+    Ok(())
+}
+
+fn valid_addr(col: u32, row: u32) -> bool {
+    col <= MAX_COLUMN && row <= MAX_ROW
+}
+
+/// Confirm a durable target still exists. The serialized index is author-time
+/// context for history and legacy envelopes; resolving the id at apply time is
+/// what makes a harmless concurrent tab reorder target the same sheet.
+fn validate_sheet(doc: &Doc, _sheet: usize, sheet_id: &str) -> Result<(), ActionError> {
+    if sheet_id.is_empty() {
+        return refuse("sheet identity is missing");
+    }
+    if SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).is_some() {
+        Ok(())
+    } else {
+        refuse("sheet target no longer matches its identity")
+    }
+}
+
+fn resolve_sheet(doc: &Doc, sheet_id: &str) -> Result<usize, ActionError> {
+    SheetsDoc::sheet_index_by_resource_id(doc, sheet_id)
+        .ok_or_else(|| ActionError::Refused("sheet target no longer exists".into()))
+}
+
+fn validate_slot(
+    doc: &Doc,
+    _at: usize,
+    before_sheet_id: Option<&str>,
+    after_sheet_id: Option<&str>,
+    excluded_sheet_id: Option<&str>,
+) -> Result<(), ActionError> {
+    let ids: Vec<String> = (0..SheetsDoc::sheet_count_readonly(doc))
+        .filter_map(|idx| SheetsDoc::sheet_resource_id(doc, idx))
+        .filter(|id| Some(id.as_str()) != excluded_sheet_id)
+        .collect();
+    let slot = match (before_sheet_id, after_sheet_id) {
+        (Some(before), Some(after)) => ids
+            .iter()
+            .position(|id| id == before)
+            .filter(|&idx| idx > 0 && ids.get(idx - 1).is_some_and(|id| id == after)),
+        (Some(before), None) => ids.iter().position(|id| id == before),
+        (None, Some(after)) => ids.iter().position(|id| id == after).map(|idx| idx + 1),
+        (None, None) if ids.is_empty() => Some(0),
+        _ => None,
+    };
+    if slot.is_some() {
+        Ok(())
+    } else {
+        refuse("sheet insertion anchor no longer matches")
+    }
+}
+
+fn resolve_slot(
+    doc: &Doc,
+    before_sheet_id: Option<&str>,
+    after_sheet_id: Option<&str>,
+    excluded_sheet_id: Option<&str>,
+) -> Result<usize, ActionError> {
+    validate_slot(doc, 0, before_sheet_id, after_sheet_id, excluded_sheet_id)?;
+    let ids: Vec<String> = (0..SheetsDoc::sheet_count_readonly(doc))
+        .filter_map(|idx| SheetsDoc::sheet_resource_id(doc, idx))
+        .filter(|id| Some(id.as_str()) != excluded_sheet_id)
+        .collect();
+    match (before_sheet_id, after_sheet_id) {
+        (Some(before), _) => ids
+            .iter()
+            .position(|id| id == before)
+            .ok_or_else(|| ActionError::Refused("sheet insertion anchor no longer matches".into())),
+        (None, Some(after)) => ids
+            .iter()
+            .position(|id| id == after)
+            .map(|idx| idx + 1)
+            .ok_or_else(|| ActionError::Refused("sheet insertion anchor no longer matches".into())),
+        (None, None) if ids.is_empty() => Ok(0),
+        _ => refuse("sheet insertion anchor no longer matches").and(Ok(0)),
+    }
+}
+
+fn validate_writes<'a>(
+    doc: &Doc,
+    sheet: usize,
+    sheet_id: &str,
+    writes: impl Iterator<Item = (u32, u32, &'a str, Option<&'a str>)>,
+) -> Result<(), ActionError> {
+    validate_sheet(doc, sheet, sheet_id)?;
+    let mut seen = HashSet::new();
+    for (count, (col, row, raw, fmt)) in writes.enumerate() {
+        if count >= MAX_WRITES_PER_ACTION {
+            return refuse("too many cells in one action");
+        }
+        if !valid_addr(col, row) {
+            return refuse("cell coordinate is outside the workbook grid");
+        }
+        if raw.len() > MAX_CELL_INPUT_BYTES {
+            return refuse("cell input is too large");
+        }
+        if fmt.is_some_and(|value| !valid_format(value)) {
+            return refuse("cell format is invalid");
+        }
+        if !seen.insert((col, row)) {
+            return refuse("the same cell appears more than once in one action");
+        }
+    }
+    Ok(())
+}
+
+/// Preflight every action against the replay base. This is intentionally pure
+/// read-only validation: a refusal leaves the document unchanged, while a
+/// valid action can then apply as one deterministic transaction.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeping exhaustive payload validation next to the action enum makes atomicity auditable."
+)]
+fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
+    match action {
+        SheetsAction::SetCell {
+            sheet,
+            sheet_id,
+            col,
+            row,
+            raw,
+            fmt,
+        } => validate_writes(
+            doc,
+            *sheet,
+            sheet_id,
+            std::iter::once((*col, *row, raw.as_str(), fmt.as_deref())),
+        ),
+        SheetsAction::SetFormat {
+            sheet,
+            sheet_id,
+            col,
+            row,
+            fmt,
+        } => validate_writes(
+            doc,
+            *sheet,
+            sheet_id,
+            std::iter::once((*col, *row, "", Some(fmt.as_str()))),
+        ),
+        SheetsAction::SetCells {
+            sheet,
+            sheet_id,
+            cells,
+        } => validate_writes(
+            doc,
+            *sheet,
+            sheet_id,
+            cells
+                .iter()
+                .map(|cell| (cell.col, cell.row, cell.raw.as_str(), cell.fmt.as_deref())),
+        ),
+        SheetsAction::SetFormats {
+            sheet,
+            sheet_id,
+            cells,
+        } => validate_writes(
+            doc,
+            *sheet,
+            sheet_id,
+            cells
+                .iter()
+                .map(|cell| (cell.col, cell.row, "", Some(cell.fmt.as_str()))),
+        ),
+        SheetsAction::AddSheet { name, new_sheet_id } => {
+            if !valid_sheet_name(name) {
+                return refuse("sheet name is empty, too long, or contains control characters");
+            }
+            validate_new_sheet_id(doc, new_sheet_id)
+        }
+        SheetsAction::InsertSheet {
+            at,
+            before_sheet_id,
+            after_sheet_id,
+            name,
+            new_sheet_id,
+        } => {
+            if !valid_sheet_name(name) {
+                return refuse("sheet name is empty, too long, or contains control characters");
+            }
+            validate_new_sheet_id(doc, new_sheet_id)?;
+            validate_slot(
+                doc,
+                *at,
+                before_sheet_id.as_deref(),
+                after_sheet_id.as_deref(),
+                None,
+            )
+        }
+        SheetsAction::DeleteSheet { idx, sheet_id } => validate_sheet(doc, *idx, sheet_id),
+        SheetsAction::DuplicateSheet {
+            idx,
+            sheet_id,
+            new_sheet_id,
+        } => {
+            validate_sheet(doc, *idx, sheet_id)?;
+            validate_new_sheet_id(doc, new_sheet_id)
+        }
+        SheetsAction::RenameSheet {
+            idx,
+            sheet_id,
+            name,
+        } => {
+            if !valid_sheet_name(name) {
+                return refuse("sheet name is empty, too long, or contains control characters");
+            }
+            validate_sheet(doc, *idx, sheet_id)
+        }
+        SheetsAction::MoveSheet {
+            from,
+            sheet_id,
+            to,
+            before_sheet_id,
+            after_sheet_id,
+        } => {
+            validate_sheet(doc, *from, sheet_id)?;
+            validate_slot(
+                doc,
+                *to,
+                before_sheet_id.as_deref(),
+                after_sheet_id.as_deref(),
+                Some(sheet_id),
+            )
+        }
+        SheetsAction::SetSheetColor {
+            idx,
+            sheet_id,
+            color,
+        } => {
+            validate_sheet(doc, *idx, sheet_id)?;
+            if color.is_none_or(|color| color < TAB_COLOR_COUNT) {
+                Ok(())
+            } else {
+                refuse("sheet color is invalid")
+            }
+        }
+        SheetsAction::InsertRow {
+            sheet,
+            sheet_id,
+            at,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if *at >= MAX_ROW {
+                refuse("row insertion position is outside the workbook grid")
+            } else {
+                Ok(())
+            }
+        }
+        SheetsAction::DeleteRow {
+            sheet,
+            sheet_id,
+            at,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if *at <= MAX_ROW {
+                Ok(())
+            } else {
+                refuse("row is outside the workbook grid")
+            }
+        }
+        SheetsAction::InsertColumn {
+            sheet,
+            sheet_id,
+            at,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if *at >= MAX_COLUMN {
+                refuse("column insertion position is outside the workbook grid")
+            } else {
+                Ok(())
+            }
+        }
+        SheetsAction::DeleteColumn {
+            sheet,
+            sheet_id,
+            at,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if *at <= MAX_COLUMN {
+                Ok(())
+            } else {
+                refuse("column is outside the workbook grid")
+            }
+        }
+        SheetsAction::SetDocSettings { .. } => Ok(()),
+    }
+}
+
 /// The `restructure` shift map for inserting a blank row above `at`.
 fn insert_row_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
     move |(c, r)| Some((c, if r >= at { r + 1 } else { r }))
@@ -558,7 +960,10 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
     let mut new_fmt: HashMap<Addr, CellFormat> = HashMap::new();
     for (addr, raw) in &snap.raw {
         if let Some(dst) = map(*addr) {
-            new_raw.insert(dst, raw.clone());
+            // Structural changes move cell *relationships*, not merely the
+            // formula-owning cell. `$` anchors only govern copy/fill, so row
+            // and column inserts remap both anchored and relative references.
+            new_raw.insert(dst, crate::formula::remap_refs(raw, &map));
         }
     }
     for (addr, fmt) in &snap.fmt {
@@ -594,11 +999,10 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<SheetsAction>(SHEETS_ACTION_TYPE);
 }
 
-/// An [`EncodedAction`] that decodes to nothing: an empty payload matches no
-/// `SheetsAction` variant, so the executor's own contract (a malformed
-/// payload is a no-op, never a crash) absorbs it harmlessly. Used only as the
-/// fallback if serializing a real action fails — every `SheetsAction`
-/// variant holds plain owned data, so that never happens in practice.
+/// An inert fallback used only if serializing a real action fails. Every
+/// `SheetsAction` variant holds plain owned data, so that cannot happen in
+/// practice; the fallback deliberately fails decoding rather than disguising
+/// an encoding fault as a document mutation.
 fn inert_encoded_action() -> EncodedAction {
     EncodedAction {
         type_id: SHEETS_ACTION_TYPE.to_string(),
@@ -623,12 +1027,14 @@ pub fn encode(action: &SheetsAction) -> EncodedAction {
 /// existing format untouched). An empty `raw` clears the cell.
 pub fn set_cell_action(
     sheet: usize,
+    sheet_id: impl Into<String>,
     addr: Addr,
     raw: &str,
     fmt: Option<CellFormat>,
 ) -> SheetsAction {
     SheetsAction::SetCell {
         sheet,
+        sheet_id: sheet_id.into(),
         col: addr.0,
         row: addr.1,
         raw: raw.to_string(),
@@ -637,9 +1043,15 @@ pub fn set_cell_action(
 }
 
 /// Set a cell's display format only.
-pub fn set_format_action(sheet: usize, addr: Addr, fmt: CellFormat) -> SheetsAction {
+pub fn set_format_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    addr: Addr,
+    fmt: CellFormat,
+) -> SheetsAction {
     SheetsAction::SetFormat {
         sheet,
+        sheet_id: sheet_id.into(),
         col: addr.0,
         row: addr.1,
         fmt: fmt.as_str(),
@@ -650,10 +1062,12 @@ pub fn set_format_action(sheet: usize, addr: Addr, fmt: CellFormat) -> SheetsAct
 /// entry is `(addr, raw, optional format)`; an empty `raw` clears the cell.
 pub fn set_cells_action(
     sheet: usize,
+    sheet_id: impl Into<String>,
     cells: impl IntoIterator<Item = (Addr, String, Option<CellFormat>)>,
 ) -> SheetsAction {
     SheetsAction::SetCells {
         sheet,
+        sheet_id: sheet_id.into(),
         cells: cells
             .into_iter()
             .map(|(addr, raw, fmt)| CellWrite {
@@ -669,10 +1083,12 @@ pub fn set_cells_action(
 /// Set the format of a batch of cells (range formatting) in one change.
 pub fn set_formats_action(
     sheet: usize,
+    sheet_id: impl Into<String>,
     cells: impl IntoIterator<Item = (Addr, CellFormat)>,
 ) -> SheetsAction {
     SheetsAction::SetFormats {
         sheet,
+        sheet_id: sheet_id.into(),
         cells: cells
             .into_iter()
             .map(|(addr, fmt)| FormatWrite {
@@ -687,53 +1103,106 @@ pub fn set_formats_action(
 pub fn add_sheet_action(name: &str) -> SheetsAction {
     SheetsAction::AddSheet {
         name: name.to_string(),
+        new_sheet_id: Uuid::new_v4().to_string(),
     }
 }
 
-pub fn insert_sheet_action(at: usize, name: &str) -> SheetsAction {
+pub fn insert_sheet_action(
+    at: usize,
+    before_sheet_id: Option<String>,
+    after_sheet_id: Option<String>,
+    name: &str,
+) -> SheetsAction {
     SheetsAction::InsertSheet {
         at,
+        before_sheet_id,
+        after_sheet_id,
         name: name.to_string(),
+        new_sheet_id: Uuid::new_v4().to_string(),
     }
 }
 
-pub fn delete_sheet_action(idx: usize) -> SheetsAction {
-    SheetsAction::DeleteSheet { idx }
+pub fn delete_sheet_action(idx: usize, sheet_id: impl Into<String>) -> SheetsAction {
+    SheetsAction::DeleteSheet {
+        idx,
+        sheet_id: sheet_id.into(),
+    }
 }
 
-pub fn rename_sheet_action(idx: usize, name: &str) -> SheetsAction {
+pub fn rename_sheet_action(idx: usize, sheet_id: impl Into<String>, name: &str) -> SheetsAction {
     SheetsAction::RenameSheet {
         idx,
+        sheet_id: sheet_id.into(),
         name: name.to_string(),
     }
 }
 
-pub fn move_sheet_action(from: usize, to: usize) -> SheetsAction {
-    SheetsAction::MoveSheet { from, to }
+pub fn move_sheet_action(
+    from: usize,
+    sheet_id: impl Into<String>,
+    to: usize,
+    before_sheet_id: Option<String>,
+    after_sheet_id: Option<String>,
+) -> SheetsAction {
+    SheetsAction::MoveSheet {
+        from,
+        sheet_id: sheet_id.into(),
+        to,
+        before_sheet_id,
+        after_sheet_id,
+    }
 }
 
-pub fn duplicate_sheet_action(idx: usize) -> SheetsAction {
-    SheetsAction::DuplicateSheet { idx }
+pub fn duplicate_sheet_action(idx: usize, sheet_id: impl Into<String>) -> SheetsAction {
+    SheetsAction::DuplicateSheet {
+        idx,
+        sheet_id: sheet_id.into(),
+        new_sheet_id: Uuid::new_v4().to_string(),
+    }
 }
 
-pub fn set_sheet_color_action(idx: usize, color: Option<u32>) -> SheetsAction {
-    SheetsAction::SetSheetColor { idx, color }
+pub fn set_sheet_color_action(
+    idx: usize,
+    sheet_id: impl Into<String>,
+    color: Option<u32>,
+) -> SheetsAction {
+    SheetsAction::SetSheetColor {
+        idx,
+        sheet_id: sheet_id.into(),
+        color,
+    }
 }
 
-pub fn insert_row_action(sheet: usize, at: u32) -> SheetsAction {
-    SheetsAction::InsertRow { sheet, at }
+pub fn insert_row_action(sheet: usize, sheet_id: impl Into<String>, at: u32) -> SheetsAction {
+    SheetsAction::InsertRow {
+        sheet,
+        sheet_id: sheet_id.into(),
+        at,
+    }
 }
 
-pub fn delete_row_action(sheet: usize, at: u32) -> SheetsAction {
-    SheetsAction::DeleteRow { sheet, at }
+pub fn delete_row_action(sheet: usize, sheet_id: impl Into<String>, at: u32) -> SheetsAction {
+    SheetsAction::DeleteRow {
+        sheet,
+        sheet_id: sheet_id.into(),
+        at,
+    }
 }
 
-pub fn insert_column_action(sheet: usize, at: u32) -> SheetsAction {
-    SheetsAction::InsertColumn { sheet, at }
+pub fn insert_column_action(sheet: usize, sheet_id: impl Into<String>, at: u32) -> SheetsAction {
+    SheetsAction::InsertColumn {
+        sheet,
+        sheet_id: sheet_id.into(),
+        at,
+    }
 }
 
-pub fn delete_column_action(sheet: usize, at: u32) -> SheetsAction {
-    SheetsAction::DeleteColumn { sheet, at }
+pub fn delete_column_action(sheet: usize, sheet_id: impl Into<String>, at: u32) -> SheetsAction {
+    SheetsAction::DeleteColumn {
+        sheet,
+        sheet_id: sheet_id.into(),
+        at,
+    }
 }
 
 pub fn set_doc_settings_action(settings: &DocSettings) -> SheetsAction {
@@ -759,6 +1228,21 @@ pub struct SheetsResourceCtx {
     /// as real `ActionSpec`s means Ctrl+K, agents and scripts consume the same
     /// encoded operation instead of a parallel command-id switch.
     pub palette_actions: Vec<ActionSpec>,
+    /// The current live selection, published beneath its owning sheet. Its
+    /// actions are byte-identical clones of `palette_actions`, so a range can
+    /// be addressed directly by agents/Ctrl+K without creating a second
+    /// mutation route.
+    pub selection: Option<RangeResourceCtx>,
+}
+
+/// Presentation-derived identity for the range the user has selected. A range
+/// is intentionally ephemeral (selection is not collaborative document state)
+/// but its action envelopes remain durable/replayable document mutations.
+#[derive(Clone)]
+pub struct RangeResourceCtx {
+    pub sheet_id: String,
+    pub label: String,
+    pub actions: Vec<ActionSpec>,
 }
 
 /// Immutable search/resource projection rebuilt when workbook heads change.
@@ -802,8 +1286,18 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 /// present, exporting "New sheet") and one `sheets.sheet:<idx>` per sheet, each
 /// exporting rename / delete / insert-row / insert-column. Every operation is
 /// the same action the on-screen affordance dispatches.
+#[allow(
+    clippy::too_many_lines,
+    clippy::missing_panics_doc,
+    clippy::expect_used,
+    reason = "resource surface is deliberately co-located and serializes owned enum values"
+)]
 pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
+    // Keep the established workbook command ordering for keyboard users while
+    // publishing the same envelopes under the selected range as well. The
+    // duplicate presentation has no second mutation route: both resources
+    // dispatch the exact same encoded action.
     workbook.actions.extend(ctx.palette_actions.clone());
 
     for (id, label, kind, variant) in [
@@ -909,8 +1403,8 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         // could make an old address operate on a different sheet. Legacy or
         // malformed rows without a durable identity remain usable on-screen,
         // but are deliberately absent from the headless action surface.
-        let stable = &searchable.id;
-        let mut sheet = Resource::new(sheet_resource_id(stable), "sheets.sheet", label)
+        let stable = searchable.id.clone();
+        let mut sheet = Resource::new(sheet_resource_id(&stable), "sheets.sheet", label)
             .with_action(operation(
                 "open",
                 "Open sheet",
@@ -920,6 +1414,20 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                 },
             ));
 
+        if let Some(range_ctx) = ctx
+            .selection
+            .as_ref()
+            .filter(|range| range.sheet_id == stable)
+        {
+            let mut range = Resource::new(
+                format!("sheets.range:{stable}:{}", range_ctx.label),
+                "sheets.range",
+                range_ctx.label.clone(),
+            );
+            range.actions.extend(range_ctx.actions.clone());
+            sheet = sheet.with_child(range);
+        }
+
         // Rename — a prompted action carrying the new name.
         sheet = sheet.with_action(ActionSpec::prompted(
             "rename",
@@ -927,14 +1435,19 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             "Name",
             "sheet name…",
             ExecutionLocus::ClientLocal,
-            move |new_name: &str| encode(&rename_sheet_action(idx, new_name.trim())),
+            {
+                let stable = stable.clone();
+                move |new_name: &str| {
+                    encode(&rename_sheet_action(idx, stable.clone(), new_name.trim()))
+                }
+            },
         ));
 
-        // Delete the whole sheet (a no-op on the workbook's last sheet).
+        // Delete the whole sheet (a final sheet is deliberately a no-op).
         sheet = sheet.with_action(immediate_spec(
             "delete",
             "Delete sheet",
-            &delete_sheet_action(idx),
+            &delete_sheet_action(idx, stable.clone()),
         ));
 
         // Insert a blank row above a given 1-based row number (default: the top).
@@ -944,13 +1457,16 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             "Row",
             "1-based row number (e.g. 5)",
             ExecutionLocus::ClientLocal,
-            move |arg: &str| {
-                let at = arg
-                    .trim()
-                    .parse::<u32>()
-                    .ok()
-                    .map_or(0, |n| n.saturating_sub(1));
-                encode(&insert_row_action(idx, at))
+            {
+                let stable = stable.clone();
+                move |arg: &str| {
+                    let at = arg
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                        .map_or(0, |n| n.saturating_sub(1));
+                    encode(&insert_row_action(idx, stable.clone(), at))
+                }
             },
         ));
 
@@ -961,9 +1477,12 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             "Column",
             "column letter (e.g. C)",
             ExecutionLocus::ClientLocal,
-            move |arg: &str| {
-                let at = letters_to_col(arg.trim()).unwrap_or(0);
-                encode(&insert_column_action(idx, at))
+            {
+                let stable = stable.clone();
+                move |arg: &str| {
+                    let at = letters_to_col(arg.trim()).unwrap_or(0);
+                    encode(&insert_column_action(idx, stable.clone(), at))
+                }
             },
         ));
 
@@ -1068,6 +1587,10 @@ mod tests {
         doc
     }
 
+    fn stable(doc: &AutoCommit, idx: usize) -> String {
+        SheetsDoc::sheet_resource_id(doc, idx).expect("seeded sheet identity")
+    }
+
     fn ctx_from(doc: &mut AutoCommit) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: SheetsDoc::sheet_names(doc),
@@ -1081,6 +1604,7 @@ mod tests {
                 })
                 .collect(),
             palette_actions: Vec::new(),
+            selection: None,
         }
     }
 
@@ -1146,6 +1670,7 @@ mod tests {
                     .collect(),
             }],
             palette_actions: Vec::new(),
+            selection: None,
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
         assert!(resources[0].children[0].children.is_empty());
@@ -1157,17 +1682,143 @@ mod tests {
         );
     }
 
+    #[test]
+    fn active_selection_is_a_range_resource_with_canonical_actions() {
+        let mut doc = seeded();
+        let mut ctx = ctx_from(&mut doc);
+        let action = immediate_spec(
+            "format-percent",
+            "Format as percent",
+            &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
+        );
+        ctx.selection = Some(RangeResourceCtx {
+            sheet_id: String::new(),
+            label: "A1:B2".into(),
+            actions: vec![action.clone()],
+        });
+        ctx.selection.as_mut().expect("selection").sheet_id =
+            SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
+
+        let resources = provide_resources(&ctx, &doc);
+        let range = &resources[0].children[0].children[0];
+        assert_eq!(range.kind, "sheets.range");
+        assert_eq!(
+            range.id.0,
+            format!("sheets.range:{}:A1:B2", ctx.selection.unwrap().sheet_id)
+        );
+        assert_eq!(
+            immediate_encode(&range.actions[0]),
+            immediate_encode(&action)
+        );
+    }
+
     /// A cell write through the action mutates the document.
     #[test]
     fn set_cell_action_writes_the_value_and_format() {
         let mut doc = seeded();
+        let sheet_id = stable(&doc, 0);
         dispatch(
             &mut doc,
-            &set_cell_action(0, (0, 1), "=SUM(B1:B3)", Some(CellFormat::Number)),
+            &set_cell_action(0, sheet_id, (0, 1), "=SUM(B1:B3)", Some(CellFormat::Number)),
         );
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "=SUM(B1:B3)");
         let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
         assert_eq!(snap.fmt.get(&(0, 1)).copied(), Some(CellFormat::Number));
+    }
+
+    #[test]
+    fn stable_cell_target_survives_a_concurrent_tab_reorder() {
+        let mut doc = seeded();
+        let budget_id = stable(&doc, 0);
+        let action = set_cell_action(0, budget_id, (7, 7), "on the intended sheet", None);
+
+        // Another collaborator moved Budget after Sales before this envelope
+        // replayed. The old positional index now names Sales, but the durable
+        // id must still resolve Budget at its new index.
+        SheetsDoc::move_sheet(&mut doc, 0, 1);
+        dispatch(&mut doc, &action);
+
+        assert_eq!(
+            SheetsDoc::cell_raw(&mut doc, 1, (7, 7)),
+            "on the intended sheet"
+        );
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 7)), "");
+    }
+
+    #[test]
+    fn authored_new_sheet_identity_converges_across_independent_replays() {
+        let mut a = seeded();
+        let mut b = seeded();
+        let action = SheetsAction::AddSheet {
+            name: "Shared".into(),
+            new_sheet_id: "10000000-0000-4000-8000-000000000001".into(),
+        };
+        dispatch(&mut a, &action);
+        dispatch(&mut b, &action);
+        assert_eq!(
+            SheetsDoc::sheet_resource_id(&a, 2).as_deref(),
+            Some("10000000-0000-4000-8000-000000000001")
+        );
+        assert_eq!(
+            SheetsDoc::sheet_resource_id(&a, 2),
+            SheetsDoc::sheet_resource_id(&b, 2)
+        );
+    }
+
+    #[test]
+    fn new_sheet_identity_must_be_a_fresh_uuid() {
+        let mut doc = seeded();
+        let existing = "10000000-0000-4000-8000-000000000009".to_string();
+        dispatch(
+            &mut doc,
+            &SheetsAction::AddSheet {
+                name: "Existing".into(),
+                new_sheet_id: existing.clone(),
+            },
+        );
+        for new_sheet_id in ["not-a-uuid".to_string(), existing] {
+            let action = SheetsAction::AddSheet {
+                name: "Rejected".into(),
+                new_sheet_id,
+            };
+            let before = doc.save();
+            let error = qos_actions::apply_local(&mut doc, &action, encode(&action))
+                .expect_err("malformed or duplicate resource identity must be refused");
+            assert!(matches!(error, ActionError::Refused(_)));
+            assert_eq!(doc.save(), before);
+        }
+    }
+
+    #[test]
+    fn insert_and_duplicate_history_use_envelope_identities() {
+        let inserted = SheetsAction::InsertSheet {
+            at: 1,
+            before_sheet_id: Some("next".into()),
+            after_sheet_id: Some("previous".into()),
+            name: "Inserted".into(),
+            new_sheet_id: "10000000-0000-4000-8000-000000000002".into(),
+        };
+        assert_eq!(
+            history_context(&inserted).resource.unwrap().id,
+            "sheets.sheet:10000000-0000-4000-8000-000000000002"
+        );
+        let duplicate = SheetsAction::DuplicateSheet {
+            idx: 0,
+            sheet_id: "source-id".into(),
+            new_sheet_id: "10000000-0000-4000-8000-000000000003".into(),
+        };
+        assert_eq!(
+            history_context(&duplicate).resource.unwrap().id,
+            "sheets.sheet:10000000-0000-4000-8000-000000000003"
+        );
+        let doc = seeded();
+        assert_eq!(
+            history_context_for_doc(&doc, &duplicate)
+                .resource
+                .unwrap()
+                .id,
+            "sheets.sheet:10000000-0000-4000-8000-000000000003"
+        );
     }
 
     /// Deleting a sheet through its action removes it; the last sheet is kept.
@@ -1175,10 +1826,12 @@ mod tests {
     fn delete_sheet_action_removes_a_sheet_but_keeps_the_last() {
         let mut doc = seeded();
         assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
-        dispatch(&mut doc, &delete_sheet_action(1));
+        let sheet_id = stable(&doc, 1);
+        dispatch(&mut doc, &delete_sheet_action(1, sheet_id));
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
         // The last sheet cannot be deleted away.
-        dispatch(&mut doc, &delete_sheet_action(0));
+        let sheet_id = stable(&doc, 0);
+        dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
         assert_eq!(
             SheetsDoc::sheet_count(&mut doc),
             1,
@@ -1190,12 +1843,13 @@ mod tests {
     #[test]
     fn insert_and_delete_row_shift_cells() {
         let mut doc = seeded();
+        let sheet_id = stable(&doc, 0);
         // Budget!A1 = "Rent". Insert a row above row 1 (at == 0): it moves to A2.
-        dispatch(&mut doc, &insert_row_action(0, 0));
+        dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "Rent");
         // Delete row 1 again: it shifts back up to A1.
-        dispatch(&mut doc, &delete_row_action(0, 0));
+        dispatch(&mut doc, &delete_row_action(0, sheet_id, 0));
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Rent");
     }
 
@@ -1250,7 +1904,7 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = set_cell_action(0, (2, 4), "converge", None);
+        let action = set_cell_action(0, stable(&a, 0), (2, 4), "converge", None);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -1280,7 +1934,7 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = insert_row_action(0, 0);
+        let action = insert_row_action(0, stable(&a, 0), 0);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -1309,6 +1963,7 @@ mod tests {
 
         let action = set_cells_action(
             0,
+            stable(&a, 0),
             vec![
                 ((0, 5), "=A1+1".to_string(), None),
                 ((1, 5), "42".to_string(), Some(CellFormat::Number)),
@@ -1330,6 +1985,60 @@ mod tests {
         assert_eq!(snap.fmt.get(&(1, 5)).copied(), Some(CellFormat::Number));
     }
 
+    #[test]
+    fn hostile_batch_is_refused_without_a_partial_write() {
+        let mut doc = seeded();
+        let before = doc.save();
+        let action = SheetsAction::SetCells {
+            sheet: 0,
+            sheet_id: stable(&doc, 0),
+            cells: vec![
+                CellWrite {
+                    col: 0,
+                    row: 9,
+                    raw: "would be valid alone".into(),
+                    fmt: None,
+                },
+                CellWrite {
+                    col: MAX_COLUMN.saturating_add(1),
+                    row: 9,
+                    raw: "outside the grid".into(),
+                    fmt: None,
+                },
+            ],
+        };
+        let error = qos_actions::apply_local(&mut doc, &action, encode(&action))
+            .expect_err("the full batch must be validated before any write");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert_eq!(
+            doc.save(),
+            before,
+            "refusal leaves the CRDT byte-for-byte unchanged"
+        );
+    }
+
+    #[test]
+    fn row_and_column_actions_remap_formula_relationships() {
+        let mut doc = seeded();
+        SheetsDoc::set_cell_raw(&mut doc, 0, (0, 1), "10");
+        SheetsDoc::set_cell_raw(&mut doc, 0, (1, 2), "=SUM($A$1:A2)");
+        let sheet_id = stable(&doc, 0);
+
+        dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
+        assert_eq!(
+            SheetsDoc::cell_raw(&mut doc, 0, (1, 3)),
+            "=SUM($A$2:A3)",
+            "both anchored and relative formula references follow the inserted row"
+        );
+
+        dispatch(&mut doc, &delete_column_action(0, sheet_id, 0));
+        assert_eq!(
+            SheetsDoc::cell_raw(&mut doc, 0, (0, 3)),
+            "=SUM(#REF!:#REF!)",
+            "a deleted referenced column is represented explicitly, never silently retargeted"
+        );
+    }
+
     /// Single source of truth: the palette's delete / rename / insert specs
     /// encode byte-identically to the builders the on-screen affordances call.
     #[test]
@@ -1342,7 +2051,7 @@ mod tests {
         // Delete spec == delete builder.
         let delete_spec = sheet.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_sheet_action(0));
+        let from_builder = encode(&delete_sheet_action(0, stable(&doc, 0)));
         assert_eq!(from_spec.type_id, from_builder.type_id);
         assert_eq!(
             from_spec.payload, from_builder.payload,
@@ -1352,7 +2061,7 @@ mod tests {
         // Rename spec == rename builder for the same name.
         let rename_spec = sheet.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Q1");
-        let from_builder = encode(&rename_sheet_action(0, "Q1"));
+        let from_builder = encode(&rename_sheet_action(0, stable(&doc, 0), "Q1"));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "rename is one source of truth"
@@ -1361,7 +2070,7 @@ mod tests {
         // Insert-row spec builds an InsertRow at the parsed (1-based → 0-based) row.
         let insert_spec = sheet.actions.iter().find(|a| a.id == "insert-row").unwrap();
         let from_spec = prompted_encode(insert_spec, "5");
-        let from_builder = encode(&insert_row_action(0, 4));
+        let from_builder = encode(&insert_row_action(0, stable(&doc, 0), 4));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "insert-row is one source of truth"
@@ -1372,6 +2081,7 @@ mod tests {
     fn cell_action_history_has_coordinate_resource() {
         let context = history_context(&SheetsAction::SetCell {
             sheet: 2,
+            sheet_id: "history-sheet".into(),
             col: 1,
             row: 4,
             raw: "42".into(),
@@ -1379,7 +2089,7 @@ mod tests {
         });
         assert_eq!(context.action_label, "Edit cell");
         let resource = context.resource.expect("cell resource");
-        assert_eq!(resource.id, "sheets.cell:2:1:4");
+        assert_eq!(resource.id, "sheets.cell:history-sheet:1:4");
         assert_eq!(resource.label, "B5");
     }
 
@@ -1391,6 +2101,7 @@ mod tests {
             &doc,
             &SheetsAction::SetCell {
                 sheet: 0,
+                sheet_id: stable.clone(),
                 col: 1,
                 row: 4,
                 raw: "42".into(),
