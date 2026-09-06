@@ -43,6 +43,11 @@ use crate::model::{Event, Id, Palette, Priority, Project, Recurrence, Task};
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
 pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 
+/// The root resource is intentionally a contextual snapshot, not a second
+/// unbounded copy of Calendar's data. Search and direct invocation resolve any
+/// omitted stable id through [`ResourceProvider::resource`] below.
+const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+
 /// Stable resource id for one event. Search, the palette, accessibility and
 /// agents all address this same resource.
 pub fn event_resource_id(id: Id) -> String {
@@ -57,6 +62,11 @@ pub fn task_resource_id(id: Id) -> String {
 /// Stable resource id for one persisted task project.
 pub fn project_resource_id(id: Id) -> String {
     format!("calendar.project:{id}")
+}
+
+/// Stable resource id for a local or configured remote calendar collection.
+pub fn calendar_resource_id(id: &str) -> String {
+    format!("calendar.collection:{id}")
 }
 
 /// Canonical view action that reveals one event in the calendar.
@@ -74,6 +84,11 @@ pub fn open_project_address(id: Id) -> ActionAddress {
     ActionAddress::new(project_resource_id(id), "open")
 }
 
+/// Canonical view action selecting one calendar collection.
+pub fn open_calendar_address(id: &str) -> ActionAddress {
+    ActionAddress::new(calendar_resource_id(id), "open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalendarOperation {
     OpenEvent {
@@ -83,6 +98,9 @@ pub enum CalendarOperation {
         id: String,
     },
     OpenProject {
+        id: String,
+    },
+    OpenCalendar {
         id: String,
     },
     ShowMonth,
@@ -116,6 +134,7 @@ fn calendar_operation(
         CalendarOperation::OpenEvent { .. }
         | CalendarOperation::OpenTask { .. }
         | CalendarOperation::OpenProject { .. }
+        | CalendarOperation::OpenCalendar { .. }
         | CalendarOperation::ShowMonth
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
@@ -127,6 +146,23 @@ fn calendar_operation(
             spec.retry_policy(RetryPolicy::AtMostOnce)
         }
     }
+}
+
+fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
+    let open = calendar_operation(
+        "open",
+        "Open calendar",
+        OperationKind::View,
+        &CalendarOperation::OpenCalendar {
+            id: calendar.id.clone(),
+        },
+    );
+    Resource::new(
+        calendar_resource_id(&calendar.id),
+        "calendar.collection",
+        calendar.label.clone(),
+    )
+    .with_action(open)
 }
 
 /// Encode an app-local operation without allowing a serialization fault to
@@ -984,6 +1020,18 @@ pub struct CalendarTargetResource {
     pub color: Option<usize>,
 }
 
+/// A local or remote event collection that owns event resources. Calendar
+/// configuration remains in Settings, but Calendar publishes the collection's
+/// stable identity, visibility and view action so navigation/search never use
+/// a display label as an authority token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarCollectionResource {
+    pub id: String,
+    pub label: String,
+    pub color: Option<usize>,
+    pub visible: bool,
+}
+
 /// A real local project that a task may be filed under. Projects live in the
 /// shared calendar document, so their ids are safe collaboration targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1004,6 +1052,7 @@ pub struct CalendarResourceCtx {
     pub events: Vec<EventResource>,
     pub tasks: Vec<TaskResource>,
     pub projects: Vec<ProjectResource>,
+    pub calendars: Vec<CalendarCollectionResource>,
     pub calendar_targets: Vec<CalendarTargetResource>,
     pub task_project_targets: Vec<TaskProjectTarget>,
     pub can_sync: bool,
@@ -1300,7 +1349,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         },
     ));
 
+    // Reserve one bounded node per visible collection context (plus an
+    // unfiled-task bucket) before materialising leaves. This keeps the entire
+    // eager tree bounded even when one account has an enormous history; every
+    // omitted stable id remains available through `resource()` below.
+    let eager_calendar_count = ctx
+        .calendars
+        .len()
+        .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(1));
+    let mut eager_remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT
+        .saturating_sub(eager_calendar_count)
+        .saturating_sub(1);
     for project in &ctx.projects {
+        if eager_remaining == 0 {
+            break;
+        }
+        eager_remaining = eager_remaining.saturating_sub(1);
         let id = project.data.id.clone();
         let Ok(parsed_id) = id.parse::<Id>() else {
             continue;
@@ -1379,6 +1443,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
     }
 
     for ev in &ctx.events {
+        if eager_remaining == 0 {
+            break;
+        }
+        eager_remaining = eager_remaining.saturating_sub(1);
         let id = ev.data.id.clone();
         let Ok(parsed_id) = id.parse::<Id>() else {
             // A corrupted snapshot must not make resource publication crash.
@@ -1686,6 +1754,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
     }
 
     for tk in &ctx.tasks {
+        if eager_remaining == 0 {
+            break;
+        }
+        eager_remaining = eager_remaining.saturating_sub(1);
         let id = tk.data.id.clone();
         let Ok(parsed_id) = id.parse::<Id>() else {
             continue;
@@ -1830,12 +1902,212 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         root = root.with_child(child);
     }
 
+    // Leaves are constructed through their normal action builders above, then
+    // placed under their *actual* owning collection. If an owner itself fell
+    // outside the eager cap, omit the leaf rather than attaching it to a
+    // misleading sibling; direct stable-id resolution remains authoritative.
+    let flat_children = std::mem::take(&mut root.children);
+    let mut calendars: Vec<_> = ctx
+        .calendars
+        .iter()
+        .take(eager_calendar_count)
+        .map(calendar_collection_resource)
+        .collect();
+    let mut projects = Vec::new();
+    let mut remaining = Vec::new();
+    for child in flat_children {
+        if child.kind == "calendar.project" {
+            projects.push(child);
+        } else {
+            remaining.push(child);
+        }
+    }
+    let mut unfiled = Resource::new(
+        "calendar.tasks:unfiled",
+        "calendar.task-group",
+        "Unfiled tasks",
+    );
+    for child in remaining {
+        match child.kind.as_str() {
+            "calendar.event" => {
+                let Some(raw) = child.id.as_str().strip_prefix("calendar.event:") else {
+                    continue;
+                };
+                let Some(event) = ctx.events.iter().find(|event| event.data.id == raw) else {
+                    continue;
+                };
+                let owner = event.data.calendar_id.as_str();
+                let owner = if owner.is_empty() { "local" } else { owner };
+                if let Some(calendar) = calendars
+                    .iter_mut()
+                    .find(|calendar| calendar.id.as_str() == calendar_resource_id(owner))
+                {
+                    calendar.children.push(child);
+                }
+            }
+            "calendar.task" => {
+                let Some(raw) = child.id.as_str().strip_prefix("calendar.task:") else {
+                    continue;
+                };
+                let Some(task) = ctx.tasks.iter().find(|task| task.data.id == raw) else {
+                    continue;
+                };
+                if task.data.project.is_empty() {
+                    unfiled.children.push(child);
+                } else if let Some(project) = projects.iter_mut().find(|project| {
+                    project.id.as_str() == format!("calendar.project:{}", task.data.project)
+                }) {
+                    project.children.push(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    root.children = calendars;
+    root.children.extend(projects);
+    if !unfiled.children.is_empty() {
+        root.children.push(unfiled);
+    }
     vec![root]
+}
+
+fn find_resource(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource);
+        }
+        if let Some(found) = find_resource(resource.children.clone(), id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Build exactly one current resource for a stable id omitted from the eager
+/// snapshot. The context is re-derived from the live model first, so an id
+/// removed by a peer, import reconciliation, or undo is refused rather than
+/// accidentally resolving to a similarly-positioned resource.
+#[allow(
+    clippy::too_many_lines,
+    reason = "stable-id routing keeps every ownership/staleness branch adjacent for auditability"
+)]
+fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    let mut scoped = ctx.clone();
+    scoped.events.clear();
+    scoped.tasks.clear();
+    scoped.projects.clear();
+
+    if id == "calendar.calendar" {
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.collection:") {
+        let calendar = ctx
+            .calendars
+            .iter()
+            .find(|calendar| calendar.id == raw && calendar_resource_id(raw) == id)?;
+        scoped.calendars = vec![calendar.clone()];
+        scoped.events = ctx
+            .events
+            .iter()
+            .filter(|event| {
+                if raw == "local" {
+                    event.data.calendar_id.is_empty()
+                } else {
+                    event.data.calendar_id == raw
+                }
+            })
+            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
+            .cloned()
+            .collect();
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.project:") {
+        let parsed = raw.parse::<Id>().ok()?;
+        let project = ctx
+            .projects
+            .iter()
+            .find(|project| project.data.id == raw && project_resource_id(parsed) == id)?;
+        scoped.calendars.clear();
+        scoped.projects.push(project.clone());
+        scoped.tasks = ctx
+            .tasks
+            .iter()
+            .filter(|task| task.data.project == raw)
+            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
+            .cloned()
+            .collect();
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.event:") {
+        let (raw, notes) = raw
+            .strip_suffix(":notes")
+            .map_or((raw, false), |raw| (raw, true));
+        let parsed = raw.parse::<Id>().ok()?;
+        let resource_id = event_resource_id(parsed);
+        if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
+            return None;
+        }
+        let event = ctx.events.iter().find(|event| event.data.id == raw)?;
+        let owner = if event.data.calendar_id.is_empty() {
+            "local"
+        } else {
+            event.data.calendar_id.as_str()
+        };
+        scoped.calendars = ctx
+            .calendars
+            .iter()
+            .find(|calendar| calendar.id == owner)
+            .cloned()
+            .or_else(|| {
+                Some(CalendarCollectionResource {
+                    id: owner.to_string(),
+                    label: owner.to_string(),
+                    color: None,
+                    visible: true,
+                })
+            })
+            .into_iter()
+            .collect();
+        scoped.events.push(event.clone());
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.task:") {
+        let (raw, notes) = raw
+            .strip_suffix(":notes")
+            .map_or((raw, false), |raw| (raw, true));
+        let parsed = raw.parse::<Id>().ok()?;
+        let resource_id = task_resource_id(parsed);
+        if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
+            return None;
+        }
+        let task = ctx.tasks.iter().find(|task| task.data.id == raw)?;
+        scoped.calendars.clear();
+        if !task.data.project.is_empty() {
+            scoped.projects.extend(
+                ctx.projects
+                    .iter()
+                    .filter(|project| project.data.id == task.data.project)
+                    .cloned(),
+            );
+        }
+        scoped.tasks.push(task.clone());
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    None
 }
 
 impl ResourceProvider for crate::app::CalendarApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.calendar_resource_ctx(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resource_from_ctx(&self.calendar_resource_ctx(), doc, id)
     }
 }
 
@@ -1851,6 +2123,18 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    fn find_kind<'a>(resources: &'a [Resource], kind: &str) -> Option<&'a Resource> {
+        for resource in resources {
+            if resource.kind == kind {
+                return Some(resource);
+            }
+            if let Some(found) = find_kind(&resource.children, kind) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -1889,12 +2173,11 @@ mod tests {
         let cal_actions: Vec<&str> = cal.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(cal_actions.contains(&"new-event"), "{cal_actions:?}");
         assert!(cal_actions.contains(&"new-project"), "{cal_actions:?}");
+        let calendar = find_kind(&cal.children, "calendar.collection")
+            .expect("a calendar collection resource");
+        assert!(calendar.actions.iter().any(|action| action.id == "open"));
 
-        let project = cal
-            .children
-            .iter()
-            .find(|r| r.kind == "calendar.project")
-            .expect("a project resource");
+        let project = find_kind(&cal.children, "calendar.project").expect("a project resource");
         let project_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(project_actions.contains(&"open"), "{project_actions:?}");
         assert!(project_actions.contains(&"edit"), "{project_actions:?}");
@@ -1904,21 +2187,13 @@ mod tests {
         );
         assert!(project_actions.contains(&"delete"), "{project_actions:?}");
 
-        let event = cal
-            .children
-            .iter()
-            .find(|r| r.kind == "calendar.event")
-            .expect("an event resource");
+        let event = find_kind(&cal.children, "calendar.event").expect("an event resource");
         let ev_actions: Vec<&str> = event.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ev_actions.contains(&"open"), "{ev_actions:?}");
         assert!(ev_actions.contains(&"edit"), "{ev_actions:?}");
         assert!(ev_actions.contains(&"delete"), "{ev_actions:?}");
 
-        let task = cal
-            .children
-            .iter()
-            .find(|r| r.kind == "calendar.task")
-            .expect("a task resource");
+        let task = find_kind(&cal.children, "calendar.task").expect("a task resource");
         let tk_actions: Vec<&str> = task.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(tk_actions.contains(&"open"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"edit"), "{tk_actions:?}");
@@ -1958,6 +2233,130 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Set reminder")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn large_resource_sets_are_capped_but_late_ids_resolve_lazily_and_stale_ids_refuse() {
+        let (mut app, mut doc) = seeded();
+        let template = CalDoc::read_model(&doc).events[0].clone();
+        let mut late_id = template.id;
+        for offset in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 2) {
+            let mut event = template.clone();
+            event.id = Uuid::from_u128(10_000 + offset as u128);
+            event.title = format!("lazy resource event {offset}");
+            late_id = event.id;
+            CalendarAction::UpsertEvent(EventData::from_event(&event))
+                .apply(&mut doc)
+                .expect("valid event is accepted");
+        }
+        app.sync(&mut doc, &ROOT);
+
+        let root = Widget::resources(&app, &doc).remove(0);
+        assert!(
+            root.children.len() <= EAGER_RESOURCE_SNAPSHOT_LIMIT,
+            "the open-resource snapshot must stay bounded"
+        );
+        let late = event_resource_id(late_id);
+        let resolved = <CalendarApp as ResourceProvider>::resource(&app, &doc, &late)
+            .expect("a current late event resolves on demand");
+        assert_eq!(resolved.id.as_str(), late);
+        assert!(resolved.actions.iter().any(|action| action.id == "open"));
+
+        CalendarAction::DeleteEvent {
+            id: late_id.to_string(),
+            remote_delete: None,
+        }
+        .apply(&mut doc)
+        .expect("delete is accepted");
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            <CalendarApp as ResourceProvider>::resource(&app, &doc, &late).is_none(),
+            "a deleted stable id is refused rather than redirected"
+        );
+    }
+
+    #[test]
+    fn omitted_calendar_keeps_its_own_bounded_hierarchy_and_refuses_when_stale() {
+        let (app, doc) = seeded();
+        let mut ctx = app.calendar_resource_ctx();
+        let template = ctx.calendars[0].clone();
+        ctx.calendars = (0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 3))
+            .map(|index| crate::actions::CalendarCollectionResource {
+                id: format!("remote/{index}"),
+                label: format!("Remote calendar {index}"),
+                color: template.color,
+                visible: true,
+            })
+            .collect();
+        let mut event = ctx.events[0].clone();
+        event.data.id = Uuid::from_u128(42_4242).to_string();
+        event.data.title = "event in omitted calendar".into();
+        event.data.calendar_id = format!("remote/{}", EAGER_RESOURCE_SNAPSHOT_LIMIT + 2);
+        ctx.events = vec![event.clone()];
+        ctx.tasks.clear();
+        ctx.projects.clear();
+
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            !resources[0]
+                .children
+                .iter()
+                .any(|resource| resource.id.as_str()
+                    == calendar_resource_id(&event.data.calendar_id)),
+            "the late collection is omitted from the bounded eager snapshot"
+        );
+        let calendar_id = calendar_resource_id(&event.data.calendar_id);
+        let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
+            .expect("an omitted current calendar resolves directly");
+        assert_eq!(resolved.id.as_str(), calendar_id);
+        assert_eq!(
+            resolved.children.len(),
+            1,
+            "direct context has only its owner event"
+        );
+        assert_eq!(
+            resolved.children[0].id.as_str(),
+            format!("calendar.event:{}", event.data.id)
+        );
+
+        ctx.calendars
+            .retain(|calendar| calendar.id != event.data.calendar_id);
+        assert!(
+            resource_from_ctx(&ctx, &doc, &calendar_id).is_none(),
+            "a removed collection id is not redirected to a surviving calendar"
+        );
+    }
+
+    #[test]
+    fn lazy_project_context_contains_only_its_own_bounded_tasks() {
+        let (app, doc) = seeded();
+        let ctx = app.calendar_resource_ctx();
+        let project = ctx.projects[0].clone();
+        let project_id = project.data.id;
+        let resource = resource_from_ctx(
+            &ctx,
+            &doc,
+            &project_resource_id(project_id.parse().unwrap()),
+        )
+        .expect("current project resolves lazily");
+        assert!(resource.children.iter().all(|child| {
+            let raw = child
+                .id
+                .as_str()
+                .strip_prefix("calendar.task:")
+                .expect("project direct children are tasks");
+            ctx.tasks
+                .iter()
+                .any(|task| task.data.id == raw && task.data.project == project_id)
+        }));
+        assert_eq!(
+            resource.children.len(),
+            ctx.tasks
+                .iter()
+                .filter(|task| task.data.project == project_id)
+                .count()
+                .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
         );
     }
 
@@ -2224,11 +2623,7 @@ mod tests {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         let cal = &resources[0];
-        let event = cal
-            .children
-            .iter()
-            .find(|r| r.kind == "calendar.event")
-            .unwrap();
+        let event = find_kind(&cal.children, "calendar.event").expect("seeded event resource");
         let id = event.id.as_str().trim_start_matches("calendar.event:");
 
         let delete_spec = event.actions.iter().find(|a| a.id == "delete").unwrap();
@@ -2377,11 +2772,7 @@ mod tests {
     fn event_field_actions_are_typed_strict_and_replayable() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let event = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "calendar.event")
-            .expect("seeded event resource");
+        let event = find_kind(&resources, "calendar.event").expect("seeded event resource");
         let id = event
             .id
             .as_str()
@@ -2590,11 +2981,7 @@ mod tests {
     fn task_field_actions_are_sparse_and_reject_hostile_priority_values() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let task = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "calendar.task")
-            .expect("seeded task resource");
+        let task = find_kind(&resources, "calendar.task").expect("seeded task resource");
         let id = task
             .id
             .as_str()
