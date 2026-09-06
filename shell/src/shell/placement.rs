@@ -157,9 +157,10 @@ pub fn note_placement_for_launch_identities(
     identities: &[String],
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
-) {
+) -> Placement {
     let placement = placement_for_new_window(tree, viewport);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
+    placement
 }
 
 /// An explicit destination (the "+" on a group's tab strip) beats
