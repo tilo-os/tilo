@@ -11,7 +11,11 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Stable identifier for a node in the project tree (file or folder).
+use uuid::Uuid;
+
+/// Ephemeral arena identifier for a node in this running project projection.
+/// Never publish this outside the process; [`TreeNode::resource_id`] is the
+/// durable collaborative identity.
 pub type NodeId = usize;
 
 /// The recognised source languages. Drives both the syntax-highlighting
@@ -150,6 +154,10 @@ impl Language {
 #[derive(Clone, Debug)]
 pub struct TreeNode {
     pub id: NodeId,
+    /// Stable file resource identity. Local `id`s are permitted to differ on
+    /// peers after lazy filesystem loading; this UUID is what actions, search,
+    /// history and collaboration use.
+    pub resource_id: String,
     pub name: String,
     pub parent: Option<NodeId>,
     pub kind: NodeKind,
@@ -208,6 +216,7 @@ impl Project {
             root,
             TreeNode {
                 id: root,
+                resource_id: Uuid::new_v4().to_string(),
                 name: name.to_string(),
                 parent: None,
                 kind: NodeKind::Folder {
@@ -253,6 +262,7 @@ impl Project {
             id,
             TreeNode {
                 id,
+                resource_id: format!("legacy-node-{id}"),
                 name: name.to_string(),
                 parent: Some(self.root),
                 kind: NodeKind::File {
@@ -267,6 +277,183 @@ impl Project {
         self.attach(root, id);
         if id >= self.next_id {
             self.next_id = id + 1;
+        }
+    }
+
+    /// Materialise a shared file record in this process's tree projection.
+    /// The caller owns the durable `resource_id`; the arena id is intentionally
+    /// allocated locally and is never used in a resource/action payload.
+    pub fn adopt_collaborative_file(
+        &mut self,
+        resource_id: &str,
+        parent: Option<&str>,
+        name: &str,
+        language: Language,
+    ) -> NodeId {
+        self.adopt_collaborative_node(resource_id, "file", parent, name, language)
+    }
+
+    pub fn adopt_collaborative_folder(
+        &mut self,
+        resource_id: &str,
+        parent: Option<&str>,
+        name: &str,
+    ) -> NodeId {
+        self.adopt_collaborative_node(resource_id, "folder", parent, name, Language::PlainText)
+    }
+
+    fn adopt_collaborative_node(
+        &mut self,
+        resource_id: &str,
+        kind: &str,
+        parent: Option<&str>,
+        name: &str,
+        language: Language,
+    ) -> NodeId {
+        if let Some((id, _)) = self
+            .nodes
+            .iter()
+            .find(|(_, node)| node.resource_id == resource_id)
+        {
+            let id = *id;
+            let parent_id = parent
+                .and_then(|parent| {
+                    self.nodes
+                        .iter()
+                        .find_map(|(id, node)| (node.resource_id == parent).then_some(*id))
+                })
+                .unwrap_or(self.root);
+            let old_parent = self.nodes.get(&id).and_then(|node| node.parent);
+            if id != self.root && old_parent != Some(parent_id) {
+                if let Some(old_parent) = old_parent
+                    && let Some(TreeNode {
+                        kind: NodeKind::Folder { children, .. },
+                        ..
+                    }) = self.nodes.get_mut(&old_parent)
+                {
+                    children.retain(|child| *child != id);
+                }
+                let depth = self.nodes.get(&parent_id).map_or(0, |node| node.depth + 1);
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.parent = Some(parent_id);
+                    node.depth = depth;
+                }
+                self.attach(parent_id, id);
+            }
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.name = name.to_string();
+                match (&mut node.kind, kind) {
+                    (
+                        NodeKind::File {
+                            language: node_language,
+                            ..
+                        },
+                        "file",
+                    ) => *node_language = language,
+                    (NodeKind::Folder { .. }, "folder") => {}
+                    (_, "folder") => {
+                        node.kind = NodeKind::Folder {
+                            expanded: false,
+                            loaded: true,
+                            children: Vec::new(),
+                        }
+                    }
+                    (_, _) => {
+                        node.kind = NodeKind::File {
+                            language,
+                            seed: String::new(),
+                        }
+                    }
+                }
+            }
+            return id;
+        }
+        let parent_id = parent
+            .and_then(|parent| {
+                self.nodes
+                    .iter()
+                    .find_map(|(id, node)| (node.resource_id == parent).then_some(*id))
+            })
+            .unwrap_or(self.root);
+        let depth = self.nodes.get(&parent_id).map_or(0, |node| node.depth + 1);
+        let id = self.alloc();
+        self.nodes.insert(
+            id,
+            TreeNode {
+                id,
+                resource_id: resource_id.to_string(),
+                name: name.to_string(),
+                parent: Some(parent_id),
+                kind: if kind == "folder" {
+                    NodeKind::Folder {
+                        expanded: false,
+                        loaded: true,
+                        children: Vec::new(),
+                    }
+                } else {
+                    NodeKind::File {
+                        language,
+                        seed: String::new(),
+                    }
+                },
+                depth,
+                disk_path: None,
+            },
+        );
+        self.attach(parent_id, id);
+        id
+    }
+
+    pub fn node_for_resource(&self, resource_id: &str) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find_map(|(id, node)| (node.resource_id == resource_id).then_some(*id))
+    }
+
+    /// Remove a file projection after its durable record becomes a tombstone.
+    /// The tombstone remains in the CRDT; only this process's render/cache node
+    /// disappears, so a later sync cannot resurrect it by accident.
+    pub fn remove_collaborative_file(&mut self, resource_id: &str) -> Option<NodeId> {
+        let id = self.node_for_resource(resource_id)?;
+        let parent = self.nodes.get(&id).and_then(|node| node.parent);
+        self.nodes.remove(&id);
+        if let Some(parent) = parent
+            && let Some(TreeNode {
+                kind: NodeKind::Folder { children, .. },
+                ..
+            }) = self.nodes.get_mut(&parent)
+        {
+            children.retain(|child| *child != id);
+        }
+        Some(id)
+    }
+
+    /// Order every projected folder from the durable `order` field.  Arena
+    /// allocation deliberately differs between replicas, so it must never be
+    /// used as a tie breaker for a collaborative tree.
+    pub fn order_collaborative_children(&mut self, ordering: &[(String, i64)]) {
+        let order_by_resource: BTreeMap<_, _> = ordering.iter().cloned().collect();
+        let order_by_node: BTreeMap<_, _> = self
+            .nodes
+            .iter()
+            .map(|(id, child)| {
+                (
+                    *id,
+                    (
+                        order_by_resource
+                            .get(&child.resource_id)
+                            .copied()
+                            .unwrap_or(i64::MAX),
+                        child.resource_id.clone(),
+                    ),
+                )
+            })
+            .collect();
+        for node in self.nodes.values_mut() {
+            if let NodeKind::Folder { children, .. } = &mut node.kind {
+                children
+                    .sort_by(|left, right| order_by_node.get(left).cmp(&order_by_node.get(right)));
+            }
         }
     }
 
@@ -308,6 +495,10 @@ impl Project {
             id,
             TreeNode {
                 id,
+                // A resource id is shared metadata, never a local filesystem
+                // address. The first project import persists this UUID in the
+                // collaborative document; `disk_path` remains local provenance.
+                resource_id: Uuid::new_v4().to_string(),
                 name: name.to_string(),
                 parent: Some(parent),
                 kind: NodeKind::Folder {
@@ -337,6 +528,9 @@ impl Project {
             id,
             TreeNode {
                 id,
+                // Do not leak an absolute path into history/search/resource
+                // identity. See the corresponding folder insertion above.
+                resource_id: Uuid::new_v4().to_string(),
                 name: name.to_string(),
                 parent: Some(parent),
                 kind: NodeKind::File {
@@ -1151,5 +1345,28 @@ mod tests {
         s.reorder_tab(0, 0);
         s.reorder_tab(0, 99);
         assert_eq!(s.open.len(), 3);
+    }
+
+    #[test]
+    fn durable_tree_ids_project_across_different_local_arena_layouts() {
+        let folder = "00000000-0000-4000-8000-000000000101";
+        let file = "00000000-0000-4000-8000-000000000102";
+        let mut first = Project::new("first");
+        let mut second = Project::new("second");
+        // Give just one replica unrelated local allocations.  Durable IDs must
+        // still resolve the same shared folder/file after projection.
+        let root = second.root;
+        second.add_file(root, "local-only.txt", "");
+        let first_folder = first.adopt_collaborative_folder(folder, None, "src");
+        let first_file =
+            first.adopt_collaborative_file(file, Some(folder), "main.rs", Language::Rust);
+        let second_folder = second.adopt_collaborative_folder(folder, None, "src");
+        let second_file =
+            second.adopt_collaborative_file(file, Some(folder), "main.rs", Language::Rust);
+        assert_ne!((first_folder, first_file), (second_folder, second_file));
+        assert_eq!(first.node_for_resource(file), Some(first_file));
+        assert_eq!(second.node_for_resource(file), Some(second_file));
+        assert_eq!(first.path_of(first_file), "first/src/main.rs");
+        assert_eq!(second.path_of(second_file), "second/src/main.rs");
     }
 }
