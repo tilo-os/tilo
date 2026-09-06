@@ -353,6 +353,18 @@ impl TrayLayout {
 }
 
 impl TopBarChrome {
+    /// The centre selector is visually anchored at the viewport centre, but
+    /// its wide-state width must not consume the entire narrow bar. Keep the
+    /// established 360 px treatment on laptop-sized and larger viewports and
+    /// release the reclaimed lane to the workspace identity below that
+    /// point. The lower bound still leaves enough room for the clock and its
+    /// three position dots at the large-text setting.
+    fn center_band_width(&self, theme: &Theme) -> f64 {
+        let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
+        let min_width = (220.0 + text_headroom).min(260.0);
+        (self.rect.width() - 580.0).clamp(min_width, 360.0)
+    }
+
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
         let mut this = Self {
             rect: Rect::ZERO,
@@ -954,7 +966,8 @@ impl TopBarChrome {
         // underneath it. Preserve the compact position suffix while eliding
         // only the user-authored portion, so even the compact layout says where
         // the current workspace sits.
-        let center_left = f64::midpoint(self.rect.x0, self.rect.x1) - 180.0;
+        let center_left =
+            f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
         let label_budget = ui::num::f32_of_f64((center_left - x - 54.0).clamp(32.0, 260.0));
         let suffix_width = text_renderer
             .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
@@ -1053,7 +1066,7 @@ impl TopBarChrome {
         center_y: f64,
     ) -> (f64, f64, f64) {
         let colors = &theme.tokens.colors;
-        let band_w = 360.0_f64;
+        let band_w = self.center_band_width(theme);
         let band_h = 34.0_f64;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
@@ -2536,8 +2549,7 @@ mod tests {
         TopBarChrome::from_tree(&tree)
     }
 
-    fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
-        let theme = Theme::default();
+    fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
@@ -2573,6 +2585,10 @@ mod tests {
         );
     }
 
+    fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
+        lay_out_and_draw_with_theme(bar, width, &Theme::default());
+    }
+
     #[test]
     fn persistent_topbar_controls_have_coherent_targets() {
         let mut bar = sample_chrome();
@@ -2603,6 +2619,55 @@ mod tests {
                 bar.center_rect,
             );
         }
+    }
+
+    #[test]
+    fn narrow_topbar_releases_center_width_for_workspace_identity() {
+        let mut short = sample_chrome();
+        lay_out_and_draw(&mut short, 800.0);
+        assert_eq!(short.center_rect.width(), 220.0);
+
+        let mut long = sample_chrome();
+        long.workspace_name =
+            "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
+                .to_string();
+        lay_out_and_draw(&mut long, 800.0);
+        assert!(
+            long.ws_pill_rect.width() > short.ws_pill_rect.width(),
+            "narrow workspace identity should retain more than the position suffix: short={:?}, long={:?}",
+            short.ws_pill_rect,
+            long.ws_pill_rect,
+        );
+        assert!(
+            long.ws_pill_rect.x1 + 12.0 <= long.center_rect.x0,
+            "workspace pill {:?} must keep its breathing room from centre {:?}",
+            long.ws_pill_rect,
+            long.center_rect,
+        );
+    }
+
+    #[test]
+    fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        tree.workspaces[0]
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("alice", "Alice"));
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let theme = Theme::default().with_text_scale(1.5);
+        lay_out_and_draw_with_theme(&mut bar, 800.0, &theme);
+
+        assert!(bar.center_rect.width() < 360.0);
+        assert!(bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0);
+        assert!(bar.center_rect.x1 + 12.0 <= bar.avatar_stack_rect.x0);
+        assert!(bar.avatar_stack_rect.x1 + 8.0 <= bar.tray_pill_rect.x0);
     }
 
     #[test]
