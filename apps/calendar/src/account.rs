@@ -261,6 +261,21 @@ impl AccountStore {
         Some(Self::load_from_settings_in(&root))
     }
 
+    /// Persist Calendar's account projection to the canonical shared store.
+    /// Other account types and their sealed secrets are retained by
+    /// [`Self::persist_in`]; callers receive an error when the real config
+    /// root cannot be resolved or written, rather than claiming a setting was
+    /// saved when it was not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when no qOS config root is available or persistence fails.
+    pub fn persist(&self) -> std::io::Result<()> {
+        let root = accounts::config_root()
+            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
+        self.persist_in(&root)
+    }
+
     /// Load under an explicit config root — the seam tests use.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::from_shared(
@@ -406,6 +421,39 @@ mod tests {
         assert_eq!(back.accounts[0].config.username, "a@x.example");
         assert_eq!(back.accounts[0].calendars.len(), 1);
         assert_eq!(back.accounts[0].calendars[0].name, "Team");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn visibility_round_trip_preserves_unrelated_accounts_and_secrets() {
+        let root = temp_root();
+        let other_id = AccountId::from("unrelated-service");
+        let mut shared = SharedStore::new();
+        shared.upsert(StoredAccount::new(
+            other_id.clone(),
+            AccountTypeId::from("unrelated"),
+        ));
+        shared.save_in(&root).expect("seed unrelated account");
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&other_id, &accounts::Secret::password("unrelated-secret"));
+        vault.save();
+
+        let mut store = AccountStore::sample();
+        store.persist_in(&root).expect("persist calendar accounts");
+        let calendar = &mut store.accounts[0].calendars[0];
+        let id = calendar.id.clone();
+        calendar.visible = false;
+        store.persist_in(&root).expect("persist visibility toggle");
+
+        let restarted = AccountStore::load_from_settings_in(&root);
+        assert!(
+            restarted
+                .all_calendars()
+                .find(|(_, calendar)| calendar.id == id)
+                .is_some_and(|(_, calendar)| !calendar.visible)
+        );
+        assert!(SharedStore::load_in(&root).get(&other_id).is_some());
+        assert!(SecretVault::open_in(&root).get(&other_id).is_some());
         std::fs::remove_dir_all(&root).ok();
     }
 
