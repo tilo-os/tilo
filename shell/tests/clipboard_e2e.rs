@@ -258,20 +258,13 @@ impl Compositor {
             command
                 .env("XWAYLAND_NO_GLAMOR", "1")
                 .env("LIBGL_ALWAYS_SOFTWARE", "1");
-            // Cargo runs this repository in its declared build container.
-            // Use the immutable host's installed compatibility helper there,
-            // while leaving normal production PATH resolution untouched.
-            let host_bin = Path::new("/run/host/usr/bin/xwayland-satellite");
-            if host_bin.is_file() {
-                let mut paths = vec![PathBuf::from("/run/host/usr/bin")];
-                if let Some(current) = std::env::var_os("PATH") {
-                    paths.extend(std::env::split_paths(&current));
-                }
-                command.env(
-                    "PATH",
-                    std::env::join_paths(paths).expect("compose host helper PATH"),
-                );
-            }
+            // Keep satellite and the Xwayland binary it execs in one runtime.
+            // Mixing `/run/host/usr/bin` into a build container's PATH can
+            // select a newer host Xwayland with a libc ABI the container does
+            // not provide. That fails before satellite's private Wayland
+            // server (and its xwayland-shell-v1 global) can even be exercised.
+            // The opt-in workstation lane therefore uses the installed pair
+            // from the environment in which this test binary is running.
         }
         command
             .env("XDG_RUNTIME_DIR", runtime_dir)
@@ -1473,6 +1466,15 @@ fn spawn_isolated_chatgpt_x11(
             local.is_file().then_some((local, None))
         })
         .or_else(|| {
+            // Distrobox exposes the immutable host payload directly. Running
+            // the Electron executable in the test environment preserves the
+            // private DISPLAY/Xauthority and process-group cleanup; routing
+            // through `distrobox-host-exec` rewrites XDG_RUNTIME_DIR and loses
+            // the throwaway qOS socket namespace.
+            let mounted = PathBuf::from("/run/host/usr/lib/chatgpt/ChatGPT");
+            mounted.is_file().then_some((mounted, None))
+        })
+        .or_else(|| {
             let bridge = PathBuf::from("/usr/bin/distrobox-host-exec");
             let host_app = PathBuf::from("/run/host/usr/bin/chatgpt");
             (bridge.is_file() && host_app.is_file())
@@ -1571,6 +1573,7 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
     let before = compositor
         .control(&serde_json::json!({ "op": "foreign_frames" }))
         .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
         .and_then(serde_json::Value::as_array)
         .map_or(0, Vec::len);
     let Some((_child, log)) = spawn_isolated_chatgpt_x11(&compositor) else {
@@ -1581,6 +1584,7 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
         let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
         let mapped = frames
             .get("foreign_frames")
+            .and_then(|payload| payload.get("frames"))
             .and_then(serde_json::Value::as_array)
             .is_some_and(|entries| entries.len() > before);
         if mapped {
@@ -1588,7 +1592,8 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
         }
         assert!(
             started.elapsed() < Duration::from_secs(45),
-            "the installed Electron client never mapped through qOS Xwayland.\nElectron log:\n{}\nCompositor log:\n{}",
+            "the installed Electron client never mapped through qOS Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
+            serde_json::to_string_pretty(&frames).unwrap_or_else(|_| frames.to_string()),
             log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
             compositor.recent_log(),
         );

@@ -5,7 +5,7 @@
 //! ordinary `xdg_toplevel`, so existing host applications participate in the
 //! same layout. Failure is non-fatal: native Wayland software remains usable.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{
@@ -58,6 +58,7 @@ impl SessionXwayland {
         }
         let x_display = format!(":{display_number}");
         let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
+        let runtime_path = satellite_runtime_path(&binary, std::env::var_os("PATH").as_deref())?;
 
         let mut command = Command::new(&binary);
         command
@@ -72,6 +73,12 @@ impl SessionXwayland {
             // seat keymap. Keep both sides on the same validated settings.
             .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
             .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
+            // Satellite deliberately execs a bare `Xwayland`. Resolve the
+            // sibling shipped in the same runtime first so a container/host
+            // PATH mix (or a user-local shadow) cannot pair it with an ABI-
+            // incompatible X server. Development fallbacks remain available
+            // after that first directory.
+            .env("PATH", runtime_path)
             .env(
                 "XKB_DEFAULT_OPTIONS",
                 keyboard.options.as_deref().unwrap_or(""),
@@ -186,6 +193,21 @@ fn satellite_binary() -> Option<PathBuf> {
     })
 }
 
+fn satellite_runtime_path(satellite: &Path, inherited: Option<&OsStr>) -> Result<OsString, String> {
+    let directory = satellite.parent().ok_or_else(|| {
+        format!(
+            "xwayland-satellite path has no parent directory: {}",
+            satellite.display()
+        )
+    })?;
+    let mut paths = vec![directory.to_path_buf()];
+    if let Some(inherited) = inherited {
+        paths.extend(std::env::split_paths(inherited).filter(|path| path != directory));
+    }
+    std::env::join_paths(paths)
+        .map_err(|error| format!("constructing xwayland-satellite runtime PATH: {error}"))
+}
+
 fn reserve_display(runtime: &Path) -> Result<(u16, File, PathBuf), String> {
     let mut random = [0_u8; 2];
     OsRng.fill_bytes(&mut random);
@@ -267,6 +289,24 @@ mod tests {
         assert_eq!(settings.layouts, "de");
         assert_eq!(settings.variants, "nodeadkeys");
         assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+    }
+
+    #[test]
+    fn satellite_and_xwayland_are_resolved_from_one_runtime_first() {
+        let path = satellite_runtime_path(
+            Path::new("/usr/bin/xwayland-satellite"),
+            Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
+        )
+        .unwrap();
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/run/host/usr/bin"),
+                PathBuf::from("/opt/tools"),
+            ]
+        );
     }
 
     #[test]
