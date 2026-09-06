@@ -1738,6 +1738,23 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 
     // Keep titles/app-ids in step for tabs on both sides (a client can call `set_app_id` after mapping).
     for want in &wanted {
+        // A client may announce its toplevel before setting app-id.  The
+        // protocol tree re-homes that anonymous tab when the late identity
+        // arrives; apply the same claimed launch placement to the rendered
+        // mirror before syncing its label, otherwise the two trees can show
+        // the same surface in different groups.
+        if crate::compositor::tab_binding::app_id_for_surface(rendered, want.surface_id)
+            .is_some_and(|app_id| app_id.starts_with("anon-"))
+        {
+            if crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+                rendered,
+                want.surface_id,
+                want.app_id.clone(),
+                Some(&want.title),
+            ) {
+                changed = true;
+            }
+        }
         for ws in &mut rendered.workspaces {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
@@ -2508,6 +2525,46 @@ mod tests {
         crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert!(foreign_tabs(&rendered).is_empty());
+    }
+
+    /// The rendered mirror must follow a late app-id re-home as well as the
+    /// protocol tree.  This is the two-tree version of the Electron/GTK race:
+    /// the first anonymous adoption is visible for one tick, then the launch
+    /// note is claimed when the client finally identifies itself.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn reconcile_mirrors_late_app_id_launch_placement() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = source.clone();
+        let target = source.workspaces[0].strips[0].window_groups[0].id;
+        crate::shell::launcher::set_pending_placement(
+            "org.example.electron",
+            crate::compositor::tab_binding::Placement::TabIn(target),
+        );
+
+        crate::compositor::tab_binding::adopt_toplevel(&mut source, 0x501, None);
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
+
+        assert!(crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+            &mut source,
+            0x501,
+            "org.example.electron".into(),
+            None,
+        ));
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        let mirrored = foreign_tabs_anywhere(&rendered);
+        assert_eq!(mirrored.len(), 1);
+        let mirrored_group = rendered
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
+            .expect("mirrored surface group");
+        assert_eq!(mirrored_group.id, target);
+        crate::shell::launcher::clear_pending_placements();
     }
 
     /// Consuming a user close removes the exact surface from the protocol

@@ -3249,7 +3249,7 @@ impl XdgShellHandler for State {
                 .host_launch_surface_labels
                 .get(&surface_id)
                 .map(String::as_str);
-            let _ = tab_binding::rename_tab_for_app_id_with_title(
+            let _ = tab_binding::rebind_toplevel_for_app_id(
                 &mut self.workspace_tree,
                 surface_id,
                 app_id.clone(),
@@ -3547,6 +3547,10 @@ impl FractionalScaleHandler for State {
         // A client just created a `wp_fractional_scale_v1` for this
         // surface. Seed it with the output's scale (or session-wide if not
         // yet placed) immediately so it doesn't wait for its first commit; `set_preferred_scale` is idempotent and safe before any buffer is attached.
+        // The protocol id is only unique within a client connection.  Use the
+        // same connection-qualified key as `commit` and `update_surface_scales`
+        // so a second client cannot inherit the first client's cached output
+        // scale when both happen to allocate the same wl_surface id.
         let scale = self.surface_scale(crate::compositor::state::surface_id(&surface));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
