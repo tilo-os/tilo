@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::search::{SearchGroup, SearchResult};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -101,6 +102,11 @@ impl SearchResultsView {
     pub fn with_empty_text(mut self, text: impl Into<String>) -> Self {
         self.empty_text = text.into();
         self
+    }
+
+    /// Update the empty-state copy without rebuilding the shared result view.
+    pub fn set_empty_text(&mut self, text: impl Into<String>) {
+        self.empty_text = text.into();
     }
 
     /// Give the overlay a stable test id so scenarios can resolve it.
@@ -293,6 +299,7 @@ impl SearchResultsView {
         };
         let selected = row.flat == self.cursor;
         let hovered = self.hover == Some(row.flat);
+        let selected_ink = colors.on_accent(ON_FILL_MIN_CONTRAST);
 
         // Selection = a filled row (per the command palette convention);
         // hover = a barely-there veneer, distinct from selection.
@@ -313,7 +320,7 @@ impl SearchResultsView {
                 (ICON_D, ICON_D),
             );
             let icon_col = if selected {
-                colors.text_primary
+                selected_ink
             } else {
                 colors.text_dim
             };
@@ -341,7 +348,11 @@ impl SearchResultsView {
             scene,
             &result.title,
             title_size,
-            colors.text_primary,
+            if selected {
+                selected_ink
+            } else {
+                colors.text_primary
+            },
             compose(transform, Affine::translate((text_x, title_y))),
             Some(text_w),
             TextWeight::Medium,
@@ -351,7 +362,7 @@ impl SearchResultsView {
         if let Some(sub) = &result.subtitle {
             let sy = row.rect.y1 - f64::from(sub_size) - 9.0;
             let sub_col = if selected {
-                colors.text_primary
+                selected_ink
             } else {
                 colors.text_dim
             };

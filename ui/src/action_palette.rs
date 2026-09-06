@@ -38,7 +38,7 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{SearchGroup, SearchProvider, SearchResult, fuzzy_score};
+use crate::search::{SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
@@ -62,6 +62,15 @@ const PER_GROUP_CAP: usize = 8;
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
+
+/// Diagnostics for one bounded progressive-search step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchAdvance {
+    pub inspected: usize,
+    pub added: usize,
+    pub pending: bool,
+    pub generation: u64,
+}
 
 /// How activating one row resolves.
 #[derive(Clone)]
@@ -158,10 +167,20 @@ pub struct ActionPalette {
     results: SearchResultsView,
     /// Row `action_id` → how activating it resolves.
     index: HashMap<String, RowResolution>,
+    base_index: HashMap<String, RowResolution>,
+    action_rows: Vec<SearchResult>,
+    provider_rows: Vec<SearchResult>,
+    provider_index: HashMap<String, RowResolution>,
     /// The focused instance's open resources (their exported actions are rows).
     resources: Vec<Resource>,
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
+    provider_cursors: Vec<Option<SearchCursor>>,
+    provider_complete: Vec<bool>,
+    next_provider: usize,
+    search_query: String,
+    search_generation: u64,
+    search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
@@ -199,8 +218,18 @@ impl ActionPalette {
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
             index: HashMap::new(),
+            base_index: HashMap::new(),
+            action_rows: Vec::new(),
+            provider_rows: Vec::new(),
+            provider_index: HashMap::new(),
             resources: Vec::new(),
             providers: Vec::new(),
+            provider_cursors: Vec::new(),
+            provider_complete: Vec::new(),
+            next_provider: 0,
+            search_query: String::new(),
+            search_generation: 0,
+            search_announcement: None,
             open: false,
             arg: None,
             confirm: None,
@@ -317,6 +346,140 @@ impl ActionPalette {
 
     pub fn is_empty(&self) -> bool {
         self.results.is_empty()
+    }
+
+    /// Advance at most one provider by one bounded page. The host calls this
+    /// once per redraw while `pending` is true, so a large corpus remains
+    /// responsive while exact matches eventually become visible.
+    pub fn advance_search_page(&mut self) -> SearchAdvance {
+        let generation = self.search_generation;
+        let provider_count = self.providers.len();
+        if provider_count == 0 || self.provider_complete.iter().all(|done| *done) {
+            return SearchAdvance {
+                pending: false,
+                generation,
+                ..SearchAdvance::default()
+            };
+        }
+
+        let selected = (self.next_provider..provider_count)
+            .chain(0..self.next_provider)
+            .find(|candidate| {
+                !self
+                    .provider_complete
+                    .get(*candidate)
+                    .copied()
+                    .unwrap_or(true)
+            });
+        let Some(provider_index) = selected else {
+            return SearchAdvance {
+                pending: false,
+                generation,
+                ..SearchAdvance::default()
+            };
+        };
+        self.next_provider = provider_index
+            .checked_add(1)
+            .filter(|next| *next < provider_count)
+            .unwrap_or(0);
+        let cursor = self.provider_cursors.get(provider_index).cloned().flatten();
+        let Some(provider) = self.providers.get(provider_index) else {
+            return SearchAdvance {
+                pending: false,
+                generation,
+                ..SearchAdvance::default()
+            };
+        };
+        let page = provider.search_page(
+            &self.search_query,
+            cursor.as_ref(),
+            PROVIDER_HIT_BUDGET,
+            PROVIDER_HIT_BUDGET,
+        );
+        let complete = page.next.is_none();
+        if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
+            *slot = page.next;
+        }
+        if let Some(slot) = self.provider_complete.get_mut(provider_index) {
+            *slot = complete;
+        }
+
+        let inspected = page.inspected;
+        let added = self.merge_provider_page(page.results);
+        self.refresh_progressive_results();
+        let pending = self.provider_complete.iter().any(|done| !*done);
+        self.results.set_empty_text(if pending {
+            "Searching…"
+        } else {
+            "No matches"
+        });
+        let count = self.results.len();
+        if added > 0 || !pending {
+            self.search_announcement = Some(if pending {
+                format!("{count} results, still searching")
+            } else {
+                format!("{count} results")
+            });
+        }
+        SearchAdvance {
+            inspected,
+            added,
+            pending,
+            generation,
+        }
+    }
+
+    fn merge_provider_page(&mut self, results: Vec<SearchResult>) -> usize {
+        let before = self.provider_rows.len();
+        let mut known = self
+            .provider_rows
+            .iter()
+            .map(|row| row.action_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for hit in results {
+            let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
+            if !known.insert(row_id.clone()) {
+                continue;
+            }
+            let resolution = if hit.has_action_address() {
+                hit.action_address().map(RowResolution::Address)
+            } else {
+                Some(RowResolution::Navigate(hit.action_id.clone()))
+            };
+            let Some(resolution) = resolution else {
+                continue;
+            };
+            self.provider_index.insert(row_id.clone(), resolution);
+            let mut row = SearchResult::new(hit.kind, hit.title, row_id).with_score(hit.score);
+            if let Some(subtitle) = hit.subtitle {
+                row = row.with_subtitle(subtitle);
+            }
+            if let Some(icon) = hit.icon {
+                row = row.with_icon(icon);
+            }
+            self.provider_rows.push(row);
+        }
+        // Retain only what can be displayed. Later pages are merged and
+        // reranked, so a stronger late exact hit displaces a broad early hit
+        // without memory growing with the corpus.
+        self.provider_rows =
+            rank_and_group(&self.search_query, std::mem::take(&mut self.provider_rows))
+                .into_iter()
+                .flat_map(|group| group.results)
+                .collect();
+        let retained = self
+            .provider_rows
+            .iter()
+            .map(|row| row.action_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.provider_index
+            .retain(|row_id, _| retained.contains(row_id.as_str()));
+        self.provider_rows.len().saturating_sub(before)
+    }
+
+    /// Drain the polite live-region text produced by progressive search.
+    pub fn take_search_announcement(&mut self) -> Option<String> {
+        self.search_announcement.take()
     }
 
     /// Move the highlight to a flat row index (clamped).
@@ -593,43 +756,39 @@ impl ActionPalette {
             }
         }
 
-        // Searchable content from folded-in providers (already query-filtered).
-        // A canonical hit uses the same ActionKind as its exported action row,
-        // including typed arguments, confirmation, provenance and operation
-        // kind. Untagged ids retain legacy navigation behavior; a tagged but
-        // stale address is omitted rather than silently changing semantics.
-        for provider in &self.providers {
-            for hit in provider.search_limited(query, PROVIDER_HIT_BUDGET) {
-                let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
-                let resolution = if hit.has_action_address() {
-                    // Discovery is intentionally allowed to name a resource
-                    // absent from the contextual snapshot. The owning widget
-                    // and host permission door decide whether it exists and
-                    // is actionable immediately before activation.
-                    hit.action_address().map(RowResolution::Address)
-                } else {
-                    Some(RowResolution::Navigate(hit.action_id.clone()))
-                };
-                let Some(resolution) = resolution else {
-                    // A stale canonical address is not authority and must not
-                    // fall through to an app-defined opaque callback.
-                    continue;
-                };
-                index.insert(row_id.clone(), resolution);
-                let mut r = SearchResult::new(hit.kind.clone(), hit.title.clone(), row_id)
-                    .with_score(hit.score);
-                if let Some(sub) = &hit.subtitle {
-                    r = r.with_subtitle(sub.clone());
-                }
-                if let Some(icon) = hit.icon {
-                    r = r.with_icon(icon);
-                }
-                rows.push(r);
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_query.clear();
+        self.search_query.push_str(query);
+        self.action_rows = rows;
+        self.base_index = index;
+        self.provider_rows.clear();
+        self.provider_index.clear();
+        self.provider_cursors = vec![None; self.providers.len()];
+        self.provider_complete = vec![false; self.providers.len()];
+        self.next_provider = 0;
+        self.refresh_progressive_results();
+        if self.providers.is_empty() {
+            self.results.set_empty_text("No matches");
+            self.search_announcement = Some(format!("{} results", self.results.len()));
+        } else {
+            self.search_announcement = Some(String::from("Searching"));
+            self.results.set_empty_text("Searching…");
+            let _ = self.advance_search_page();
+        }
+    }
+
+    fn refresh_progressive_results(&mut self) {
+        let mut rows = self.action_rows.clone();
+        rows.extend(self.provider_rows.iter().cloned());
+        let groups = rank_and_group(&self.search_query, rows);
+        let mut index = self.base_index.clone();
+        for row in groups.iter().flat_map(|group| &group.results) {
+            if let Some(resolution) = self.provider_index.get(&row.action_id) {
+                index.insert(row.action_id.clone(), resolution.clone());
             }
         }
-
         self.index = index;
-        self.results.set_groups(rank_and_group(query, rows));
+        self.results.set_groups(groups);
     }
 
     /// Position the palette at `origin` with `width`. Called each frame
@@ -1149,6 +1308,80 @@ mod tests {
             palette.take_operation().is_none(),
             "provider discovery must not become dispatch authority"
         );
+    }
+
+    #[test]
+    fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates() {
+        let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
+        for id in 0..100_000usize {
+            let resource_id = format!("item:{id:06}");
+            catalog
+                .upsert(
+                    &resource_id,
+                    "abc x bcd",
+                    SearchResult::for_action(
+                        "Items",
+                        format!("Broad candidate {id}"),
+                        qos_actions::ActionAddress::new(&resource_id, "open"),
+                    ),
+                )
+                .expect("valid broad candidate");
+        }
+        let target_id = "item:999999";
+        catalog
+            .upsert(
+                target_id,
+                "abcd",
+                SearchResult::for_action(
+                    "Items",
+                    "The only exact abcd result",
+                    qos_actions::ActionAddress::new(target_id, "open"),
+                ),
+            )
+            .expect("valid exact target");
+
+        let mut palette = ActionPalette::new();
+        palette.set_providers(vec![Box::new(catalog)]);
+        palette.set_query("abcd");
+        let generation = palette.search_generation;
+        let mut ticks = 0usize;
+        while !palette
+            .result_labels()
+            .iter()
+            .any(|label| label == "The only exact abcd result")
+        {
+            let progress = palette.advance_search_page();
+            assert!(progress.inspected <= PROVIDER_HIT_BUDGET);
+            assert_eq!(progress.generation, generation);
+            ticks = ticks.saturating_add(1);
+            assert!(progress.pending || ticks <= 3_126, "target was skipped");
+            assert!(ticks <= 3_126, "search did not finish in bounded pages");
+        }
+        assert!(ticks > 3_000, "the match must exercise continuation paging");
+        assert!(
+            palette
+                .referenced_action_resource_ids()
+                .iter()
+                .any(|resource_id| resource_id == target_id),
+            "the exact result must retain its canonical resource action"
+        );
+        assert!(
+            palette
+                .take_search_announcement()
+                .is_some_and(|announcement| announcement.contains("result"))
+        );
+
+        palette.set_query("a different query");
+        assert_ne!(palette.search_generation, generation);
+        assert!(
+            !palette
+                .result_labels()
+                .iter()
+                .any(|label| label == "The only exact abcd result")
+        );
+        let restarted = palette.advance_search_page();
+        assert_eq!(restarted.generation, palette.search_generation);
+        assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
     }
 
     /// Both an ACTION (from the resource tree) and a searchable CONTENT hit
