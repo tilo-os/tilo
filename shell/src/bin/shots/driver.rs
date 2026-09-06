@@ -805,6 +805,8 @@ impl ShellDriver {
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
             "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
+            "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
+            "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -1005,6 +1007,54 @@ impl ShellDriver {
         self.with_chrome(|st| {
             st.overlays.quick_settings = true;
             st.quick_settings.push_level(QsLevel::Bluetooth);
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// Device names from BlueZ are user-controlled. Keep a deterministic
+    /// long-name scene so the battery and connected indicators remain a
+    /// reserved trailing region instead of becoming an accidental text
+    /// overlay at a compact panel width.
+    fn scene_qs_bt_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Bluetooth);
+            st.quick_settings.bt_devices = vec![
+                shell::shell::quick_settings::BtDevice {
+                    name: "Studio-headphones-with-a-very-long-pairing-name".into(),
+                    battery: 73,
+                    connected: true,
+                },
+                shell::shell::quick_settings::BtDevice {
+                    name: "Wohnzimmer-Lautsprecher außerordentlich lang".into(),
+                    battery: 18,
+                    connected: false,
+                },
+            ];
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// VPN connection names are also supplied by NetworkManager. Exercise
+    /// two rows with distinct active state, an intentionally long label and
+    /// the trailing toggle region in the same render contract as Wi-Fi and
+    /// Bluetooth.
+    fn scene_qs_vpn_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Vpn);
+            st.quick_settings.vpns = vec![
+                os_actions::VpnConnectionInfo {
+                    name: "Engineering production WireGuard tunnel Frankfurt".into(),
+                    active: true,
+                    kind: "wireguard".into(),
+                },
+                os_actions::VpnConnectionInfo {
+                    name: "Personal research network with a long name".into(),
+                    active: false,
+                    kind: "vpn".into(),
+                },
+            ];
         });
         self.fb.host_mut().force_quick_settings_settled();
     }
@@ -1588,6 +1638,8 @@ impl ShellDriver {
         "qs-wifi-drillin",
         "qs-wifi-long-labels",
         "qs-bt-drillin",
+        "qs-bt-long-labels",
+        "qs-vpn-long-labels",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",
