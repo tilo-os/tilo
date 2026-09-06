@@ -7891,16 +7891,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if super_down
-            && matches!(logical_key, Key::Named(NamedKey::Tab))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            st.overlays.overview = !st.overlays.overview;
-            st.bump();
-            *handled = true;
-            return true;
-        }
         // Window-creation chords are Super-only (grabbed wholesale,
         // taking nothing from a focused client), not the
         // Ctrl+Shift+letter chords browsers/terminals define.
