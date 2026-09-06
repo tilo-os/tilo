@@ -9,33 +9,80 @@
 //! agents all enter through the same brokered operation.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-};
+use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult, SearchTextIndex};
 
-use crate::model::ContactStore;
+use crate::model::{Contact, ContactStore};
 
 /// The kind label (and result group header) Contacts produces.
 pub const CONTACT_KIND: &str = "Contacts";
 
+/// A contact plus its independently searchable fields. A newline separates
+/// values in the indexed projection, so ordinary text queries cannot bridge
+/// the end of a phone number into the start of an email.
+struct SearchEntry {
+    contact: Contact,
+    sources: Vec<String>,
+}
+
 /// A [`SearchProvider`] over a snapshot of the address book. Rebuild it (cheap)
 /// whenever the store changes, or when the search surface opens.
 pub struct ContactSearchProvider {
-    contacts: Vec<crate::model::Contact>,
+    entries: Vec<SearchEntry>,
+    /// Complete Unicode substring index over the address book. The result
+    /// window is bounded, but no contact is silently left out of the corpus.
+    index: SearchTextIndex,
 }
 
 impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
+        let entries: Vec<_> = store
+            .contacts
+            .iter()
+            .cloned()
+            .map(|contact| SearchEntry {
+                sources: searchable_fields(&contact),
+                contact,
+            })
+            .collect();
         Self {
-            contacts: store
-                .contacts
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
+            index: SearchTextIndex::new(entries.iter().map(|entry| entry.sources.join("\n"))),
+            entries,
         }
     }
+
+    fn matching_entry_ids(&self, query: &str, limit: usize) -> Vec<usize> {
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        self.index.matching_ids(query, limit)
+    }
+}
+
+/// Every user-searchable field in a contact. The vector rather than a
+/// flattened string retains field boundaries via a newline separator.
+fn searchable_fields(contact: &Contact) -> Vec<String> {
+    let mut fields = vec![
+        contact.first.clone(),
+        contact.last.clone(),
+        contact.org.clone(),
+        contact.title.clone(),
+        contact.website.clone(),
+        contact.notes.clone(),
+    ];
+    fields.extend(contact.phones.iter().map(|field| field.value.clone()));
+    fields.extend(contact.emails.iter().map(|field| field.value.clone()));
+    fields.extend(
+        contact
+            .addresses
+            .iter()
+            .map(crate::model::Address::one_line),
+    );
+    fields.extend(contact.groups.iter().map(|group| group.value.clone()));
+    fields
+        .into_iter()
+        .filter(|field| !field.is_empty())
+        .collect()
 }
 
 impl SearchProvider for ContactSearchProvider {
@@ -48,42 +95,50 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        // The model's cross-field matcher expects a lower-cased query and
-        // searches name / org / title / phones / emails / addresses / notes /
-        // groups — richer than a title-only match, so a phone- or email-only
-        // hit still surfaces. The registry then re-ranks by the query's fit
-        // against the visible title.
-        let q = query.to_lowercase();
-        self.contacts
-            .iter()
-            .filter(|c| c.matches(&q))
-            .map(|c| {
-                let mut r = SearchResult::for_action(
-                    CONTACT_KIND,
-                    c.display_name(),
-                    crate::actions::open_contact_address(c.id),
-                )
-                .with_icon(Icon::Mail);
-                let sub = c.subtitle();
-                if !sub.is_empty() {
-                    r = r.with_subtitle(sub);
-                }
-                // Float favourites a notch above equally-strong matches.
-                if c.favorite {
-                    r = r.with_score(1);
-                }
-                r
-            })
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        if limit == 0 {
+            return Vec::new();
+        }
+        if query.is_empty() {
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|entry| contact_result(&entry.contact))
+                .collect();
+        }
+        self.matching_entry_ids(query, limit)
+            .into_iter()
+            .filter_map(|id| self.entries.get(id))
+            .map(|entry| contact_result(&entry.contact))
             .collect()
     }
+}
+
+fn contact_result(contact: &Contact) -> SearchResult {
+    let mut r = SearchResult::for_action(
+        CONTACT_KIND,
+        contact.display_name(),
+        crate::actions::open_contact_address(contact.id),
+    )
+    .with_icon(Icon::Mail);
+    let sub = contact.subtitle();
+    if !sub.is_empty() {
+        r = r.with_subtitle(sub);
+    }
+    // Float favourites a notch above equally-strong matches.
+    if contact.favorite {
+        r = r.with_score(1);
+    }
+    r
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContactStore, sample_contacts};
+    use crate::model::{Contact, ContactStore, sample_contacts};
     use ui::search::SearchRegistry;
+    use uuid::Uuid;
 
     fn store_with_samples() -> ContactStore {
         let mut store = ContactStore::new();
@@ -174,5 +229,30 @@ mod tests {
             store.len(),
             "every contact is browsable"
         );
+    }
+
+    #[test]
+    fn contacts_beyond_the_legacy_snapshot_limit_are_searchable() {
+        let mut store = ContactStore::new();
+        for index in 0..4_097 {
+            store.upsert(Contact {
+                id: Uuid::new_v4(),
+                first: format!("Contact {index}"),
+                last: if index == 4_096 {
+                    "needle beyond legacy cap".into()
+                } else {
+                    String::new()
+                },
+                ..Contact::default()
+            });
+        }
+
+        let hits = ContactSearchProvider::new(&store).search("needle beyond legacy cap");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the complete index reaches the final contact"
+        );
+        assert_eq!(hits[0].title, "Contact 4096 needle beyond legacy cap");
     }
 }
