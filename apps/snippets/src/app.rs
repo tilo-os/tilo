@@ -79,6 +79,9 @@ struct Toast {
 
 pub struct SnippetsApp {
     library: Library,
+    /// Complete incremental Ctrl+K catalogue. Provider handles clone this
+    /// shared index in O(1), so opening the palette never snapshots the library.
+    search_provider: crate::search_provider::SnippetSearchProvider,
     selection: Selection,
     /// Local, per-peer search editor. It intentionally is not CRDT-bound:
     /// filtering is presentation state, while snippet mutations still flow
@@ -190,8 +193,10 @@ impl SnippetsApp {
     }
 
     fn with_library(library: Library) -> Self {
+        let search_provider = crate::search_provider::SnippetSearchProvider::new(&library);
         let mut app = Self {
             library,
+            search_provider,
             selection: Selection::default(),
             search_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Search)
@@ -275,7 +280,11 @@ impl SnippetsApp {
     /// after every dispatched action so the list/detail reflect it immediately,
     /// before the next frame's `sync`.
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
-        self.library.snippets = SnippetsDoc::list(doc);
+        let next = Library {
+            snippets: SnippetsDoc::list(doc),
+        };
+        self.search_provider.update(&self.library, &next);
+        self.library = next;
     }
 
     /// The presentation context Ctrl+K needs to build the library-level "New
@@ -397,7 +406,9 @@ impl SnippetsApp {
                 }
             } else {
                 // A peer is already sharing — adopt their library.
-                self.library.snippets = remote;
+                let next = Library { snippets: remote };
+                self.search_provider.update(&self.library, &next);
+                self.library = next;
                 self.recompute_visible();
             }
             self.seeded = true;
@@ -405,7 +416,9 @@ impl SnippetsApp {
         }
         // Steady state: the document is authoritative — re-project it.
         if self.library.snippets != remote {
-            self.library.snippets = remote;
+            let next = Library { snippets: remote };
+            self.search_provider.update(&self.library, &next);
+            self.library = next;
             self.recompute_visible();
         }
     }
@@ -718,8 +731,27 @@ impl ui::widget::Widget for SnippetsApp {
     /// scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        if id == "snippets.library" {
+            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+                .pop();
+        }
+        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
+            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
+            return self
+                .library
+                .get(snippet_id)
+                .map(crate::actions::provide_snippet_resource);
+        }
+        self.library
+            .tags()
+            .into_iter()
+            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
+            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -729,14 +761,13 @@ impl ui::widget::Widget for SnippetsApp {
         self.actions.take_committed()
     }
 
-    /// Fold the library into the unified Ctrl+K palette: a snapshot
-    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider)
-    /// makes every snippet findable there by title, language, folder, tag,
+    /// Fold the library into the unified Ctrl+K palette. The provider is an
+    /// O(1) handle to the retained incremental
+    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
+    /// making every snippet findable there by title, language, folder, tag,
     /// description or body, alongside the actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::SnippetSearchProvider::new(&self.library),
-        )]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a
@@ -2856,12 +2887,9 @@ mod tests {
         let id = SnippetsDoc::list(&doc)[0].id;
 
         // What the palette would dispatch for this snippet's "delete".
-        let resources = Widget::resources(&app, &doc);
-        let snip = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
-            .expect("a resource for the target snippet");
+        let resource_id = format!("snippets.snippet:{id}");
+        let snip =
+            Widget::resource(&app, &doc, &resource_id).expect("a resource for the target snippet");
         let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
         let spec_encoded = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
@@ -2901,12 +2929,8 @@ mod tests {
             .map(|s| s.id)
             .expect("an unstarred seeded snippet");
 
-        let resources = Widget::resources(&app, &doc);
-        let snip = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
-            .unwrap();
+        let resource_id = format!("snippets.snippet:{id}");
+        let snip = Widget::resource(&app, &doc, &resource_id).unwrap();
         let spec = snip
             .actions
             .iter()

@@ -315,9 +315,8 @@ fn snippet_label(s: &Snippet) -> String {
     format!("{} · {}", base, s.language.label())
 }
 
-/// Build the resource tree Snippets currently has open: the library, and one
-/// resource per snippet exporting every document-mutating operation as an action.
-pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+/// Build the small contextual root shown immediately by Ctrl+K.
+pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
     let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
     lib = lib.with_action(view_operation(
         "search",
@@ -346,99 +345,104 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
         },
     ));
 
+    vec![lib]
+}
+
+pub fn provide_tag_resource(tag: String) -> Resource {
+    Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
+        "reveal",
+        "Reveal tagged snippets",
+        SnippetsOperation::RevealTag { tag },
+    ))
+}
+
+/// Materialise one snippet only after a canonical search result names it.
+pub fn provide_snippet_resource(s: &Snippet) -> Resource {
+    let id = s.id;
+    let mut r = Resource::new(
+        snippet_resource_id(id),
+        "snippets.snippet",
+        snippet_label(s),
+    );
+    r = r.with_action(view_operation(
+        "open",
+        "Open snippet",
+        SnippetsOperation::OpenSnippet { id },
+    ));
+
+    r = r.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename",
+        "Title",
+        "new title…",
+        ExecutionLocus::ClientLocal,
+        move |t: &str| encode(&rename_action(id, t.trim())),
+    ));
+    r = r.with_action(ActionSpec::prompted(
+        "set-language",
+        "Set language",
+        "Language",
+        "rust, shell, python, sql…",
+        ExecutionLocus::ClientLocal,
+        move |t: &str| {
+            encode(&set_language_action(
+                id,
+                Language::from_slug(&t.trim().to_lowercase()),
+            ))
+        },
+    ));
+    r = r.with_action(ActionSpec::prompted(
+        "move-to-folder",
+        "Move to folder",
+        "Folder",
+        "folder name (blank = All)",
+        ExecutionLocus::ClientLocal,
+        move |t: &str| encode(&set_folder_action(id, t.trim())),
+    ));
+    r = r.with_action(ActionSpec::prompted(
+        "set-tags",
+        "Set tags",
+        "Tags",
+        "comma, separated, tags",
+        ExecutionLocus::ClientLocal,
+        move |t: &str| encode(&set_tags_action(id, &parse_tags(t))),
+    ));
+    r = r.with_action(ActionSpec::prompted(
+        "edit-description",
+        "Edit description",
+        "Description",
+        "describe this snippet…",
+        ExecutionLocus::ClientLocal,
+        move |t: &str| encode(&set_description_action(id, t)),
+    ));
+    r = r.with_action(encode_spec(
+        "toggle-favorite",
+        if s.favorite { "Unstar" } else { "Star" },
+        &set_favorite_action(id, !s.favorite),
+    ));
+    r.with_action(encode_spec(
+        "delete",
+        "Delete snippet",
+        &delete_snippet_action(id),
+    ))
+}
+
+/// Build the complete resource tree for audits and non-interactive callers.
+pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut lib = provide_contextual_resources(ctx)
+        .pop()
+        .unwrap_or_else(|| Resource::new("snippets.library", "snippets.library", "Snippets"));
     let snippets = SnippetsDoc::list(doc);
     let tags = snippets
         .iter()
         .flat_map(|snippet| snippet.tags.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>();
     for tag in tags {
-        lib = lib.with_child(
-            Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
-                "reveal",
-                "Reveal tagged snippets",
-                SnippetsOperation::RevealTag { tag },
-            )),
-        );
+        lib = lib.with_child(provide_tag_resource(tag));
     }
 
     for s in snippets {
-        let id = s.id;
-        let mut r = Resource::new(
-            snippet_resource_id(id),
-            "snippets.snippet",
-            snippet_label(&s),
-        );
-        r = r.with_action(view_operation(
-            "open",
-            "Open snippet",
-            SnippetsOperation::OpenSnippet { id },
-        ));
-
-        // Rename — prompted for the new title.
-        r = r.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename",
-            "Title",
-            "new title…",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&rename_action(id, t.trim())),
-        ));
-        // Set the language — prompted; the argument is parsed as a language slug.
-        r = r.with_action(ActionSpec::prompted(
-            "set-language",
-            "Set language",
-            "Language",
-            "rust, shell, python, sql…",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| {
-                encode(&set_language_action(
-                    id,
-                    Language::from_slug(&t.trim().to_lowercase()),
-                ))
-            },
-        ));
-        // Move to a folder — prompted.
-        r = r.with_action(ActionSpec::prompted(
-            "move-to-folder",
-            "Move to folder",
-            "Folder",
-            "folder name (blank = All)",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&set_folder_action(id, t.trim())),
-        ));
-        // Set the tag set — prompted, comma-separated.
-        r = r.with_action(ActionSpec::prompted(
-            "set-tags",
-            "Set tags",
-            "Tags",
-            "comma, separated, tags",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&set_tags_action(id, &parse_tags(t))),
-        ));
-        // Edit the description — prompted.
-        r = r.with_action(ActionSpec::prompted(
-            "edit-description",
-            "Edit description",
-            "Description",
-            "describe this snippet…",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&set_description_action(id, t)),
-        ));
-        // Star / unstar — immediate; carries the flipped target value, the same
-        // EncodedAction the toolbar Star button dispatches.
-        r = r.with_action(encode_spec(
-            "toggle-favorite",
-            if s.favorite { "Unstar" } else { "Star" },
-            &set_favorite_action(id, !s.favorite),
-        ));
-        // Delete — immediate, the same EncodedAction the toolbar Delete dispatches.
-        r = r.with_action(encode_spec(
-            "delete",
-            "Delete snippet",
-            &delete_snippet_action(id),
-        ));
-
-        lib = lib.with_child(r);
+        lib = lib.with_child(provide_snippet_resource(&s));
     }
 
     vec![lib]
@@ -496,8 +500,8 @@ mod tests {
             .expect("a seeded snippet")
     }
 
-    /// Ctrl+K on Snippets yields the library resource plus one child per snippet,
-    /// each exporting the actions the model implies. Drives the real resource hook.
+    /// Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
+    /// one snippet with every action the model implies.
     #[test]
     fn ctrl_k_publishes_the_library_and_snippet_tree() {
         let (app, doc) = seeded();
@@ -507,13 +511,10 @@ mod tests {
         assert_eq!(lib.kind, "snippets.library");
         let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
-        assert!(!lib.children.is_empty(), "the seeded library has snippets");
-
-        let snip = lib
-            .children
-            .iter()
-            .find(|resource| resource.kind == "snippets.snippet")
-            .expect("a snippet child resource");
+        assert!(lib.children.is_empty(), "the contextual root stays bounded");
+        let snippet = first_snippet(&doc);
+        let resource_id = snippet_resource_id(snippet.id);
+        let snip = Widget::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
         assert_eq!(snip.kind, "snippets.snippet");
         let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
@@ -531,22 +532,25 @@ mod tests {
             );
         }
 
-        let tag = lib
-            .children
-            .iter()
-            .find(|resource| resource.kind == "snippets.tag")
-            .expect("seeded snippets publish tag resources");
+        let tag_name = snippet
+            .tags
+            .first()
+            .expect("seeded snippet has a tag")
+            .clone();
+        let tag = Widget::resource(&app, &doc, &tag_resource_id(&tag_name))
+            .expect("seeded snippets lazily publish tag resources");
         let reveal = tag
             .actions
             .iter()
             .find(|action| action.id == "reveal")
             .expect("tag exports its reveal action");
         assert_eq!(reveal.kind, OperationKind::View);
-        let tag_name =
+        let decoded_tag_name =
             match decode_operation(SNIPPETS_OPERATION_TYPE, &immediate_encode(reveal).payload) {
                 Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
                 other => panic!("unexpected tag operation: {other:?}"),
             };
+        assert_eq!(decoded_tag_name, tag_name);
         assert_eq!(
             reveal_tag_address(&tag_name),
             ActionAddress::new(&tag.id.0, &reveal.id)
@@ -568,7 +572,9 @@ mod tests {
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
+        let mut palette_resources = resources.clone();
+        palette_resources.push(snip.clone());
+        palette.load_open_resources(&palette_resources);
         palette.open();
         palette.set_query("New snippet");
         let labels = palette.result_labels();
@@ -706,11 +712,8 @@ mod tests {
     #[test]
     fn palette_and_builder_encode_identically() {
         let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let snip = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "snippets.snippet")
+        let snippet = first_snippet(&doc);
+        let snip = Widget::resource(&app, &doc, &snippet_resource_id(snippet.id))
             .expect("a snippet resource");
         let id_str = snip.id.as_str().trim_start_matches("snippets.snippet:");
         let id: SnippetId = id_str.parse().unwrap();
