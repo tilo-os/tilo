@@ -41,8 +41,8 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::qos_actions::{
     ActionAddress, ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec,
-    ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy, RiskLevel,
+    Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -185,20 +185,24 @@ fn short_publisher(item: &StoreItem) -> String {
     )
 }
 
-fn full_publisher(item: &StoreItem) -> String {
-    item.publisher_pubkey_hex.as_deref().map_or_else(
-        || short_publisher(item),
-        |key| {
-            let grouped = key
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(8)
-                .map(|chunk| chunk.iter().collect::<String>())
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("ed25519 {grouped}")
-        },
-    )
+/// Render the entire publisher key in deliberately short, inspectable lines.
+/// Card summaries use [`short_publisher`], but the anti-scam decision sheet
+/// must not replace the actual verified identity with an ellipsis merely to
+/// satisfy a narrow layout.
+fn publisher_identity_lines(item: &StoreItem) -> Vec<String> {
+    let Some(key) = item.publisher_pubkey_hex.as_deref() else {
+        return vec!["Publisher identity: not published by this distributor".into()];
+    };
+    let groups: Vec<&str> = key
+        .as_bytes()
+        .chunks(8)
+        .filter_map(|group| std::str::from_utf8(group).ok())
+        .collect();
+    let mut lines = vec!["Publisher fingerprint (ed25519):".into()];
+    for chunk in groups.chunks(2) {
+        lines.push(chunk.join(" "));
+    }
+    lines
 }
 
 fn format_size(bytes: u64) -> String {
@@ -1001,12 +1005,11 @@ impl StoreApp {
         if let Some(binding) = report_binding(item) {
             report_button = report_button.on_action(binding);
         }
+        let mut trust_lines = vec![trust_summary.to_string()];
+        trust_lines.extend(publisher_identity_lines(item));
         column = column.push(Box::new(actions)).push(detail_section(
             "Trust & safety",
-            [
-                trust_summary.to_string(),
-                format!("Publisher fingerprint: {}", full_publisher(item)),
-            ],
+            trust_lines,
             theme,
         ));
 
@@ -2024,6 +2027,14 @@ impl Widget for StoreApp {
             ) {
                 let destructive = matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove);
                 resource.actions.push(spec.with_contract(ActionContract {
+                    availability: if action.requires_flatpak_host() && !self.flatpak_available {
+                        Availability::Unavailable {
+                            code: "flatpak_host_unavailable".into(),
+                            reason: "Flatpak is not installed on this host; install it before using Flatpak catalog actions".into(),
+                        }
+                    } else {
+                        Availability::Available
+                    },
                     risk: if destructive {
                         RiskLevel::Destructive
                     } else {
@@ -2077,6 +2088,14 @@ impl Widget for StoreApp {
                     &payload,
                 ) {
                     resource.actions.push(spec.with_contract(ActionContract {
+                        availability: if remove.requires_flatpak_host() && !self.flatpak_available {
+                            Availability::Unavailable {
+                                code: "flatpak_host_unavailable".into(),
+                                reason: "Flatpak is not installed on this host; install it before using Flatpak catalog actions".into(),
+                            }
+                        } else {
+                            Availability::Available
+                        },
                         risk: RiskLevel::Destructive,
                         confirmation: ConfirmationPolicy::Confirm,
                         retry: RetryPolicy::Idempotent,
@@ -2466,6 +2485,19 @@ impl Widget for StoreApp {
             .clone();
         let action = action_from_code(args.get(1).map_or("", String::as_str))
             .ok_or_else(|| "unknown store action".to_string())?;
+        let item = self
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
+        if !item.allows_action(action, self.flatpak_available) {
+            return Err("this action is no longer available for the current app state".into());
+        }
+        if action.requires_flatpak_host() && !self.flatpak_available {
+            return Err(
+                "Flatpak is not installed on this host; no install operation can run".into(),
+            );
+        }
         self.pending_lifecycle_actions
             .push((id, action, invocation));
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
@@ -3000,6 +3032,90 @@ mod tests {
     }
 
     #[test]
+    fn stale_resource_action_cannot_escalate_to_an_unoffered_mutation() {
+        let mut app = seeded_app();
+        let doc = AutoCommit::new();
+        let result = app.start_resource_operation(
+            qos_actions::InvocationId::new(),
+            OperationKind::Effect,
+            "store.app",
+            &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
+            &doc,
+            &automerge::ROOT,
+        );
+        assert!(
+            result.is_err(),
+            "an uninstalled app publishes Open, not an arbitrary stale Remove effect"
+        );
+        assert!(app.take_lifecycle_actions().is_empty());
+    }
+
+    #[test]
+    fn flatpak_actions_are_explicitly_unavailable_without_a_flatpak_host() {
+        let mut app = seeded_app();
+        app.set_flatpak_available(false);
+        let doc = AutoCommit::new();
+        let root = Widget::resources(&app, &doc).pop().unwrap();
+        let chess = root
+            .children
+            .iter()
+            .flat_map(|publisher| publisher.children.iter())
+            .find(|resource| resource.id.0 == "app:id.chess")
+            .unwrap();
+        let install = chess
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-setup")
+            .unwrap();
+        assert!(matches!(
+            install.contract.availability,
+            Availability::Unavailable { ref code, .. } if code == "flatpak_host_unavailable"
+        ));
+    }
+
+    #[test]
+    fn installed_flatpak_remove_is_unavailable_and_refused_without_host() {
+        let mut app = seeded_app();
+        app.items
+            .iter_mut()
+            .find(|item| item.id == "id.chess")
+            .unwrap()
+            .installed = InstalledState::Installed {
+            version: "1".into(),
+            available: "1".into(),
+            pinned: false,
+        };
+        app.set_flatpak_available(false);
+        let doc = AutoCommit::new();
+        let root = Widget::resources(&app, &doc).pop().unwrap();
+        let chess = root
+            .children
+            .iter()
+            .flat_map(|publisher| publisher.children.iter())
+            .find(|resource| resource.id.0 == "app:id.chess")
+            .unwrap();
+        for id in ["flatpak-setup", "remove"] {
+            let action = chess.actions.iter().find(|action| action.id == id).unwrap();
+            assert!(matches!(
+                action.contract.availability,
+                Availability::Unavailable { ref code, .. } if code == "flatpak_host_unavailable"
+            ));
+        }
+        assert!(
+            app.start_resource_operation(
+                qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "store.app",
+                &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "direct/stale invocation cannot bypass the unavailable resource contract"
+        );
+    }
+
+    #[test]
     fn exported_store_operations_are_background_jobs() {
         let app = seeded_app();
         let doc = AutoCommit::new();
@@ -3084,6 +3200,23 @@ mod tests {
         assert_eq!(node.role, Role::Window);
         assert_eq!(node.name.as_deref(), Some("App Store"));
         assert!(node.bounds.is_some());
+    }
+
+    #[test]
+    fn trust_sheet_keeps_the_entire_publisher_identity_in_wrapped_lines() {
+        let mut signed = item(
+            "Signed",
+            StoreSource::Qos {
+                registry_name: "qOS".into(),
+            },
+            "Utilities",
+            InstalledState::Not,
+        );
+        signed.publisher_pubkey_hex = Some("ab".repeat(32));
+        let lines = publisher_identity_lines(&signed);
+        assert_eq!(lines[0], "Publisher fingerprint (ed25519):");
+        assert_eq!(lines[1..].concat().replace(' ', ""), "ab".repeat(32));
+        assert!(lines.iter().skip(1).all(|line| line.len() <= 17));
     }
 
     #[test]
