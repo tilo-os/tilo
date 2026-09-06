@@ -381,12 +381,11 @@ fn mix_core(
             if let Some(output) = out.get_mut(i) {
                 *output += v;
             }
-            if let (Some(idx), Some(buckets)) = (bucket, per_track.as_deref_mut()) {
-                if let Some((_, samples)) = buckets.get_mut(idx)
-                    && let Some(sample) = samples.get_mut(i)
-                {
-                    *sample += v;
-                }
+            if let (Some(idx), Some(buckets)) = (bucket, per_track.as_deref_mut())
+                && let Some((_, samples)) = buckets.get_mut(idx)
+                && let Some(sample) = samples.get_mut(i)
+            {
+                *sample += v;
             }
         }
     }
@@ -1112,12 +1111,12 @@ impl AudioMonitor {
                     let at = *state
                         .position
                         .lock()
-                        .unwrap_or_else(|poison| poison.into_inner());
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let (block, report) = {
                         let project = state
                             .project
                             .lock()
-                            .unwrap_or_else(|poison| poison.into_inner());
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
                     };
                     // Recorded before the push, so a device that goes away
@@ -1133,7 +1132,7 @@ impl AudioMonitor {
                     *state
                         .position
                         .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) = at + block_secs;
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
                 }
             })
             .ok();
