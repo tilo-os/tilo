@@ -165,14 +165,124 @@ click_named() {
   }
 }
 
+editable_node_named() {
+  local expected=$1 candidate needle interfaces
+  needle="'$expected'"
+  for candidate in "${!node_names[@]}"; do
+    [[ ${node_names[$candidate]} == *"$needle"* ]] || continue
+    interfaces=$(property "$candidate" Interfaces 2>/dev/null) || continue
+    if [[ $interfaces == *"org.a11y.atspi.EditableText"* \
+      && $interfaces == *"org.a11y.atspi.Text"* ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# AT-SPI exposes focus as an action on Component, rather than through the
+# Action interface used by buttons.  Verify both halves: the provider accepts
+# the request and the following live tree transaction marks that exact object
+# focused.  This catches an adapter which exports names/actions but never
+# forwards focus requests into the compositor's widget dispatcher.
+focus_named() {
+  local expected=$1 path result
+  path=$(editable_node_named "$expected") || {
+    echo "AT-SPI $mode tree has no editable node named '$expected' to focus" >&2
+    return 1
+  }
+  result=$(gdbus call --address "$atspi_address" \
+    --dest "$app_bus" \
+    --object-path "$path" \
+    --method org.a11y.atspi.Component.GrabFocus)
+  [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+    echo "AT-SPI focus on '$expected' was rejected: $result" >&2
+    return 1
+  }
+  wait_for_focused "$path" "$expected"
+}
+
+# `Focused` is AT-SPI State 12, represented in the first uint32 word returned
+# by Accessible.GetState.  Keep the wire-level assertion here instead of
+# trusting a successful GrabFocus reply: requests are asynchronous and a
+# provider may acknowledge one while dropping it before the next tree update.
+wait_for_focused() {
+  local path=$1 expected=$2 state word
+  for _ in $(seq 1 400); do
+    state=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.Accessible.GetState 2>/dev/null) || {
+      sleep 0.05
+      continue
+    }
+    if [[ $state =~ uint32[[:space:]]+([0-9]+) ]]; then
+      word=${BASH_REMATCH[1]}
+      (( (word & (1 << 12)) != 0 )) && return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI focus on '$expected' never appeared in Accessible.GetState" >&2
+  return 1
+}
+
+# Text fields use EditableText.SetTextContents, then expose their live value
+# through the AT-SPI Text interface.  This is intentionally a non-secret
+# OOBE field: it proves the screen-reader editing path without ever reading a
+# password or changing the identity flow's credentials.
+set_text_named() {
+  local expected=$1 value=$2 path result
+  path=$(editable_node_named "$expected") || {
+    echo "AT-SPI $mode tree has no text field named '$expected'" >&2
+    return 1
+  }
+  result=$(gdbus call --address "$atspi_address" \
+    --dest "$app_bus" \
+    --object-path "$path" \
+    --method org.a11y.atspi.EditableText.SetTextContents "$value")
+  [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+    echo "AT-SPI text update on '$expected' was rejected: $result" >&2
+    return 1
+  }
+  wait_for_text "$path" "$expected" "$value"
+}
+
+wait_for_text() {
+  local path=$1 expected=$2 value=$3 text
+  for _ in $(seq 1 400); do
+    text=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.Text.GetText 0 -1 2>/dev/null) || {
+      sleep 0.05
+      continue
+    }
+    [[ $text == *"'$value'"* ]] && return 0
+    sleep 0.05
+  done
+  echo "AT-SPI value for '$expected' never reflected '$value'" >&2
+  return 1
+}
+
 case "$mode" in
   oobe|oobe-actions)
     wait_for_names "Use existing" "Create identity"
     if [[ $mode == oobe-actions ]]; then
-      # This is the release's external action proof. Each transition is made
-      # through org.a11y.atspi.Action, then observed back through the live
-      # AT-SPI tree. It catches a provider that advertises controls but drops
-      # ActionRequest messages before the compositor's widget dispatcher.
+      # Prove the complete external-reader contract before making the
+      # irreversible identity choice. The disposable Connect branch gives us
+      # a visible, non-secret editable field: focus and write it solely over
+      # AT-SPI, observe the value through that same bus, then return to Intro.
+      click_named "Use existing"
+      wait_for_names "Identity backup file" "Back"
+      focus_named "Identity backup file"
+      set_text_named "Identity backup file" "qos-atspi-edit-probe"
+      click_named "Back"
+      wait_for_names "Use existing" "Create identity"
+
+      # Each remaining transition is made through org.a11y.atspi.Action, then
+      # observed back through the live AT-SPI tree. It catches a provider that
+      # advertises controls but drops ActionRequest messages before the
+      # compositor's widget dispatcher.
       click_named "Create identity"
       wait_for_names \
         "I understand that losing this device without a backup means losing this identity." \
