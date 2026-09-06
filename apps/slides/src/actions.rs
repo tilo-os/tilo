@@ -39,8 +39,9 @@
 //! no wall-clock, no app state. Where an operation is relative to the current
 //! deck (a z-order raise/lower, a slide reorder) it recomputes from the
 //! document's base state, reading z-values order-independently, so two replicas
-//! at the same heads land on the byte-identical result. A malformed payload is a
-//! **no-op**, never an error, so a bad replay can't wedge a peer.
+//! at the same heads land on the byte-identical result. A malformed or stale
+//! payload is refused before it changes the document, so it cannot create a
+//! successful-looking history entry that silently did nothing.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
@@ -53,7 +54,8 @@ use qos_actions::{
 
 use crate::doc::SlidesDoc;
 use crate::model::{
-    Background, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign, new_id,
+    Background, Element, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
+    STROKE_ROLES, Slide, TextAlign, new_id, parse_hex,
 };
 
 /// Registry `type_id` for every Slides action.
@@ -356,32 +358,44 @@ pub struct StylePatch {
 /// Determinism contract: ids and enums are carried in the payload;
 /// [`Action::apply`] never touches the RNG or the wall-clock. The two variants
 /// that are relative to the current deck ([`Self::RaiseElement`] /
-/// [`Self::LowerElement`]) recompute from the document's base state. A malformed
-/// payload is a **no-op** rather than an error.
+/// [`Self::LowerElement`]) recompute from the document's base state. Malformed
+/// or stale payloads are refused atomically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SlidesAction {
-    /// Insert a whole slide (a blank create *or* a duplicate) at index `at`
-    /// (clamped to the end). One variant covers both: "add" and "duplicate"
+    /// Insert a whole slide (a blank create *or* a duplicate) at index `at`.
+    /// One variant covers both: "add" and "duplicate"
     /// differ only in the payload their builders mint, exactly as a create and
     /// an edit are one `Upsert` elsewhere.
     InsertSlide { at: usize, slide: SlideData },
-    /// Delete slide `idx`. A no-op when it is the deck's last slide (a deck
-    /// always keeps at least one slide) or when `idx` is out of range.
-    DeleteSlide { idx: usize },
+    /// Delete the slide identified by `id` at `idx`. Refused when it is the
+    /// deck's last slide or when the index no longer names that stable id.
+    DeleteSlide { idx: usize, id: String },
     /// Move the slide at `from` so it lands at index `to`, carrying its whole
     /// content. Recomputed from the document's base state.
-    MoveSlide { from: usize, to: usize },
+    MoveSlide { from: usize, to: usize, id: String },
     /// Set slide `slide`'s layout.
-    SetSlideLayout { slide: usize, layout: String },
+    SetSlideLayout {
+        slide: usize,
+        id: String,
+        layout: String,
+    },
     /// Set slide `slide`'s background treatment.
-    SetSlideBackground { slide: usize, background: String },
+    SetSlideBackground {
+        slide: usize,
+        id: String,
+        background: String,
+    },
     /// Set the deck's accent theme (palette). Deck-wide, so it carries no slide
     /// index.
     SetDeckPalette { palette: String },
     /// Add an element (a fresh insert, a paste, a duplicate, or a picked image)
     /// to slide `slide`. The element's id is minted at authoring and carried in
     /// the payload.
-    AddElement { slide: usize, element: ElementData },
+    AddElement {
+        slide: usize,
+        slide_id: String,
+        element: ElementData,
+    },
     /// Delete element `id` from slide `slide`.
     DeleteElement { slide: usize, id: String },
     /// Move element `id` to its **final** top-left after a drag drop or a
@@ -416,42 +430,237 @@ pub enum SlidesAction {
     LowerElement { slide: usize, id: String },
 }
 
+const MAX_DECK_SLIDES: usize = 10_000;
+const MAX_ELEMENTS_PER_SLIDE: usize = 10_000;
+const MAX_TEXT_CHARS: usize = 100_000;
+
+fn refused(reason: &str) -> ActionError {
+    ActionError::Refused(reason.to_string())
+}
+
+fn exact_layout(value: &str) -> bool {
+    Layout::ALL.iter().any(|layout| layout.as_str() == value)
+}
+
+fn exact_background(value: &str) -> bool {
+    Background::ALL
+        .iter()
+        .any(|background| background.as_str() == value)
+}
+
+fn exact_palette(value: &str) -> bool {
+    PaletteKind::ALL
+        .iter()
+        .any(|palette| palette.as_str() == value)
+}
+
+fn exact_kind(value: &str) -> bool {
+    ["text", "rect", "ellipse", "line", "image"].contains(&value)
+}
+
+fn exact_align(value: &str) -> bool {
+    TextAlign::ALL.iter().any(|align| align.as_str() == value)
+}
+
+/// The palette has more neutral roles than the compact inspector swatch row,
+/// and custom picker colours are canonical `#RRGGBB[AA]` literals. Do not let
+/// an unknown string take the renderer's permissive fallback: direct/replayed
+/// actions must have the same bounded vocabulary as the UI.
+fn exact_paint(value: &str, allow_none: bool) -> bool {
+    (allow_none && value == "none")
+        || FILL_ROLES.contains(&value)
+        || matches!(
+            value,
+            "accent-deep" | "surface-dim" | "text" | "text-dim" | "on-accent" | "white"
+        )
+        || (value.starts_with('#') && parse_hex(value).is_some())
+}
+
+fn valid_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_whitespace)
+}
+
+fn valid_geometry(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> bool {
+    x.is_finite()
+        && y.is_finite()
+        && w.is_finite()
+        && h.is_finite()
+        && (-SLIDE_W..=SLIDE_W * 2.0).contains(&x)
+        && (-SLIDE_H..=SLIDE_H * 2.0).contains(&y)
+        && match kind {
+            // Lines are stored as the bounding rectangle of their endpoints.
+            // A horizontal or vertical line deliberately has one zero extent.
+            ElementKind::Line => {
+                (0.0..=SLIDE_W * 2.0).contains(&w)
+                    && (0.0..=SLIDE_H * 2.0).contains(&h)
+                    && (w > 0.0 || h > 0.0)
+            }
+            _ => (1.0..=SLIDE_W * 2.0).contains(&w) && (1.0..=SLIDE_H * 2.0).contains(&h),
+        }
+}
+
+fn validate_element(data: &ElementData) -> Result<(), ActionError> {
+    if !valid_id(&data.id)
+        || !exact_kind(&data.kind)
+        || !valid_geometry(
+            ElementKind::from_str(&data.kind),
+            data.x,
+            data.y,
+            data.w,
+            data.h,
+        )
+    {
+        return Err(refused("element id, kind, or geometry is invalid"));
+    }
+    if data.text.chars().count() > MAX_TEXT_CHARS
+        || data.src.len() > 4_096
+        || !exact_paint(&data.fill, true)
+        || (!STROKE_ROLES.contains(&data.stroke.as_str()) && !exact_paint(&data.stroke, true))
+        || !exact_align(&data.align)
+        || !data.stroke_width.is_finite()
+        || !data.font_size.is_finite()
+        || !data.radius.is_finite()
+        || !(0.0..=64.0).contains(&data.stroke_width)
+        || !(4.0..=256.0).contains(&data.font_size)
+        || !(0.0..=720.0).contains(&data.radius)
+    {
+        return Err(refused("element style or content is invalid"));
+    }
+    Ok(())
+}
+
+fn deck_for_action(doc: &Doc) -> Result<crate::model::Deck, ActionError> {
+    SlidesDoc::load(doc).ok_or_else(|| refused("the shared deck is unavailable"))
+}
+
+fn live_element<'a>(
+    deck: &'a crate::model::Deck,
+    slide: usize,
+    id: &str,
+) -> Result<&'a Element, ActionError> {
+    deck.slides
+        .get(slide)
+        .ok_or_else(|| refused("the target slide no longer exists"))?
+        .element(id)
+        .ok_or_else(|| refused("the target element no longer exists"))
+}
+
 impl Action for SlidesAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive action match is the atomic validation boundary: every branch validates its complete payload before it can write the shared deck"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let deck = deck_for_action(doc)?;
         match self {
             SlidesAction::InsertSlide { at, slide } => {
+                if *at > deck.slides.len() || deck.slides.len() >= MAX_DECK_SLIDES {
+                    return Err(refused("slide insertion position or deck size is invalid"));
+                }
+                if !valid_id(&slide.id)
+                    || !exact_layout(&slide.layout)
+                    || !exact_background(&slide.background)
+                    || slide.notes.chars().count() > MAX_TEXT_CHARS
+                    || slide.elements.len() > MAX_ELEMENTS_PER_SLIDE
+                    || deck.slides.iter().any(|existing| existing.id == slide.id)
+                {
+                    return Err(refused("new slide data is invalid or stale"));
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for element in &slide.elements {
+                    validate_element(element)?;
+                    if !ids.insert(&element.id)
+                        || deck.slides.iter().any(|existing| {
+                            existing.elements.iter().any(|live| live.id == element.id)
+                        })
+                    {
+                        return Err(refused("new element id already exists"));
+                    }
+                }
                 SlidesDoc::insert_slide(doc, *at, &slide.to_slide());
             }
-            SlidesAction::DeleteSlide { idx } => {
-                // A deck always keeps at least one slide. The count is read from
-                // the document's base state, so the guard evaluates identically
-                // on every replica.
-                if let Some(deck) = SlidesDoc::load(doc)
-                    && deck.slides.len() > 1
-                    && *idx < deck.slides.len()
+            SlidesAction::DeleteSlide { idx, id } => {
+                if deck.slides.len() <= 1
+                    || deck.slides.get(*idx).is_none_or(|slide| slide.id != *id)
                 {
-                    SlidesDoc::remove_slide(doc, *idx);
+                    return Err(refused("the target slide cannot be deleted"));
                 }
+                SlidesDoc::remove_slide(doc, *idx);
             }
-            SlidesAction::MoveSlide { from, to } => {
+            SlidesAction::MoveSlide { from, to, id } => {
+                if *from >= deck.slides.len()
+                    || *to >= deck.slides.len()
+                    || from == to
+                    || deck.slides.get(*from).is_none_or(|slide| slide.id != *id)
+                {
+                    return Err(refused("slide move source or destination is invalid"));
+                }
                 SlidesDoc::move_slide(doc, *from, *to);
             }
-            SlidesAction::SetSlideLayout { slide, layout } => {
+            SlidesAction::SetSlideLayout { slide, id, layout } => {
+                if deck
+                    .slides
+                    .get(*slide)
+                    .is_none_or(|current| current.id != *id)
+                    || !exact_layout(layout)
+                {
+                    return Err(refused("slide or layout is invalid"));
+                }
                 SlidesDoc::set_slide_layout(doc, *slide, Layout::from_str(layout));
             }
-            SlidesAction::SetSlideBackground { slide, background } => {
+            SlidesAction::SetSlideBackground {
+                slide,
+                id,
+                background,
+            } => {
+                if deck
+                    .slides
+                    .get(*slide)
+                    .is_none_or(|current| current.id != *id)
+                    || !exact_background(background)
+                {
+                    return Err(refused("slide or background is invalid"));
+                }
                 SlidesDoc::set_slide_background(doc, *slide, Background::from_str(background));
             }
             SlidesAction::SetDeckPalette { palette } => {
+                if !exact_palette(palette) {
+                    return Err(refused("deck palette is invalid"));
+                }
                 SlidesDoc::set_palette(doc, PaletteKind::from_str(palette));
             }
-            SlidesAction::AddElement { slide, element } => {
+            SlidesAction::AddElement {
+                slide,
+                slide_id,
+                element,
+            } => {
+                let target = deck
+                    .slides
+                    .get(*slide)
+                    .filter(|current| current.id == *slide_id)
+                    .ok_or_else(|| refused("the target slide no longer exists"))?;
+                if target.elements.len() >= MAX_ELEMENTS_PER_SLIDE {
+                    return Err(refused("the target slide has too many elements"));
+                }
+                validate_element(element)?;
+                if deck
+                    .slides
+                    .iter()
+                    .any(|existing| existing.elements.iter().any(|live| live.id == element.id))
+                {
+                    return Err(refused("element id already exists"));
+                }
                 SlidesDoc::add_element(doc, *slide, &element.to_element());
             }
             SlidesAction::DeleteElement { slide, id } => {
+                live_element(&deck, *slide, id)?;
                 SlidesDoc::remove_element(doc, *slide, id);
             }
             SlidesAction::MoveElement { slide, id, x, y } => {
+                let current = live_element(&deck, *slide, id)?;
+                if !valid_geometry(current.kind, *x, *y, current.w, current.h) {
+                    return Err(refused("element position is invalid"));
+                }
                 SlidesDoc::set_element_pos(doc, *slide, id, *x, *y);
             }
             SlidesAction::ResizeElement {
@@ -462,9 +671,38 @@ impl Action for SlidesAction {
                 w,
                 h,
             } => {
+                let current = live_element(&deck, *slide, id)?;
+                if !valid_geometry(current.kind, *x, *y, *w, *h) {
+                    return Err(refused("element rectangle is invalid"));
+                }
                 SlidesDoc::set_element_rect(doc, *slide, id, *x, *y, *w, *h);
             }
             SlidesAction::RestyleElement { slide, id, patch } => {
+                live_element(&deck, *slide, id)?;
+                if patch == &StylePatch::default()
+                    || patch
+                        .fill
+                        .as_deref()
+                        .is_some_and(|value| !exact_paint(value, true))
+                    || patch.stroke.as_deref().is_some_and(|value| {
+                        !STROKE_ROLES.contains(&value) && !exact_paint(value, true)
+                    })
+                    || patch
+                        .align
+                        .as_deref()
+                        .is_some_and(|value| !exact_align(value))
+                    || patch
+                        .font_size
+                        .is_some_and(|value| !value.is_finite() || !(4.0..=256.0).contains(&value))
+                    || patch
+                        .stroke_width
+                        .is_some_and(|value| !value.is_finite() || !(0.0..=64.0).contains(&value))
+                    || patch
+                        .radius
+                        .is_some_and(|value| !value.is_finite() || !(0.0..=720.0).contains(&value))
+                {
+                    return Err(refused("element style patch is invalid"));
+                }
                 // Fixed field order so the emitted change is byte-identical on
                 // every replica.
                 if let Some(v) = &patch.fill {
@@ -493,14 +731,16 @@ impl Action for SlidesAction {
                 }
             }
             SlidesAction::RaiseElement { slide, id } => {
-                if let Some(z) = restack_z(doc, *slide, true) {
-                    SlidesDoc::set_element_z(doc, *slide, id, z);
-                }
+                live_element(&deck, *slide, id)?;
+                let z =
+                    restack_z(doc, *slide, true).ok_or_else(|| refused("cannot raise element"))?;
+                SlidesDoc::set_element_z(doc, *slide, id, z);
             }
             SlidesAction::LowerElement { slide, id } => {
-                if let Some(z) = restack_z(doc, *slide, false) {
-                    SlidesDoc::set_element_z(doc, *slide, id, z);
-                }
+                live_element(&deck, *slide, id)?;
+                let z =
+                    restack_z(doc, *slide, false).ok_or_else(|| refused("cannot lower element"))?;
+                SlidesDoc::set_element_z(doc, *slide, id, z);
             }
         }
         Ok(())
@@ -565,24 +805,38 @@ pub fn insert_slide_action(at: usize, slide: &Slide) -> SlidesAction {
     }
 }
 
-pub fn delete_slide_action(idx: usize) -> SlidesAction {
-    SlidesAction::DeleteSlide { idx }
+pub fn delete_slide_action(idx: usize, id: impl Into<String>) -> SlidesAction {
+    SlidesAction::DeleteSlide { idx, id: id.into() }
 }
 
-pub fn move_slide_action(from: usize, to: usize) -> SlidesAction {
-    SlidesAction::MoveSlide { from, to }
+pub fn move_slide_action(from: usize, to: usize, id: impl Into<String>) -> SlidesAction {
+    SlidesAction::MoveSlide {
+        from,
+        to,
+        id: id.into(),
+    }
 }
 
-pub fn set_slide_layout_action(slide: usize, layout: Layout) -> SlidesAction {
+pub fn set_slide_layout_action(
+    slide: usize,
+    id: impl Into<String>,
+    layout: Layout,
+) -> SlidesAction {
     SlidesAction::SetSlideLayout {
         slide,
+        id: id.into(),
         layout: layout.as_str().to_string(),
     }
 }
 
-pub fn set_slide_background_action(slide: usize, background: Background) -> SlidesAction {
+pub fn set_slide_background_action(
+    slide: usize,
+    id: impl Into<String>,
+    background: Background,
+) -> SlidesAction {
     SlidesAction::SetSlideBackground {
         slide,
+        id: id.into(),
         background: background.as_str().to_string(),
     }
 }
@@ -593,9 +847,14 @@ pub fn set_deck_palette_action(palette: PaletteKind) -> SlidesAction {
     }
 }
 
-pub fn add_element_action(slide: usize, element: &Element) -> SlidesAction {
+pub fn add_element_action(
+    slide: usize,
+    slide_id: impl Into<String>,
+    element: &Element,
+) -> SlidesAction {
     SlidesAction::AddElement {
         slide,
+        slide_id: slide_id.into(),
         element: ElementData::from_element(element),
     }
 }
@@ -885,21 +1144,21 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         slide = slide.with_action(immediate_spec(
             "delete",
             "Delete slide",
-            &delete_slide_action(idx),
+            &delete_slide_action(idx, sr.data.id.clone()),
         ));
 
         for layout in Layout::ALL {
             slide = slide.with_action(immediate_spec(
                 &format!("layout-{}", layout.as_str()),
                 &format!("Layout: {}", layout.label()),
-                &set_slide_layout_action(idx, layout),
+                &set_slide_layout_action(idx, sr.data.id.clone(), layout),
             ));
         }
         for bg in Background::ALL {
             slide = slide.with_action(immediate_spec(
                 &format!("background-{}", bg.as_str()),
                 &format!("Background: {}", bg.label()),
-                &set_slide_background_action(idx, bg),
+                &set_slide_background_action(idx, sr.data.id.clone(), bg),
             ));
         }
 
@@ -1178,7 +1437,8 @@ mod tests {
 
         // Set the second slide's background — a whole-value write, deterministic
         // against the shared base.
-        let action = set_slide_background_action(1, Background::Deep);
+        let slide_id = SlidesDoc::load(&a).unwrap().slides[1].id.clone();
+        let action = set_slide_background_action(1, slide_id, Background::Deep);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -1238,7 +1498,8 @@ mod tests {
 
         let el = Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0);
         let id = el.id.clone();
-        let action = add_element_action(0, &el);
+        let slide_id = SlidesDoc::load(&a).unwrap().slides[0].id.clone();
+        let action = add_element_action(0, slide_id, &el);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -1251,6 +1512,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_and_hostile_actions_are_refused_without_a_partial_write() {
+        let (_app, mut doc) = seeded();
+        let before = doc.get_heads();
+        let live = SlidesDoc::load(&doc).unwrap();
+        let element = live.slides[0].elements[0].id.clone();
+
+        for action in [
+            move_element_action(99, element.clone(), 10.0, 10.0),
+            move_element_action(0, element.clone(), f64::NAN, 10.0),
+            delete_element_action(0, "stale-element"),
+            set_slide_layout_action(99, "stale-slide", Layout::Blank),
+            set_slide_background_action(0, "stale-slide", Background::Deep),
+            SlidesAction::SetDeckPalette {
+                palette: "untrusted-purple".into(),
+            },
+            SlidesAction::RestyleElement {
+                slide: 0,
+                id: element.clone(),
+                patch: StylePatch::default(),
+            },
+        ] {
+            assert!(
+                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                "invalid action must be visibly refused: {action:?}"
+            );
+            assert_eq!(doc.get_heads(), before, "a refused action is atomic");
+        }
+    }
+
+    #[test]
+    fn duplicate_element_insert_is_refused_before_document_mutation() {
+        let (_app, mut doc) = seeded();
+        let before = doc.get_heads();
+        let duplicate = SlidesDoc::load(&doc).unwrap().slides[0].elements[0].clone();
+        let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
+        let action = add_element_action(0, slide_id, &duplicate);
+        assert!(matches!(
+            action.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(doc.get_heads(), before);
+    }
+
     /// Single source of truth: the palette's "Delete element" / "Delete slide" /
     /// "Background" specs encode byte-identically to the builders the on-screen
     /// affordances call.
@@ -1260,11 +1565,12 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         let deck = &resources[0];
         let slide = &deck.children[0];
+        let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
 
         // Delete-slide spec == delete builder (slide 0).
         let delete_spec = slide.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_slide_action(0));
+        let from_builder = encode(&delete_slide_action(0, &slide_id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
         assert_eq!(
             from_spec.payload, from_builder.payload,
@@ -1278,7 +1584,7 @@ mod tests {
             .find(|a| a.id == "background-deep")
             .unwrap();
         let from_spec = immediate_encode(bg_spec);
-        let from_builder = encode(&set_slide_background_action(0, Background::Deep));
+        let from_builder = encode(&set_slide_background_action(0, &slide_id, Background::Deep));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "background is one source of truth"
