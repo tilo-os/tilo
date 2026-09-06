@@ -1348,16 +1348,18 @@ impl BooksApp {
         let in_ch = (self.page as f32 + 1.0) / self.cur_page_count.max(1) as f32;
         let fraction = ((self.chapter as f32 + in_ch) / nchap).clamp(0.0, 1.0);
         let id = book.id.clone();
-        BooksDoc::write_progress(
+        self.perform_action(
             doc,
-            &id,
-            &Progress {
-                chapter: self.chapter,
-                page: self.page,
-                fraction,
-                // 0 ⇒ write_progress leaves the recorded open time untouched.
-                opened: 0,
-            },
+            &crate::actions::set_progress_action(
+                &id,
+                Progress {
+                    chapter: self.chapter,
+                    page: self.page,
+                    fraction,
+                    // 0 ⇒ the action preserves the recorded open time.
+                    opened: 0,
+                },
+            ),
         );
         self.last_persisted = Some((self.chapter, self.page));
     }
@@ -1439,7 +1441,7 @@ impl BooksApp {
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
         p.opened = now_ms();
-        BooksDoc::write_progress(doc, &id, &p);
+        self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
         self.note_composer.close();
