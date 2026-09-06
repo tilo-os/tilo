@@ -96,6 +96,9 @@ in specialist workspaces without duplicating their implementation in Settings.
 The manifest reader currently exposes extension claims to the desktop. The
 policy model already supports MIME types and URI schemes, but browser/mail
 defaults will appear only after the canonical package manifest and installed-app
-enumerator expose those claims. The sync filesystem also needs a signed
-hydration/eviction accounting API before Settings can offer safe “free local
-space” actions for replicated files.
+enumerator expose those claims. Settings already offers conservative “free
+local space” actions through the namespace hydration authority. The remaining
+storage work is to replace its daemon-lifetime, single-source provenance with
+the record plane's existing signed exact-version replica receipts, durable
+availability projection and crash-safe eviction queue, removing the two
+parallel eviction models.
