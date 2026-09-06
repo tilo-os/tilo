@@ -5702,6 +5702,14 @@ impl FileExplorerWidget {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let len = self.displayed_entries().len();
         match &ke.logical_key {
+            // Location is a first-class, keyboard-accessible control. Keep
+            // this at the application layer so it works when focus is in the
+            // file view, places list, or breadcrumb; a path editor itself
+            // consumes keys before this method is reached.
+            Key::Character(s) if (s == "l" || s == "L") && ctrl => {
+                self.toolbar.begin_path_edit();
+                true
+            }
             Key::Named(NamedKey::ContextMenu) if !self.selection.is_empty() => {
                 self.open_context_menu(self.keyboard_context_anchor());
                 true
@@ -6067,6 +6075,10 @@ impl FileExplorerWidget {
     /// folder may entail hundreds of thousands of entries, so entries,
     /// templates, places, and remote projections stay behind their retained
     /// search providers rather than being copied into this root page.
+    #[allow(
+        clippy::expect_used,
+        reason = "ActionSpec::prompted_operation requires an infallible builder; serde serialization of a String is infallible in practice, while the shared API cannot return a Result"
+    )]
     fn action_directory_folder_root(&self) -> Resource {
         let mut folder = Resource::new(
             crate::search_provider::folder_resource_id(&self.current_path),
@@ -8351,6 +8363,28 @@ mod command_path_tests {
         assert!(w.apply_command(FileCommand::SetSort(SortBy::Name)));
         assert_eq!(w.sort_by(), SortBy::Name);
         assert_eq!(w.entries_snapshot()[0].name, "a.txt");
+    }
+
+    #[test]
+    fn command_l_opens_the_editable_location_bar_without_a_pointer() {
+        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+
+        let mut widget = FileExplorerWidget::new();
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = winit::event::ElementState::Pressed;
+        event.repeat = false;
+
+        assert!(widget.handle_app_key(
+            &event,
+            winit::event::Modifiers::from(ModifiersState::CONTROL),
+        ));
+        assert!(
+            widget.toolbar.is_path_editing(),
+            "the documented location shortcut must expose the real editable path control"
+        );
     }
 
     #[test]

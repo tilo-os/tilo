@@ -465,6 +465,18 @@ pub struct WorkspaceRecordIndexPager {
     root_generations: std::collections::HashMap<PathBuf, String>,
     generation_root_cursor: usize,
     discovery_sources: std::collections::VecDeque<PathBuf>,
+    /// A generated authority source keeps the >100k paging contract covered
+    /// without writing thousands of xattrs during the unit test.
+    #[cfg(test)]
+    test_v2: Option<TestV2Source>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct TestV2Source {
+    root: PathBuf,
+    revision: String,
+    records: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -598,7 +610,7 @@ fn read_record_index_page_v2(
         || page
             .records
             .windows(2)
-            .any(|pair| pair[0].record_id >= pair[1].record_id)
+            .any(|pair| matches!(pair, [first, second] if first.record_id >= second.record_id))
     {
         return None;
     }
@@ -639,7 +651,7 @@ fn read_record_index_page_v3(
         && value
             .records
             .windows(2)
-            .all(|pair| pair[0].record_id < pair[1].record_id))
+            .all(|pair| matches!(pair, [first, second] if first.record_id < second.record_id)))
     .then_some(value)
 }
 
@@ -667,10 +679,8 @@ pub fn resolve_workspace_record(
             continue;
         }
         let (mut records, malformed) = project_record_entries(root, vec![projection.record]);
-        if !malformed {
-            if let Some(record) = records.pop() {
-                return Some(record);
-            }
+        if !malformed && let Some(record) = records.pop() {
+            return Some(record);
         }
     }
     None
@@ -818,6 +828,13 @@ impl WorkspaceRecordIndexPager {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::unused_self,
+            reason = "the receiver is used by the test-only synthetic authority seam"
+        )
+    )]
     fn v2_manifest(&self, root: &Path) -> Option<RecordIndexManifestV2> {
         #[cfg(test)]
         if let Some(source) = &self.test_v2
@@ -833,6 +850,13 @@ impl WorkspaceRecordIndexPager {
         read_record_index_manifest_v2(root)
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::unused_self,
+            reason = "the receiver is used by the test-only synthetic authority seam"
+        )
+    )]
     fn v2_page(
         &self,
         root: &Path,
@@ -904,7 +928,11 @@ impl WorkspaceRecordIndexPager {
         for _ in 0..ROOT_WATCH_BUDGET.min(roots.len()) {
             let index = self.generation_root_cursor % roots.len();
             self.generation_root_cursor = self.generation_root_cursor.wrapping_add(1);
-            let root = &roots[index];
+            // `index` is modulo `roots.len()` above; preserve that invariant
+            // without an unchecked slice access in this refresh path.
+            let Some(root) = roots.get(index) else {
+                return false;
+            };
             let generation = root_generation(root);
             let root_changed = self
                 .root_generations
@@ -928,6 +956,10 @@ impl WorkspaceRecordIndexPager {
 
     /// Fetch one authority page. A changed manifest generation restarts from
     /// its first page and marks `reset`, preventing mixed old/new paths.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded authority-page state machine keeps generation, cursor, and fail-closed validation together"
+    )]
     pub fn next_page(&mut self) -> WorkspaceRecordIndexPage {
         // Capture the current authority before admitting the first page. This
         // prevents a mutation between startup and the first periodic poll from
@@ -981,7 +1013,7 @@ impl WorkspaceRecordIndexPager {
                         .as_ref()
                         .and_then(|(revision, _, previous)| {
                             (revision == &manifest.revision)
-                                .then(|| previous.clone())
+                                .then_some(*previous)
                                 .flatten()
                         });
                 if prior_record_id.is_some_and(|previous| {
@@ -998,7 +1030,7 @@ impl WorkspaceRecordIndexPager {
                         truncated: true,
                     };
                 }
-                let last_record_id = page.records.last().map(|record| record.record_id.clone());
+                let last_record_id = page.records.last().map(|record| record.record_id);
                 let (records, malformed) = project_record_entries(&root, page.records);
                 truncated |= malformed;
                 if let Some(next) = page.next_cursor {
@@ -1024,7 +1056,7 @@ impl WorkspaceRecordIndexPager {
                 Some(manifest) => {
                     let (offset, prior_record_id) = match &self.cursor {
                         Some(cursor) if cursor.revision == manifest.revision => {
-                            (cursor.offset, cursor.last_record_id.clone())
+                            (cursor.offset, cursor.last_record_id)
                         }
                         Some(_) => {
                             // The mount invalidated the cursor. Do not keep old
@@ -1073,7 +1105,7 @@ impl WorkspaceRecordIndexPager {
                             truncated: true,
                         };
                     }
-                    let last_record_id = page.records.last().map(|record| record.record_id.clone());
+                    let last_record_id = page.records.last().map(|record| record.record_id);
                     // A page's continuation advances over the namespace-owned
                     // source window, not merely returned rows: an ACL can
                     // deny every row in a bounded window. Empty pages are
