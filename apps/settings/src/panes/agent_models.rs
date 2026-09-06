@@ -464,13 +464,17 @@ fn synced_local_profile(
     // The manager owns port allocation. Settings persists only the endpoint
     // returned by its ready state, never the legacy `:8000` placeholder.
     if let Some(endpoint) = running_endpoint {
-        profile.endpoint = endpoint.url.clone();
+        profile.endpoint.clone_from(&endpoint.url);
         profile.default_model = Some(endpoint.model_id.clone());
     }
     profile.enabled = running_endpoint.is_some();
     Some(profile)
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the independent lifecycle, confirmation, and rebuild flags model concurrent manager state"
+)]
 pub struct AgentModelsPane {
     control: Arc<dyn LocalModelControl>,
     snapshot: LocalModelSnapshot,
@@ -807,7 +811,7 @@ impl AgentModelsPane {
         let mut buffers = self
             .provider_key_buffers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         buffers
             .entry(profile_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(String::new())))
@@ -818,7 +822,7 @@ impl AgentModelsPane {
         let mut buffers = self
             .provider_field_buffers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
@@ -831,6 +835,10 @@ impl AgentModelsPane {
             .clone()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hosted-provider editor keeps each credential and endpoint control together"
+    )]
     fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
         let mut body: Vec<El> = vec![caption(
@@ -1037,7 +1045,7 @@ impl AgentModelsPane {
                         .on_effect(move || {
                             let mut key = set_buffer
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let value = std::mem::take(&mut *key);
                             let _ = qos_model_gateway::set_api_key(&set_id, value);
                             key.zeroize();
@@ -1173,11 +1181,11 @@ impl AgentModelsPane {
                 }
             }
         }
-        if take_bool(state, root, SETUP_KEY) {
-            if let Some(package) = &self.snapshot.recommendation {
-                self.confirmation = Some(package.id.clone());
-                self.structure_dirty = true;
-            }
+        if take_bool(state, root, SETUP_KEY)
+            && let Some(package) = &self.snapshot.recommendation
+        {
+            self.confirmation = Some(package.id.clone());
+            self.structure_dirty = true;
         }
         if take_bool(state, root, CANCEL_KEY) {
             self.confirmation = None;
@@ -1558,13 +1566,14 @@ mod tests {
     #[test]
     fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
         let package = package();
+        let model_id = package.id.clone();
         let models = vec![InstalledLocalModel {
-            package: package.clone(),
+            package,
             phase: LocalModelPhase::Ready {
                 running: true,
                 endpoint: Some(LocalModelEndpoint {
                     url: "http://127.0.0.1:43127/v1".into(),
-                    model_id: package.id.clone(),
+                    model_id,
                 }),
             },
         }];
