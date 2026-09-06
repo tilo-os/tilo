@@ -8,20 +8,27 @@ use std::collections::{HashMap, HashSet};
 
 use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-};
+use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
 
 use crate::model::{AnnoKind, Annotation, Book};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
-const MAX_SEARCH_TEXT_CHARS: usize = 65_536;
+/// A query never probes more than this many full entry strings.  The index is
+/// complete, but a pathological query such as "the" must not turn Ctrl+K into
+/// an unbounded main-thread scan on a large shared library.
+const MAX_QUERY_CANDIDATES: usize = 2_048;
 
 pub struct BookSearchProvider {
     entries: Vec<SearchEntry>,
-    trigram_index: HashMap<String, Vec<usize>>,
+    /// One-, two-, and three-character postings.  Indexing all three sizes
+    /// means even a one-letter query is narrowed by the index rather than
+    /// falling back to a linear scan. `GramKey` packs Unicode scalar values
+    /// into a `u64`, avoiding one heap allocation per character window. Each
+    /// entry contributes at most three postings per input character, so the
+    /// index remains linear in library text size.
+    gram_index: HashMap<GramKey, Vec<usize>>,
 }
 
 struct SearchEntry {
@@ -29,17 +36,26 @@ struct SearchEntry {
     result: SearchResult,
 }
 
+/// A compact one-, two-, or three-scalar search gram. Three Unicode scalar
+/// values need 63 bits (each scalar fits in 21), leaving no need for a hash or
+/// string allocation. Missing trailing scalars use the first value above the
+/// Unicode range, so one-, two-, and three-scalar keys cannot alias even when
+/// real text contains NUL. That matters because candidate verification is
+/// deliberately bounded: a key collision must not let unrelated early entries
+/// hide a valid late match.
+type GramKey = u64;
+const GRAM_END: u64 = 0x11_0000;
+
 impl BookSearchProvider {
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
-        let indexed_books = books
-            .iter()
-            .take(DEFAULT_SEARCH_INDEX_LIMIT)
-            .collect::<Vec<_>>();
-        let book_ids: HashSet<&str> = indexed_books.iter().map(|book| book.id.as_str()).collect();
+        // Search is a library feature, not a viewport feature: every loaded
+        // book, chapter, full chapter body, and live annotation participates.
+        // In particular, never use the UI result/index limits while building
+        // this durable snapshot; doing so made old books undiscoverable.
+        let book_ids: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
         let live_annotations = annotations
             .iter()
             .filter(|annotation| book_ids.contains(annotation.doc_id.as_str()))
-            .take(DEFAULT_SEARCH_INDEX_LIMIT)
             .collect::<Vec<_>>();
         let highlight_groups: HashSet<_> = live_annotations
             .iter()
@@ -47,7 +63,7 @@ impl BookSearchProvider {
             .map(|annotation| (annotation.doc_id.clone(), annotation.group))
             .collect();
         let mut entries = Vec::new();
-        'books: for book in indexed_books {
+        for book in books {
             let title = Self::book_title(book);
             let mut result =
                 SearchResult::for_action(BOOK_KIND, title, Self::book_address(&book.id))
@@ -59,9 +75,6 @@ impl BookSearchProvider {
                 haystack: format!("{} {}", title, book.author).to_lowercase(),
                 result,
             });
-            if entries.len() == DEFAULT_SEARCH_INDEX_LIMIT {
-                break;
-            }
             for (chapter, item) in book.chapters.iter().enumerate() {
                 let chapter_title = if item.title.trim().is_empty() {
                     format!("Chapter {}", chapter + 1)
@@ -69,20 +82,9 @@ impl BookSearchProvider {
                     item.title.clone()
                 };
                 let mut chapter_text = String::new();
-                let mut indexed_chars = 0;
                 for block in &item.blocks {
-                    for ch in crate::model::Block::plain_text(block).chars() {
-                        if indexed_chars == MAX_SEARCH_TEXT_CHARS {
-                            break;
-                        }
-                        chapter_text.push(ch);
-                        indexed_chars += 1;
-                    }
-                    if indexed_chars == MAX_SEARCH_TEXT_CHARS {
-                        break;
-                    }
+                    chapter_text.push_str(&crate::model::Block::plain_text(block));
                     chapter_text.push(' ');
-                    indexed_chars += 1;
                 }
                 entries.push(SearchEntry {
                     haystack: format!("{chapter_title} {chapter_text}").to_lowercase(),
@@ -94,33 +96,30 @@ impl BookSearchProvider {
                     .with_subtitle(format!("{} · Chapter {}", title, chapter + 1))
                     .with_icon(Icon::List),
                 });
-                if entries.len() == DEFAULT_SEARCH_INDEX_LIMIT {
-                    break 'books;
-                }
             }
         }
         Self::append_annotation_entries(&mut entries, &live_annotations, books, &highlight_groups);
 
-        let trigram_index = Self::build_trigram_index(&entries);
+        let gram_index = Self::build_gram_index(&entries);
         Self {
             entries,
-            trigram_index,
+            gram_index,
         }
     }
 
-    /// Index each distinct trigram once per row so a repeated sequence does
-    /// not bloat candidate lists or make search ranking depend on repetition.
-    fn build_trigram_index(entries: &[SearchEntry]) -> HashMap<String, Vec<usize>> {
-        let mut trigram_index: HashMap<String, Vec<usize>> = HashMap::new();
+    /// Index each distinct 1/2/3-gram once per row so repetition does not
+    /// bloat postings or make ranking depend on repeated words.
+    fn build_gram_index(entries: &[SearchEntry]) -> HashMap<GramKey, Vec<usize>> {
+        let mut gram_index: HashMap<GramKey, Vec<usize>> = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
             let mut unique = HashSet::new();
-            for trigram in trigrams(&entry.haystack) {
-                if unique.insert(trigram.clone()) {
-                    trigram_index.entry(trigram).or_default().push(index);
+            for_each_gram_key(&entry.haystack, |gram| {
+                if unique.insert(gram) {
+                    gram_index.entry(gram).or_default().push(index);
                 }
-            }
+            });
         }
-        trigram_index
+        gram_index
     }
 
     fn append_annotation_entries(
@@ -131,9 +130,6 @@ impl BookSearchProvider {
     ) {
         let mut emitted_highlights = HashSet::new();
         for annotation in annotations {
-            if entries.len() == DEFAULT_SEARCH_INDEX_LIMIT {
-                break;
-            }
             if annotation.kind == AnnoKind::Highlight
                 && !emitted_highlights.insert((annotation.doc_id.clone(), annotation.group))
             {
@@ -229,33 +225,111 @@ impl SearchProvider for BookSearchProvider {
         if limit == 0 {
             return Vec::new();
         }
-        let candidates: Box<dyn Iterator<Item = usize> + '_> = if q.chars().count() >= 3 {
-            let first = trigrams(&q).into_iter().next();
-            Box::new(
-                first
-                    .and_then(|key| self.trigram_index.get(&key))
-                    .into_iter()
-                    .flatten()
-                    .copied(),
-            )
-        } else {
-            Box::new(0..self.entries.len())
-        };
-        candidates
+        if q.is_empty() {
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|entry| entry.result.clone())
+                .collect();
+        }
+
+        self.candidate_indexes(&q)
+            .into_iter()
+            // The final substring check makes every returned hit exact while
+            // intersecting *all* query grams prevents an exact title hit from
+            // suppressing other partial body/annotation matches.
             .filter_map(|index| self.entries.get(index))
-            .filter(|entry| q.is_empty() || entry.haystack.contains(&q))
+            .filter(|entry| entry.haystack.contains(&q))
             .take(limit)
             .map(|entry| entry.result.clone())
             .collect()
     }
 }
 
-fn trigrams(text: &str) -> Vec<String> {
-    let chars = text.chars().collect::<Vec<_>>();
-    chars
-        .windows(3)
-        .map(|window| window.iter().collect())
-        .collect()
+impl BookSearchProvider {
+    /// Return a bounded, ordered candidate set by intersecting every query
+    /// gram. Posting lists are entry-order sorted as they are built, so output
+    /// is stable and exact/title results are never treated as a terminal tier.
+    fn candidate_indexes(&self, query: &str) -> Vec<usize> {
+        let chars = query.chars().count();
+        let gram_len = chars.min(3);
+        let Some(mut postings) = gram_keys(query, gram_len)
+            .into_iter()
+            .map(|gram| self.gram_index.get(&gram))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        postings.sort_by_key(|list| list.len());
+        let Some((first, rest)) = postings.split_first() else {
+            return Vec::new();
+        };
+        first
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                rest.iter()
+                    .all(|list| list.binary_search(candidate).is_ok())
+            })
+            .take(MAX_QUERY_CANDIDATES)
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn index_stats(&self) -> (usize, usize) {
+        (
+            self.gram_index.len(),
+            self.gram_index.values().map(Vec::len).sum(),
+        )
+    }
+}
+
+/// Run `visit` once for every 1/2/3-scalar gram in `text`, without building a
+/// temporary character array or allocating a string for every overlapping
+/// window. This preserves Unicode scalar boundaries — unlike byte trigrams,
+/// it cannot split a multi-byte character.
+fn for_each_gram_key(text: &str, mut visit: impl FnMut(GramKey)) {
+    let mut prev2 = '\0';
+    let mut prev1 = '\0';
+    for (seen, ch) in text.chars().enumerate() {
+        visit(pack_gram(ch, None, None));
+        if seen >= 1 {
+            visit(pack_gram(prev1, Some(ch), None));
+        }
+        if seen >= 2 {
+            visit(pack_gram(prev2, Some(prev1), Some(ch)));
+        }
+        prev2 = prev1;
+        prev1 = ch;
+    }
+}
+
+/// Pack up to three Unicode scalar values in their original order. Unicode's
+/// largest scalar (`0x10_FFFF`) fits in 21 bits.
+fn pack_gram(a: char, b: Option<char>, c: Option<char>) -> GramKey {
+    u64::from(u32::from(a))
+        | (b.map_or(GRAM_END, |value| u64::from(u32::from(value))) << 21)
+        | (c.map_or(GRAM_END, |value| u64::from(u32::from(value))) << 42)
+}
+
+/// Compact query grams; this allocates only one small vector for sorting the
+/// relevant posting lists, never one allocation per window.
+fn gram_keys(text: &str, width: usize) -> Vec<GramKey> {
+    let mut keys = Vec::with_capacity(text.chars().count().saturating_sub(width - 1));
+    let mut prev2 = '\0';
+    let mut prev1 = '\0';
+    for (seen, ch) in text.chars().enumerate() {
+        match width {
+            1 => keys.push(pack_gram(ch, None, None)),
+            2 if seen >= 1 => keys.push(pack_gram(prev1, Some(ch), None)),
+            3 if seen >= 2 => keys.push(pack_gram(prev2, Some(prev1), Some(ch))),
+            _ => {}
+        }
+        prev2 = prev1;
+        prev1 = ch;
+    }
+    keys
 }
 
 #[cfg(test)]
@@ -373,5 +447,118 @@ mod tests {
             .expect("sample chapter has a substring");
         let hits = BookSearchProvider::new(&books, &[]).search_limited(&needle, 2);
         assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
+    }
+
+    #[test]
+    fn complete_index_includes_books_after_the_old_ui_cap() {
+        let mut books = (0..4_097)
+            .map(|i| Book {
+                id: format!("book:{i}"),
+                title: format!("Library volume {i}"),
+                ..Book::default()
+            })
+            .collect::<Vec<_>>();
+        books.last_mut().expect("nonempty test library").title = "Late catalogue needle".into();
+
+        let hits = BookSearchProvider::new(&books, &[]).search("catalogue needle");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, BOOK_KIND);
+        assert_eq!(hits[0].title, "Late catalogue needle");
+    }
+
+    #[test]
+    fn complete_index_keeps_text_after_the_old_chapter_cap() {
+        let book = Book {
+            id: "long-book".into(),
+            title: "Long book".into(),
+            chapters: vec![crate::model::Chapter {
+                title: "A long chapter".into(),
+                blocks: vec![crate::model::Block::Math {
+                    expr: ui::math::MathExpr::new(),
+                    source: format!("{} tail-needle", "x".repeat(65_537)),
+                    display: false,
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        };
+
+        let hits = BookSearchProvider::new(&[book], &[]).search("tail-needle");
+        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
+    }
+
+    #[test]
+    fn title_exact_match_does_not_hide_partial_body_match() {
+        let books = vec![
+            Book {
+                id: "title".into(),
+                title: "Needle".into(),
+                ..Book::default()
+            },
+            Book {
+                id: "body".into(),
+                title: "Other".into(),
+                chapters: vec![crate::model::Chapter {
+                    title: "Chapter".into(),
+                    blocks: vec![crate::model::Block::Math {
+                        expr: ui::math::MathExpr::new(),
+                        source: "a partial needle match in the book body".into(),
+                        display: false,
+                    }],
+                    ..crate::model::Chapter::default()
+                }],
+                ..Book::default()
+            },
+        ];
+        let provider = BookSearchProvider::new(&books, &[]);
+
+        let hits = provider.search_limited("needle", 10);
+        assert!(hits.iter().any(|hit| hit.kind == BOOK_KIND));
+        assert!(hits.iter().any(|hit| hit.kind == CHAPTER_KIND));
+    }
+
+    #[test]
+    fn candidate_probe_is_bounded_even_for_a_common_short_query() {
+        let books = (0..(MAX_QUERY_CANDIDATES + 100))
+            .map(|i| Book {
+                id: format!("book:{i}"),
+                title: "A common title".into(),
+                ..Book::default()
+            })
+            .collect::<Vec<_>>();
+        let provider = BookSearchProvider::new(&books, &[]);
+
+        assert_eq!(provider.candidate_indexes("a").len(), MAX_QUERY_CANDIDATES);
+    }
+
+    #[test]
+    fn compact_unicode_index_preserves_unicode_substrings_and_linear_postings() {
+        let books = (0..1_000)
+            .map(|i| Book {
+                id: format!("book:{i}"),
+                title: format!("Über den Fluss {i}"),
+                ..Book::default()
+            })
+            .collect::<Vec<_>>();
+        let provider = BookSearchProvider::new(&books, &[]);
+        let indexed_chars = provider
+            .entries
+            .iter()
+            .map(|entry| entry.haystack.chars().count())
+            .sum::<usize>();
+        let (unique_keys, postings) = provider.index_stats();
+
+        assert!(provider.search("den Fl").len() > 1);
+        assert!(unique_keys <= postings);
+        assert!(postings <= indexed_chars * 3);
+    }
+
+    #[test]
+    fn gram_widths_do_not_alias_when_text_contains_nul() {
+        assert_ne!(pack_gram('a', None, None), pack_gram('a', Some('\0'), None));
+        assert_ne!(
+            pack_gram('a', Some('b'), None),
+            pack_gram('a', Some('b'), Some('\0'))
+        );
     }
 }
