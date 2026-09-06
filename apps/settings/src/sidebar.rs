@@ -28,8 +28,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -162,6 +163,7 @@ pub struct SidebarRow {
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
+    is_focused: bool,
 }
 
 impl SidebarRow {
@@ -173,7 +175,15 @@ impl SidebarRow {
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
+            is_focused: false,
         }
+    }
+
+    /// Commit the same local presentation latch for pointer, keyboard and
+    /// assistive-technology activation.  Selection is local-only and the
+    /// app consumes it as a one-shot edge in `SettingsApp::sync`.
+    fn activate(&self, state: &mut AutoCommit, root: &ObjId) {
+        let _ = state.put(root, self.select_key.as_str(), true);
     }
 }
 
@@ -247,6 +257,16 @@ impl Widget for SidebarRow {
             let pill = RoundedRect::from_rect(geo.pill, radius);
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &pill);
         }
+        if self.is_focused {
+            let pill = RoundedRect::from_rect(geo.pill, radius);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &pill,
+            );
+        }
 
         // Icon + label, left-aligned, vertically centred. The active row uses
         // a bright on-accent foreground; inactive rows use the primary text
@@ -288,8 +308,8 @@ impl Widget for SidebarRow {
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -315,13 +335,27 @@ impl Widget for SidebarRow {
                         // write the category's select key so the app's `sync`
                         // switches the active pane.
                         if !pressed {
-                            let _ = state.put(root, self.select_key.as_str(), true);
+                            self.activate(state, root);
+                        }
+                        if pressed {
+                            *focus_target = Some(node_id);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
                     *handled = true;
                 }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.is_focused
+                    && event.state == ElementState::Pressed
+                    && matches!(
+                        event.logical_key,
+                        Key::Named(NamedKey::Enter | NamedKey::Space)
+                    ) =>
+            {
+                self.activate(state, root);
+                *handled = true;
             }
             _ => {}
         }
@@ -344,6 +378,7 @@ impl Widget for SidebarRow {
                 .with_action_target(self.select_key.clone())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
+                    focused: self.is_focused,
                     checked: Some(self.active),
                     selected: self.active,
                     ..Default::default()
@@ -369,6 +404,35 @@ impl Widget for SidebarRow {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.rect
+            .contains(point)
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Activate => {
+                self.activate(state, path);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -611,6 +675,27 @@ mod tests {
         assert!(
             matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
             "releasing a click on the row writes its select key true"
+        );
+    }
+
+    #[test]
+    fn row_activation_and_semantics_cover_keyboard_and_assistive_technology() {
+        use automerge::{ReadDoc, Value};
+
+        let mut row = SidebarRow::new(Category::Accessibility, false);
+        row.set_focus(true);
+        let node = row.accessibility().expect("sidebar row has semantics");
+        assert_eq!(node.role, ui::a11y::Role::RadioButton);
+        assert!(node.state.focusable);
+        assert!(node.state.focused);
+        assert_eq!(node.state.checked, Some(false));
+
+        let mut doc = AutoCommit::new();
+        assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+        let got = doc.get(&automerge::ROOT, "settings.select.accessibility.edit");
+        assert!(
+            matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
+            "the semantic activation uses the same local navigation latch as a pointer click"
         );
     }
 }
