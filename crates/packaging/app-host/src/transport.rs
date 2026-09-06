@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
@@ -74,10 +75,28 @@ pub async fn serve(
     reason = "capnp-rpc's RpcSystem future runs on a single-threaded LocalSet and is never Send by design"
 )]
 pub async fn handle_connection(
-    stream: tokio::net::UnixStream,
+    mut stream: tokio::net::UnixStream,
     store: Arc<Store>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
+    let mut magic = [0u8; 4];
+    stream.read_exact(&mut magic).await?;
+    anyhow::ensure!(magic == *b"QAH1", "missing authenticated launcher handoff");
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length).await?;
+    let length = u32::from_be_bytes(length) as usize;
+    anyhow::ensure!(
+        length > 0 && length <= 1024,
+        "invalid launcher handoff length"
+    );
+    let mut bytes = vec![0u8; length];
+    stream.read_exact(&mut bytes).await?;
+    let handoff: serde_json::Value = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        handoff.get("protocol").and_then(serde_json::Value::as_u64) == Some(1)
+            && handoff.get("app_id").and_then(serde_json::Value::as_str) == Some("dev.qos.store"),
+        "caller is not authorized for app-host"
+    );
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
     let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);

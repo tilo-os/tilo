@@ -31,7 +31,7 @@ use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest,
     ChangeRun, ColorCompat, GroupNameRequest, HistoryComparison, HistoryFacetIndex,
     HistorySelectionDetail, HistorySource, NamedRange, NarrativeRequest, RecordId, RecordStore,
-    StepState, Theme, Widget, format_relative_time,
+    StepState, Theme, Widget, format_relative_time, participant_display_label,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -391,10 +391,6 @@ struct UndoApply {
 }
 
 /// The room-activity sheet.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent pane interaction flags model orthogonal UI state"
-)]
 pub struct RoomActivityPane {
     timeline: ActivityTimeline,
     source: HistorySource,
@@ -534,10 +530,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "constructor wires the pane's callback-backed interaction state"
-    )]
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
@@ -1362,8 +1354,47 @@ impl RoomActivityPane {
         }
 
         let mut entries = self.source.entries(&mut tree.doc);
-        let tags = describe_room_changes(&mut tree.doc, &mut entries);
+        let mut tags = describe_room_changes(&mut tree.doc, &mut entries);
+        let represented_receipts = entries
+            .iter()
+            .filter_map(|entry| entry.context.as_ref())
+            .flat_map(|context| context.facets.iter())
+            .filter(|facet| facet.key == "qos.invocation")
+            .map(|facet| facet.value.clone())
+            .collect::<HashSet<_>>();
+        for workspace in &tree.workspaces {
+            for receipt in &workspace.effect_receipts {
+                if represented_receipts.contains(&receipt.invocation.0.to_string()) {
+                    continue;
+                }
+                let actor = receipt.actor.clone();
+                entries.push(HistoryEntry {
+                    id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
+                    author: ui::widget::HistoryAuthor::new(
+                        participant_display_label(&actor),
+                        ui::history_source::stable_hue(&actor),
+                        ui::history_source::short_id(&actor),
+                    ),
+                    op_class: OpClass::EditMeta,
+                    artifact_kind: ArtifactKind::Cluster,
+                    timestamp: SystemTime::UNIX_EPOCH
+                        + Duration::from_secs(
+                            u64::try_from(receipt.completed_at).unwrap_or_default(),
+                        ),
+                    summary: receipt
+                        .context
+                        .summary()
+                        .unwrap_or_else(|| receipt.status.label().to_string()),
+                    text_delta: None,
+                    diff_payload: None,
+                    redaction: None,
+                    context: Some(receipt.context.clone()),
+                });
+                tags.push(Some(workspace.id.raw()));
+            }
+        }
         self.derived = entries.into_iter().zip(tags).collect();
+        self.derived.sort_by_key(|(entry, _)| entry.timestamp);
         // Names come out of the same document as the changes, so a peer's name
         // arrives with their edits.
         self.named = ui::history_groups::read_named_ranges(&tree.doc, self.source.authors());
@@ -2445,13 +2476,6 @@ impl RoomActivityPane {
         y + 28.0
     }
 
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::cast_precision_loss,
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "bounded UI geometry uses small display counts and cohesive layout inputs"
-    )]
     fn draw_detail_comparison(
         &self,
         scene: &mut Scene,
@@ -2569,10 +2593,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "kept as the comparison renderer's state-adjacent fallback"
-    )]
     fn draw_unavailable_comparison(
         &self,
         scene: &mut Scene,
@@ -2739,11 +2759,6 @@ impl RoomActivityPane {
         );
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::too_many_lines,
-        reason = "bounded activity-card counts are converted solely for pixel layout"
-    )]
     fn draw_catch_up(
         &mut self,
         scene: &mut Scene,
@@ -2889,11 +2904,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::too_many_lines,
-        reason = "replay controls and preview are one bounded rendering pass"
-    )]
     fn draw_replay(
         &mut self,
         scene: &mut Scene,
@@ -3066,11 +3076,6 @@ impl RoomActivityPane {
         );
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::too_many_lines,
-        reason = "task rows use bounded indices for pixel layout in one rendering pass"
-    )]
     fn draw_task_center(
         &mut self,
         scene: &mut Scene,
@@ -3317,10 +3322,6 @@ impl RoomActivityPane {
     }
 
     /// Paint the sheet's title, factual scope/count, and latest outcome.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "title copy and status derivation vary together by activity mode"
-    )]
     fn draw_title_and_subtitle(
         &self,
         scene: &mut Scene,
@@ -3803,11 +3804,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::match_same_arms,
-        clippy::too_many_lines,
-        reason = "task transitions remain centralized so authorization and outcomes stay aligned"
-    )]
     fn apply_task_action(
         &mut self,
         action: TaskAction,
@@ -4929,12 +4925,7 @@ impl RoomActivityPane {
                 .map(|task| {
                     AccessNode::new(Role::ListItem)
                         .with_name(task.title.clone())
-                        .with_description(format!(
-                            "{}; {}; {} audit events",
-                            task.status.label(),
-                            task.route.label(),
-                            task.audit.len()
-                        ))
+                        .with_description(task_accessibility_description(task, self.now()))
                 })
                 .collect();
             root.children.push(tasks);
@@ -5327,11 +5318,6 @@ fn draw_task_button(
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "task card rendering consumes the complete immutable card context"
-)]
 fn draw_task_card(
     scene: &mut Scene,
     transform: Affine,
@@ -5401,10 +5387,7 @@ fn draw_task_card(
         None,
         ui::text_render::TextWeight::Medium,
     );
-    let assignee = task.assigned_agent.as_ref().map_or_else(
-        || format!("Unassigned · created by {}", task.created_by),
-        |agent| format!("▣ AGENT · {agent}"),
-    );
+    let assignee = task_assignee_label(task);
     let resource = task
         .resource
         .as_ref()
@@ -5451,12 +5434,7 @@ fn draw_task_card(
                 .ok()
                 .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            let line = format!(
-                "{} · {} · {}",
-                event.actor,
-                event.summary,
-                format_relative_time(event_time, now)
-            );
+            let line = task_audit_line(event, event_time, now);
             let line = tr.elide_to_width(
                 &line,
                 theme.tokens.typography.scale.sm,
@@ -5473,6 +5451,58 @@ fn draw_task_card(
             audit_y += 18.0;
         }
     }
+}
+
+fn task_assignee_label(task: &WorkspaceTask) -> String {
+    task.assigned_agent.as_ref().map_or_else(
+        || {
+            format!(
+                "Unassigned · created by {}",
+                participant_display_label(&task.created_by)
+            )
+        },
+        |agent| {
+            // The card already owns the prominent AGENT badge, so reuse the
+            // shared presentation while avoiding a redundant second suffix.
+            let label = participant_display_label(agent);
+            let name = label.strip_suffix(" · Agent").unwrap_or(&label);
+            format!("▣ AGENT · {name}")
+        },
+    )
+}
+
+fn task_audit_line(
+    event: &crate::shell::state::WorkspaceTaskAuditEvent,
+    event_time: SystemTime,
+    now: SystemTime,
+) -> String {
+    format!(
+        "{} · {} · {}",
+        participant_display_label(&event.actor),
+        event.summary,
+        format_relative_time(event_time, now)
+    )
+}
+
+fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> String {
+    let latest = task.audit.last().map(|event| {
+        let event_time = u64::try_from(event.at)
+            .ok()
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        task_audit_line(event, event_time, now)
+    });
+    let mut description = format!(
+        "{}; {}; {}; {} audit events",
+        task.status.label(),
+        task.route.label(),
+        task_assignee_label(task),
+        task.audit.len()
+    );
+    if let Some(latest) = latest {
+        let _ = write!(description, "; latest: {latest}");
+    }
+    description
 }
 
 fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {
@@ -5566,7 +5596,7 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
 }
 
 fn humanize_field(field: &str) -> String {
-    let words = field.replace(['_', '-'], " ");
+    let words = field.replace('_', " ").replace('-', " ");
     if words.trim().is_empty() {
         "content".to_string()
     } else {
@@ -5574,12 +5604,6 @@ fn humanize_field(field: &str) -> String {
     }
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_precision_loss,
-    clippy::too_many_lines,
-    reason = "bounded replay topology counts are converted solely to pixel coordinates"
-)]
 fn draw_replay_layout(
     scene: &mut Scene,
     transform: Affine,
@@ -5729,10 +5753,6 @@ fn draw_replay_layout(
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "bounded frame and pointer indices are converted solely to pixel coordinates"
-)]
 fn draw_presence_trail(
     scene: &mut Scene,
     transform: Affine,
@@ -5830,12 +5850,6 @@ fn draw_replay_pointers(
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "brief card rendering uses bounded collection sizes and complete card context"
-)]
 fn draw_brief_card(
     scene: &mut Scene,
     transform: Affine,
@@ -6609,6 +6623,41 @@ mod tests {
         (tree, ws_id, user)
     }
 
+    #[test]
+    fn persisted_effect_receipt_reappears_in_workspace_activity_without_revert() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let invocation = qos_actions::InvocationId::new();
+        assert!(
+            tree.append_workspace_effect_receipt(
+                tree.active,
+                invocation,
+                "ada",
+                qos_actions::ActionContext::for_resource(
+                    "Export",
+                    "document:brief",
+                    "document",
+                    "Release brief",
+                )
+                .with_app("org.qos.Writer", "Writer"),
+                qos_actions::EffectReceiptStatus::Succeeded,
+            )
+        );
+        let persisted = serde_json::to_vec(&tree).expect("persist workspace tree");
+        let mut restored: WorkspaceTree =
+            serde_json::from_slice(&persisted).expect("restore workspace tree");
+        restored.seed_doc_from_cache();
+
+        let mut pane = RoomActivityPane::new();
+        pane.refresh(&mut restored);
+        let entry = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
+            .expect("receipt is visible after restart");
+        assert_eq!(entry.summary, "Completed · Export · Release brief");
+        assert!(!entry.is_revertible());
+    }
+
     fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {
         let mut pane = RoomActivityPane::new();
         // Legacy timeline tests exercise the granular surface explicitly;
@@ -6910,6 +6959,44 @@ mod tests {
         assert!(debug.contains("Prepare screenshots"));
         assert!(debug.contains("rules only"));
         assert!(debug.contains("1 audit events"));
+    }
+
+    #[test]
+    fn task_center_presents_agent_principals_without_leaking_wire_ids() {
+        let event_time = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(42))
+            .expect("fixture time");
+        let task = WorkspaceTask {
+            id: "task:review".into(),
+            title: "Review launch copy".into(),
+            created_by: "ada".into(),
+            assigned_agent: Some("agent:scribe".into()),
+            route: WorkspaceTaskRoute::RulesOnly,
+            status: WorkspaceTaskStatus::InProgress,
+            resource: None,
+            created_at: 42,
+            updated_at: 42,
+            audit: vec![crate::shell::state::WorkspaceTaskAuditEvent {
+                at: 42,
+                actor: "agent:scribe".into(),
+                summary: "Reviewed section 2".into(),
+            }],
+        };
+
+        let byline = task_assignee_label(&task);
+        let audit = task_audit_line(&task.audit[0], event_time, event_time);
+        let accessible = task_accessibility_description(&task, event_time);
+
+        assert_eq!(byline, "▣ AGENT · scribe");
+        assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
+        assert!(accessible.contains("▣ AGENT · scribe"));
+        assert!(accessible.contains("scribe · Agent"));
+        for rendered in [&byline, &audit, &accessible] {
+            assert!(
+                !rendered.contains("agent:"),
+                "wire principal leaked into visible copy: {rendered}"
+            );
+        }
     }
 
     #[test]

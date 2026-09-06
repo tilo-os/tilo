@@ -72,11 +72,15 @@ local decision. Disk selection, erase/alongside choice, a fresh account/startup
 secret and recovery-key acknowledgement remain on the target computer. The
 Review screen shows the resulting choices before any destructive operation.
 
-The current host bundles elevate the imager process for raw-device access; the
-application still has its typed target gate, system-disk acknowledgement, and
-readback verification. Flatpak is not offered because safely supporting raw
-media from its sandbox requires a separately installed privileged host helper;
-elevating the Flatpak itself would not provide a meaningful security boundary.
+The current host bundles keep the Imager UI unprivileged. Only after the target
+and destructive warning are confirmed does the operating system authenticate a
+short-lived writer mode. Its request contains no profile secret, is bound to a
+digest of the reviewed operation, and revalidates and locks the selected device
+before writing and reading it back. The Flatpak instead asks the host's
+root-owned UDisks2 service for one polkit-authorized, exclusive descriptor to
+the reviewed removable drive. It has no `/dev`, host-filesystem, or arbitrary
+host-command permission; writing and verification use the same engine as the
+native packages.
 
 ## Boot the installation medium
 

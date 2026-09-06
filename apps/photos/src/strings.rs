@@ -51,6 +51,9 @@ mod tests {
     fn every_key_the_app_uses_resolves() {
         for key in [
             "photos-open",
+            "photos-library",
+            "photos-library-empty-title",
+            "photos-library-empty-body",
             "photos-open-title",
             "photos-filter-images",
             "photos-rotate-left",
@@ -68,6 +71,14 @@ mod tests {
             "photos-crop-noop",
             "photos-empty-title",
             "photos-empty-body",
+            "photos-loading-title",
+            "photos-loading-body",
+            "photos-error-title",
+            "photos-error-body",
+            "photos-app",
+            "photos-tools",
+            "photos-image",
+            "photos-image-help",
         ] {
             let got = tr(key);
             assert_ne!(got, key, "`{key}` is not in the bundle");

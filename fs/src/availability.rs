@@ -388,8 +388,7 @@ impl AvailabilityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the effective policy graph is invalid or the
-    /// updated registry cannot be persisted.
+    /// Returns an error if clearing the durable transfer state cannot persist.
     pub fn clear_automatic_transfer_subtree(
         &mut self,
         root: FileRecordId,
@@ -445,8 +444,7 @@ impl AvailabilityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the revision is invalid or the updated registry
-    /// cannot be persisted.
+    /// Returns an error when the supplied revision is invalid or state cannot persist.
     pub fn track_current_revision(
         &mut self,
         revision: collab_types::ContentRevisionV1,

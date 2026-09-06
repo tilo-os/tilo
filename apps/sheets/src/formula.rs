@@ -352,6 +352,60 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
     out
 }
 
+/// Rewrite every A1 reference in a formula through a structural grid change.
+///
+/// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
+/// affect copying, but inserting or deleting a row/column moves *all*
+/// references, including absolute ones. A target that was deleted becomes the
+/// canonical `#REF!` token. String literals, function names, and numeric
+/// exponents use the same scanner as copy/fill and are left verbatim.
+///
+/// Keeping this beside [`offset_refs`] is important: row/column actions must
+/// preserve formula relationships in the same replayable action that moves the
+/// cells, rather than leaving stale coordinates for a later UI-only repair.
+pub fn remap_refs(raw: &str, map: impl Fn(Addr) -> Option<Addr>) -> String {
+    let Some(body) = raw.strip_prefix('=') else {
+        return raw.to_string();
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let mut scan = Scan::new(&chars);
+    let mut out = String::with_capacity(raw.len().saturating_add(8));
+    out.push('=');
+    while let Some(ch) = scan.peek() {
+        if ch == '"' {
+            let start = scan.pos();
+            scan.bump();
+            scan.skip_while(|c| c != '"');
+            scan.bump();
+            out.push_str(&scan.text_from(start));
+            continue;
+        }
+        if ch != '$' && !ch.is_ascii_alphabetic() {
+            out.push(ch);
+            scan.bump();
+            continue;
+        }
+        let start = scan.pos();
+        scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        let token = scan.text_from(start);
+        let prev_numish = scan
+            .before(start)
+            .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
+        let mut ahead = scan;
+        ahead.skip_while(char::is_whitespace);
+        let is_call = ahead.peek() == Some('(');
+        if !prev_numish
+            && !is_call
+            && let Some(mapped) = remap_ref_token(&token, &map)
+        {
+            out.push_str(&mapped);
+            continue;
+        }
+        out.push_str(&token);
+    }
+    out
+}
+
 /// Shift one `A1`/`$A$1`-shaped token by `(dcol, drow)`, preserving each `$`
 /// anchor. Returns `None` when the token is not a well-formed reference
 /// (leaving function names, booleans, and bare words untouched).
@@ -404,6 +458,54 @@ fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
     }
     s.push_str(&new_row.to_string());
     Some(s)
+}
+
+/// Map one A1 token through a structural change while retaining its `$`
+/// spelling. `None` is a valid mapping result and deliberately renders as
+/// `#REF!`; an outer `Option` distinguishes that from a non-reference token.
+fn remap_ref_token(tok: &str, map: &impl Fn(Addr) -> Option<Addr>) -> Option<String> {
+    let bytes = tok.as_bytes();
+    let mut at = 0usize;
+    let col_abs = bytes.first() == Some(&b'$');
+    if col_abs {
+        at = 1;
+    }
+    let letters_start = at;
+    while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
+        at = at.saturating_add(1);
+    }
+    let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
+    let row_abs = bytes.get(at) == Some(&b'$');
+    if row_abs {
+        at = at.saturating_add(1);
+    }
+    let digits_start = at;
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at = at.saturating_add(1);
+    }
+    if at != bytes.len() {
+        return None;
+    }
+    let old = (
+        crate::model::letters_to_col(letters)?,
+        tok.get(digits_start..at)?
+            .parse::<u32>()
+            .ok()?
+            .checked_sub(1)?,
+    );
+    let Some((col, row)) = map(old) else {
+        return Some("#REF!".into());
+    };
+    let mut result = String::new();
+    if col_abs {
+        result.push('$');
+    }
+    result.push_str(&crate::model::col_to_letters(col));
+    if row_abs {
+        result.push('$');
+    }
+    result.push_str(&row.saturating_add(1).to_string());
+    Some(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -2989,6 +3091,21 @@ mod tests {
         assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
         // A relative component never underflows past the grid origin.
         assert_eq!(offset_refs("=A1", -5, -5), "=A1");
+    }
+
+    #[test]
+    fn remap_refs_tracks_structural_moves_including_absolute_references() {
+        let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", |(col, row)| {
+            Some((col, row.saturating_add(1)))
+        });
+        assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
+
+        let deleted = remap_refs("=SUM(A1:A3)+B2", |(col, row)| match row {
+            1 => None,
+            row if row > 1 => Some((col, row - 1)),
+            _ => Some((col, row)),
+        });
+        assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
     }
 
     #[test]

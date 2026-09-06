@@ -46,6 +46,7 @@ use crate::model::{
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
+#[cfg(any(feature = "decode", test))]
 use crate::preview;
 #[cfg(test)]
 use crate::preview::CompositedFrame;
@@ -440,7 +441,10 @@ impl Pane {
     fn step(self, back: bool) -> Pane {
         let i = Self::ORDER.iter().position(|p| *p == self).unwrap_or(0);
         let n = Self::ORDER.len();
-        Self::ORDER[if back { (i + n - 1) % n } else { (i + 1) % n }]
+        Self::ORDER
+            .get(if back { (i + n - 1) % n } else { (i + 1) % n })
+            .copied()
+            .unwrap_or(self)
     }
 }
 
@@ -1703,8 +1707,8 @@ impl VideoEditorApp {
             import_notice: None,
             pending_imports: Vec::new(),
             auto_place_imports: false,
-            #[cfg(feature = "decode")]
             undo: ui::UndoAccess::default(),
+            #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
             #[cfg(feature = "decode")]
             frame_source: None,
@@ -1898,32 +1902,36 @@ impl VideoEditorApp {
     /// fill, and handing back *its* colour as "the colour of your footage"
     /// would be a fabrication. The caller shows the control as unavailable
     /// instead.
-    pub fn preview_pixel(&self, u: f64, v: f64) -> Option<[f64; 3]> {
+    pub fn preview_pixel(&self, normalized_x: f64, normalized_y: f64) -> Option<[f64; 3]> {
         #[cfg(feature = "decode")]
         {
-            let f = self.preview_decoder.frame()?;
+            let frame = self.preview_decoder.frame()?;
             // The sample must belong to the clip under the playhead, not to
             // whatever the decoder last held for a different one.
             let want = self.project.top_video_clip_at(self.playhead)?.media;
             if self.preview_decoder.frame_media() != Some(want) {
                 return None;
             }
-            if f.width == 0 || f.height == 0 {
+            if frame.width == 0 || frame.height == 0 {
                 return None;
             }
-            let x = ((u.clamp(0.0, 1.0) * f.width as f64) as u32).min(f.width - 1);
-            let y = ((v.clamp(0.0, 1.0) * f.height as f64) as u32).min(f.height - 1);
-            let i = ((y * f.width + x) * 4) as usize;
-            let px = f.rgba.get(i..i + 3)?;
+            let pixel_x = ((normalized_x.clamp(0.0, 1.0) * f64::from(frame.width)) as u32)
+                .min(frame.width - 1);
+            let pixel_y = ((normalized_y.clamp(0.0, 1.0) * f64::from(frame.height)) as u32)
+                .min(frame.height - 1);
+            let byte_index = ((pixel_y * frame.width + pixel_x) * 4) as usize;
+            let [red, green, blue] = frame.rgba.get(byte_index..byte_index + 3)? else {
+                return None;
+            };
             Some([
-                px[0] as f64 / 255.0,
-                px[1] as f64 / 255.0,
-                px[2] as f64 / 255.0,
+                f64::from(*red) / 255.0,
+                f64::from(*green) / 255.0,
+                f64::from(*blue) / 255.0,
             ])
         }
         #[cfg(not(feature = "decode"))]
         {
-            let _ = (u, v);
+            let _ = (normalized_x, normalized_y);
             None
         }
     }
@@ -3887,7 +3895,9 @@ impl VideoEditorApp {
                     c.remove_key_at(param, at);
                 }),
                 2..=4 => {
-                    let shape = Interp::ALL[idx - 2];
+                    let Some(&shape) = Interp::ALL.get(idx - 2) else {
+                        return;
+                    };
                     self.edit_selected(doc, move |c| {
                         c.set_interp_at(param, at, shape);
                     })
@@ -5014,6 +5024,91 @@ impl VideoEditorApp {
     ) -> Result<(), String> {
         use crate::actions::VideoEditorOperation;
         match operation {
+            VideoEditorOperation::RevealClip { clip } => {
+                let id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid clip id: {clip}"))?;
+                let clip = self
+                    .project
+                    .clip(id)
+                    .cloned()
+                    .ok_or_else(|| format!("clip is no longer available: {id}"))?;
+                self.selection.select_only(id);
+                self.selected_media = Some(clip.media);
+                self.seek_to(clip.start);
+                self.reveal_inspector();
+            }
+            VideoEditorOperation::RevealTrack { track } => {
+                let id = track
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid track id: {track}"))?;
+                if self.project.track(id).is_none() {
+                    return Err(format!("track is no longer available: {id}"));
+                }
+                let mut clips: Vec<_> = self
+                    .project
+                    .clips_on(id)
+                    .into_iter()
+                    .map(|clip| (clip.id, clip.start, clip.media))
+                    .collect();
+                clips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                self.selection.ids = clips.iter().map(|(clip, _, _)| *clip).collect();
+                self.selection.primary = clips.first().map(|(clip, _, _)| *clip);
+                self.selected_media = clips.first().map(|(_, _, media)| *media);
+                if let Some((_, at, _)) = clips.first() {
+                    self.seek_to(*at);
+                    self.reveal_inspector();
+                }
+            }
+            VideoEditorOperation::RevealMarker { marker, clip } => {
+                let marker_id = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid marker id: {marker}"))?;
+                let (at, owner, media) = match clip {
+                    Some(clip) => {
+                        let clip_id = clip
+                            .parse::<Uuid>()
+                            .map_err(|_| format!("invalid clip id: {clip}"))?;
+                        let clip = self.project.clip(clip_id).ok_or_else(|| {
+                            format!("marker's clip is no longer available: {clip_id}")
+                        })?;
+                        let marker = clip
+                            .markers
+                            .iter()
+                            .find(|marker| marker.id == marker_id)
+                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                        (clip.start + marker.t, Some(clip_id), Some(clip.media))
+                    }
+                    None => {
+                        let marker = self
+                            .project
+                            .markers
+                            .iter()
+                            .find(|marker| marker.id == marker_id)
+                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                        (marker.t, None, None)
+                    }
+                };
+                if let Some(owner) = owner {
+                    self.selection.select_only(owner);
+                    self.selected_media = media;
+                    self.reveal_inspector();
+                } else {
+                    self.selection.clear();
+                }
+                self.seek_to(at);
+            }
+            VideoEditorOperation::RevealMedia { media } => {
+                let id = media
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid media id: {media}"))?;
+                if self.project.media(id).is_none() {
+                    return Err(format!("media is no longer available: {id}"));
+                }
+                self.selected_media = Some(id);
+                self.selection.clear();
+                self.bin_flap.open();
+            }
             VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
             VideoEditorOperation::OpenProject { path: None } => self.request_open_project(),
             VideoEditorOperation::SaveProject { path: None } => self.queue_save_project(),
@@ -5330,15 +5425,21 @@ impl VideoEditorApp {
                 }
                 self.frame_source_sig = sig;
             }
-            let sources = self.frame_source.as_mut().expect("just built");
-            // An open pipeline holds a decoder and a slice of the GPU. Drop
-            // the idle ones periodically rather than every frame, which
-            // would churn sessions the playhead is about to want again.
-            self.prune_countdown = self.prune_countdown.wrapping_add(1);
-            if self.prune_countdown.is_multiple_of(120) {
-                sources.prune();
+            if let Some(sources) = self.frame_source.as_mut() {
+                // An open pipeline holds a decoder and a slice of the GPU. Drop
+                // the idle ones periodically rather than every frame, which
+                // would churn sessions the playhead is about to want again.
+                self.prune_countdown = self.prune_countdown.wrapping_add(1);
+                if self.prune_countdown.is_multiple_of(120) {
+                    sources.prune();
+                }
+                compositor.frame(&self.project, self.playhead, w, h, sources)
+            } else {
+                // A decoder setup failure is a preview fallback, never a UI
+                // thread panic. The media bin continues to disclose it.
+                let mut sources = crate::gpu::NoSources;
+                compositor.frame(&self.project, self.playhead, w, h, &mut sources)
             }
-            compositor.frame(&self.project, self.playhead, w, h, sources)
         };
         #[cfg(not(feature = "decode"))]
         let rgba = {
@@ -5402,6 +5503,10 @@ impl VideoEditorApp {
         self.clamp_scroll(r);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one geometry pass keeps every inspector section aligned to the same scroll coordinate system"
+    )]
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
         let mut l = InspectorLayout::default();
         // Markers belong to the project, not to any clip, so the list is laid
@@ -5418,7 +5523,9 @@ impl VideoEditorApp {
             l.content_height = y - (r.inspector.y0 - self.inspector_scroll);
             return l;
         }
-        let clip = selected.expect("checked above");
+        let Some(clip) = selected else {
+            return l;
+        };
         let media = self.project.media(clip.media);
         let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
@@ -6317,19 +6424,31 @@ impl VideoEditorApp {
         // Each group's label is drawn 18px above its segments, so the segment
         // row starts one label-height into the group's slot.
         let mut y = content_top + EXPORT_LABEL_H;
-        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y)
-            .into_iter()
-            .enumerate()
+        for (resolution, rect) in
+            Resolution::ALL
+                .iter()
+                .copied()
+                .zip(seg(x0, x1, Resolution::ALL.len(), y))
         {
-            l.resolution.push((Resolution::ALL[i], rect));
+            l.resolution.push((resolution, rect));
         }
         y += step;
-        for (i, rect) in seg(x0, x1, Container::ALL.len(), y).into_iter().enumerate() {
-            l.container.push((Container::ALL[i], rect));
+        for (container, rect) in
+            Container::ALL
+                .iter()
+                .copied()
+                .zip(seg(x0, x1, Container::ALL.len(), y))
+        {
+            l.container.push((container, rect));
         }
         y += step;
-        for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
-            l.fps.push((FrameRate::ALL[i], rect));
+        for (frame_rate, rect) in
+            FrameRate::ALL
+                .iter()
+                .copied()
+                .zip(seg(x0, x1, FrameRate::ALL.len(), y))
+        {
+            l.fps.push((frame_rate, rect));
         }
         l.cancel = Rect::new(
             x0,
@@ -6349,6 +6468,10 @@ impl VideoEditorApp {
     /// Deterministically arrange editor state for a `--shots` scenario. Real
     /// production edit paths are used (split/grade through the CRDT) so the
     /// captured frame reflects genuine behaviour, not a mock.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
+    )]
     fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
@@ -6376,9 +6499,19 @@ impl VideoEditorApp {
                 self.export_status = ExportStatus::Rendering { progress: 0.62 };
             }
             ShotScenario::ExportFailed => {
-                self.show_export = false;
+                // The normal failure capture exercises the persistent chip;
+                // `QOS_VE_EXPORT=1` is the existing headless modal harness,
+                // and keeps this same failure visible in the full details
+                // surface for visual review.
+                let review_dialog = std::env::var_os("QOS_VE_EXPORT").is_some();
+                self.show_export = review_dialog;
                 self.export_status = ExportStatus::Failed {
-                    reason: "no encoder for H.264 on this machine".to_string(),
+                    reason: if review_dialog {
+                        "No H.264 encoder is available for the selected export preset. Install an H.264-capable GStreamer plugin, then retry the export."
+                            .to_string()
+                    } else {
+                        "no encoder for H.264 on this machine".to_string()
+                    },
                 };
             }
             // The keyboard cursor, which nothing painted at all until now.
@@ -7673,6 +7806,10 @@ impl Widget for VideoEditorApp {
             || self.mix_meter_is_live()
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "a complete local root style is infallible; Widget::build_layout cannot return Result"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -7687,13 +7824,23 @@ impl Widget for VideoEditorApp {
                 },
                 ..Default::default()
             })
-            .unwrap();
+            // A leaf made from this complete local style cannot violate a
+            // Taffy tree invariant; the host API cannot surface the error.
+            .expect("a complete video-editor root leaf is valid");
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "the host supplies the exact node produced by build_layout in the same lifecycle"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy
+            .layout(node)
+            // The node was just installed by `build_layout`; a missing node
+            // would be a host lifecycle violation rather than user input.
+            .expect("the video-editor root node remains in the Taffy tree");
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -7874,6 +8021,10 @@ impl Widget for VideoEditorApp {
             .draw(scene, transform, tr, theme, presence);
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "each inline-editor Option is checked immediately before borrowing its mutable editor for this event dispatch"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -8280,10 +8431,10 @@ impl Widget for VideoEditorApp {
         // A live drag owns the cursor for its whole duration.
         match self.drag {
             Some(Drag::ClipMove { .. }) => return Some(CursorIcon::Grabbing),
-            Some(Drag::TrimIn { .. }) | Some(Drag::TrimOut { .. }) => {
+            Some(Drag::TrimIn { .. } | Drag::TrimOut { .. }) => {
                 return Some(CursorIcon::EwResize);
             }
-            Some(Drag::Playhead) | Some(Drag::Scrubber) => return Some(CursorIcon::ColResize),
+            Some(Drag::Playhead | Drag::Scrubber) => return Some(CursorIcon::ColResize),
             Some(Drag::Marquee { .. }) => return Some(CursorIcon::Crosshair),
             _ => {}
         }
@@ -8514,6 +8665,12 @@ impl Widget for VideoEditorApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
         self.perform_resource_operation(operation)?;
         Ok(true)
     }
@@ -8530,6 +8687,12 @@ impl Widget for VideoEditorApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
+            ));
+        }
         if matches!(
             operation,
             crate::actions::VideoEditorOperation::CancelExport
@@ -8585,23 +8748,6 @@ impl Widget for VideoEditorApp {
         vec![Box::new(
             crate::search_provider::ProjectSearchProvider::new(&self.project),
         )]
-    }
-
-    /// Open the moment a chosen search row names.
-    ///
-    /// Every row this editor publishes resolves to an instant, so activating
-    /// one is the same move as clicking a marker — through
-    /// [`Self::seek_to`], not a raw write, so a running transport is stopped
-    /// and the view follows exactly as it does everywhere else.
-    ///
-    /// A row from another provider parses as `None` and is *declined*. A
-    /// silent fall-through would have been a seek to zero: choosing somebody
-    /// else's search hit would have thrown the playhead to the head of the
-    /// timeline, which is a worse answer than doing nothing.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(at) = crate::search_provider::parse_action_id(action_id) {
-            self.seek_to(at);
-        }
     }
 
     /// Hand the host the document heads captured before an on-screen affordance
@@ -8754,6 +8900,10 @@ impl Widget for VideoEditorApp {
     /// path resolves to the same clip after it has been dragged somewhere else
     /// — and a path naming something that no longer exists matches nothing and
     /// is dropped rather than applied to whatever took its place.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "a decoded accessibility action has its fixed argument shape validated before its command-specific fields are read"
+    )]
     fn perform_action_at(
         &mut self,
         action: &ui::a11y::Action,
@@ -9396,6 +9546,10 @@ impl VideoEditorApp {
     /// The inspector: one group per section carrying its folded state, with the
     /// section's controls inside when it is open. A folded header still states
     /// what it contains, so folding hides controls and never hides state.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "inspector children are emitted from the same validated section list that supplies their stable semantic keys"
+    )]
     fn a11y_inspector(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Inspector;
         let rows = self.a11y_inspector_rows();
@@ -10085,6 +10239,19 @@ impl VideoEditorApp {
                     }),
             );
         }
+        if let ExportStatus::Failed { reason } = &self.export_status {
+            // The compact topbar chip is intentionally elided, but it must
+            // never be the only place the reason exists. Ctrl+E opens this
+            // dialog from the keyboard and this value is deliberately the
+            // complete worker/encoder message for a screen reader.
+            kids.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Export failure details")
+                    .with_value(reason.clone())
+                    .with_key(ui::a11y::hash_key(&"export.failure-details"))
+                    .with_live(ui::a11y::Politeness::Assertive),
+            );
+        }
         AccessNode::new(Role::Dialog)
             .with_name("Export video")
             .with_key(ui::a11y::hash_key(&"export"))
@@ -10178,6 +10345,10 @@ fn help_group_h(rows: usize) -> f64 {
 /// height cuts rows off the bottom the moment a group is added — silently,
 /// because the row loop simply stops drawing — so the sheet claimed to be the
 /// list of shortcuts while omitting two of them.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the shortcut label prefix is split only at the ASCII command separator emitted by this module"
+)]
 fn help_columns(two_col: bool) -> (usize, f64) {
     let heights: Vec<f64> = SHORTCUTS
         .iter()
@@ -10433,6 +10604,10 @@ impl VideoEditorApp {
     /// Move the selection to the clip on the previous / next track that sits
     /// nearest the current one in time — the "same place, one track up" move,
     /// not an arbitrary index walk.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "track stepping computes the target ordinal from the non-empty ordered track list before reading it"
+    )]
     fn step_clip_across_tracks(&mut self, up: bool) -> bool {
         let Some(current) = self
             .selection
@@ -10596,6 +10771,10 @@ impl VideoEditorApp {
 
     // ---- routed accessibility actions ------------------------------------
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "bin commands decode only the fixed key layout emitted by a11y_bin"
+    )]
     fn a11y_bin_action(
         &mut self,
         action: &ui::a11y::Action,
@@ -10628,6 +10807,10 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "transport commands decode only the fixed key layout emitted by a11y_transport"
+    )]
     fn a11y_transport_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::{Action, hash_key};
         let Some(&key) = rest.first() else {
@@ -14664,6 +14847,10 @@ impl VideoEditorApp {
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Inspector, r);
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "inspector controls index fixed option tables and validated selected rows while drawing the corresponding control"
+    )]
     fn draw_inspector_body(
         &self,
         scene: &mut Scene,
@@ -15863,6 +16050,10 @@ impl VideoEditorApp {
 
     /// What a folded section reports about itself, or `None` when everything
     /// inside it is at its default and there is nothing to report.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "section summaries read the paired fixed labels and values that their section builder created"
+    )]
     fn section_summary(
         &self,
         section: Section,
@@ -16085,6 +16276,10 @@ impl VideoEditorApp {
         );
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "timeline rendering indexes only lane geometry built from the same validated project track order"
+    )]
     fn draw_timeline(
         &self,
         scene: &mut Scene,
@@ -17216,6 +17411,10 @@ impl VideoEditorApp {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the export dialog paint pass shares one geometry calculation across its presets, status, and controls"
+    )]
     fn draw_export_modal(
         &self,
         scene: &mut Scene,
@@ -17392,17 +17591,23 @@ impl VideoEditorApp {
                 );
             }
             ExportStatus::Failed { reason } => {
-                // Danger, not warning: the export did not happen.
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    reason,
-                    10.5,
-                    c.semantic.danger,
-                    x0,
-                    card.y1 - 68.0,
-                );
+                // Danger, not warning: the export did not happen. The status
+                // slot is deliberately bounded so an encoder's untrusted
+                // error cannot paint through the buttons; the full, unelided
+                // reason remains in the dialog's accessible static-text node.
+                let lines = tr.clamp_to_lines(reason, 10.5, (card.width() - 48.0) as f32, 2);
+                for (line, words) in lines.iter().enumerate() {
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        words,
+                        10.5,
+                        c.semantic.danger,
+                        x0,
+                        card.y1 - 80.0 + line as f64 * 14.0,
+                    );
+                }
             }
             ExportStatus::Idle => {
                 // One source of truth for the availability copy — the export
@@ -18216,6 +18421,10 @@ struct LinkMarks {
 }
 
 impl LinkMarks {
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "keyboard timeline indices are derived from the current non-empty project vectors before their paired reads"
+    )]
     fn build(project: &Project, selection: &Selection) -> Self {
         let mut groups: Vec<(Uuid, u32, bool)> = Vec::new();
         for clip in &project.clips {
@@ -18232,6 +18441,10 @@ impl LinkMarks {
         Self { groups }
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "entry reads a fixed tuple encoded by build after the tuple length has been established"
+    )]
     fn entry(&self, clip: &Clip) -> Option<(u32, bool)> {
         let link = clip.link?;
         self.groups
@@ -18324,6 +18537,10 @@ fn darken(c: Color, t: f64) -> Color {
 /// source window `[in_p, out_p]` (over `media_dur`) into the peaks array so a
 /// trimmed clip shows its own portion. `volume` scales the bar height.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "waveform draw buckets are paired with their validated sample interval before each read"
+)]
 fn draw_waveform(
     scene: &mut Scene,
     tf: Affine,
@@ -20060,6 +20277,51 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = app_and_doc();
+        let selected_before = app.selected();
+        let playhead_before = app.playhead;
+        let clip = app.project.clips[0].id;
+        let reveal = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealClip {
+            clip: clip.to_string(),
+        })
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &reveal,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.selected(), selected_before);
+        assert_eq!(app.playhead, playhead_before);
+
+        let import = serde_json::to_vec(&crate::actions::VideoEditorOperation::ImportMedia {
+            path: Some("/tmp/wrong-kind.mp4".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &import,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.resource_operation.is_none());
+        assert!(app.resource_pending_operation.is_none());
+        assert!(app.resource_invocation.is_none());
+    }
+
     fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: bool) -> bool {
         let r = app.regions();
         let mods = if ctrl {
@@ -20475,6 +20737,71 @@ mod tests {
         ));
         assert!(app.import_rx.is_some(), "Ctrl+Shift+O still imports media");
         assert!(app.project_rx.is_none());
+    }
+
+    #[test]
+    fn export_failure_details_are_available_to_keyboard_and_screen_readers() {
+        let (mut app, mut doc) = app_and_doc();
+        let reason =
+            "no encoder for H.264 on this system; install an H.264-capable GStreamer plugin";
+        app.export_status = ExportStatus::Failed {
+            reason: reason.to_string(),
+        };
+
+        // With the dialog closed, the status is a complete assertive live
+        // region, not the ellipsized text painted in the compact topbar chip.
+        let closed = app.accessibility().expect("editor semantics");
+        let status = a11y_find(&closed, "Export failed");
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].value.as_deref(), Some(reason));
+
+        // Ctrl+E is the documented keyboard route to the full export surface.
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "e",
+            ModifiersState::CONTROL
+        ));
+        assert!(app.show_export, "Ctrl+E opens the export details dialog");
+        let open = app.accessibility().expect("dialog semantics");
+        let details = a11y_find(&open, "Export failure details");
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].value.as_deref(), Some(reason));
+        assert_eq!(
+            details[0].key,
+            Some(ui::a11y::hash_key(&"export.failure-details")),
+            "the failure node has a semantic key rather than a child position"
+        );
+    }
+
+    #[test]
+    fn a_long_export_failure_wraps_above_the_footer_and_buttons() {
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
+        app.show_export = true;
+        let reason = "The selected encoder rejected the profile because the source contains an unsupported colour space; choose a compatible profile or install an encoder that supports this footage.";
+        app.export_status = ExportStatus::Failed {
+            reason: reason.into(),
+        };
+        let r = app.regions();
+        let layout = app.export_layout(&r);
+        let mut tr = TextRenderer::new();
+        let lines = tr.clamp_to_lines(reason, 10.5, (layout.card.width() - 48.0) as f32, 2);
+        assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
+        let line_h = f64::from(tr.measure("Hg", 10.5, None).1);
+        let info_bottom = layout.card.y1 - 96.0 + f64::from(tr.measure("Hg", 12.0, None).1);
+        let error_top = layout.card.y1 - 80.0;
+        let error_bottom = layout.card.y1 - 80.0 + 14.0 + line_h;
+        assert!(
+            error_top >= info_bottom,
+            "the wrapped failure overlaps the footer metadata: {error_top} < {info_bottom}"
+        );
+        assert!(
+            error_bottom <= layout.cancel.y0,
+            "the wrapped failure overlaps the footer buttons: {error_bottom} > {}",
+            layout.cancel.y0
+        );
+        // Exercise the real Vello draw pass as well as its layout math.
+        render(&mut app);
     }
 
     #[test]
@@ -28033,56 +28360,80 @@ mod tests {
 
     // ---- the project as a search source ----------------------------------
 
-    /// A chosen search row opens the editor *at that position* — which is what
-    /// CLAUDE.md means by a provider plus a renderer, and what makes a hit a
-    /// place rather than a list entry.
+    /// A chosen search row resolves through the exported resource tree and the
+    /// operation broker, then opens the exact clip and timeline instant.
     #[test]
-    fn a_chosen_search_hit_seeks_the_timeline_to_it() {
-        let (mut app, mut doc) = app_and_doc();
-        let mut next = app.project.clone();
-        next.add_marker(12.5, "Coastline hold", 1);
-        app.dispatch_project_meta(&mut doc, next);
+    fn a_chosen_search_hit_brokers_the_exact_timeline_selection() {
+        let (mut app, doc) = app_and_doc();
+        let clip = app.project.clips[0].clone();
+        let media = app
+            .project
+            .media(clip.media)
+            .expect("clip source")
+            .name
+            .clone();
 
         let providers = app.search_providers();
         let provider = providers.first().expect("the editor publishes a provider");
         let hit = provider
-            .search("Coastline hold")
+            .search(&media)
             .into_iter()
-            .find(|h| h.title == "Coastline hold")
-            .expect("the marker is findable by name");
+            .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
+            .expect("the exact clip is findable by source name");
+        let address = hit.action_address().expect("canonical search address");
+        let encoded = qos_actions::door::encode(&app.resources(&doc), &address, None)
+            .expect("the address resolves through the live resource tree");
 
-        // Running, so the assertion below can tell the shared seek from a raw
-        // write to the playhead: a transport left running slides the moment
-        // that was just asked for straight back out from under the user.
         app.playing = true;
         app.playhead = 0.0;
-        app.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
         assert!(
-            (app.playhead - 12.5).abs() < 1e-3,
-            "the hit put the playhead on the marker: {}",
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("view operation succeeds")
+        );
+        assert!(
+            (app.playhead - clip.start).abs() < 1e-3,
+            "the hit put the playhead on the clip: {}",
             app.playhead,
         );
-        assert!(
-            !app.playing,
-            "and stopped the transport, as a marker click does"
-        );
+        assert_eq!(app.selected(), Some(clip.id));
+        assert_eq!(app.selected_media, Some(clip.media));
+        assert!(!app.playing, "the shared seek stops the transport");
     }
 
-    /// Somebody else's row is declined, not treated as a seek to zero.
+    /// Clip markers resolve their current collaborative position at execution
+    /// time and select their owner, rather than replaying a stale timestamp.
     #[test]
-    fn a_search_row_from_another_app_is_declined_rather_than_seeking_to_zero() {
-        let (mut app, mut doc) = app_and_doc();
-        app.playhead = 9.0;
-        app.playing = true;
-        for foreign in ["chat.channel:general", "", "video-editor.seek:not-a-number"] {
-            app.activate_search_result(foreign, &mut doc, &automerge::ROOT);
-            assert!(
-                (app.playhead - 9.0).abs() < 1e-9,
-                "{foreign} is not ours, so it moved nothing: {}",
-                app.playhead,
-            );
-            assert!(app.playing, "and did not stop the transport either");
-        }
+    fn marker_view_action_selects_its_owner_at_the_current_position() {
+        let (mut app, doc) = app_and_doc();
+        let cid = app.project.clips[0].id;
+        let marker = crate::model::Marker::new(1.25, "Exact beat", 1);
+        let marker_id = marker.id;
+        app.project
+            .clip_mut(cid)
+            .expect("clip")
+            .markers
+            .push(marker);
+        let clip = app.project.clip(cid).expect("clip").clone();
+        let resources = crate::actions::provide_resources(&app.video_resource_ctx().unwrap());
+        let address = crate::actions::reveal_marker_address(marker_id);
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("marker action is exported");
+        app.invoke_resource_operation(
+            qos_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .expect("view marker");
+        assert_eq!(app.selected(), Some(cid));
+        assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
     }
 
     /// The raw bytes of a rectangle of the frame.

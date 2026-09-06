@@ -1,10 +1,13 @@
 # Browser: migrate from `iced` to `quick-ui` — RFC
 
-> **Status:** spec, not yet implemented. Closes the last headless-screenshot gap (currently `quick-browser --shots` is the only system app without an offscreen mode).
+> **Status:** implemented. Browser chrome now uses `quick-ui`, exposes the
+> standard deterministic `--shots` path plus focused visual states, and can run
+> the real WPE engine-to-frame screenshot path with the `wpe` feature. This file
+> remains as the design record for that migration.
 
 ## Problem
 
-`apps/browser/` is the only system app still on `iced` 0.13:
+Before the migration, `apps/browser/` was the only system app on `iced` 0.13:
 
 ```toml
 # apps/browser/Cargo.toml

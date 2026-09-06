@@ -103,6 +103,8 @@ pub enum BundleError {
     },
     #[error("home / data-dir not resolvable — set XDG_DATA_HOME or HOME")]
     NoDataDir,
+    #[error("SOURCE_DATE_EPOCH must be an unsigned unix timestamp: {0}")]
+    InvalidSourceDateEpoch(String),
     #[error("bundle is not signed — signature required (pass --allow-unsigned-runtime to opt out)")]
     NotSigned,
     #[error("bundle signature does not verify against embedded publisher")]
@@ -528,7 +530,7 @@ pub fn build_bundle_with(
         arch: arch.to_string(),
         root_hash,
         files,
-        produced_at: unix_now(),
+        produced_at: produced_at()?,
         publisher_hex,
         signature_hex,
     };
@@ -858,9 +860,34 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+fn produced_at() -> Result<u64, BundleError> {
+    produced_at_from(std::env::var("SOURCE_DATE_EPOCH"))
+}
+
+fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, BundleError> {
+    match value {
+        Ok(value) => value
+            .parse()
+            .map_err(|_| BundleError::InvalidSourceDateEpoch(value)),
+        Err(std::env::VarError::NotPresent) => Ok(unix_now()),
+        Err(std::env::VarError::NotUnicode(value)) => Err(BundleError::InvalidSourceDateEpoch(
+            value.to_string_lossy().into_owned(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_date_epoch_controls_produced_at() {
+        assert_eq!(produced_at_from(Ok("123456".into())).unwrap(), 123_456);
+        assert!(matches!(
+            produced_at_from(Ok("not-a-timestamp".into())),
+            Err(BundleError::InvalidSourceDateEpoch(_))
+        ));
+    }
 
     fn fake_x86_64_host(root: &Path) {
         for rel in [

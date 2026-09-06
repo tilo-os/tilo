@@ -154,6 +154,7 @@ pub fn map_role(role: Role) -> AkRole {
         Role::Heading { .. } => AkRole::Heading,
         Role::Paragraph => AkRole::Paragraph,
         Role::Document => AkRole::Document,
+        Role::Terminal => AkRole::Terminal,
         Role::Canvas => AkRole::Canvas,
         Role::Unknown => AkRole::Unknown,
     }
@@ -1003,6 +1004,11 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
             ak.add_action(AkAction::SetValue);
             ak.add_action(AkAction::SetTextSelection);
         }
+        // A terminal transcript is selectable but never replaceable as one
+        // editable value. Input is a stream, not a SetValue mutation.
+        Role::Terminal if !access.state.disabled => {
+            ak.add_action(AkAction::SetTextSelection);
+        }
         _ => {}
     }
 }
@@ -1196,6 +1202,7 @@ mod tests {
             (Role::StaticText, AkRole::Label),
             (Role::Heading { level: 2 }, AkRole::Heading),
             (Role::MultilineTextInput, AkRole::MultilineTextInput),
+            (Role::Terminal, AkRole::Terminal),
             (Role::Generic, AkRole::GenericContainer),
         ];
         for (ours, theirs) in cases {
@@ -1479,6 +1486,29 @@ mod tests {
             .unwrap();
         assert!(node.supports_action(AkAction::Focus));
         assert!(node.supports_action(AkAction::Click));
+    }
+
+    #[test]
+    fn terminal_is_selectable_but_not_an_editable_text_value() {
+        let terminal = TestWidget::new(Some(
+            AccessNode::new(Role::Terminal)
+                .with_name("Terminal")
+                .with_value("$ cargo test")
+                .with_state(AccessState::new().focusable(true).read_only(true)),
+        ));
+        let mut root = TestWidget::new(None).with_child(Box::new(terminal));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::Terminal)
+            .expect("terminal reaches AccessKit with its native role");
+        assert!(node.is_read_only());
+        assert!(node.supports_action(AkAction::Focus));
+        assert!(node.supports_action(AkAction::SetTextSelection));
+        assert!(!node.supports_action(AkAction::SetValue));
+        assert_eq!(node.value(), Some("$ cargo test"));
     }
 
     #[test]

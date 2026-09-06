@@ -19,6 +19,11 @@ use crate::model::{
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub trait CompatibilityProvider: Send {
+    /// Live UI controls emit inert resource/action addresses so the host can
+    /// re-authorize, record, and dispatch them. Fixtures execute in-process.
+    fn action_native_controls(&self) -> bool {
+        false
+    }
     /// Whether a successful method return is also the terminal outcome. Live
     /// providers return `false`: they acknowledge queueing first and later
     /// surface the service result through `take_notice`.
@@ -239,6 +244,21 @@ impl SampleProvider {
                 WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for published Windows guest applications.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
                 WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is unavailable in app-focused SPICE because this presentation has no portal file bridge.".into()), route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted qOS policy action and are disabled in this session API.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
             ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
+    }
+
+    pub(crate) fn seed_setup_failure(&mut self) {
+        if let Some(first) = self.catalogue.apps.first_mut() {
+            first.status = AppStatus::Failed;
+            first.launch_available = false;
+            first.launch_unavailable_reason =
+                Some("The compatibility service could not repair this capsule.".into());
+            first.can_retry_install = true;
+            first.can_escalate_install_to_vm = true;
+            first.installation_detail = Some(
+                "Setup stopped before the application was published. Your private data was retained."
+                    .into(),
+            );
+        }
     }
 }
 impl Default for SampleProvider {
@@ -527,6 +547,9 @@ impl LiveProvider {
 }
 
 impl CompatibilityProvider for LiveProvider {
+    fn action_native_controls(&self) -> bool {
+        true
+    }
     fn catalogue(&mut self) -> Catalogue {
         self.drain();
         if !self.refresh_pending && Instant::now() >= self.next_refresh {

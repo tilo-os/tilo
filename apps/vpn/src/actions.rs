@@ -6,12 +6,12 @@
 //! document (see [`crate::doc`]). The stored **configuration** is the document —
 //! the saved connection profiles, their per-connection Tor routing preference,
 //! and the global "route everything over Tor" toggle. The exact same
-//! [`EncodedAction`] an on-screen affordance dispatches (the add form, a
+//! [`EncodedAction`] an on-screen affordance dispatches (a completed import, a
 //! connection's Tor toggle) is what the Ctrl+K palette dispatches — one source
 //! of truth, one replay path, undo for free.
 //!
 //! The resource tree mirrors the model: the vault owns its connections. The
-//! vault exports "add connection" (per protocol) and the global Tor toggle; each
+//! vault exports profile import (per protocol) and the global Tor toggle; each
 //! connection exports rename / toggle-Tor / delete.
 //!
 //! ## What is *not* an action
@@ -22,20 +22,16 @@
 //!   side effects and OS-projected live state *driven by* the configuration,
 //!   never part of [`Action::apply`], which only mutates the CRDT
 //!   deterministically.
-//! * **Importing a system config** — the XDG-portal file pick, reading and
-//!   parsing the `.conf` / `.ovpn`, and persisting it to the data dir are
-//!   external steps ([`ui::portal`], [`crate::config`]). Only the resulting
-//!   parsed [`Connection`] is added to the document, and that add is the same
-//!   [`VpnAction::AddConnection`] the add form dispatches.
+//! * **Importing a system config** — the XDG-portal file pick, validation and
+//!   privileged `NetworkManager` import are a typed host effect. Only the safe,
+//!   secret-free profile summary is added to the shared document afterward.
 //! * **Presentation** — which connection is selected, the detail tab, hover,
-//!   the confirm/add modals. Selection is stored in the document as a shared
-//!   cursor but is view state, never an action.
+//!   and modal state remain local to each window.
 //!
 //! ## Determinism contract
 //!
-//! A connection's uuid is minted at *authoring* time (in [`crate::model::stub_connection`]
-//! / [`crate::model::Connection::new`], called by the affordance or the palette
-//! closure) and carried whole in the [`VpnAction::AddConnection`] payload;
+//! A connection's uuid is minted after validation and `NetworkManager` import,
+//! then carried whole in the [`VpnAction::AddConnection`] payload;
 //! [`Action::apply`] never touches the RNG or the wall-clock. It reads the
 //! current fleet from the document and applies a targeted, change-guarded write,
 //! so two replicas at the same heads land on the byte-identical result. A
@@ -47,15 +43,18 @@ use automerge::AutoCommit;
 
 use qos_actions::{
     ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::doc::VpnDoc;
-use crate::model::{ConnId, ConnKind, Connection, Vault, stub_connection};
+use crate::model::{ConnId, ConnKind, Connection, Vault};
 
 /// Registry `type_id` for every VPN action.
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
+pub const VPN_IMPORT_TYPE: &str = "vpn.import-profile";
+pub const VPN_DELETE_TYPE: &str = "vpn.delete-profile";
 
 /// Every collaborative operation the VPN client exports on its saved fleet.
 ///
@@ -237,25 +236,33 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
         &set_tor_global_action(!vault.tor_global),
     ));
 
-    // Add a saved connection — one prompted action per protocol. The uuid is
-    // minted once, in the closure, when the name argument is committed, then
-    // baked into the envelope so replay stays deterministic.
+    // A name is not a VPN profile. Import is a typed privileged host effect;
+    // the collaborative add action is emitted only after validation succeeds.
     for kind in [ConnKind::WireGuard, ConnKind::OpenVpn] {
         let (id, label) = match kind {
-            ConnKind::WireGuard => ("add-wireguard", "Add WireGuard connection"),
-            ConnKind::OpenVpn => ("add-openvpn", "Add OpenVPN connection"),
+            ConnKind::WireGuard => ("import-wireguard", "Import WireGuard profile"),
+            ConnKind::OpenVpn => ("import-openvpn", "Import OpenVPN profile"),
         };
-        root = root.with_action(
-            ActionSpec::prompted(
-                id,
-                label,
-                "Name",
-                "e.g. Home",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&add_connection_action(stub_connection(name, kind))),
-            )
-            .with_contract(config_contract()),
-        );
+        let Ok(mut spec) = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::Effect,
+            VPN_IMPORT_TYPE,
+            &kind.as_str(),
+        ) else {
+            continue;
+        };
+        spec.contract = ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::AtMostOnce,
+            execution: ExecutionMode::Background { cancellable: true },
+            result: ResultSpec::Job,
+            tags: vec!["vpn".into(), "import".into(), kind.as_str().into()],
+            ..ActionContract::default()
+        };
+        root = root.with_action(spec);
     }
 
     for c in &vault.connections {
@@ -266,18 +273,29 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             connection_label(c),
         );
 
-        // Rename — prompted for the new name.
-        cr = cr.with_action(
-            ActionSpec::prompted(
-                "rename",
-                "Rename connection",
-                "Name",
-                "new name",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&rename_connection_action(id, name.trim().to_string())),
-            )
-            .with_contract(config_contract()),
-        );
+        cr.children.push(Resource::new(
+            format!("vpn.connection:{id}:protocol"),
+            "vpn.protocol",
+            c.kind.long_name(),
+        ));
+        cr.children.push(Resource::new(
+            format!("vpn.connection:{id}:endpoint"),
+            "vpn.endpoint",
+            if c.endpoint.is_empty() {
+                "Endpoint managed by NetworkManager".into()
+            } else {
+                c.endpoint.clone()
+            },
+        ));
+        cr.children.push(Resource::new(
+            format!("vpn.connection:{id}:routing"),
+            "vpn.routing-policy",
+            if c.allowed_ips.is_empty() {
+                "Routes managed by NetworkManager".into()
+            } else {
+                c.allowed_ips.clone()
+            },
+        ));
 
         // Toggle this tunnel's Tor routing preference.
         let tor_label = if c.tor {
@@ -291,18 +309,27 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             &set_conn_tor_action(id, !c.tor),
         ));
 
-        // Delete the saved connection.
-        cr = cr.with_action(
-            immediate_spec("delete", "Delete connection", &remove_connection_action(id))
-                .with_contract(ActionContract {
-                    risk: RiskLevel::Destructive,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    retry: RetryPolicy::Idempotent,
-                    reversible: true,
-                    tags: vec!["configuration".into(), "vpn".into()],
-                    ..ActionContract::default()
-                }),
-        );
+        // Removal must delete the real NetworkManager profile before the
+        // shared secret-free summary disappears.
+        if let Ok(mut delete) = ActionSpec::operation(
+            "delete",
+            "Delete connection",
+            OperationKind::Effect,
+            VPN_DELETE_TYPE,
+            &(id, c.name.clone()),
+        ) {
+            delete.contract = ActionContract {
+                permission: PermissionRequirement::Admin,
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::AtMostOnce,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Job,
+                tags: vec!["configuration".into(), "vpn".into(), "delete".into()],
+                ..ActionContract::default()
+            };
+            cr = cr.with_action(delete);
+        }
 
         root = root.with_child(cr);
     }
@@ -322,6 +349,7 @@ impl ResourceProvider for crate::app::VpnApp {
 mod tests {
     use super::*;
     use crate::app::VpnApp;
+    use crate::model::draft_connection;
     use automerge::ROOT;
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
@@ -350,13 +378,6 @@ mod tests {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
             ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -400,8 +421,11 @@ mod tests {
             root_actions.contains(&"toggle-tor-global"),
             "{root_actions:?}"
         );
-        assert!(root_actions.contains(&"add-wireguard"), "{root_actions:?}");
-        assert!(root_actions.contains(&"add-openvpn"), "{root_actions:?}");
+        assert!(
+            root_actions.contains(&"import-wireguard"),
+            "{root_actions:?}"
+        );
+        assert!(root_actions.contains(&"import-openvpn"), "{root_actions:?}");
         assert!(
             !root.children.is_empty(),
             "the sample connections are published"
@@ -414,7 +438,6 @@ mod tests {
             .expect("a Home connection resource");
         assert_eq!(home.kind, "vpn.connection");
         let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(h_actions.contains(&"rename"), "{h_actions:?}");
         assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
         assert!(h_actions.contains(&"delete"), "{h_actions:?}");
 
@@ -425,7 +448,7 @@ mod tests {
             .map(|f| f.action.label.as_str())
             .collect();
         assert!(flat.contains(&"Delete connection"), "{flat:?}");
-        assert!(flat.contains(&"Add WireGuard connection"), "{flat:?}");
+        assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -540,7 +563,7 @@ mod tests {
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
 
-        let conn = stub_connection("Travel", ConnKind::WireGuard);
+        let conn = draft_connection("Travel", ConnKind::WireGuard);
         let cid = conn.id;
         let action = add_connection_action(conn);
         let encoded = encode(&action);
@@ -573,15 +596,12 @@ mod tests {
         );
     }
 
-    /// Single source of truth (spec == builder): the palette's per-connection
-    /// delete / rename specs and the vault's global-Tor spec encode
-    /// byte-identically to the builders the on-screen affordances call.
+    /// Profile removal is a privileged OS operation.
     #[test]
     fn palette_specs_match_builders() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         let root = &resources[0];
-        let id = home_id(root);
         let home = root
             .children
             .iter()
@@ -590,20 +610,7 @@ mod tests {
 
         let delete_spec = home.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&remove_connection_action(id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        let rename_spec = home.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "Cabin");
-        let from_builder = encode(&rename_connection_action(id, "Cabin".to_string()));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
+        assert_eq!(from_spec.type_id, VPN_DELETE_TYPE);
 
         let vault = VpnDoc::read_vault(&doc);
         let global = root

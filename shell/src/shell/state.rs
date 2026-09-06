@@ -203,10 +203,8 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
 
-        let tree = WorkspaceTree {
-            fs_acl_path: Some(acl.clone()),
-            ..WorkspaceTree::default()
-        };
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl.clone());
         let started = Instant::now();
         tree.export_fs_capabilities();
         assert!(
@@ -271,10 +269,8 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
-        let tree = WorkspaceTree {
-            fs_acl_path: Some(acl),
-            ..WorkspaceTree::default()
-        };
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl);
         tree.export_fs_capabilities();
         for _ in 0..300 {
             if log.exists() {
@@ -397,14 +393,14 @@ mod identity_fs_tests {
         let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
         let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
         let room_a_id = room_a.room;
-        let first_room_scope = room_a.room.to_string();
-        let second_room_scope = room_b.room.to_string();
+        let room_a_scope = room_a.room.to_string();
+        let room_b_scope = room_b.room.to_string();
         let relay_a = crate::shell::network::room_topic_id(room_a.room).to_string();
         let relay_b = crate::shell::network::room_topic_id(room_b.room).to_string();
         room_a.capabilities.extend([
             CapOverride::new(
                 Subject::User(alice),
-                Scope::Room(first_room_scope),
+                Scope::Room(room_a_scope),
                 Effect::Grant,
                 Verb::Read,
             ),
@@ -425,15 +421,13 @@ mod identity_fs_tests {
         ]);
         room_b.capabilities.push(CapOverride::new(
             Subject::User(bob),
-            Scope::Room(second_room_scope),
+            Scope::Room(room_b_scope),
             Effect::Grant,
             Verb::Read,
         ));
-        let mut tree = WorkspaceTree {
-            fs_acl_path: Some(output.clone()),
-            workspaces: vec![room_a, room_b],
-            ..WorkspaceTree::default()
-        };
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(output.clone());
+        tree.workspaces = vec![room_a, room_b];
         tree.export_fs_capabilities();
 
         let exported: Vec<CapOverride> =
@@ -1238,6 +1232,64 @@ pub struct WorkspaceTaskAuditEvent {
     pub summary: String,
 }
 
+/// Append-only, broker-authenticated record of an external side effect.
+/// Arguments, output values, produced resource addresses, failure messages,
+/// and failure details are deliberately absent from this durable shape.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceEffectReceipt {
+    pub invocation: qos_actions::InvocationId,
+    pub actor: String,
+    pub context: qos_actions::ActionContext,
+    pub status: qos_actions::EffectReceiptStatus,
+    pub completed_at: i64,
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or_default()
+}
+
+fn bounded_receipt_text(value: &str, max: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
+    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(app) = &mut context.app {
+        app.id = bounded_receipt_text(&app.id, 160);
+        app.label = bounded_receipt_text(&app.label, 160);
+    }
+    if let Some(resource) = &mut context.resource {
+        resource.id = bounded_receipt_text(&resource.id, 512);
+        resource.kind = bounded_receipt_text(&resource.kind, 160);
+        resource.label = bounded_receipt_text(&resource.label, 200);
+    }
+    context.purpose = context
+        .purpose
+        .as_deref()
+        .map(|value| bounded_receipt_text(value, 512))
+        .filter(|value| !value.is_empty());
+    if let Some(group) = &mut context.group {
+        group.id = bounded_receipt_text(&group.id, 160);
+        group.label = bounded_receipt_text(&group.label, 200);
+        group.kind = bounded_receipt_text(&group.kind, 160);
+    }
+    context.facets.truncate(32);
+    for facet in &mut context.facets {
+        facet.key = bounded_receipt_text(&facet.key, 96);
+        facet.value = bounded_receipt_text(&facet.value, 160);
+    }
+}
+
 /// A durable unit of work in a collaboration room.
 ///
 /// Tasks are deliberately shell-owned rather than chat messages: every app
@@ -1301,6 +1353,20 @@ pub struct Workspace {
     /// adopted by the local user on first load.
     #[serde(default)]
     pub owner: Option<UserId>,
+    /// One exact, owner-signed offer awaiting the named recipient's consent.
+    /// Persisted with the workspace so restart cannot erase, extend, or retarget
+    /// the ceremony.
+    #[serde(default)]
+    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
+    /// Completed transfers retaining the outgoing owner's signed authorization
+    /// and the exact recipient's signed acceptance. This is append-only audit
+    /// evidence, not a second source of current ownership.
+    #[serde(default)]
+    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
+    /// Owner-signed cancellations retained so a cancelled proposal cannot be
+    /// replayed after restart.
+    #[serde(default)]
+    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     /// **Every** permission in this room, as capabilities — one list, one
     /// vocabulary (room membership, file shares, portal grants), so it
     /// can't drift the way a second per-app map would.
@@ -1315,6 +1381,10 @@ pub struct Workspace {
     /// Values are projected as a CRDT map keyed by task id.
     #[serde(default)]
     pub tasks: Vec<WorkspaceTask>,
+    /// Consequential effects are activity, but never pretend to be edits to
+    /// an app's collaborative document.
+    #[serde(default)]
+    pub effect_receipts: Vec<WorkspaceEffectReceipt>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -1403,6 +1473,29 @@ pub enum WorkspaceDefaultError {
     #[error("invalid default application: {0}")]
     InvalidSelection(desktop_policy::DefaultAppError),
 }
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum OwnershipTransferStateError {
+    #[error("workspace ownership transfer is not locally governed")]
+    NotGoverned,
+    #[error("workspace or current structural owner does not match the signed proposal")]
+    WrongWorkspaceOrOwner,
+    #[error("recipient must retain administrator membership until commit")]
+    RecipientNotAdministrator,
+    #[error("another live ownership-transfer proposal already exists")]
+    ProposalAlreadyPending,
+    #[error("ownership-transfer proposal is unknown, cancelled, expired, or already consumed")]
+    ProposalUnavailable,
+    #[error("ownership-transfer audit history is full; archive it before another transfer")]
+    HistoryFull,
+    #[error("invalid signed ownership-transfer record: {0}")]
+    InvalidSignature(#[from] collab_types::OwnershipTransferError),
+    #[error("ownership-transfer persistence failed: {0}")]
+    Persistence(String),
+}
+
+const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
+const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 impl Capability {
     /// The `(scope, verb)` this request descriptor asks for —
@@ -1774,7 +1867,7 @@ impl Workspace {
     /// must already be an administrator.  The latter makes transfer an
     /// explicit two-step ceremony (promote, then transfer) and avoids handing
     /// the workspace to a mistyped or stale identity.
-    pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
         if current_owner == new_owner
             || self.owner.as_ref() != Some(current_owner)
             || self.role_of(new_owner) != Some(CapRole::Owner)
@@ -1989,9 +2082,13 @@ impl Workspace {
             strips: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -2050,9 +2147,13 @@ impl Default for Workspace {
             strips: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -2839,10 +2940,6 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "room projection keeps the document mutation transaction in one scope"
-    )]
     pub fn sync_room_doc(&mut self, room: RoomId) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -2853,6 +2950,7 @@ impl WorkspaceTree {
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let tasks = ws.tasks.clone();
+        let effect_receipts = ws.effect_receipts.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let peer_identities = self
@@ -2922,6 +3020,7 @@ impl WorkspaceTree {
         Self::project_room_records(doc, &held);
         Self::project_owned_contents(doc, &strips, local_salt, share_floor);
         Self::project_workspace_tasks(doc, &tasks);
+        Self::project_effect_receipts(doc, &effect_receipts);
 
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
@@ -2972,6 +3071,7 @@ impl WorkspaceTree {
     const ROOM_PEERS_KEY: &'static str = "peers";
     const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
     const ROOM_TASKS_KEY: &'static str = "tasks_v1";
+    const ROOM_EFFECT_RECEIPTS_KEY: &'static str = "effect_receipts_v1";
 
     /// Project durable tasks as independently mergeable values. Task ids are
     /// stable, so two collaborators creating work concurrently add two map
@@ -3027,6 +3127,65 @@ impl WorkspaceTree {
                 .then_with(|| left.id.cmp(&right.id))
         });
         tasks
+    }
+
+    fn project_effect_receipts(doc: &mut AutoCommit, receipts: &[WorkspaceEffectReceipt]) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        let object = match doc
+            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        {
+            Some((_, id)) => id,
+            None if receipts.is_empty() => return,
+            None => match doc.put_object(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map) {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(?error, "room doc: effect receipts map");
+                    return;
+                }
+            },
+        };
+        for receipt in receipts {
+            let key = receipt.invocation.0.to_string();
+            let Ok(blob) = serde_json::to_vec(receipt) else {
+                continue;
+            };
+            let unchanged = matches!(
+                doc.get(&object, key.as_str()).ok().flatten(),
+                Some((Value::Scalar(value), _))
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+            );
+            if !unchanged {
+                let _ = doc.put(&object, key, ScalarValue::Bytes(blob));
+            }
+        }
+    }
+
+    fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let Some((_, object)) = doc
+            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut receipts = doc
+            .keys(&object)
+            .filter_map(|key| {
+                let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
+                    return None;
+                };
+                let ScalarValue::Bytes(blob) = value.as_ref() else {
+                    return None;
+                };
+                serde_json::from_slice(blob).ok()
+            })
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+        receipts
     }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
@@ -4275,6 +4434,26 @@ impl WorkspaceTree {
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let mut tasks = Self::workspace_tasks_of(&candidate);
+        let mut effect_receipts = Self::workspace_effect_receipts_of(&candidate);
+        if let Some(workspace) = self.workspace_in_room(room) {
+            for existing in &workspace.effect_receipts {
+                match effect_receipts
+                    .iter()
+                    .find(|receipt| receipt.invocation == existing.invocation)
+                {
+                    Some(received) if received != existing => {
+                        tracing::warn!(
+                            room = %room,
+                            invocation = %existing.invocation.0,
+                            "room sync refused: an effect receipt is immutable",
+                        );
+                        return Ok(false);
+                    }
+                    Some(_) => {}
+                    None => effect_receipts.push(existing.clone()),
+                }
+            }
+        }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
         self.room_docs.insert(room, candidate);
@@ -4315,6 +4494,13 @@ impl WorkspaceTree {
         current_tasks.sort_by(|left, right| left.id.cmp(&right.id));
         if current_tasks != tasks {
             ws.tasks = tasks;
+            fields_changed = true;
+        }
+        effect_receipts.sort_by_key(|receipt| receipt.invocation.0);
+        let mut current_receipts = ws.effect_receipts.clone();
+        current_receipts.sort_by_key(|receipt| receipt.invocation.0);
+        if current_receipts != effect_receipts {
+            ws.effect_receipts = effect_receipts;
             fields_changed = true;
         }
 
@@ -4400,6 +4586,20 @@ impl WorkspaceTree {
                         let _ = self
                             .doc
                             .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
+                    }
+                }
+            }
+            if let Ok(receipts_id) =
+                self.doc
+                    .put_object(&entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
+            {
+                for receipt in &ws.effect_receipts {
+                    if let Ok(blob) = serde_json::to_vec(receipt) {
+                        let _ = self.doc.put(
+                            &receipts_id,
+                            receipt.invocation.0.to_string(),
+                            ScalarValue::Bytes(blob),
+                        );
                     }
                 }
             }
@@ -4566,6 +4766,7 @@ impl WorkspaceTree {
                     ws.capabilities = caps;
                 }
                 ws.tasks = self.doc_read_workspace_tasks(&entry_id);
+                ws.effect_receipts = self.doc_read_workspace_effect_receipts(&entry_id);
                 new_workspaces.push(ws);
             }
             self.workspaces = new_workspaces;
@@ -5142,46 +5343,227 @@ impl WorkspaceTree {
         true
     }
 
-    /// Transfer structural ownership and persist the owner record together
-    /// with its replacement Admin capability.
+    /// Persist an exact, owner-signed ownership offer without changing roles.
     ///
-    /// Only the exact current owner may do this; an Admin delegation is not
-    /// equivalent to the root authority. The recipient must already be an
-    /// Admin, so callers have a reviewable promotion step before this
-    /// irreversible governance operation.
+    /// # Errors
     ///
-    /// Returns `false` if the workspace's ownership state is incomplete.
-    pub fn transfer_workspace_ownership(
+    /// Refuses foreign governance, invalid/expired signatures, a mismatched
+    /// owner/workspace, a non-administrator recipient, replay, or replacement
+    /// of another live proposal.
+    pub fn propose_workspace_ownership_transfer(
         &mut self,
         workspace_id: WorkspaceId,
-        current_owner: &UserId,
-        new_owner: &UserId,
-    ) -> bool {
-        let Some(room) = self.room_of(workspace_id) else {
-            return false;
-        };
+        proposal: collab_types::OwnershipTransferProposalV1,
+        now_unix: u64,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
         if !room.is_nil() && !self.governs_room(room) {
-            return false;
+            return Err(OwnershipTransferStateError::NotGoverned);
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
-            return false;
-        };
-        if !ws.transfer_owner_as(current_owner, new_owner) {
-            return false;
+        proposal.verify(now_unix)?;
+        if proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
+        let expected_owner = public_key_user_id(proposal.current_owner);
+        let recipient = public_key_user_id(proposal.recipient);
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+        if proposal.workspace != ws.room.to_string() || ws.owner.as_ref() != Some(&expected_owner) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        if ws.role_of(&recipient) != Some(CapRole::Owner) {
+            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        }
+        if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
+            || ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
+        {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if ws
+            .ownership_transfer_audit
+            .iter()
+            .any(|audit| audit.proposal.proposal_id == proposal.proposal_id)
+            || ws
+                .ownership_transfer_cancellations
+                .iter()
+                .any(|cancelled| cancelled.proposal_digest == proposal.digest().unwrap_or([0; 32]))
+        {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        if ws
+            .pending_ownership_transfer
+            .as_ref()
+            .is_some_and(|pending| pending.expires_unix > now_unix)
+        {
+            return Err(OwnershipTransferStateError::ProposalAlreadyPending);
+        }
+        let previous = ws.pending_ownership_transfer.replace(proposal);
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let ws = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+            ws.pending_ownership_transfer = previous;
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Cancel the currently pending proposal using the current owner's signed
+    /// cancellation record.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an absent/stale proposal, a different signer or proposal
+    /// digest, or a workspace no longer governed by this host.
+    pub fn cancel_workspace_ownership_transfer(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cancellation: &collab_types::OwnershipTransferCancellationV1,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            return Err(OwnershipTransferStateError::NotGoverned);
+        }
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let proposal = ws
+            .pending_ownership_transfer
+            .as_ref()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if ws.owner.as_deref() != Some(public_key_user_id(proposal.current_owner).as_str()) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        cancellation.verify(proposal)?;
+        let previous = proposal.clone();
+        ws.ownership_transfer_cancellations
+            .push(cancellation.clone());
+        ws.pending_ownership_transfer = None;
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let ws = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+            ws.ownership_transfer_cancellations.pop();
+            ws.pending_ownership_transfer = Some(previous);
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Verify both parties and atomically replace the structural owner while
+    /// appending both parties' signed audit evidence in the same persisted snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Refuses replay, expiry, recipient substitution, role changes, stale
+    /// ownership, invalid signatures, foreign governance, or persistence
+    /// failure. On persistence failure the in-memory owner and audit roll back.
+    pub fn accept_workspace_ownership_transfer(
+        &mut self,
+        workspace_id: WorkspaceId,
+        audit: collab_types::OwnershipTransferAuditV1,
+        now_unix: u64,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            return Err(OwnershipTransferStateError::NotGoverned);
+        }
+        audit.verify()?;
+        if audit.committed_unix > now_unix {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let previous = self
+            .workspaces
+            .get(index)
+            .cloned()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let ws = self
+            .workspaces
+            .get_mut(index)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let pending = ws
+            .pending_ownership_transfer
+            .as_ref()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if pending != &audit.proposal || audit.proposal.workspace != ws.room.to_string() {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        audit.proposal.verify(now_unix)?;
+        if audit.proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        let current_owner = public_key_user_id(audit.proposal.current_owner);
+        let recipient = public_key_user_id(audit.proposal.recipient);
+        if ws.owner.as_ref() != Some(&current_owner) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        if ws.role_of(&recipient) != Some(CapRole::Owner) {
+            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        }
+        if ws
+            .ownership_transfer_audit
+            .iter()
+            .any(|prior| prior.proposal.proposal_id == audit.proposal.proposal_id)
+        {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if !ws.transfer_owner_as(&current_owner, &recipient) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        ws.pending_ownership_transfer = None;
+        ws.ownership_transfer_audit.push(audit);
         let owner_capability_id = format!("owner-{}", workspace_id.raw());
-        let Some(owner_capability) = ws
+        let owner_capability = ws
             .capabilities
             .iter()
-            .find(|cap| cap.id == owner_capability_id)
+            .find(|capability| capability.id == owner_capability_id)
             .cloned()
-        else {
-            return false;
-        };
-        self.doc_set_owner(workspace_id, new_owner);
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+        self.doc_set_owner(workspace_id, &recipient);
         self.doc_insert_capability(workspace_id, &owner_capability);
-        self.flush_to_disk();
-        true
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let workspace = self
+                .workspaces
+                .get_mut(index)
+                .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+            *workspace = previous;
+            self.seed_doc_from_cache();
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        self.export_fs_capabilities();
+        Ok(())
     }
 
     /// Mirror a capability grant into the automerge doc so peer-sync
@@ -5344,6 +5726,58 @@ impl WorkspaceTree {
         true
     }
 
+    /// Persist one terminal effect exactly once. This creates semantic
+    /// workspace activity, not a mutation in the target application's CRDT.
+    pub fn append_workspace_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: qos_actions::InvocationId,
+        actor: &str,
+        mut context: qos_actions::ActionContext,
+        status: qos_actions::EffectReceiptStatus,
+    ) -> bool {
+        let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return false;
+        };
+        if workspace
+            .effect_receipts
+            .iter()
+            .any(|receipt| receipt.invocation == invocation)
+        {
+            return false;
+        }
+        let completed_at = unix_now();
+        let original_action = bounded_receipt_text(&context.action_label, 160);
+        context.action_label = if original_action.is_empty() {
+            status.label().to_string()
+        } else {
+            format!("{} · {original_action}", status.label())
+        };
+        context
+            .facets
+            .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
+        context.facets.push(qos_actions::ActionFacet::new(
+            "qos.invocation",
+            invocation.0.to_string(),
+        ));
+        redact_receipt_context(&mut context);
+        let receipt = WorkspaceEffectReceipt {
+            invocation,
+            actor: bounded_receipt_text(actor, 160),
+            context,
+            status,
+            completed_at,
+        };
+        workspace.effect_receipts.push(receipt.clone());
+        self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
+        self.flush_to_disk();
+        true
+    }
+
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
         use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
@@ -5363,6 +5797,46 @@ impl WorkspaceTree {
             .doc
             .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
         self.commit_room_change();
+    }
+
+    fn doc_upsert_workspace_effect_receipt(
+        &mut self,
+        workspace_id: WorkspaceId,
+        receipt: &WorkspaceEffectReceipt,
+    ) {
+        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let object = match self
+            .doc
+            .get(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        {
+            Some((_, id)) => id,
+            None => {
+                match self
+                    .doc
+                    .put_object(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
+                {
+                    Ok(id) => id,
+                    Err(_) => return,
+                }
+            }
+        };
+        let Ok(blob) = serde_json::to_vec(receipt) else {
+            return;
+        };
+        let _ = self.doc.put(
+            &object,
+            receipt.invocation.0.to_string(),
+            ScalarValue::Bytes(blob),
+        );
+        let _ = qdoc::history::commit_stamped_with_message(
+            &mut self.doc,
+            receipt.context.change_message(),
+        );
     }
 
     /// Mirror the room's owner into the doc.
@@ -5420,6 +5894,36 @@ impl WorkspaceTree {
             }
         }
         tasks
+    }
+
+    fn doc_read_workspace_effect_receipts(
+        &self,
+        ws_entry: &automerge::ObjId,
+    ) -> Vec<WorkspaceEffectReceipt> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        let Some((_, object)) = self
+            .doc
+            .get(ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut receipts = self
+            .doc
+            .keys(&object)
+            .filter_map(|key| {
+                let (Value::Scalar(value), _) = self.doc.get(&object, key).ok().flatten()? else {
+                    return None;
+                };
+                let ScalarValue::Bytes(blob) = value.as_ref() else {
+                    return None;
+                };
+                serde_json::from_slice(blob).ok()
+            })
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+        receipts
     }
 
     /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Strip id
@@ -5820,9 +6324,13 @@ impl WorkspaceTree {
             }],
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5912,9 +6420,13 @@ impl WorkspaceTree {
                     .with_role("editor"),
             ],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5974,9 +6486,13 @@ impl WorkspaceTree {
             }],
             collaborators: vec![],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         self.active_strip.insert(ws_id, strip_id);
@@ -6124,10 +6640,6 @@ impl WorkspaceTree {
     /// Materialize another device's continuation as synchronized placeholder
     /// tabs. This never activates a workspace, strip, or group; the compositor
     /// opens the matching local apps through its normal authorized launch path.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "continuation materialization preserves one ordered topology transaction"
-    )]
     pub fn materialize_continuation_workspace(
         &mut self,
         _source_device: &str,
@@ -6149,7 +6661,7 @@ impl WorkspaceTree {
             let mut apps = continuation.apps.clone();
             apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
             for app in apps {
-                let (title, tile_content) = match &app.launch {
+                let (title, tile) = match &app.launch {
                     crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
                         // A newer app winner may reuse the durable tab id of
                         // an earlier file-reference card.  Do not let the
@@ -6231,9 +6743,7 @@ impl WorkspaceTree {
                         .strips
                         .push(Strip::new(StripId::new(), "Available elsewhere"));
                 }
-                let Some(strip) = workspace.strips.get_mut(app.placement.strip as usize) else {
-                    continue;
-                };
+                let strip = &mut workspace.strips[app.placement.strip as usize];
                 while strip.window_groups.len() <= app.placement.group as usize {
                     strip.window_groups.push(WindowGroup {
                         id: next_id(),
@@ -6243,13 +6753,11 @@ impl WorkspaceTree {
                         maximized: false,
                     });
                 }
-                let Some(group) = strip.window_groups.get_mut(app.placement.group as usize) else {
-                    continue;
-                };
+                let group = &mut strip.window_groups[app.placement.group as usize];
                 let tab = Tab {
                     id: app.id.0,
                     title,
-                    tile: tile_content,
+                    tile,
                 };
                 if !existing_continuation_tabs.contains(&app.id.0) {
                     inserted_continuation_tabs.push(app.id.0);
@@ -6690,6 +7198,10 @@ impl WorkspaceTree {
             None
         }
     }
+}
+
+fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
+    hex::encode(key.as_bytes())
 }
 
 /// What colour each person on `roster` is drawn in. One function so
@@ -8997,9 +9509,13 @@ mod active_group_tests {
             strips: vec![strip],
             collaborators: vec![],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -9340,9 +9856,13 @@ mod active_workspace_peer_count_tests {
             }],
             collaborators: collabs,
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -10091,31 +10611,102 @@ mod peer_window_merge_tests {
     }
 
     #[test]
-    fn ownership_transfer_requires_exact_owner_and_preexisting_admin() {
-        let mut tree = WorkspaceTree::default();
+    fn ownership_transfer_requires_both_signatures_survives_restart_and_rejects_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("state.json");
+        let mut tree = WorkspaceTree {
+            persist_path: Some(state_path.clone()),
+            ..WorkspaceTree::default()
+        };
         let workspace_id = tree.append_empty_workspace("Security review");
-        let alice = "alice".to_string();
-        let bob = "bob".to_string();
-        let delegated_admin = "mallory".to_string();
+        let (alice_key, alice_public) = collab_types::generate_keypair();
+        let (bob_key, bob_public) = collab_types::generate_keypair();
+        let (mallory_key, _) = collab_types::generate_keypair();
+        let alice = public_key_user_id(alice_public);
+        let bob = public_key_user_id(bob_public);
         tree.adopt_ownerless_workspaces(&alice);
-
-        assert!(!tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
-
-        for person in [&bob, &delegated_admin] {
-            tree.grant_in_workspace(
-                workspace_id,
-                &alice,
-                CapOverride::membership(
-                    Subject::Principal(Principal::Person(person.clone())),
-                    tree.room_of(workspace_id).unwrap().to_string(),
-                    Verb::Admin,
-                ),
-            )
-            .expect("owner may promote a collaborator");
-        }
-
-        assert!(!tree.transfer_workspace_ownership(workspace_id, &delegated_admin, &bob));
-        assert!(tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+        let room = tree.room_of(workspace_id).unwrap();
+        tree.grant_in_workspace(
+            workspace_id,
+            &alice,
+            CapOverride::membership(
+                Subject::Principal(Principal::Person(bob.clone())),
+                room.to_string(),
+                Verb::Admin,
+            ),
+        )
+        .expect("owner may promote a collaborator");
+        let overlong = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [6; 32],
+            alice_public,
+            bob_public,
+            604_901,
+            &alice_key,
+        )
+        .unwrap();
+        assert!(matches!(
+            tree.propose_workspace_ownership_transfer(workspace_id, overlong, 100),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
+        let proposal = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [7; 32],
+            alice_public,
+            bob_public,
+            200,
+            &alice_key,
+        )
+        .unwrap();
+        tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
+            .unwrap();
+        let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
+        tree.persist_path = Some(state_path);
+        let wrong_acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &mallory_key).unwrap();
+        assert!(wrong_acceptance.verify(&proposal, 101).is_err());
+        let acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_key).unwrap();
+        let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102).unwrap();
+        let recipient_admin = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .unwrap()
+            .capabilities
+            .iter()
+            .find(|capability| {
+                capability.id != format!("owner-{}", workspace_id.raw())
+                    && matches!(
+                        &capability.subject,
+                        Subject::Principal(Principal::Person(person)) if person == &bob
+                    )
+                    && capability.verb.implies(Verb::Admin)
+            })
+            .unwrap()
+            .id
+            .clone();
+        assert!(tree.revoke_in_workspace(workspace_id, &alice, &recipient_admin));
+        assert!(matches!(
+            tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102),
+            Err(OwnershipTransferStateError::RecipientNotAdministrator)
+        ));
+        tree.grant_in_workspace(
+            workspace_id,
+            &alice,
+            CapOverride::membership(
+                Subject::person(bob.clone()),
+                tree.room_of(workspace_id).unwrap().to_string(),
+                Verb::Admin,
+            ),
+        )
+        .unwrap();
+        tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102)
+            .unwrap();
+        assert!(matches!(
+            tree.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
         let ws = tree
             .workspaces
             .iter()
@@ -10124,6 +10715,61 @@ mod peer_window_merge_tests {
         assert_eq!(ws.owner.as_ref(), Some(&bob));
         assert_eq!(ws.role_of(&alice), None);
         assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
+        assert_eq!(ws.ownership_transfer_audit.len(), 1);
+        assert!(ws.pending_ownership_transfer.is_none());
+    }
+
+    #[test]
+    fn cancelled_transfer_is_durable_and_cannot_be_replayed() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("state.json");
+        let mut tree = WorkspaceTree {
+            persist_path: Some(state_path.clone()),
+            ..WorkspaceTree::default()
+        };
+        let workspace_id = tree.append_empty_workspace("Security review");
+        let (owner_key, owner_public) = collab_types::generate_keypair();
+        let (recipient_key, recipient_public) = collab_types::generate_keypair();
+        let owner = public_key_user_id(owner_public);
+        let recipient = public_key_user_id(recipient_public);
+        tree.adopt_ownerless_workspaces(&owner);
+        let room = tree.room_of(workspace_id).unwrap();
+        tree.grant_in_workspace(
+            workspace_id,
+            &owner,
+            CapOverride::membership(Subject::person(recipient), room.to_string(), Verb::Admin),
+        )
+        .unwrap();
+        let proposal = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [11; 32],
+            owner_public,
+            recipient_public,
+            200,
+            &owner_key,
+        )
+        .unwrap();
+        tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
+            .unwrap();
+        let cancellation =
+            collab_types::OwnershipTransferCancellationV1::new(&proposal, 101, &owner_key).unwrap();
+        let acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &recipient_key)
+                .unwrap();
+        let audit =
+            collab_types::OwnershipTransferAuditV1::new(proposal.clone(), acceptance, 101).unwrap();
+        tree.cancel_workspace_ownership_transfer(workspace_id, &cancellation)
+            .unwrap();
+        let mut restarted = crate::shell::persist::load_tree_from(&state_path).unwrap();
+        restarted.persist_path = Some(state_path);
+        assert!(matches!(
+            restarted.propose_workspace_ownership_transfer(workspace_id, proposal, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
+        assert!(matches!(
+            restarted.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
     }
 
     #[test]
@@ -10499,5 +11145,62 @@ mod peer_window_merge_tests {
         assert_eq!(task.status, WorkspaceTaskStatus::Done);
         assert_eq!(task.audit.len(), 3);
         assert_eq!(task.audit.last().unwrap().summary, "Status · Done");
+    }
+
+    #[test]
+    fn effect_receipt_is_durable_semantic_activity_not_an_app_edit() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.active;
+        let mut app_document = automerge::AutoCommit::new();
+        let app_heads_before = app_document.get_heads();
+        let invocation = qos_actions::InvocationId::new();
+        let context = qos_actions::ActionContext::for_resource(
+            "Send",
+            "mail.message:42",
+            "mail.message",
+            "Release update",
+        )
+        .with_app("org.qos.Mail", "Mail");
+
+        assert!(tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            context,
+            qos_actions::EffectReceiptStatus::Failed {
+                code: "smtp_rejected".into(),
+            },
+        ));
+        assert!(!tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            qos_actions::ActionContext::default(),
+            qos_actions::EffectReceiptStatus::Succeeded,
+        ));
+        assert_eq!(app_document.get_heads(), app_heads_before);
+
+        tree.resync_cache_from_doc();
+        let receipt = &tree.active_workspace().unwrap().effect_receipts[0];
+        assert_eq!(receipt.invocation, invocation);
+        assert_eq!(receipt.status.label(), "Failed");
+        assert!(receipt.context.action_label.starts_with("Failed · Send"));
+
+        let entry = ui::HistorySource::new()
+            .entries(&mut tree.doc)
+            .into_iter()
+            .find(|entry| {
+                entry.context.as_ref().is_some_and(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+                })
+            })
+            .expect("effect receipt appears in workspace activity");
+        assert!(
+            !entry.is_revertible(),
+            "external work is not a CRDT undo claim"
+        );
     }
 }

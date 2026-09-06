@@ -48,6 +48,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(Box::new(app))
 }
 
+fn configure_app(app: &mut ui::App) {
+    logs::actions::register(app.action_registry_mut());
+}
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -55,6 +59,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.logs", logs::app_root)
             .shot_root(shot_root)
-            .allowed_flags(&["--detail"]),
+            .allowed_flags(&["--detail"])
+            .configure_app(configure_app),
     );
 }

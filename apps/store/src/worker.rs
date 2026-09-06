@@ -11,11 +11,13 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::sources::{
-    flathub_placeholder_to_item, flathub_record_to_item, merge, qos_to_store_item,
+    flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
+    installed_qos_to_store_item, merge, qos_to_store_item,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -38,6 +40,19 @@ pub enum Request {
     /// `Request` (and the channel that carries them) sized to the common
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
+    SubmitReport {
+        registry_name: String,
+        envelope: ReportEnvelope,
+    },
+    RefreshModeration {
+        registry_name: String,
+        case_id: String,
+    },
+    AppealModeration {
+        registry_name: String,
+        case_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +65,7 @@ pub struct Snapshot {
     pub remotes: Vec<Remote>,
     pub invocation: Option<qos_actions::InvocationId>,
     pub operation_error: Option<String>,
+    pub moderation_case: Option<registry_types::ModerationCase>,
 }
 
 struct QueuedRequest {
@@ -129,6 +145,7 @@ impl StoreWorker {
 }
 
 struct State {
+    host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
@@ -146,6 +163,12 @@ fn run(
         .unwrap_or_else(|| std::env::temp_dir().join("qos-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
+        host: app_host::client::BlockingClient::from_service()
+            .map_err(|error| {
+                tracing::error!(%error, "required app-host capability unavailable");
+                error
+            })
+            .ok(),
         opened_ref,
         base_items: Vec::new(),
         installed: Vec::new(),
@@ -195,6 +218,10 @@ fn run(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the serialized worker owns one exhaustive request dispatch; splitting it would obscure that every blocking Store effect crosses this queue"
+)]
 fn handle(
     request: Request,
     invocation: Option<qos_actions::InvocationId>,
@@ -233,7 +260,13 @@ fn handle(
             )
         }
         Request::RemoteAdd { name, url } => {
-            let label = run_plan(&crate::actions::flatpak_remote_add_plan(&name, &url));
+            let label = state.host.as_ref().map_or_else(
+                || "App service unavailable.".to_string(),
+                |host| {
+                    host.remote(true, &name, Some(&url))
+                        .unwrap_or_else(|error| error)
+                },
+            );
             state.remotes = crate::flathub_client::list_remotes();
             send_tracked(
                 snapshots,
@@ -247,7 +280,13 @@ fn handle(
             )
         }
         Request::RemoteRemove(name) => {
-            let label = run_plan(&crate::actions::flatpak_remote_remove_plan(&name));
+            let label = state.host.as_ref().map_or_else(
+                || "App service unavailable.".to_string(),
+                |host| {
+                    host.remote(false, &name, None)
+                        .unwrap_or_else(|error| error)
+                },
+            );
             state.remotes = crate::flathub_client::list_remotes();
             send_tracked(
                 snapshots,
@@ -261,7 +300,8 @@ fn handle(
             )
         }
         Request::Act(item, action) => {
-            let outcome = crate::actions::execute(&item, action, staging);
+            let outcome =
+                crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
             refresh(state);
             let operation_error = (!outcome.ok).then(|| outcome.status_line.clone());
             send_tracked(
@@ -273,6 +313,86 @@ fn handle(
                 None,
                 invocation,
                 operation_error,
+            )
+        }
+        Request::SubmitReport {
+            registry_name,
+            envelope,
+        } => {
+            let result = submit_report(&registry_name, &envelope);
+            let (label, moderation_case, operation_error) = match result {
+                Ok(case) => (
+                    format!(
+                        "Report submitted as {}. Status will appear after the registry owner publishes a signed transparency snapshot.",
+                        case.case_id
+                    ),
+                    None,
+                    None,
+                ),
+                Err(error) => {
+                    let message = format!(
+                        "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
+                    );
+                    (message.clone(), None, Some(message))
+                }
+            };
+            snapshots
+                .send(Snapshot {
+                    items: state.base_items.clone(),
+                    status_line: label,
+                    query: None,
+                    detail: None,
+                    remotes: state.remotes.clone(),
+                    invocation,
+                    operation_error,
+                    moderation_case,
+                })
+                .is_ok()
+        }
+        Request::RefreshModeration {
+            registry_name,
+            case_id,
+        } => send_moderation_result(
+            state,
+            snapshots,
+            invocation,
+            moderation_registry(&registry_name).and_then(|registry| {
+                crate::moderation_client::fetch_verified_case(&registry, &case_id)
+            }),
+            "Moderation status refreshed",
+        ),
+        Request::AppealModeration {
+            registry_name,
+            case_id,
+            reason,
+        } => {
+            let result = moderation_registry(&registry_name).and_then(|registry| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let mut nonce = [0_u8; 16];
+                getrandom::getrandom(&mut nonce).map_err(|error| {
+                    crate::moderation_client::ModerationClientError::Identity(error.to_string())
+                })?;
+                let request = crate::moderation_client::sign_with_runtime_identity(
+                    crate::moderation_client::report_request_id(&case_id, &reason, now, &nonce),
+                    now,
+                    registry_types::ModerationActorRole::Publisher,
+                    registry_types::ModerationMutation::PublisherAppeal {
+                        case_id,
+                        reason,
+                        evidence_digest_hex: None,
+                    },
+                )?;
+                crate::moderation_client::submit(&registry.base_url, &request)
+            });
+            send_moderation_submission_result(
+                state,
+                snapshots,
+                invocation,
+                result,
+                "Appeal submitted",
             )
         }
     }
@@ -349,18 +469,6 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
     )
 }
 
-fn run_plan(plan: &crate::actions::SpawnPlan) -> String {
-    let (code, output) = crate::actions::spawn_plan(plan);
-    if code == 0 {
-        plan.status_line.trim_end_matches('…').to_string()
-    } else {
-        format!(
-            "{} (exit {code})",
-            output.lines().last().unwrap_or("Flatpak failed").trim()
-        )
-    }
-}
-
 fn send(
     snapshots: &mpsc::Sender<Snapshot>,
     state: &State,
@@ -381,6 +489,10 @@ fn send(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "snapshot emission keeps the complete worker state transition explicit at each call site"
+)]
 fn send_tracked(
     snapshots: &mpsc::Sender<Snapshot>,
     state: &State,
@@ -400,6 +512,129 @@ fn send_tracked(
             remotes: state.remotes.clone(),
             invocation,
             operation_error,
+            moderation_case: None,
+        })
+        .is_ok()
+}
+
+fn submit_report(
+    registry_name: &str,
+    envelope: &ReportEnvelope,
+) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
+    let registry = moderation_registry(registry_name)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let envelope_bytes = serde_json::to_vec(envelope)
+        .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
+    let mut nonce = [0_u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|error| {
+        crate::moderation_client::ModerationClientError::Identity(error.to_string())
+    })?;
+    let request = crate::moderation_client::sign_with_runtime_identity(
+        crate::moderation_client::report_request_id(
+            &envelope.app_id,
+            &envelope.evidence_note,
+            now,
+            &nonce,
+        ),
+        now,
+        registry_types::ModerationActorRole::Reporter,
+        registry_types::ModerationMutation::FileReport {
+            package_id: envelope.app_id.clone(),
+            category: "policy".into(),
+            summary: envelope.evidence_note.chars().take(4_096).collect(),
+            evidence_digest_hex: blake3::hash(&envelope_bytes).to_hex().to_string(),
+        },
+    )?;
+    crate::moderation_client::submit(&registry.base_url, &request)
+}
+
+fn moderation_registry(
+    registry_name: &str,
+) -> Result<RegistryConfig, crate::moderation_client::ModerationClientError> {
+    load_registries()
+        .registries
+        .into_iter()
+        .find(|registry| registry.enabled && registry.name == registry_name)
+        .ok_or_else(|| {
+            crate::moderation_client::ModerationClientError::Offline(
+                "the app's registry is disabled or no longer configured".into(),
+            )
+        })
+}
+
+fn send_moderation_result(
+    state: &State,
+    snapshots: &mpsc::Sender<Snapshot>,
+    invocation: Option<qos_actions::InvocationId>,
+    result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
+    success: &str,
+) -> bool {
+    let (status_line, moderation_case, operation_error) = match result {
+        Ok(case) => (
+            format!(
+                "{success}: {} is {}.",
+                case.case_id,
+                crate::app::moderation_status_label(case.status)
+            ),
+            Some(case),
+            None,
+        ),
+        Err(error) => {
+            let message = format!(
+                "Registry request failed: {error} The collaborative draft and last confirmed status are unchanged; retry when ready."
+            );
+            (message.clone(), None, Some(message))
+        }
+    };
+    snapshots
+        .send(Snapshot {
+            items: state.base_items.clone(),
+            status_line,
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            invocation,
+            operation_error,
+            moderation_case,
+        })
+        .is_ok()
+}
+
+fn send_moderation_submission_result(
+    state: &State,
+    snapshots: &mpsc::Sender<Snapshot>,
+    invocation: Option<qos_actions::InvocationId>,
+    result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
+    success: &str,
+) -> bool {
+    let (status_line, operation_error) = match result {
+        Ok(case) => (
+            format!(
+                "{success} for {}. The last verified status stays visible until an owner-signed transparency snapshot includes it.",
+                case.case_id
+            ),
+            None,
+        ),
+        Err(error) => {
+            let message = format!(
+                "Registry request failed: {error} The collaborative draft and last verified status are unchanged; retry when ready."
+            );
+            (message.clone(), Some(message))
+        }
+    };
+    snapshots
+        .send(Snapshot {
+            items: state.base_items.clone(),
+            status_line,
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            invocation,
+            operation_error,
+            moderation_case: None,
         })
         .is_ok()
 }
@@ -407,7 +642,11 @@ fn send_tracked(
 fn refresh(state: &mut State) {
     state.installed = installed_flatpaks();
     state.remotes = crate::flathub_client::list_remotes();
-    state.base_items = collect_items(state.opened_ref.as_ref(), &state.installed);
+    state.base_items = collect_items(
+        state.opened_ref.as_ref(),
+        &state.installed,
+        state.host.as_ref(),
+    );
     state.searches.clear();
     state.details.clear();
 }
@@ -415,9 +654,20 @@ fn refresh(state: &mut State) {
 fn collect_items(
     opened_ref: Option<&FlatpakRef>,
     installed: &[(String, String)],
+    host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
     let registries = load_registries().registries;
-    let installed_qos = crate::installed::load_installed();
+    let installed_qos = host
+        .and_then(|host| host.list().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|package| crate::installed::InstalledEntry {
+            id: package.app_id,
+            version: package.version,
+            pinned: package.pinned,
+            ..crate::installed::InstalledEntry::default()
+        })
+        .collect::<Vec<_>>();
     let mut qos_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {
@@ -429,11 +679,29 @@ fn collect_items(
             Err(error) => tracing::warn!("registry {} refresh failed: {error}", registry.name),
         }
     }
+    // The Store's action surface is also the recovery path for software that
+    // is already here. Never make installed qOS apps vanish merely because a
+    // configured registry is offline or no longer carries an older package.
+    // Catalogue rows win whenever present because they carry the signed
+    // download/update metadata; these local rows intentionally cannot update.
+    for installed in &installed_qos {
+        if !qos_items.iter().any(|item| item.id == installed.id) {
+            qos_items.push(installed_qos_to_store_item(installed));
+        }
+    }
     let mut flatpak_items = crate::flathub_client::fetch_popular(200)
         .unwrap_or_default()
         .iter()
         .map(|entry| flathub_placeholder_to_item(entry, installed))
         .collect::<Vec<_>>();
+    // Popular is a discovery feed, not an installed-app inventory. Preserve
+    // every locally reported Flatpak so launch/remove remain possible during
+    // an API outage and for apps that were never popular.
+    for (app_id, version) in installed {
+        if !flatpak_items.iter().any(|item| item.id == *app_id) {
+            flatpak_items.push(installed_flatpak_to_item(app_id, version));
+        }
+    }
     if let Some(reference) = opened_ref
         && !flatpak_items.iter().any(|item| item.id == reference.app_id)
     {

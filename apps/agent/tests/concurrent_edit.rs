@@ -138,6 +138,9 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
             caret_block: anchor.clone(),
             caret_offset: 0,
             target_blocks: (!anchor.is_empty()).then_some(anchor).into_iter().collect(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: word_processor::actions::RegionKind::Body,
         },
         doc,
     )
@@ -178,7 +181,6 @@ fn drive_peer_and_type(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                publish_word_processor_actions(peer, replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
@@ -190,6 +192,7 @@ fn drive_peer_and_type(
                 action,
                 argument,
                 actor,
+                ..
             } => {
                 invocation_actor = Some(actor.clone());
                 let resources = word_processor_resources(replica);
@@ -364,7 +367,7 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
 fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
+    let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -386,7 +389,10 @@ fn a_person_typing_and_the_agent_working_both_land() {
     peer.announce(&sock, &hello).unwrap();
     let mut replica = seed_document();
     let head = heading_id(&replica);
-    std::thread::sleep(Duration::from_millis(100));
+    // The action host exists before the delegated agent is launched. Agent
+    // construction now consumes the broker's initial catalogue snapshot, so
+    // the first document decision has one deterministic routing source.
+    publish_word_processor_actions(&mut peer, &replica);
 
     let cfg = Config {
         endpoint: Some(sock),

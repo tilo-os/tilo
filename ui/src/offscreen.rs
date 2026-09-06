@@ -1995,13 +1995,22 @@ impl OffscreenRenderer {
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         let (mut pixels, mut overflowed) = self.render_with_overflow(scene, bg);
         let mut grew_budget = overflowed;
+        // A first Vello submission can be non-transparent and report no bump
+        // overflow while its glyph atlas is still only partially populated.
+        // Always require one subsequent confirmed frame for a non-empty scene;
+        // this keeps deterministic screenshots from blessing missing text.
+        let mut needs_warmup_confirmation = !scene.encoding().is_empty();
         for _ in 1..RESILIENT_RENDER_ATTEMPTS {
             let unexpectedly_transparent = bg == Color::TRANSPARENT
                 && !scene.encoding().is_empty()
                 && pixels
                     .chunks_exact(4)
                     .all(|pixel| pixel.get(3).copied().unwrap_or(0) == 0);
-            if !overflowed && !unexpectedly_transparent && !grew_budget {
+            if !overflowed
+                && !unexpectedly_transparent
+                && !grew_budget
+                && !needs_warmup_confirmation
+            {
                 break;
             }
             // The first frame that fits after a growth can still be the one
@@ -2009,6 +2018,7 @@ impl OffscreenRenderer {
             // additional confirmed-fit submission, then return immediately.
             let confirm_after_growth = grew_budget && !overflowed && !unexpectedly_transparent;
             (pixels, overflowed) = self.render_with_overflow(scene, bg);
+            needs_warmup_confirmation = false;
             grew_budget = if confirm_after_growth {
                 overflowed
             } else {

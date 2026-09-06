@@ -104,11 +104,11 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] if the relay cannot be reached, framing fails,
-    /// either identity check fails, or the response cannot be decoded.
+    /// Returns [`ClientError`] when dialing, framing, or mutual authentication
+    /// fails, including when the relay's pinned user or device differs.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transport and mutual-authentication inputs are independent protocol requirements"
+        reason = "public compatibility API mirrors the independently supplied endpoint, pinned identity, and caller credentials"
     )]
     pub async fn manage_home_peer(
         endpoint: &Endpoint,
@@ -176,11 +176,11 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] if the relay cannot be reached or authenticated,
-    /// framing fails, or its content advertisement is invalid.
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transport and mutual-authentication inputs are independent protocol requirements"
+        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
     )]
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
@@ -210,11 +210,11 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] if the relay cannot be reached or authenticated,
-    /// framing fails, or its content advertisement is invalid.
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transport and mutual-authentication inputs are independent protocol requirements"
+        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
     )]
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
@@ -244,11 +244,11 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] if the relay cannot be reached or authenticated,
-    /// framing fails, or its content advertisement is invalid.
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transport and mutual-authentication inputs are independent protocol requirements"
+        reason = "public compatibility API keeps caller credentials and the explicit pinned host identity separate"
     )]
     pub async fn discover_content_endpoint_to_pinned_host(
         endpoint: &Endpoint,
@@ -432,8 +432,8 @@ impl RelayClient {
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] if the relay cannot be reached, framing fails,
-    /// or either enrolled identity check fails.
+    /// Returns [`ClientError`] when dialing, framing, or the pinned
+    /// user/device authentication check fails.
     pub async fn connect_to_enrolled_home_peer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,

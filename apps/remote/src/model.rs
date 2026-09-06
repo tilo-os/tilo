@@ -167,6 +167,23 @@ impl AuthMethod {
         ]
     }
 
+    /// Authentication methods that the selected protocol can actually use.
+    ///
+    /// This keeps the form from advertising a credential shape that the live
+    /// transport would silently ignore or reinterpret.
+    pub const fn available_for(kind: ConnectionKind) -> &'static [AuthMethod] {
+        match kind {
+            ConnectionKind::Ssh => &[Self::Password, Self::PublicKey],
+            ConnectionKind::Vnc | ConnectionKind::Rdp => &[Self::Password],
+            ConnectionKind::Qos => &[Self::DeviceIdentity],
+        }
+    }
+
+    /// Whether this method is valid for the selected protocol.
+    pub fn is_supported_by(self, kind: ConnectionKind) -> bool {
+        Self::available_for(kind).contains(&self)
+    }
+
     pub fn from_label(s: &str) -> AuthMethod {
         match s {
             "Public key" => AuthMethod::PublicKey,
@@ -196,7 +213,8 @@ pub struct Connection {
     /// Display name shown in the list (e.g. "Home Server").
     pub name: String,
     /// Hostname or IP (e.g. "10.0.0.4" or "build.example.com"). For a
-    /// qOS relay this is the device's friendly node name.
+    /// qOS relay this is the exact certified device endpoint id; `name` is
+    /// the friendly label shown in the UI.
     pub host: String,
     pub port: u16,
     /// Login user. Empty for kinds that don't need one (qOS relay).
@@ -214,19 +232,65 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// `user@host:port` address line, omitting parts that don't apply.
+    /// Compact address line, omitting parts that don't apply.
     pub fn address(&self) -> String {
-        let host_part = if self.port == 0 || self.kind == ConnectionKind::Qos {
+        if self.kind == ConnectionKind::Qos {
+            // A certified endpoint id is intentionally long. The row already
+            // carries the user-assigned connection name; show a stable prefix
+            // here while the editable form retains the exact target id.
+            return format!("qOS device {}", compact_qos_endpoint(&self.host));
+        }
+        let host_part = if self.port == 0 {
             self.host.clone()
         } else {
             format!("{}:{}", self.host, self.port)
         };
-        if self.user.is_empty() {
+        if self.user.is_empty() || self.kind != ConnectionKind::Ssh {
             host_part
         } else {
             format!("{}@{}", self.user, host_part)
         }
     }
+
+    /// Explain why this persisted profile cannot safely start a transport.
+    ///
+    /// The result is deliberately a stable, non-secret string: it is shared by
+    /// the canvas UI, accessibility tree, resource catalogue, and agent-facing
+    /// availability contract. No connect attempt is made until this returns
+    /// `None`.
+    pub fn profile_issue(&self) -> Option<&'static str> {
+        profile_issue(self.kind, &self.host, self.auth)
+    }
+}
+
+/// Compact an exact qOS endpoint id for list rows and device-picker labels.
+/// The editable form retains the full identity; this rendering helper avoids
+/// overflow and never slices user-controlled UTF-8 by byte offset.
+pub fn compact_qos_endpoint(endpoint: &str) -> String {
+    let prefix: String = endpoint.chars().take(12).collect();
+    if endpoint.chars().nth(12).is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&'static str> {
+    if !auth.is_supported_by(kind) {
+        return Some(match kind {
+            ConnectionKind::Ssh => "SSH profiles support password or public-key authentication.",
+            ConnectionKind::Vnc => "VNC profiles support password authentication only.",
+            ConnectionKind::Rdp => "RDP profiles support password authentication only.",
+            ConnectionKind::Qos => "qOS device profiles must use qOS device identity.",
+        });
+    }
+    if kind == ConnectionKind::Qos
+        && !host.trim().is_empty()
+        && host.trim().parse::<iroh::EndpointId>().is_err()
+    {
+        return Some("qOS device node must be an exact certified endpoint id.");
+    }
+    None
 }
 
 /// Which top-level screen the UI is showing.
@@ -299,6 +363,9 @@ impl ConnectionDraft {
                 Ok(_) => {}
             }
         }
+        if let Some(issue) = profile_issue(self.kind, &self.host, self.auth) {
+            out.push(issue.into());
+        }
         out
     }
 
@@ -317,7 +384,11 @@ impl ConnectionDraft {
             name: self.name.trim().to_string(),
             host: self.host.trim().to_string(),
             port,
-            user: self.user.trim().to_string(),
+            user: if self.kind == ConnectionKind::Ssh || self.kind == ConnectionKind::Rdp {
+                self.user.trim().to_string()
+            } else {
+                String::new()
+            },
             kind: self.kind,
             auth: self.auth,
             last_used: "Never".to_string(),
@@ -454,7 +525,14 @@ mod tests {
         c.host = "studio-node".into();
         c.user = String::new();
         c.port = 0;
-        assert_eq!(c.address(), "studio-node");
+        assert_eq!(c.address(), "qOS device studio-node");
+    }
+
+    #[test]
+    fn qos_address_compacts_a_long_endpoint_without_string_slicing() {
+        let mut c = sample("q", ConnectionKind::Qos);
+        c.host = "abcdefghijklmnopqrstuvwxyz".into();
+        assert_eq!(c.address(), "qOS device abcdefghijkl…");
     }
 
     #[test]
@@ -527,12 +605,49 @@ mod tests {
         let d = ConnectionDraft {
             kind: ConnectionKind::Qos,
             name: "node".into(),
-            host: "studio".into(),
+            host: iroh::SecretKey::from_bytes(&[7; 32]).public().to_string(),
             port: String::new(),
+            auth: AuthMethod::DeviceIdentity,
             ..Default::default()
         };
         assert!(d.problems().is_empty());
         let built = d.build(Uuid::new_v4());
         assert_eq!(built.port, 0);
+    }
+
+    #[test]
+    fn q_os_profiles_require_an_exact_device_identity_and_endpoint() {
+        let mut connection = sample("q", ConnectionKind::Qos);
+        connection.host = "friendly-name".into();
+        connection.auth = AuthMethod::Password;
+        assert_eq!(
+            connection.profile_issue(),
+            Some("qOS device profiles must use qOS device identity.")
+        );
+
+        connection.auth = AuthMethod::DeviceIdentity;
+        assert_eq!(
+            connection.profile_issue(),
+            Some("qOS device node must be an exact certified endpoint id.")
+        );
+
+        connection.host = iroh::SecretKey::generate().public().to_string();
+        assert_eq!(connection.profile_issue(), None);
+    }
+
+    #[test]
+    fn protocol_specific_authentication_choices_never_offer_dead_paths() {
+        assert_eq!(
+            AuthMethod::available_for(ConnectionKind::Ssh),
+            &[AuthMethod::Password, AuthMethod::PublicKey]
+        );
+        assert_eq!(
+            AuthMethod::available_for(ConnectionKind::Vnc),
+            &[AuthMethod::Password]
+        );
+        assert_eq!(
+            AuthMethod::available_for(ConnectionKind::Qos),
+            &[AuthMethod::DeviceIdentity]
+        );
     }
 }

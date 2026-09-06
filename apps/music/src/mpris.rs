@@ -181,13 +181,13 @@ impl MprisHandle {
     /// Bring up the MPRIS service, publishing `initial` as the starting state.
     /// Never panics: without the `audio` feature, or if the session bus can't be
     /// reached, it returns an inert [`Self::disabled`] handle.
-    pub fn spawn(initial: PlayerSnapshot) -> Self {
+    pub fn spawn(initial: &PlayerSnapshot) -> Self {
         #[cfg(feature = "audio")]
         {
             match imp::spawn(initial.clone()) {
                 Some((cmd_rx, publish_tx)) => Self {
                     cmd_rx: Some(cmd_rx),
-                    last: initial,
+                    last: initial.clone(),
                     publish_tx: Some(publish_tx),
                 },
                 None => Self::disabled(),
@@ -214,15 +214,15 @@ impl MprisHandle {
     /// Publish the current player state to the bus, emitting `PropertiesChanged`
     /// for whatever changed. Cheap and deduped: identical/insignificant updates
     /// are dropped so the bus isn't spammed each frame.
-    pub fn publish(&mut self, snap: PlayerSnapshot) {
+    pub fn publish(&mut self, snap: &PlayerSnapshot) {
         if !snap.should_republish(&self.last) {
             return;
         }
-        self.last = snap.clone();
+        self.last.clone_from(snap);
         #[cfg(feature = "audio")]
         if let Some(tx) = &self.publish_tx {
             // Unbounded send is sync + non-blocking; a dead worker just drops it.
-            let _ = tx.send(snap);
+            let _ = tx.send(snap.clone());
         }
     }
 }
@@ -678,7 +678,7 @@ mod tests {
         assert!(!h.is_active());
         assert!(h.drain_commands().is_empty());
         // Publishing never panics on the stub.
-        h.publish(PlayerSnapshot {
+        h.publish(&PlayerSnapshot {
             status: PlaybackStatus::Playing,
             title: "x".into(),
             ..PlayerSnapshot::default()

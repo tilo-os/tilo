@@ -3,6 +3,9 @@
 This describes the shared `ui` framework path, not application-specific model
 logic. Counts are per primary window unless stated otherwise.
 
+See [Performance controls](performance-flags.md) for source-checked environment
+flags, production defaults, experimental dependencies, and profiling caveats.
+
 ## Object lifecycle
 
 1. Widgets are retained as one `Box<dyn Widget>` tree. Layout and drawing borrow

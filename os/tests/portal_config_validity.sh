@@ -4,7 +4,8 @@
 #
 #   1. The .portal file declares the right backend bus name and lists
 #      every interface our `quick_desktop::portal::serve()` registers.
-#   2. No obsolete D-Bus activation or standalone portal unit remains;
+#   2. The nirios desktop preference selects that backend.
+#   3. No obsolete D-Bus activation or standalone portal unit remains;
 #      the live compositor is the sole backend owner.
 #
 # Falls back to a grep-based contract when `xdg-desktop-portal-validator`
@@ -32,6 +33,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$TEST_DIR/.." && pwd)}"
 
 PORTAL_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/portals/qos.portal"
+PORTAL_PREFERENCE_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/nirios-portals.conf"
 DBUS_SERVICE_FILE="$OS_ROOT/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service"
 SYSTEMD_UNIT_FILE="$OS_ROOT/usr/lib/systemd/user/shell-portal.service"
 
@@ -119,6 +121,12 @@ if assert_file_exists "$PORTAL_FILE"; then
     fi
 fi
 
+# --- desktop preference ---------------------------------------------
+if assert_file_exists "$PORTAL_PREFERENCE_FILE"; then
+    assert_contains "$PORTAL_PREFERENCE_FILE" '^\[preferred\]$'
+    assert_contains "$PORTAL_PREFERENCE_FILE" '^default=qos$'
+fi
+
 # --- no second claimant for the bus name -----------------------------
 #
 # The compositor owns $EXPECTED_BUS_NAME in-process
@@ -155,7 +163,7 @@ if [[ -d "$OS_ROOT/usr/lib/systemd" ]]; then
 fi
 
 if (( fail == 0 )); then
-    echo "OK: portal config validity ($(( ${#EXPECTED_INTERFACES[@]} + 7 )) checks)"
+    echo "OK: portal config validity ($(( ${#EXPECTED_INTERFACES[@]} + 10 )) checks)"
     exit 0
 else
     exit 1

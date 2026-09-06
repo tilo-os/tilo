@@ -82,6 +82,7 @@ mod phrase {
             | Role::Heading { .. }
             | Role::Unknown => ("", ""),
             Role::Document => ("sr-role-document", "document"),
+            Role::Terminal => ("sr-role-terminal", "terminal"),
             Role::Canvas => ("sr-role-canvas", "canvas"),
         };
         if key.is_empty() {

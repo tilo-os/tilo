@@ -5,8 +5,11 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 
 ## What's in place
 
-- **Image signing.** CI signs every promoted image by digest with cosign
-  (`--tlog-upload=false`, own key). The tracked `keys/cosign.pub` is the
+- **Image signing and public transparency.** CI signs every promoted image by
+  digest with cosign and requires the default Rekor publication path for the
+  signature and attestations. The release invariant rejects both
+  `--tlog-upload=false` and `--insecure-ignore-tlog`. The tracked
+  `keys/cosign.pub` is the
   verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
   KMS/HSM key. Exportable private-key material is rejected by the workflow.
 - **Verify-before-update.** The image ships `/usr/share/qos/cosign.pub` + an
@@ -110,12 +113,12 @@ The signing key is the root of update trust — rotate on exposure or schedule.
 
 ## Still missing (§9 follow-ups)
 
-- **Transparency log.** We sign with our own key and do **not** upload to the
-  public sigstore/Rekor. A *self-hosted* append-only log of released digests —
-  and a measured-boot PCR policy that *requires* the running image to appear in
-  it (plan §4/§9) — is not yet stood up. This is what makes "trust qOS"
-  publicly verifiable rather than "trust our key."
-- **Independent transparency witness.** The registry stores signatures and
-  attestations, but a registry operator can still hide a release from a new
-  client. A separately administered append-only witness/checkpoint service is
-  still required for public split-view and freeze detection.
+- **Installed-client transparency enforcement.** Release CI publishes Rekor
+  evidence, but the installed update path currently enforces the qOS signature
+  through containers-policy; it does not independently require a fresh Rekor
+  inclusion proof and checkpoint before booting the image.
+- **Independent transparency witness.** Rekor provides public append-only
+  evidence, but the repository has no separately administered witness key and
+  checkpoint/freshness service yet. That independent operator is still needed
+  for robust split-view and freeze detection; the existing release-signed
+  freshness attestation is only the migration anchor, not an independent vote.

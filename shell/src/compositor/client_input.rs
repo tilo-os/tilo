@@ -1417,9 +1417,11 @@ pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
             Notification::new(
                 "Remote input stopped",
                 match revoked {
-                    0 => "No peer was driving this session.".to_string(),
-                    1 => "1 shared window is now view-only.".to_string(),
-                    n => format!("{n} shared windows are now view-only."),
+                    0 => "Remote control and sharing sessions were stopped.".to_string(),
+                    1 => "Remote control was removed and sharing was stopped.".to_string(),
+                    n => {
+                        format!("Remote control was removed from {n} shares; sharing was stopped.")
+                    }
                 },
             )
             .with_severity(NotificationSeverity::Warning)
@@ -2894,7 +2896,7 @@ mod tests {
             .find(|n| n.title == "Remote input stopped")
             .expect("the host got no confirmation that anything happened");
         assert!(
-            toast.body.contains('1'),
+            toast.body.contains("Remote control") && toast.body.contains("sharing was stopped"),
             "the confirmation has to say what it stopped; body was {:?}",
             toast.body,
         );

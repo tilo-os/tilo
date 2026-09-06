@@ -12,49 +12,112 @@
 //! synchronous.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
-use ui::search::{SearchProvider, SearchResult};
+use ui::qos_actions::ActionAddress;
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult, SearchTextIndex,
+};
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
+use crate::remote_accounts::RemoteAccount;
 
-/// The `action_id` prefix. A chosen row's `action_id` is `fav:<path>`;
-/// [`parse_action_id`] turns it back into the destination path.
-const ACTION_PREFIX: &str = "fav:";
-const RECORD_ACTION_PREFIX: &str = "record:";
+pub const OPEN_ACTION: &str = "open";
+pub const REVEAL_ACTION: &str = "reveal";
+pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
 
-/// A directory projection is untrusted input. Keep the palette snapshot small
-/// even when a mount exposes an unusually large directory.
-pub const MAX_COLLABORATIVE_SEARCH_RECORDS: usize = 256;
+/// Stable resource identity for a local place. Hex keeps the resource/action
+/// wire separator out of ids even when a Unix path contains control bytes.
+pub fn place_resource_id(path: &std::path::Path) -> String {
+    format!("files.place:{}", path_identity_suffix(path))
+}
+
+/// A path is an opaque filesystem name, not display text.  Resource ids cross
+/// the action door, where delimiters and control characters in a Unix filename
+/// must never alter the address.  Keep the encoding shared by folders and
+/// entries as well as Places so every Files resource remains round-trippable.
+fn path_identity_suffix(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str()
+        .as_bytes()
+        .iter()
+        .fold(String::new(), |mut output, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(output, "{byte:02x}");
+            output
+        })
+}
+
+/// Stable, wire-safe identity for a currently presented directory.  The path
+/// is deliberately the identity here: ordinary host folders do not have a
+/// qOS record UUID, while collaborative records use [`record_resource_id`].
+pub fn folder_resource_id(path: &std::path::Path) -> String {
+    format!("files.folder:{}", path_identity_suffix(path))
+}
+
+/// Stable, wire-safe identity for an entry in the currently presented folder.
+/// Collaborative resources additionally publish their record UUID identity,
+/// which survives rename and move; this address is the local filesystem view.
+pub fn entry_resource_id(path: &std::path::Path) -> String {
+    format!("files.entry:{}", path_identity_suffix(path))
+}
+
+pub fn place_open_address(path: &std::path::Path) -> ActionAddress {
+    ActionAddress::new(place_resource_id(path), OPEN_ACTION)
+}
+
+pub fn record_resource_id(record_id: uuid::Uuid) -> String {
+    format!("files.record:{record_id}")
+}
+
+pub fn record_reveal_address(record_id: uuid::Uuid) -> ActionAddress {
+    ActionAddress::new(record_resource_id(record_id), REVEAL_ACTION)
+}
+
+pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
+    ActionAddress::new(
+        crate::remote_accounts::resource_id(&account.id),
+        REMOTE_ACCOUNT_OPEN_ACTION,
+    )
+}
+
+/// Join independently searchable fields without allowing a query to match
+/// across a label/path boundary.  `SearchTextIndex` supplies the shared packed
+/// exact Unicode suffix index and hard result budget.
+fn searchable_fields(fields: impl IntoIterator<Item = String>) -> String {
+    fields.into_iter().collect::<Vec<_>>().join("\u{1f}")
+}
 
 /// A [`SearchProvider`] over a snapshot of the Favourites / Places list.
 pub struct PlacesSearchProvider {
-    favorites: Vec<Favorite>,
+    favorites: Vec<IndexedFavorite>,
+    index: SearchTextIndex,
     kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedFavorite {
+    favorite: Favorite,
 }
 
 impl PlacesSearchProvider {
     /// Snapshot the current favourites into a provider.
     pub fn new(favorites: Vec<Favorite>) -> Self {
+        let favorites: Vec<_> = favorites
+            .into_iter()
+            .map(|favorite| IndexedFavorite { favorite })
+            .collect();
         Self {
+            index: SearchTextIndex::new(favorites.iter().map(|entry| {
+                searchable_fields([
+                    entry.favorite.label.clone(),
+                    entry.favorite.path.to_string_lossy().into_owned(),
+                ])
+            })),
             favorites,
             kind: crate::i18n::t("files-a11y-places"),
         }
-    }
-
-    /// The `action_id` for a place — its destination path is its identity.
-    pub fn action_id(path: &std::path::Path) -> String {
-        format!("{ACTION_PREFIX}{}", path.display())
-    }
-
-    /// Resolve an `action_id` produced by this provider back into a destination
-    /// path. Returns `None` for an id this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<PathBuf> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
     }
 }
 
@@ -64,68 +127,72 @@ impl SearchProvider for PlacesSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let q = query.to_lowercase();
-        self.favorites
-            .iter()
-            .filter(|f| {
-                f.label.to_lowercase().contains(&q)
-                    || f.path.to_string_lossy().to_lowercase().contains(&q)
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.index
+            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .into_iter()
+            .filter_map(|entry_id| self.favorites.get(entry_id))
+            .map(|entry| {
+                let favorite = &entry.favorite;
+                SearchResult::for_action(
+                    &self.kind,
+                    favorite.label.clone(),
+                    place_open_address(&favorite.path),
+                )
+                .with_subtitle(favorite.path.display().to_string())
+                .with_icon(favorite.icon())
             })
-            .map(|f| {
-                SearchResult::new(&self.kind, f.label.clone(), Self::action_id(&f.path))
-                    .with_subtitle(f.path.display().to_string())
-                    .with_icon(f.icon())
-            })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
 
-/// Bounded search over the mount's ACL-filtered room record catalog. Record
+/// Complete search over the mount's ACL-filtered room record catalog. Record
 /// UUIDs, rather than paths, are action identity: paths are mutable provenance
 /// used only for matching and presentation.
 pub struct CollaborativeRecordSearchProvider {
-    records: Vec<CollaborativeSearchRecord>,
+    catalog: SearchCatalog,
     kind: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CollaborativeSearchRecord {
-    record_id: uuid::Uuid,
-    name: String,
-    provenance: PathBuf,
-    is_dir: bool,
-}
-
 impl CollaborativeRecordSearchProvider {
-    pub fn new(entries: &[WorkspaceRecord]) -> Self {
+    #[allow(
+        clippy::expect_used,
+        reason = "the action address and catalogue key are derived from the same immutable record UUID"
+    )]
+    pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
         let mut seen = BTreeSet::new();
-        let records = entries
-            .iter()
-            .filter_map(|entry| {
-                let record_id = entry.record_id;
-                seen.insert(record_id).then(|| CollaborativeSearchRecord {
-                    record_id,
-                    name: entry.name.clone(),
-                    provenance: entry.path.clone(),
-                    is_dir: entry.is_dir,
-                })
-            })
-            .take(MAX_COLLABORATIVE_SEARCH_RECORDS)
-            .collect();
-        Self {
-            records,
-            kind: crate::i18n::t("files-search-collaborative-records"),
+        let kind = crate::i18n::t("files-search-collaborative-records");
+        let catalog = SearchCatalog::new(kind.clone());
+        for entry in entries.iter().filter(|entry| seen.insert(entry.record_id)) {
+            let address = record_reveal_address(entry.record_id);
+            let result = SearchResult::for_action(&kind, entry.name.clone(), &address)
+                .with_subtitle(crate::i18n::t_args(
+                    "files-search-record-provenance",
+                    &[
+                        crate::i18n::arg("path", entry.path.display().to_string()),
+                        crate::i18n::arg("record", entry.record_id.to_string()),
+                    ],
+                ))
+                .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir));
+            // `address` is constructed from the same immutable record id as
+            // the catalogue key, so a failed insert would be a programmer
+            // error rather than a recoverable data condition.
+            catalog
+                .upsert(
+                    address.resource,
+                    searchable_fields([
+                        entry.name.clone(),
+                        entry.path.to_string_lossy().into_owned(),
+                    ]),
+                    result,
+                )
+                .expect("collaborative search result addresses its record resource");
         }
-    }
-
-    pub fn action_id(record_id: uuid::Uuid) -> String {
-        format!("{RECORD_ACTION_PREFIX}{record_id}")
-    }
-
-    pub fn parse_action_id(action_id: &str) -> Option<uuid::Uuid> {
-        action_id
-            .strip_prefix(RECORD_ACTION_PREFIX)
-            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        Self { catalog, kind }
     }
 }
 
@@ -135,32 +202,94 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let query = query.to_lowercase();
-        self.records
-            .iter()
-            .filter(|record| {
-                record.name.to_lowercase().contains(&query)
-                    || record
-                        .provenance
-                        .to_string_lossy()
-                        .to_lowercase()
-                        .contains(&query)
-            })
-            .map(|record| {
-                SearchResult::new(
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+}
+
+/// Searchable snapshot of the canonical, non-secret file-provider accounts.
+/// This is deliberately a small metadata projection, not a remote directory
+/// crawler: the mount daemon owns remote I/O and Files must remain responsive
+/// and offline-safe while the palette is open.
+pub struct RemoteAccountSearchProvider {
+    accounts: Vec<IndexedRemoteAccount>,
+    index: SearchTextIndex,
+    kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedRemoteAccount {
+    account: RemoteAccount,
+}
+
+impl RemoteAccountSearchProvider {
+    pub fn new(accounts: Vec<RemoteAccount>) -> Self {
+        let accounts: Vec<_> = accounts
+            .into_iter()
+            .map(|account| IndexedRemoteAccount { account })
+            .collect();
+        Self {
+            index: SearchTextIndex::new(accounts.iter().map(|entry| {
+                searchable_fields([
+                    entry.account.label.clone(),
+                    entry.account.host.clone(),
+                    entry.account.kind.label().to_owned(),
+                ])
+            })),
+            accounts,
+            kind: "Remote file accounts".into(),
+        }
+    }
+}
+
+impl SearchProvider for RemoteAccountSearchProvider {
+    fn name(&self) -> &str {
+        &self.kind
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.index
+            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .into_iter()
+            .filter_map(|entry_id| self.accounts.get(entry_id))
+            .map(|entry| {
+                let account = &entry.account;
+                SearchResult::for_action(
                     &self.kind,
-                    record.name.clone(),
-                    Self::action_id(record.record_id),
+                    account.label.clone(),
+                    remote_account_open_address(account),
                 )
-                .with_subtitle(crate::i18n::t_args(
-                    "files-search-record-provenance",
-                    &[
-                        crate::i18n::arg("path", record.provenance.display().to_string()),
-                        crate::i18n::arg("record", record.record_id.to_string()),
-                    ],
+                .with_subtitle(format!(
+                    "{} · {} · {}",
+                    account.kind.label(),
+                    account.host,
+                    account.health.label()
                 ))
-                .with_icon(ui::icons::icon_for_path(&record.provenance, record.is_dir))
+                .with_icon(ui::icons::icon_for_path(
+                    std::path::Path::new("remote-folder"),
+                    true,
+                ))
             })
+            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
@@ -169,6 +298,7 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
 mod tests {
     use super::*;
     use crate::favorites::{FavKind, Favorite};
+    use std::path::PathBuf;
     use ui::search::SearchRegistry;
 
     fn places() -> Vec<Favorite> {
@@ -232,15 +362,46 @@ mod tests {
             .find(|r| r.title == "Documents")
             .expect("Documents is findable");
         assert_eq!(
-            PlacesSearchProvider::parse_action_id(&hit.action_id),
-            Some(PathBuf::from("/home/tester/Documents"))
+            hit.action_address(),
+            Some(place_open_address(
+                PathBuf::from("/home/tester/Documents").as_path()
+            ))
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(PlacesSearchProvider::parse_action_id("contact:42").is_none());
-        assert!(PlacesSearchProvider::parse_action_id("fav:").is_none());
+    fn remote_accounts_are_searchable_by_label_host_and_kind() {
+        let account = RemoteAccount {
+            id: accounts::AccountId::from("cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+            label: "Personal cloud".into(),
+            host: "cloud.example".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+        };
+        let provider = RemoteAccountSearchProvider::new(vec![account.clone()]);
+        for query in ["personal", "example", "nextcloud"] {
+            assert_eq!(provider.search(query).len(), 1, "{query}");
+        }
+        assert_eq!(
+            provider.search("personal")[0].action_address(),
+            Some(remote_account_open_address(&account))
+        );
+    }
+
+    #[test]
+    fn place_resource_ids_are_wire_safe() {
+        let address = place_open_address(PathBuf::from("/tmp/a\u{1f}b").as_path());
+        assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
+    }
+
+    #[test]
+    fn folder_and_entry_resource_ids_are_wire_safe_and_kind_scoped() {
+        let path = PathBuf::from("/tmp/a\u{1f}b");
+        let folder = ActionAddress::new(folder_resource_id(&path), "refresh");
+        let entry = ActionAddress::new(entry_resource_id(&path), "open");
+        assert_eq!(ActionAddress::parse(&folder.encode()), Some(folder));
+        assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
+        assert_ne!(folder_resource_id(&path), entry_resource_id(&path));
     }
 
     #[test]
@@ -251,16 +412,14 @@ mod tests {
         entry.record_id = record_id;
         let provider = CollaborativeRecordSearchProvider::new(&[entry]);
         let hit = provider.search("workspace").pop().expect("path matches");
-        assert_eq!(
-            CollaborativeRecordSearchProvider::parse_action_id(&hit.action_id),
-            Some(record_id)
-        );
+        assert_eq!(hit.action_address(), Some(record_reveal_address(record_id)));
         assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
     }
 
     #[test]
-    fn collaborative_projection_is_deduplicated_and_bounded() {
-        let entries: Vec<_> = (0..MAX_COLLABORATIVE_SEARCH_RECORDS + 20)
+    fn collaborative_projection_is_deduplicated_and_complete_beyond_the_old_cap() {
+        const RECORD_COUNT: usize = 276;
+        let entries: Vec<_> = (0..RECORD_COUNT)
             .flat_map(|index| {
                 let id = uuid::Uuid::from_u128(index as u128 + 1);
                 let mut first = collaborative_entry(&format!("file-{index}"));
@@ -270,7 +429,83 @@ mod tests {
             })
             .collect();
         let provider = CollaborativeRecordSearchProvider::new(&entries);
-        assert_eq!(provider.search("").len(), MAX_COLLABORATIVE_SEARCH_RECORDS);
+        // Result presentation is intentionally capped, but the index itself
+        // is complete: a match beyond the former 256-record snapshot limit is
+        // still discoverable.
+        assert_eq!(provider.search("file-275").len(), 1);
+    }
+
+    #[test]
+    fn collaborative_search_pages_a_late_hit_in_a_100k_record_catalog() {
+        const RECORD_COUNT: usize = 100_001;
+        let mut entries: Vec<_> = (0..RECORD_COUNT)
+            .map(|index| {
+                let mut entry = collaborative_entry(&format!("record-{index}"));
+                entry.record_id = uuid::Uuid::from_u128(index as u128 + 1);
+                entry.path = PathBuf::from(format!("/Workspace/record-{index}"));
+                entry
+            })
+            .collect();
+        // A unique late tail proves this is a complete index, not a first-page
+        // snapshot.  It also avoids making the test's query work proportional
+        // to the entire corpus.
+        entries[RECORD_COUNT - 1].name = "late-needle-文書".into();
+        entries[RECORD_COUNT - 1].path = PathBuf::from("/Workspace/late-needle-文書");
+        let provider = CollaborativeRecordSearchProvider::new(&entries);
+
+        let page = provider.search_page("needle-文書", None, 1, 1);
+        assert_eq!(page.inspected, 1);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "late-needle-文書");
+        assert!(
+            page.next.is_none(),
+            "the exact late hit exhausted its posting"
+        );
+
+        // Broad searches remain bounded and carry an explicit continuation.
+        let first = provider.search_page("record", None, 7, 7);
+        assert_eq!(first.inspected, 7);
+        assert_eq!(first.results.len(), 7);
+        let second = provider.search_page("record", first.next.as_ref(), 7, 7);
+        assert_eq!(second.inspected, 7);
+        assert!(
+            second
+                .results
+                .iter()
+                .all(|hit| !first.results.contains(hit))
+        );
+    }
+
+    #[test]
+    fn suffix_index_finds_mid_token_tail_hits_with_a_fixed_result_budget() {
+        let texts: Vec<_> = (0..(DEFAULT_SEARCH_CANDIDATE_LIMIT + 80))
+            .map(|index| format!("common-{index}"))
+            .chain(std::iter::once("archive-composite-tail".into()))
+            .collect();
+        let index = SearchTextIndex::new(texts.iter());
+
+        // `site` is neither a prefix nor a complete token. The unique tail
+        // posting proves late corpus members remain searchable.
+        assert_eq!(
+            index.matching_ids("site", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            vec![texts.len() - 1]
+        );
+        // A deliberately common one-character query still never inspects more
+        // than the hard candidate budget.
+        assert_eq!(
+            index
+                .matching_ids("m", DEFAULT_SEARCH_CANDIDATE_LIMIT)
+                .len(),
+            DEFAULT_SEARCH_CANDIDATE_LIMIT
+        );
+        // Exact and partial matches follow the same postings path: `common-1`
+        // must not hide the longer `common-10`/`common-100` entries.
+        assert!(
+            index
+                .matching_ids("common-1", DEFAULT_SEARCH_CANDIDATE_LIMIT)
+                .len()
+                > 1
+        );
     }
 
     #[test]
@@ -300,11 +535,24 @@ mod tests {
         let hit = providers[0]
             .search("")
             .into_iter()
-            .find(|r| PlacesSearchProvider::parse_action_id(&r.action_id) == Some(home.clone()))
+            .find(|r| r.action_address() == Some(place_open_address(&home)))
             .expect("the Home favourite is findable through the real hook");
 
-        let mut doc = AutoCommit::new();
-        app.activate_search_result(&hit.action_id, &mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        let address = hit.action_address().expect("canonical action address");
+        let resources = app.resources(&doc);
+        let spec = ui::qos_actions::door::resolve(&resources, &address)
+            .expect("search address is exported");
+        assert_eq!(spec.kind, ui::qos_actions::OperationKind::View);
+        assert_eq!(spec.contract, ui::qos_actions::ActionContract::view());
+        let kind = spec.kind;
+        let encoded =
+            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+                .expect("search address is exported");
+        assert!(
+            app.invoke_resource_operation(kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
+                .unwrap()
+        );
         assert_eq!(
             app.current_path(),
             home,

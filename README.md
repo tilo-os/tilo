@@ -108,9 +108,15 @@ everywhere, collaborative cursors, peer-shared tabs over H.264, per-workspace sa
 portal-mediated grants, FUSE-projected workspaces, and headless test infrastructure that
 produces the same pixels as the live binary.
 
-Collaboration between different people works today. Syncing your own devices to each other is
-the part that is not finished. Also outstanding for daily-driver use: multi-monitor, the
-AT-SPI accessibility tree, audio routing, notifications, session lock and power management.
+Collaboration between different people works today; durable encrypted channel membership and
+the production secret-store boundary are being completed before it is called ready for syncing
+your own devices. Also outstanding for daily-driver use: multi-workspace-per-output and cross-GPU
+monitor handling, per-app audio routing, and recorded hardware acceptance for session lock and
+power management. The app/shell AT-SPI bridge now includes compositor-owned OOBE, desktop and
+protected-lock endpoints, and the installed-image workflow walks those trees through an external
+AT-SPI client. Human screen-reader acceptance and a successful run of the new installed-system
+gate remain evidence requirements; they are not missing implementation hidden behind a status
+claim.
 
 Release packaging covers the platform matrix in `docs/install-contract.json`,
 but the first public Imager, installer image, and Linux package registries have

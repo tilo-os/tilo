@@ -7,7 +7,23 @@
 //! is plain, unit-testable logic.
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
+
+/// Canonical, Unicode-safe text projection used for search, group matching,
+/// and deterministic list ordering. NFC first makes canonically equivalent
+/// user input compare alike; lowercasing is deliberately scalar-based, never
+/// byte-indexed, so names in every script remain valid UTF-8 throughout.
+#[must_use]
+pub fn normalize_text(value: &str) -> String {
+    value.nfc().flat_map(char::to_lowercase).collect()
+}
+
+/// Whether two user-visible group names designate the same group.
+#[must_use]
+pub fn group_names_equal(left: &str, right: &str) -> bool {
+    normalize_text(left.trim()) == normalize_text(right.trim())
+}
 
 /// Stable identifier for a single contact record. Backs every
 /// cross-reference and the CRDT map key.
@@ -16,32 +32,72 @@ pub type ContactId = Uuid;
 /// A typed, repeatable single-value field — a phone number or an email
 /// address. `label` is a free-form type tag (home / work / mobile / …);
 /// `value` is the actual number or address.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Labeled {
+    pub id: Uuid,
     pub label: String,
     pub value: String,
 }
 
 impl Labeled {
+    #[must_use]
     pub fn new(label: &str, value: &str) -> Self {
         Self {
+            id: Uuid::new_v4(),
             label: label.to_string(),
             value: value.to_string(),
         }
     }
 }
 
+impl Default for Labeled {
+    fn default() -> Self {
+        Self::new("", "")
+    }
+}
+
 /// A typed postal address. Components map onto the vCard `ADR` structured
 /// value (`PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY`) — we keep the four
 /// fields that matter for a daily address book plus a free type label.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
+    pub id: Uuid,
     pub label: String,
     pub street: String,
     pub city: String,
     pub region: String,
     pub postal: String,
     pub country: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupEntry {
+    pub id: Uuid,
+    pub value: String,
+}
+
+impl GroupEntry {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            value: value.into(),
+        }
+    }
+}
+
+impl Default for Address {
+    fn default() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            street: String::new(),
+            city: String::new(),
+            region: String::new(),
+            postal: String::new(),
+            country: String::new(),
+        }
+    }
 }
 
 impl Address {
@@ -235,7 +291,7 @@ pub struct Contact {
     pub phones: Vec<Labeled>,
     pub emails: Vec<Labeled>,
     pub addresses: Vec<Address>,
-    pub groups: Vec<String>,
+    pub groups: Vec<GroupEntry>,
     pub favorite: bool,
 }
 
@@ -289,7 +345,7 @@ impl Contact {
         }
     }
 
-    /// True if `query` (already lower-cased) matches anywhere in the
+    /// True if `query` matches anywhere in the
     /// record — name, org, title, any phone / email / address, notes or
     /// group. Powers the cross-field search box.
     pub fn matches(&self, query: &str) -> bool {
@@ -307,24 +363,46 @@ impl Contact {
         hay.push(' ');
         hay.push_str(&self.website);
         hay.push(' ');
+        if let Some(birthday) = self.birthday {
+            hay.push_str(&birthday.iso());
+            hay.push(' ');
+            hay.push_str(&birthday.pretty());
+            hay.push(' ');
+        }
         hay.push_str(&self.notes);
         for p in &self.phones {
+            hay.push(' ');
+            hay.push_str(&p.label);
             hay.push(' ');
             hay.push_str(&p.value);
         }
         for e in &self.emails {
             hay.push(' ');
+            hay.push_str(&e.label);
+            hay.push(' ');
             hay.push_str(&e.value);
         }
         for a in &self.addresses {
+            hay.push(' ');
+            hay.push_str(&a.label);
+            hay.push(' ');
+            hay.push_str(&a.street);
+            hay.push(' ');
+            hay.push_str(&a.city);
+            hay.push(' ');
+            hay.push_str(&a.region);
+            hay.push(' ');
+            hay.push_str(&a.postal);
+            hay.push(' ');
+            hay.push_str(&a.country);
             hay.push(' ');
             hay.push_str(&a.one_line());
         }
         for g in &self.groups {
             hay.push(' ');
-            hay.push_str(g);
+            hay.push_str(&g.value);
         }
-        hay.to_lowercase().contains(query)
+        normalize_text(&hay).contains(&normalize_text(query))
     }
 }
 
@@ -390,13 +468,27 @@ impl ContactStore {
         let mut set: Vec<String> = Vec::new();
         for c in &self.contacts {
             for g in &c.groups {
-                let g = g.trim();
-                if !g.is_empty() && !set.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+                let g = g.value.trim();
+                if g.is_empty() {
+                    continue;
+                }
+                if let Some(existing) = set.iter_mut().find(|x| group_names_equal(x, g)) {
+                    // CRDT/map arrival order is not a presentation contract.
+                    // Pick one deterministic spelling for equivalent Unicode
+                    // group names so separate peers expose the same filter.
+                    if g < existing.as_str() {
+                        *existing = g.to_string();
+                    }
+                } else {
                     set.push(g.to_string());
                 }
             }
         }
-        set.sort_by_key(|s| s.to_lowercase());
+        set.sort_by(|left, right| {
+            normalize_text(left)
+                .cmp(&normalize_text(right))
+                .then_with(|| left.cmp(right))
+        });
         set
     }
 
@@ -409,14 +501,14 @@ impl ContactStore {
         group: Option<&str>,
         sort: SortKey,
     ) -> Vec<ContactId> {
-        let q = query.trim().to_lowercase();
+        let q = normalize_text(query.trim());
         let mut out: Vec<&Contact> = self
             .contacts
             .iter()
             .filter(|c| c.matches(&q))
             .filter(|c| match group {
                 None => true,
-                Some(g) => c.groups.iter().any(|x| x.eq_ignore_ascii_case(g)),
+                Some(g) => c.groups.iter().any(|x| group_names_equal(&x.value, g)),
             })
             .collect();
         out.sort_by(|a, b| sort_cmp(a, b, sort));
@@ -437,8 +529,14 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
         match sort {
-            SortKey::Name => (c.last.trim().to_lowercase(), c.first.trim().to_lowercase()),
-            SortKey::Org => (c.org.trim().to_lowercase(), c.display_name().to_lowercase()),
+            SortKey::Name => (
+                normalize_text(c.last.trim()),
+                normalize_text(c.first.trim()),
+            ),
+            SortKey::Org => (
+                normalize_text(c.org.trim()),
+                normalize_text(&c.display_name()),
+            ),
         }
     };
     let (ka1, ka2) = key(a);
@@ -452,10 +550,9 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     }
     match ka1.cmp(&kb1) {
         Ordering::Equal => match ka2.cmp(&kb2) {
-            Ordering::Equal => a
-                .display_name()
-                .to_lowercase()
-                .cmp(&b.display_name().to_lowercase()),
+            Ordering::Equal => normalize_text(&a.display_name())
+                .cmp(&normalize_text(&b.display_name()))
+                .then_with(|| a.id.cmp(&b.id)),
             other => other,
         },
         other => other,
@@ -504,7 +601,7 @@ fn make_sample(spec: SampleSpec<'_>) -> Contact {
         groups: spec
             .groups
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|value| GroupEntry::new(*value))
             .collect(),
         favorite: spec.favorite,
     }
@@ -524,6 +621,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
                 ("home", "ada.lovelace@example.com"),
             ],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
@@ -545,6 +643,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             phones: &[("work", "+1 202 555 0143")],
             emails: &[("work", "grace.hopper@navy.mil")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "9620 Maryland Ave".into(),
                 city: "Arlington".into(),
@@ -580,6 +679,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             phones: &[("work", "+1 757 555 0188"), ("mobile", "+1 757 555 0042")],
             emails: &[("work", "k.johnson@nasa.gov")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "100 NASA Rd".into(),
                 city: "Hampton".into(),
@@ -635,6 +735,7 @@ fn sample_contacts_part2() -> Vec<Contact> {
             phones: &[("work", "+1 617 555 0156")],
             emails: &[("work", "mhamilton@mit.edu")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "77 Massachusetts Ave".into(),
                 city: "Cambridge".into(),
@@ -846,7 +947,7 @@ mod tests {
                 .unwrap()
                 .groups
                 .iter()
-                .any(|g| g.eq_ignore_ascii_case("Friends"))
+                .any(|g| g.value.eq_ignore_ascii_case("Friends"))
         }));
         assert!(!friends.is_empty());
     }
@@ -855,10 +956,30 @@ mod tests {
     fn all_groups_dedupes_case_insensitively() {
         let mut store = ContactStore::new();
         let mut a = Contact::new();
-        a.groups = vec!["Work".into(), "work".into(), "Family".into()];
+        a.groups = vec![
+            GroupEntry::new("Work"),
+            GroupEntry::new("work"),
+            GroupEntry::new("Family"),
+        ];
         store.upsert(a);
         let groups = store.all_groups();
         assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
+    }
+
+    #[test]
+    fn groups_and_search_handle_canonically_equivalent_unicode() {
+        let mut store = ContactStore::new();
+        let mut first = Contact::new();
+        first.groups.push(GroupEntry::new("Cafe\u{301}"));
+        let mut second = Contact::new();
+        second.groups.push(GroupEntry::new("CAFÉ"));
+        store.upsert(first.clone());
+        store.upsert(second.clone());
+
+        assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
+        let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
+        assert_eq!(visible.len(), 2);
+        assert!(first.matches("CAFÉ"));
     }
 
     #[test]

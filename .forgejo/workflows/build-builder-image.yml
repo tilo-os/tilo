@@ -1,4 +1,4 @@
-name: Build the CI builder image
+name: Snapshot / CI builder
 
 # Publishes code.sandbox.example/qos/qos-builder, which check.yml runs in. Weekly so
 # the base and the package set stay current; on dispatch, and whenever the
@@ -69,6 +69,8 @@ jobs:
       # The runner provides docker, not podman.
       - name: Set up buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
 
       # The Containerfile runs tools/check-build-env.sh during the build, so a
       # missing native dependency fails here rather than in every later job.
@@ -86,6 +88,8 @@ jobs:
             code.sandbox.example/qos/qos-builder:${{ env.RUST_CHANNEL }}
             code.sandbox.example/qos/qos-builder:${{ github.sha }}
             code.sandbox.example/qos/qos-builder:latest
+          cache-from: type=registry,ref=code.sandbox.example/qos/qos-builder-buildcache:latest
+          cache-to: type=registry,ref=code.sandbox.example/qos/qos-builder-buildcache:latest,mode=max
 
   # Two separate, fresh job containers prove that an object written by the
   # first compiler process is read back from the remote S3 cache by another.

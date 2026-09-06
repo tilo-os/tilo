@@ -34,14 +34,14 @@ use crate::errors::{Error, Result};
 pub struct ChannelGroup {
     /// The qOS channel this group represents, so callers can route incoming
     /// ops via [`channel_id`](Self::channel_id) without a side table.
-    channel_id: ChannelId,
+    pub(crate) channel_id: ChannelId,
     /// Secret material + provider — the group state lives in
     /// `member.provider`; do not allocate a second provider.
-    member: MemberKey,
+    pub(crate) member: MemberKey,
     /// The openmls group state, mutated in place, kept private so callers
     /// can't reach around the wrapper (e.g. commit without going through
     /// this crate).
-    group: MlsGroup,
+    pub(crate) group: MlsGroup,
 }
 
 /// `MlsGroupCreateConfig` toggles always on: `use_ratchet_tree_extension(true)`
@@ -127,13 +127,11 @@ impl ChannelGroup {
     /// caller must broadcast the Welcome to the new member and the
     /// accompanying *commit* to existing members so they advance too.
     ///
-    /// **Current limitation**: the commit is dropped on the floor here. With
-    /// only a single-creator/single-joiner test surface, the joiner
-    /// reconstructs state from the self-contained Welcome and the creator
-    /// advances locally — both land at the new epoch. A 3+-member group
-    /// needs the commit fanned out to existing peers (broker integration);
-    /// [`add_member_with_commit`](Self::add_member_with_commit) synthesises
-    /// that handoff for the in-crate `third_member_joins` test.
+    /// This convenience is valid only for the first join, when there is no
+    /// pre-existing peer that needs the commit. Once the group has two or more
+    /// members it refuses; callers must use
+    /// [`add_member_with_commit`](Self::add_member_with_commit) and fan the
+    /// returned commit out before considering the admission complete.
     ///
     /// # Errors
     ///
@@ -141,7 +139,37 @@ impl ChannelGroup {
     /// commit fails, or [`Error::TlsCodec`] if the resulting Welcome fails
     /// to serialise.
     pub fn add_member(&mut self, candidate_key_package: KeyPackage) -> Result<Vec<u8>> {
-        let (_commit, welcome_msg, _gi) = self
+        if self.member_count() != 1 {
+            return Err(Error::CommitPropagationRequired {
+                operation: "ChannelGroup::add_member",
+                required_api: "ChannelGroup::add_member_with_commit",
+            });
+        }
+        let (welcome, _) =
+            self.add_member_transactional(candidate_key_package, |_, _, _, _| Ok(()))?;
+        Ok(welcome)
+    }
+
+    /// Prepare an add, call `persist` with the opaque Welcome, optional
+    /// existing-member commit, and post-change epoch, and only then merge the
+    /// pending commit locally. A persistence failure leaves the epoch
+    /// unchanged, allowing the caller to retry instead of creating a locally
+    /// admitted member with no durable delivery record.
+    ///
+    /// # Errors
+    ///
+    /// Returns the MLS/codec error, the callback's persistence error, or a
+    /// storage error if rolling back a failed handoff fails.
+    pub fn add_member_transactional<F>(
+        &mut self,
+        candidate_key_package: KeyPackage,
+        persist: F,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>)>
+    where
+        F: FnOnce(&ChannelGroup, &[u8], Option<&[u8]>, u64) -> Result<()>,
+    {
+        let preexisting_members = self.member_count();
+        let (commit_msg, welcome_msg, _gi) = self
             .group
             .add_members(
                 &self.member.provider,
@@ -149,12 +177,35 @@ impl ChannelGroup {
                 &[candidate_key_package],
             )
             .map_err(Error::openmls)?;
+        let welcome = welcome_msg
+            .tls_serialize_detached()
+            .map_err(Error::tls_codec)?;
+        let commit = if preexisting_members > 1 {
+            Some(
+                commit_msg
+                    .tls_serialize_detached()
+                    .map_err(Error::tls_codec)?,
+            )
+        } else {
+            None
+        };
+        if let Err(error) = persist(
+            self,
+            &welcome,
+            commit.as_deref(),
+            self.epoch().saturating_add(1),
+        ) {
+            self.group
+                .clear_pending_commit(openmls_traits::OpenMlsProvider::storage(
+                    &self.member.provider,
+                ))
+                .map_err(Error::storage)?;
+            return Err(error);
+        }
         self.group
             .merge_pending_commit(&self.member.provider)
             .map_err(Error::openmls)?;
-        welcome_msg
-            .tls_serialize_detached()
-            .map_err(Error::tls_codec)
+        Ok((welcome, commit))
     }
 
     /// Same as [`add_member`](Self::add_member) but also returns the commit
@@ -172,23 +223,12 @@ impl ChannelGroup {
         &mut self,
         candidate_key_package: KeyPackage,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let (commit_msg, welcome_msg, _gi) = self
-            .group
-            .add_members(
-                &self.member.provider,
-                &self.member.signer,
-                &[candidate_key_package],
-            )
-            .map_err(Error::openmls)?;
-        self.group
-            .merge_pending_commit(&self.member.provider)
-            .map_err(Error::openmls)?;
-        let welcome = welcome_msg
-            .tls_serialize_detached()
-            .map_err(Error::tls_codec)?;
-        let commit = commit_msg
-            .tls_serialize_detached()
-            .map_err(Error::tls_codec)?;
+        let (welcome, commit) =
+            self.add_member_transactional(candidate_key_package, |_, _, _, _| Ok(()))?;
+        let commit = commit.ok_or(Error::CommitPropagationRequired {
+            operation: "ChannelGroup::add_member_with_commit",
+            required_api: "ChannelGroup::add_member",
+        })?;
         Ok((welcome, commit))
     }
 
@@ -366,22 +406,68 @@ impl ChannelGroup {
         }
     }
 
-    /// Remove a member from the group.
-    ///
-    /// **Not implemented.** The broker needs to fan out the resulting commit
-    /// to surviving members (same plumbing as
-    /// [`add_member_with_commit`](Self::add_member_with_commit) minus a
-    /// Welcome), and the role table needs a `Revoke` op class. Until then,
-    /// callers can mint a fresh channel and invite only the desired members.
+    /// Remove a member and return the commit every other member must process.
+    /// The caller is already advanced locally; surviving remote members call
+    /// [`process_commit`](Self::process_commit). The removed member should also
+    /// receive the commit so `OpenMLS` marks its local group inactive.
     ///
     /// # Errors
     ///
-    /// Always returns [`Error::NotImplemented`] — see above.
-    pub fn remove_member(&mut self, _leaf_index: u32) -> Result<()> {
-        Err(Error::NotImplemented {
-            operation: "ChannelGroup::remove_member",
-            reason: "needs broker commit fan-out and a role-table revoke op class",
-        })
+    /// Returns [`Error::OpenMls`] when the leaf is invalid or `OpenMLS` refuses
+    /// the change, and [`Error::TlsCodec`] when the commit cannot be encoded.
+    pub fn remove_member(&mut self, leaf_index: u32) -> Result<Vec<u8>> {
+        self.remove_member_transactional(leaf_index, |_, _, _| Ok(()))
+    }
+
+    /// Removal counterpart to [`Self::add_member_transactional`]. The opaque
+    /// commit is durably handed to the caller before the local pending commit
+    /// is merged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the MLS/codec error, the callback's persistence error, or a
+    /// storage error if rolling back a failed handoff fails.
+    pub fn remove_member_transactional<F>(&mut self, leaf_index: u32, persist: F) -> Result<Vec<u8>>
+    where
+        F: FnOnce(&ChannelGroup, &[u8], u64) -> Result<()>,
+    {
+        let (commit, _welcome, _group_info) = self
+            .group
+            .remove_members(
+                &self.member.provider,
+                &self.member.signer,
+                &[LeafNodeIndex::new(leaf_index)],
+            )
+            .map_err(Error::openmls)?;
+        let commit = commit.tls_serialize_detached().map_err(Error::tls_codec)?;
+        if let Err(error) = persist(self, &commit, self.epoch().saturating_add(1)) {
+            self.group
+                .clear_pending_commit(openmls_traits::OpenMlsProvider::storage(
+                    &self.member.provider,
+                ))
+                .map_err(Error::storage)?;
+            return Err(error);
+        }
+        self.group
+            .merge_pending_commit(&self.member.provider)
+            .map_err(Error::openmls)?;
+        Ok(commit)
+    }
+
+    /// Finish a pending member commit restored from a sealed crash-recovery
+    /// checkpoint. Returns `false` when no transaction is pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `OpenMLS` error when the pending commit cannot be merged.
+    pub fn merge_pending_transaction(&mut self) -> Result<bool> {
+        if self.group.pending_commit().is_none() {
+            return Ok(false);
+        }
+        self.group
+            .merge_pending_commit(&self.member.provider)
+            .map_err(Error::openmls)?;
+        Ok(true)
     }
 }
 

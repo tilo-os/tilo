@@ -194,6 +194,10 @@ pub struct TextInput {
     /// Gates whether edits splice into `state`, materialising a missing path
     /// lazily on the first effective edit.
     crdt_bound: bool,
+    /// Action-owned parents can retain a bound text object for reconciliation
+    /// while keeping optimistic input entirely local until they dispatch their
+    /// own semantic operation.
+    direct_crdt_writes: bool,
     /// Distinguishes an uninitialised binding (where a local initial value may
     /// remain visible) from a path removed by undo or a remote model change.
     path_was_present: bool,
@@ -373,6 +377,7 @@ impl TextInput {
             local_state: None,
             model_layout_dirty: false,
             crdt_bound: false,
+            direct_crdt_writes: true,
             path_was_present: false,
             external_buffer: None,
             font_size_override: None,
@@ -439,7 +444,16 @@ impl TextInput {
         self.bound_text.as_ref()
     }
 
+    /// Keep an existing document binding readable while preventing this input
+    /// from directly splicing the backing `Text` object on user input.
+    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
+        self.direct_crdt_writes = enabled;
+    }
+
     fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if !self.direct_crdt_writes {
+            return None;
+        }
         if self.action.is_some() {
             return None;
         }
@@ -6502,6 +6516,31 @@ mod tests {
             &taffy,
         );
         handled
+    }
+
+    #[test]
+    fn action_owned_bound_text_edits_optimistically_without_splicing_document() {
+        let mut doc = AutoCommit::new();
+        let text = doc
+            .put_object(&automerge::ROOT, "note", ObjType::Text)
+            .expect("note text");
+        doc.splice_text(&text, 0, 0, "before")
+            .expect("seed note text");
+        let mut input = TextInput::local();
+        input.bind_text(text.clone());
+        input.sync(&mut doc, &automerge::ROOT);
+        input.set_focus(true);
+        input.set_cursor_pos("before".len());
+        input.set_direct_crdt_writes(false);
+
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &char_key_event("!"),
+            mods(false, false)
+        ));
+        assert_eq!(input.value(), "before!", "optimistic text remains visible");
+        assert_eq!(doc.text(&text).expect("document text"), "before");
     }
 
     /// Unfocused, so `scroll_x` stays 0 and click math is simple.

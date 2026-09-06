@@ -53,6 +53,60 @@ pub enum InstallError {
     Io(#[from] std::io::Error),
 }
 
+/// Registry-authenticated identity that downloaded bytes must match.
+///
+/// This is deliberately supplied by the privileged Store capability, not
+/// inferred from the archive: an archive is allowed to describe itself, but
+/// it is not allowed to choose the identity the user approved in the
+/// catalogue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallExpectation {
+    pub package_root: PackageId,
+    pub publisher: [u8; 32],
+    pub app_id: String,
+    pub version: String,
+    pub size_bytes: u64,
+}
+
+/// Verify a registry download against every signed catalogue identity before
+/// ingesting it into the host store.
+///
+/// # Errors
+///
+/// Returns an error when the bytes do not match the expected catalogue identity
+/// or cannot be installed into the host store.
+pub fn install_verified_qpkg(
+    store: &Store,
+    bytes: &[u8],
+    pinning: Pinning,
+    expected: &InstallExpectation,
+) -> Result<PackageId, InstallError> {
+    let actual_size = u64::try_from(bytes.len())
+        .map_err(|_| InstallError::Verify("package length does not fit u64".into()))?;
+    if actual_size != expected.size_bytes {
+        return Err(InstallError::Verify(format!(
+            "package size mismatch: catalogue says {}, download has {actual_size}",
+            expected.size_bytes
+        )));
+    }
+    app_registry::verify_bytes(bytes, expected.package_root, expected.publisher)
+        .map_err(|error| InstallError::Verify(error.to_string()))?;
+    let meta =
+        app_registry::qpkg::load(bytes).map_err(|error| InstallError::Verify(error.to_string()))?;
+    if meta.manifest.package.id != expected.app_id
+        || meta.manifest.package.version != expected.version
+    {
+        return Err(InstallError::Verify(format!(
+            "manifest identity mismatch: expected {}@{}, got {}@{}",
+            expected.app_id,
+            expected.version,
+            meta.manifest.package.id,
+            meta.manifest.package.version
+        )));
+    }
+    install_qpkg(store, bytes, pinning)
+}
+
 /// Ingest a .qpkg-shaped byte blob into `store`.
 ///
 /// - Verifies the signature (best-effort: self-signed is accepted; the

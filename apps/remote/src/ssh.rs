@@ -187,6 +187,10 @@ impl SshSession {
     /// Queue bytes and receive an acknowledgement only after russh has
     /// accepted them on the live channel. Resource actions use this instead
     /// of mistaking insertion into the UI→worker queue for delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input worker has already stopped.
     pub fn send_input_ack(
         &self,
         bytes: Vec<u8>,

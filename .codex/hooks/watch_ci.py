@@ -25,6 +25,7 @@ TERMINAL_STATUSES = {
     "canceled",
     "skipped",
     "neutral",
+    "blocked",
 }
 GREEN_STATUSES = {"success", "skipped", "neutral"}
 PUSH_COMMAND = re.compile(r"(?:^|[;&|]\s*)git(?:\s+-\S+)*\s+push(?:\s|$)", re.MULTILINE)
@@ -52,10 +53,27 @@ def pushed_successfully(event: dict[str, Any]) -> bool:
         return False
 
     response = event.get("tool_response")
-    if not isinstance(response, dict):
+    if isinstance(response, dict):
+        exit_code = response.get("exit_code", response.get("exitCode"))
+        return exit_code == 0
+    # Native Codex serializes completed Bash output as a string and does not
+    # include the process exit code. The remote-ref check in main() is the
+    # authoritative success test for that event shape.
+    return isinstance(response, str)
+
+
+def branch_is_on_remote(cwd: Path, sha: str, branch: str) -> bool:
+    if not branch:
         return False
-    exit_code = response.get("exit_code", response.get("exitCode"))
-    return exit_code == 0
+    result = run(
+        ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+        cwd=cwd,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    remote_sha = result.stdout.partition("\t")[0].strip()
+    return remote_sha == sha
 
 
 def forgejo_target(cwd: Path) -> tuple[str, str]:
@@ -248,6 +266,8 @@ def main() -> int:
         branch = run(
             ["git", "branch", "--show-current"], cwd=cwd, check=False
         ).stdout.strip()
+        if not branch_is_on_remote(cwd, sha, branch):
+            return 0
         host, repo = forgejo_target(cwd)
         started = dt.datetime.now(dt.timezone.utc)
         outcome, runs = watch(

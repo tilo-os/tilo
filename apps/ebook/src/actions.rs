@@ -24,7 +24,7 @@ use qos_actions::{
 };
 
 use crate::doc::BooksDoc;
-use crate::model::{AnnoKind, Annotation, HiColor};
+use crate::model::{AnnoKind, Annotation, HiColor, Progress};
 
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
@@ -37,7 +37,30 @@ pub enum EbookOperation {
     ToggleContents,
     ToggleNotes,
     OpenSettings,
-    OpenBook { path: Option<String> },
+    /// Reveal an existing library resource without changing the shared
+    /// document. `block` is present for annotation hits and absent for a book
+    /// or chapter row.
+    Reveal {
+        book_id: String,
+        chapter: usize,
+        page: usize,
+        block: Option<usize>,
+    },
+    OpenBook {
+        path: Option<String>,
+    },
+}
+
+pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
+    match operation {
+        EbookOperation::PreviousPage
+        | EbookOperation::NextPage
+        | EbookOperation::ToggleContents
+        | EbookOperation::ToggleNotes
+        | EbookOperation::OpenSettings
+        | EbookOperation::Reveal { .. } => OperationKind::View,
+        EbookOperation::OpenBook { .. } => OperationKind::Effect,
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +90,11 @@ mod file_action_tests {
     }
 }
 
+/// Decode a presentation operation when `type_id` belongs to Books.
+///
+/// # Errors
+///
+/// Returns a descriptive JSON error when a Books payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOperation>, String> {
     if type_id != EBOOK_OPERATION_TYPE {
         return Ok(None);
@@ -76,11 +104,39 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOpe
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    reason = "the owned enum makes call sites legible and this fieldless/string-only operation schema is infallibly serializable"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
     ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
         .expect("EbookOperation is always serializable")
 }
 
+fn reveal_operation(
+    book_id: &str,
+    chapter: usize,
+    page: usize,
+    block: Option<usize>,
+) -> ActionSpec {
+    operation(
+        "open",
+        "Open",
+        OperationKind::View,
+        EbookOperation::Reveal {
+            book_id: book_id.to_string(),
+            chapter,
+            page,
+            block,
+        },
+    )
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
 fn open_book_operation() -> ActionSpec {
     ActionSpec::typed_operation(
         "open-book",
@@ -126,7 +182,7 @@ pub struct HiPiece {
     pub excerpt: String,
 }
 
-/// Every collaborative operation Books exports on its annotation store.
+/// Every collaborative operation Books exports on its durable reader store.
 ///
 /// Determinism contract: ids and timestamps are minted at *authoring* time and
 /// carried in the payload, never inside [`Action::apply`], which must not touch
@@ -134,9 +190,26 @@ pub struct HiPiece {
 /// error, so a bad replay can't wedge a peer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EbookAction {
+    /// Persist one book's reading position. This is intentionally separate
+    /// from the reader's transient page animation and open rails: the
+    /// position is the durable, collaborative part of navigation.
+    SetProgress {
+        book_id: String,
+        chapter: usize,
+        page: usize,
+        fraction: f32,
+        /// `0` preserves the existing last-opened time. A nonzero timestamp
+        /// is minted by the caller and makes an explicit open replayable.
+        opened: u64,
+    },
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
+    /// Mark an annotation as finished at an author-supplied timestamp. Draft
+    /// editors create their row first and then use this action on Save/Escape;
+    /// carrying the timestamp keeps the lifecycle replayable and avoids a
+    /// hidden wall-clock write in the widget layer.
+    FinalizeAnnotation { id: String, created: u64 },
     /// Delete a single annotation row (a standalone note, a bookmark, or one
     /// comment).
     DeleteAnnotation { id: String },
@@ -211,11 +284,41 @@ pub enum EbookAction {
 // Per-variant `apply` bodies, kept as inherent methods (not trait methods) so
 // `too_many_lines` can be satisfied without moving code out of this impl.
 impl EbookAction {
+    fn apply_set_progress(
+        doc: &mut Doc,
+        book_id: &str,
+        chapter: usize,
+        page: usize,
+        fraction: f32,
+        opened: u64,
+    ) {
+        BooksDoc::write_progress(
+            doc,
+            book_id,
+            &Progress {
+                chapter,
+                page,
+                fraction: fraction.clamp(0.0, 1.0),
+                opened,
+            },
+        );
+    }
+
     fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
         if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
             && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
         {
             doc.put(&entry, "note", note)?;
+        }
+        Ok(())
+    }
+
+    fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
+        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
+            && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
+        {
+            let created = i64::try_from(created).unwrap_or(i64::MAX);
+            doc.put(&entry, "created", created)?;
         }
         Ok(())
     }
@@ -422,7 +525,20 @@ impl EbookAction {
 impl Action for EbookAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            EbookAction::SetProgress {
+                book_id,
+                chapter,
+                page,
+                fraction,
+                opened,
+            } => {
+                Self::apply_set_progress(doc, book_id, *chapter, *page, *fraction, *opened);
+                Ok(())
+            }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::FinalizeAnnotation { id, created } => {
+                Self::apply_finalize_annotation(doc, id, *created)
+            }
             EbookAction::DeleteAnnotation { id } => Self::apply_delete_annotation(doc, id),
             EbookAction::AddNote {
                 book_id,
@@ -549,8 +665,31 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     }
 }
 
+/// Build the replayable draft-finalisation action used by both note and
+/// comment editors. `created` is minted at the user-visible completion point,
+/// never inside action application.
+pub fn finalize_annotation_action(id: Uuid, created: u64) -> EbookAction {
+    EbookAction::FinalizeAnnotation {
+        id: id.to_string(),
+        created,
+    }
+}
+
 pub fn delete_annotation_action(id: Uuid) -> EbookAction {
     EbookAction::DeleteAnnotation { id: id.to_string() }
+}
+
+/// Build the replayable navigation action used whenever a reader changes its
+/// durable position. `opened` is caller-supplied so applying an action never
+/// consults the wall clock.
+pub fn set_progress_action(book_id: &str, progress: Progress) -> EbookAction {
+    EbookAction::SetProgress {
+        book_id: book_id.to_string(),
+        chapter: progress.chapter,
+        page: progress.page,
+        fraction: progress.fraction.clamp(0.0, 1.0),
+        opened: progress.opened,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -790,7 +929,13 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
         format!("ebook.highlight:{group}"),
         "ebook.highlight",
         anno_label(first),
-    );
+    )
+    .with_action(reveal_operation(
+        book_id,
+        first.chapter,
+        0,
+        Some(first.block),
+    ));
 
     // Change colour — a prompted action taking a colour name.
     hl = hl.with_action(ActionSpec::prompted(
@@ -853,6 +998,7 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
             "ebook.comment",
             anno_label(cm),
         )
+        .with_action(reveal_operation(book_id, cm.chapter, 0, Some(cm.block)))
         .with_action(ActionSpec::prompted(
             "edit-comment",
             "Edit comment",
@@ -888,7 +1034,7 @@ fn highlight_resources(annos: &[Annotation], book_id: &str) -> (Vec<Resource>, V
 }
 
 /// Bookmark resources, each with a single delete action.
-fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
+fn bookmark_resources(annos: &[Annotation], book_id: &str) -> Vec<Resource> {
     annos
         .iter()
         .filter(|a| a.kind == AnnoKind::Bookmark)
@@ -899,6 +1045,7 @@ fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
                 "ebook.bookmark",
                 anno_label(a),
             )
+            .with_action(reveal_operation(book_id, a.chapter, 0, Some(a.block)))
             .with_action(encode_spec(
                 "delete",
                 "Delete bookmark",
@@ -910,13 +1057,18 @@ fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
 
 /// Standalone-note resources (note rows not attached to a highlight group),
 /// each with edit + delete actions.
-fn standalone_note_resources(annos: &[Annotation], highlight_groups: &[Uuid]) -> Vec<Resource> {
+fn standalone_note_resources(
+    annos: &[Annotation],
+    highlight_groups: &[Uuid],
+    book_id: &str,
+) -> Vec<Resource> {
     annos
         .iter()
         .filter(|a| a.kind == AnnoKind::Note && !highlight_groups.contains(&a.group))
         .map(|a| {
             let id = a.id;
             Resource::new(format!("ebook.note:{id}"), "ebook.note", anno_label(a))
+                .with_action(reveal_operation(book_id, a.chapter, 0, Some(a.block)))
                 .with_action(ActionSpec::prompted(
                     "edit",
                     "Edit note",
@@ -937,70 +1089,119 @@ fn standalone_note_resources(annos: &[Annotation], highlight_groups: &[Uuid]) ->
 /// Build the resource tree Books currently has open: the book being read, its
 /// highlights (each owning its comments), its bookmarks, and its standalone
 /// notes — every document-mutating operation exported as an action.
-pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+fn book_resource(
+    book: &crate::model::Book,
+    current: Option<&BookResourceCtx>,
+    doc: &AutoCommit,
+) -> Resource {
     let root = Resource::new(
-        format!("ebook.book:{}", ctx.book_id),
+        format!("ebook.book:{}", book.id),
         "ebook.book",
-        ctx.book_title.clone(),
+        if book.title.trim().is_empty() {
+            "Untitled".to_string()
+        } else {
+            book.title.clone()
+        },
     );
-    let mut root = book_level_actions(root, ctx);
-    for (id, label, kind, value) in [
-        (
-            "previous-page",
-            "Previous page",
-            OperationKind::View,
-            EbookOperation::PreviousPage,
-        ),
-        (
-            "next-page",
-            "Next page",
-            OperationKind::View,
-            EbookOperation::NextPage,
-        ),
-        (
-            "contents",
-            "Toggle table of contents",
-            OperationKind::View,
-            EbookOperation::ToggleContents,
-        ),
-        (
-            "notes",
-            "Toggle notes",
-            OperationKind::View,
-            EbookOperation::ToggleNotes,
-        ),
-        (
-            "settings",
-            "Open reading settings",
-            OperationKind::View,
-            EbookOperation::OpenSettings,
-        ),
-    ] {
-        root = root.with_action(operation(id, label, kind, value));
-    }
-    root = root.with_action(open_book_operation());
+    let progress = BooksDoc::read_progress(doc, &book.id);
+    let root = root.with_action(reveal_operation(
+        &book.id,
+        progress.chapter,
+        progress.page,
+        None,
+    ));
+    let mut root = match current {
+        Some(ctx) if ctx.book_id == book.id => book_level_actions(root, ctx),
+        _ => root,
+    };
 
-    let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
-    let (highlights, highlight_groups) = highlight_resources(&annos, &ctx.book_id);
+    for (chapter, item) in book.chapters.iter().enumerate() {
+        let label = if item.title.trim().is_empty() {
+            format!("Chapter {}", chapter + 1)
+        } else {
+            item.title.clone()
+        };
+        root = root.with_child(
+            Resource::new(
+                format!("ebook.chapter:{}:{chapter}", book.id),
+                "ebook.chapter",
+                label,
+            )
+            .with_action(reveal_operation(&book.id, chapter, 0, None)),
+        );
+    }
+
+    if current.is_some_and(|ctx| ctx.book_id == book.id) {
+        for (id, label, kind, value) in [
+            (
+                "previous-page",
+                "Previous page",
+                OperationKind::View,
+                EbookOperation::PreviousPage,
+            ),
+            (
+                "next-page",
+                "Next page",
+                OperationKind::View,
+                EbookOperation::NextPage,
+            ),
+            (
+                "contents",
+                "Toggle table of contents",
+                OperationKind::View,
+                EbookOperation::ToggleContents,
+            ),
+            (
+                "notes",
+                "Toggle notes",
+                OperationKind::View,
+                EbookOperation::ToggleNotes,
+            ),
+            (
+                "settings",
+                "Open reading settings",
+                OperationKind::View,
+                EbookOperation::OpenSettings,
+            ),
+        ] {
+            root = root.with_action(operation(id, label, kind, value));
+        }
+        root = root.with_action(open_book_operation());
+    }
+
+    let annos = BooksDoc::annotations_for(doc, &book.id);
+    let (highlights, highlight_groups) = highlight_resources(&annos, &book.id);
     for hl in highlights {
         root = root.with_child(hl);
     }
-    for bm in bookmark_resources(&annos) {
+    for bm in bookmark_resources(&annos, &book.id) {
         root = root.with_child(bm);
     }
-    for note in standalone_note_resources(&annos, &highlight_groups) {
+    for note in standalone_note_resources(&annos, &highlight_groups, &book.id) {
         root = root.with_child(note);
     }
 
-    vec![root]
+    root
+}
+
+/// Build the canonical resource tree for every book in the shelf. Search,
+/// agents and accessibility all resolve the same stable addresses from this
+/// tree, including resources that are not currently visible.
+pub fn provide_resources(
+    books: &[crate::model::Book],
+    current: Option<&BookResourceCtx>,
+    doc: &AutoCommit,
+) -> Vec<Resource> {
+    books
+        .iter()
+        .map(|book| book_resource(book, current, doc))
+        .collect()
 }
 
 impl ResourceProvider for crate::app::BooksApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.book_resource_ctx() {
-            Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
-        }
+        let ctx = self.book_resource_ctx();
+        provide_resources(self.library(), ctx.as_ref(), doc)
     }
 }
 
@@ -1087,16 +1288,24 @@ mod tests {
         (app, doc, book_id, group)
     }
 
-    /// Ctrl+K on Books yields the full nested tree: the open book →
-    /// highlight → comment, plus bookmark and standalone-note resources, each
-    /// with the actions the data model implies. Drives the real resource hook.
+    /// Ctrl+K on Books yields the whole shelf. The open book owns its chapter
+    /// and annotation resources, with highlight → comments nested beneath it.
     #[test]
     fn ctrl_k_publishes_the_full_nested_tree() {
-        let (app, doc, _book, _group) = open_with_annotations();
+        let (app, doc, book_id, _group) = open_with_annotations();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one open book");
-        let book = &resources[0];
+        assert_eq!(resources.len(), app.library().len(), "every shelf book");
+        assert!(resources.iter().all(|book| {
+            book.actions
+                .iter()
+                .any(|action| action.id == "open" && action.kind == OperationKind::View)
+        }));
+        let book = resources
+            .iter()
+            .find(|book| book.id.as_str() == format!("ebook.book:{book_id}"))
+            .expect("open book resource");
         assert_eq!(book.kind, "ebook.book");
+        assert!(book.children.iter().any(|r| r.kind == "ebook.chapter"));
         let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(
             book_actions.contains(&"toggle-bookmark"),
@@ -1272,6 +1481,65 @@ mod tests {
         assert_eq!(
             BooksDoc::annotations_for(&a, &book_id).len(),
             BooksDoc::annotations_for(&b, &book_id).len(),
+        );
+    }
+
+    #[test]
+    fn progress_action_replays_byte_identically_and_preserves_open_timestamp() {
+        let (_app, mut a, book_id, _group) = open_with_annotations();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let action = set_progress_action(
+            &book_id,
+            Progress {
+                chapter: 2,
+                page: 7,
+                fraction: 0.625,
+                opened: 1_700_000_000_000,
+            },
+        );
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("action applies");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("action replays");
+
+        assert_eq!(a.get_heads(), b.get_heads(), "position converges exactly");
+        assert_eq!(
+            BooksDoc::read_progress(&a, &book_id),
+            Progress {
+                chapter: 2,
+                page: 7,
+                fraction: 0.625,
+                opened: 1_700_000_000_000,
+            }
+        );
+    }
+
+    #[test]
+    fn editor_finalisation_is_replayable_and_never_needs_a_direct_doc_write() {
+        let (_app, seeded, book_id, _group) = open_with_annotations();
+        let id = BooksDoc::annotations_for(&seeded, &book_id)
+            .into_iter()
+            .find(|annotation| annotation.kind == AnnoKind::Note)
+            .expect("seeded note")
+            .id;
+        let mut a = seeded;
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).expect("replica loads");
+        let action = finalize_annotation_action(id, 1_700_000_123_456);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action))
+            .expect("finalisation applies");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("finalisation replays");
+
+        assert_eq!(a.get_heads(), b.get_heads(), "peers converge exactly");
+        assert_eq!(
+            BooksDoc::annotations_for(&a, &book_id)
+                .into_iter()
+                .find(|annotation| annotation.id == id)
+                .expect("note remains")
+                .created,
+            1_700_000_123_456,
         );
     }
 

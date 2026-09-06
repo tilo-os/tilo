@@ -7,7 +7,7 @@
 //!     hash of the `.qpkg`, so the client can verify identity + integrity
 //!     before running `qos-install`.
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
-//!     Actions shell out to the host `flatpak` CLI.
+//!     Actions cross the capability-scoped app-host service.
 //!
 //! Filter chips (`All | qOS | Flatpak | Installed`), category chips and a
 //! search box sit above a scrolling list of cards. A detail sheet slides
@@ -21,12 +21,11 @@
 //!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the qOS registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
-//!   * [`installed`]       — parser for `$XDG_DATA_HOME/qos-apps/registry.toml`.
+//!   * [`installed`]       — compatibility parser for legacy install registries.
 //!   * [`config`]          — read/write user config for configured registries.
 //!   * [`sources`]         — merges the two feeds + installed state into
 //!     one [`StoreItem`] stream.
-//!   * [`actions`]         — dispatches Add / Install / Remove via
-//!     `qos-install` / `flatpak` subprocesses.
+//!   * [`actions`]         — dispatches Add / Install / Remove via app-host.
 //!   * [`app`]             — the root `StoreApp` widget.
 //!   * [`shots`]           — headless `--shots` renderer.
 //!   * [`widgets`]         — small ui-toolkit compositions shared across
@@ -63,10 +62,13 @@
 pub mod actions;
 pub mod app;
 pub mod config;
+pub mod doc_actions;
 pub mod flathub_client;
 pub mod flatpakref;
+pub mod images;
 pub mod installed;
 pub mod model;
+pub mod moderation_client;
 pub mod registry_client;
 pub mod shots;
 pub mod sources;
@@ -76,5 +78,5 @@ pub mod worker;
 pub use app::StoreApp;
 pub use flatpakref::FlatpakRef;
 pub use model::{
-    ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource,
+    ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };

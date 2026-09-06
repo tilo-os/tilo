@@ -24,8 +24,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use qos_actions::{
-    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, LocalTransport,
-    apply_local, dispatch, replay,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport, apply_local, dispatch,
+    replay,
 };
 use serde::{Deserialize, Serialize};
 
@@ -91,16 +91,6 @@ impl Action for Counter {
         }
         Ok(())
     }
-
-    fn locus(&self) -> ExecutionLocus {
-        match self {
-            Counter::Append { .. } => ExecutionLocus::ServerPreferred,
-            Counter::Put { .. }
-            | Counter::Noop
-            | Counter::EmptySplice
-            | Counter::WriteThenError => ExecutionLocus::ClientLocal,
-        }
-    }
 }
 
 fn registry() -> ActionRegistry {
@@ -130,8 +120,9 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
         let mut envelopes = Vec::new();
 
         for i in 0..n {
-            // Alternate loci so both ClientLocal and ServerPreferred (no-host
-            // fallback) apply paths get stacked on the same doc.
+            // Alternate map/list mutation shapes on the same document. Host
+            // locus behavior is covered separately and deliberately cannot
+            // participate without an authoritative transport.
             let action = if i % 2 == 0 {
                 Counter::Put {
                     key: format!("k{i}"),

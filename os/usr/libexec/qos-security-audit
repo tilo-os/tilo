@@ -2,11 +2,14 @@
 # qOS security self-check (security plan §11). Oneshot at boot: logs which
 # hardening features are actually ACTIVE to the journal, so "we think it's on"
 # becomes "verified on". Read with: journalctl -u qos-security-audit
-# Never fails the boot — it only reports (always exits 0).
+# A failed audit marks this oneshot failed so health surfaces and agents can
+# detect it. It is deliberately not a boot dependency, so a diagnostic failure
+# never strands the user outside their session.
 set -u
 
+failures=0
 ok()   { echo "[ OK ]   $*"; }
-warn() { echo "[WARN]   $*"; }
+warn() { echo "[FAIL]   $*"; failures=$((failures + 1)); }
 note() { echo "[info]   $*"; }
 
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
@@ -192,11 +195,18 @@ case "$fsctx" in
   *) note "fs.service domain: $fsctx" ;;
 esac
 
-# Image signature enforcement (verify-before-update)
-if grep -q 'sigstoreSigned' /etc/containers/policy.json 2>/dev/null; then
-  ok "container signature policy requires signed qOS images"
+# Image signature enforcement (verify-before-update). Match the qOS registry
+# scope and pinned public-key path together: an unrelated sigstore policy must
+# not make this check pass.
+policy=/etc/containers/policy.json
+if [ -r "$policy" ] \
+   && grep -Fq '"code.sandbox.example/qos/qos"' "$policy" \
+   && grep -Fq '"type": "sigstoreSigned"' "$policy" \
+   && grep -Fq '"keyPath": "/usr/share/qos/cosign.pub"' "$policy" \
+   && [ -s /usr/share/qos/cosign.pub ]; then
+  ok "container signature policy pins signed qOS images to the installed verification key"
 else
-  warn "no sigstoreSigned policy for qOS images"
+  warn "qOS image signature policy or its pinned verification key is missing"
 fi
 
 # systemd-homed available (per-user encrypted homes; homed users get a
@@ -224,4 +234,8 @@ else
 fi
 
 echo "=== end qOS security audit ==="
+if [ "$failures" -ne 0 ]; then
+  echo "qOS security audit failed: $failures required invariant(s) are inactive" >&2
+  exit 1
+fi
 exit 0

@@ -14,7 +14,8 @@
 //!
 //! **Document-mutating → an action:** mark read/unread, star, move to a folder
 //! (archive / delete-to-trash / junk / move-to-inbox are all a move), add/remove a
-//! label, create/rename/delete a local folder, and save/discard the draft.
+//! label, create/rename/delete a local folder, permanently purge a trashed
+//! message, and save/discard the draft.
 //!
 //! **External, non-deterministic → never an action:** IMAP fetch/sync, SMTP send,
 //! and account auth all write mailbox state as *external ingestion* driven by the
@@ -53,9 +54,77 @@ use crate::model::{Draft, Folder};
 pub const MAIL_ACTION_TYPE: &str = "mail.action";
 pub const MAIL_OPERATION_TYPE: &str = "mail.operation";
 
+/// Bounds applied at the replicated-action boundary.  The UI normally keeps
+/// values much smaller; these limits make a malformed, remote, or replayed
+/// envelope unable to turn one mail action into an unbounded CRDT delta.
+const MAX_MESSAGE_IDS_PER_ACTION: usize = 256;
+const MAX_MESSAGE_ID_CHARS: usize = 128;
+const MAX_LABEL_CHARS: usize = 128;
+const MAX_FOLDER_NAME_CHARS: usize = 96;
+const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
+const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
+const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
+
+/// Take at most `max` Unicode scalar values without slicing a UTF-8 byte
+/// offset.  Control characters are removed from one-line fields; bodies keep
+/// normal newlines but still reject NUL and other control injection.
+fn bounded_text(value: &str, max: usize, multiline: bool) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() || (multiline && matches!(ch, '\n' | '\r' | '\t')))
+        .take(max)
+        .collect()
+}
+
+/// Normalise a batch before applying it.  This both bounds work and makes a
+/// duplicated id in a hostile payload behave exactly like one requested id.
+fn bounded_ids(ids: &[String]) -> Vec<&str> {
+    let mut result = Vec::with_capacity(ids.len().min(MAX_MESSAGE_IDS_PER_ACTION));
+    for id in ids {
+        if result.len() == MAX_MESSAGE_IDS_PER_ACTION {
+            break;
+        }
+        let id = id.trim();
+        if id.is_empty() || id.chars().count() > MAX_MESSAGE_ID_CHARS || result.contains(&id) {
+            continue;
+        }
+        result.push(id);
+    }
+    result
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MailOperation {
     RefreshCurrentFolder,
+    /// Reveal a system folder without changing the collaborative document.
+    RevealFolder {
+        folder: String,
+    },
+    RevealAccount {
+        index: usize,
+    },
+    /// Reveal an already-loaded message. The app records normal mark-read
+    /// semantics through its document action at the next mutable sync boundary.
+    /// This is the operation behind the plainly named **Open message** action.
+    RevealMessage {
+        id: String,
+    },
+    /// Inspect an already-loaded message without changing its read flag.
+    ///
+    /// This deliberately has a different operation and a deliberately explicit
+    /// label in the resource tree: an agent (or a person checking a message)
+    /// must never get a surprising read receipt merely by asking to inspect it.
+    /// Normal list activation and **Open message** still use [`Self::RevealMessage`]
+    /// and therefore mark an unread message as read.
+    InspectMessage {
+        id: String,
+    },
+    RevealDraft,
+    SaveAttachment {
+        message_id: String,
+        index: usize,
+    },
 }
 
 /// Decode a Mail effect operation when `type_id` addresses this application.
@@ -88,23 +157,29 @@ pub struct DraftData {
 impl DraftData {
     pub fn from_draft(d: &Draft) -> Self {
         Self {
-            to: d.to.clone(),
-            cc: d.cc.clone(),
-            bcc: d.bcc.clone(),
-            subject: d.subject.clone(),
-            body: d.body.clone(),
-            html_body: d.html_body.clone(),
+            to: bounded_text(&d.to, MAX_DRAFT_ADDRESS_CHARS, false),
+            cc: bounded_text(&d.cc, MAX_DRAFT_ADDRESS_CHARS, false),
+            bcc: bounded_text(&d.bcc, MAX_DRAFT_ADDRESS_CHARS, false),
+            subject: bounded_text(&d.subject, MAX_DRAFT_SUBJECT_CHARS, false),
+            body: bounded_text(&d.body, MAX_DRAFT_BODY_CHARS, true),
+            html_body: d
+                .html_body
+                .as_deref()
+                .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
         }
     }
 
     fn to_draft(&self) -> Draft {
         Draft {
-            to: self.to.clone(),
-            cc: self.cc.clone(),
-            bcc: self.bcc.clone(),
-            subject: self.subject.clone(),
-            body: self.body.clone(),
-            html_body: self.html_body.clone(),
+            to: bounded_text(&self.to, MAX_DRAFT_ADDRESS_CHARS, false),
+            cc: bounded_text(&self.cc, MAX_DRAFT_ADDRESS_CHARS, false),
+            bcc: bounded_text(&self.bcc, MAX_DRAFT_ADDRESS_CHARS, false),
+            subject: bounded_text(&self.subject, MAX_DRAFT_SUBJECT_CHARS, false),
+            body: bounded_text(&self.body, MAX_DRAFT_BODY_CHARS, true),
+            html_body: self
+                .html_body
+                .as_deref()
+                .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
             attachments: Vec::new(),
             in_reply_to: None,
         }
@@ -126,6 +201,10 @@ pub enum MailAction {
     /// [`Folder::as_key`]). Archive, delete-to-trash, junk, and move-to-inbox are
     /// all this with a specific target. An unknown key is a no-op.
     Move { ids: Vec<String>, folder: String },
+    /// Permanently remove a batch which is already in Trash. This writes a
+    /// tombstone rather than directly altering a peer's hydrated corpus, so a
+    /// delayed action cannot resurrect its flags.
+    Purge { ids: Vec<String> },
     /// Add a label/tag to a batch of messages. Idempotent per message.
     AddLabel { ids: Vec<String>, label: String },
     /// Remove a label/tag from a batch of messages.
@@ -147,42 +226,75 @@ impl Action for MailAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MailAction::SetRead { ids, read } => {
-                for id in ids {
-                    MailDoc::set_read(doc, id, *read);
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::set_read(doc, id, *read);
+                    }
                 }
             }
             MailAction::SetStarred { ids, starred } => {
-                for id in ids {
-                    MailDoc::set_starred(doc, id, *starred);
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::set_starred(doc, id, *starred);
+                    }
                 }
             }
             MailAction::Move { ids, folder } => {
                 // An unknown folder key (e.g. a stale local-folder id) is a no-op
                 // rather than a wrong move — the system `Folder` enum is total.
                 if let Some(f) = Folder::from_key(folder) {
-                    for id in ids {
-                        MailDoc::set_folder_for(doc, id, f);
+                    for id in bounded_ids(ids) {
+                        if MailDoc::is_present_message(doc, id) {
+                            MailDoc::set_folder_for(doc, id, f);
+                        }
+                    }
+                }
+            }
+            MailAction::Purge { ids } => {
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::mark_message_purged(doc, id);
                     }
                 }
             }
             MailAction::AddLabel { ids, label } => {
-                for id in ids {
-                    MailDoc::add_label(doc, id, label);
+                let label = bounded_text(label, MAX_LABEL_CHARS, false);
+                if label.is_empty() {
+                    return Ok(());
+                }
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::add_label(doc, id, &label);
+                    }
                 }
             }
             MailAction::RemoveLabel { ids, label } => {
-                for id in ids {
-                    MailDoc::remove_label(doc, id, label);
+                let label = bounded_text(label, MAX_LABEL_CHARS, false);
+                if label.is_empty() {
+                    return Ok(());
+                }
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::remove_label(doc, id, &label);
+                    }
                 }
             }
             MailAction::CreateFolder { id, name } => {
-                MailDoc::create_folder(doc, id, name);
+                let name = bounded_text(name, MAX_FOLDER_NAME_CHARS, false);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS && !name.is_empty() {
+                    MailDoc::create_folder(doc, id, &name);
+                }
             }
             MailAction::RenameFolder { id, name } => {
-                MailDoc::rename_folder(doc, id, name);
+                let name = bounded_text(name, MAX_FOLDER_NAME_CHARS, false);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS && !name.is_empty() {
+                    MailDoc::rename_folder(doc, id, &name);
+                }
             }
             MailAction::DeleteFolder { id } => {
-                MailDoc::delete_folder(doc, id);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS {
+                    MailDoc::delete_folder(doc, id);
+                }
             }
             MailAction::SaveDraft(data) => {
                 MailDoc::store_draft(doc, &data.to_draft());
@@ -240,6 +352,11 @@ pub fn move_action(ids: Vec<String>, folder: Folder) -> MailAction {
         ids,
         folder: folder.as_key().to_string(),
     }
+}
+
+/// Permanently purge a batch of already-trashed messages.
+pub fn purge_action(ids: Vec<String>) -> MailAction {
+    MailAction::Purge { ids }
 }
 
 /// Add a label to a batch of messages.
@@ -300,9 +417,19 @@ pub fn discard_draft_action() -> MailAction {
 pub struct MessageRow {
     pub id: String,
     pub subject: String,
+    pub thread_subject: String,
+    pub folder: Folder,
     pub read: bool,
     pub starred: bool,
     pub labels: Vec<String>,
+    pub attachments: Vec<AttachmentRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentRow {
+    pub filename: String,
+    pub size: u64,
+    pub downloadable: bool,
 }
 
 /// The presentation context Mail hands [`provide_resources`]: the account label,
@@ -313,7 +440,9 @@ pub struct MessageRow {
 pub struct MailResourceCtx {
     pub mailbox_label: String,
     pub current_folder: Folder,
-    /// Messages in the currently-open folder (the "open" scope), bounded.
+    pub accounts: Vec<(usize, String, bool)>,
+    /// Loaded messages in the currently-open folder. Resource materialization
+    /// applies its own bound so a large mailbox cannot inflate Ctrl+K snapshots.
     pub messages: Vec<MessageRow>,
     /// User-defined local folders `(id, name)`, sorted by id.
     pub custom_folders: Vec<(String, String)>,
@@ -335,6 +464,37 @@ fn immediate_spec(id: &str, label: &str, action: &MailAction) -> ActionSpec {
         .reversible()
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
+)]
+fn view_spec(id: &str, label: &str, operation: &MailOperation) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        MAIL_OPERATION_TYPE,
+        operation,
+    )
+    .expect("encode mail view operation")
+    .retry_policy(RetryPolicy::Idempotent)
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
+)]
+fn effect_spec(id: &str, label: &str, operation: &MailOperation) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::Effect,
+        MAIL_OPERATION_TYPE,
+        operation,
+    )
+    .expect("encode mail effect operation")
+}
+
 fn message_label(m: &MessageRow) -> String {
     let s = m.subject.trim();
     let base = if s.is_empty() { "(no subject)" } else { s };
@@ -345,12 +505,26 @@ fn message_label(m: &MessageRow) -> String {
     }
 }
 
-fn message_resource(message: &MessageRow) -> Resource {
+pub(crate) fn message_resource(message: &MessageRow) -> Resource {
     let mut resource = Resource::new(
         format!("mail.message:{}", message.id),
         "mail.message",
         message_label(message),
     );
+    resource = resource.with_action(view_spec(
+        "open",
+        "Open message",
+        &MailOperation::RevealMessage {
+            id: message.id.clone(),
+        },
+    ));
+    resource = resource.with_action(view_spec(
+        "inspect",
+        "Preview without marking read",
+        &MailOperation::InspectMessage {
+            id: message.id.clone(),
+        },
+    ));
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -370,14 +544,20 @@ fn message_resource(message: &MessageRow) -> Resource {
         "Archive",
         &move_action(vec![message.id.clone()], Folder::Archive),
     ));
-    resource = resource.with_action(
+    let delete = if message.folder == Folder::Trash {
+        immediate_spec(
+            "delete",
+            "Delete permanently",
+            &purge_action(vec![message.id.clone()]),
+        )
+    } else {
         immediate_spec(
             "delete",
             "Delete",
             &move_action(vec![message.id.clone()], Folder::Trash),
         )
-        .destructive(),
-    );
+    };
+    resource = resource.with_action(delete.destructive());
 
     let message_id = message.id.clone();
     resource = resource.with_action(ActionSpec::prompted(
@@ -395,16 +575,47 @@ fn message_resource(message: &MessageRow) -> Resource {
             &remove_label_action(vec![message.id.clone()], label),
         ));
     }
+    for (index, attachment) in message.attachments.iter().enumerate() {
+        let save = effect_spec(
+            "save",
+            "Save attachment",
+            &MailOperation::SaveAttachment {
+                message_id: message.id.clone(),
+                index,
+            },
+        );
+        resource = resource.with_child(
+            Resource::new(
+                format!("mail.attachment:{}:{index}", message.id),
+                "mail.attachment",
+                format!(
+                    "{} · {}",
+                    attachment.filename,
+                    ui::format::bytes(attachment.size)
+                ),
+            )
+            .with_action(if attachment.downloadable {
+                save
+            } else {
+                save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
+            }),
+        );
+    }
     resource
 }
 
-/// Build the resource tree Mail currently has open: the mailbox root (exporting
-/// "New folder"), the open folder with its messages nested (each exporting
+/// Build Mail's resource tree: the mailbox root (exporting "New folder"),
+/// every system folder with its loaded messages nested (each exporting
 /// read / flag / move / delete + label actions), and one `mail.folder:<id>` per
 /// user-defined local folder (rename / delete). The Drafts folder additionally
 /// exports "Discard draft" when a draft is in progress. Every operation is the
 /// same action the on-screen affordance dispatches.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mailbox hierarchy is intentionally authored together so every visible entity and operation shares one contract"
+)]
 pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    const OPEN_MESSAGE_LIMIT: usize = 100;
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
 
     if let Ok(refresh) = ActionSpec::operation(
@@ -445,21 +656,68 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         .reversible(),
     );
 
-    // The currently-open folder, with its messages nested.
-    let mut folder_node = Resource::new(
-        format!("mail.folder:{}", ctx.current_folder.as_key()),
-        "mail.folder",
-        ctx.current_folder.title().to_string(),
+    root = root.with_child(
+        Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
+            ctx.accounts.iter().map(|(index, label, active)| {
+                Resource::new(
+                    format!("mail.account:{index}"),
+                    "mail.account",
+                    if *active {
+                        format!("{label} · Active")
+                    } else {
+                        label.clone()
+                    },
+                )
+                .with_action(view_spec(
+                    "open",
+                    "Open account",
+                    &MailOperation::RevealAccount { index: *index },
+                ))
+            }),
+        ),
     );
-    if ctx.current_folder == Folder::Drafts && ctx.has_draft {
-        folder_node = folder_node.with_action(
-            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
-        );
+
+    // Every searchable system folder and loaded message gets a stable address.
+    // A message is nested under its physical folder only; Starred is virtual,
+    // and duplicating resources there would make canonical ids ambiguous.
+    for folder in Folder::ALL {
+        let mut folder_node = system_folder_resource(folder, ctx.has_draft);
+        if folder == ctx.current_folder {
+            let mut threads: Vec<(String, Vec<&MessageRow>)> = Vec::new();
+            for message in ctx
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| message.folder == folder)
+                .take(OPEN_MESSAGE_LIMIT)
+            {
+                if let Some((_, messages)) = threads
+                    .iter_mut()
+                    .find(|(subject, _)| subject == &message.thread_subject)
+                {
+                    messages.push(message);
+                } else {
+                    threads.push((message.thread_subject.clone(), vec![message]));
+                }
+            }
+            for (thread_subject, messages) in threads {
+                let stable = thread_resource_key(&thread_subject);
+                folder_node = folder_node.with_child(
+                    Resource::new(
+                        format!("mail.thread:{stable}"),
+                        "mail.thread",
+                        if thread_subject.is_empty() {
+                            "(no subject)".into()
+                        } else {
+                            thread_subject
+                        },
+                    )
+                    .with_children(messages.into_iter().map(message_resource)),
+                );
+            }
+        }
+        root = root.with_child(folder_node);
     }
-    for m in &ctx.messages {
-        folder_node = folder_node.with_child(message_resource(m));
-    }
-    root = root.with_child(folder_node);
 
     // User-defined local folders — rename / delete.
     for (id, name) in &ctx.custom_folders {
@@ -486,9 +744,88 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     vec![root]
 }
 
+/// Build the canonical resource for a built-in folder. Kept separate from the
+/// tree assembly above so the search provider can materialize the *same*
+/// folder resource lazily instead of returning an address which only happens
+/// to work when another provider has already built the whole mailbox tree.
+pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resource {
+    let mut folder_node = Resource::new(
+        format!("mail.folder:{}", folder.as_key()),
+        "mail.folder",
+        folder.title().to_string(),
+    )
+    .with_action(view_spec(
+        "open",
+        "Open folder",
+        &MailOperation::RevealFolder {
+            folder: folder.as_key().to_string(),
+        },
+    ));
+    if folder == Folder::Drafts && has_draft {
+        folder_node = folder_node.with_action(
+            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
+        );
+        folder_node = folder_node.with_child(
+            Resource::new("mail.draft:current", "mail.draft", "Current draft")
+                .with_action(view_spec(
+                    "open",
+                    "Continue editing",
+                    &MailOperation::RevealDraft,
+                ))
+                .with_action(
+                    immediate_spec("discard", "Discard draft", &discard_draft_action())
+                        .destructive(),
+                ),
+        );
+    }
+    folder_node
+}
+
+fn thread_resource_key(subject: &str) -> String {
+    // Stable FNV-1a rather than process-random HashMap hashing: agents and
+    // history may hold this address across frames.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in subject.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 impl ResourceProvider for crate::app::MailApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.mail_resource_ctx(doc), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let ctx = self.mail_resource_ctx(doc);
+        if let Some(message_id) = id.strip_prefix("mail.message:") {
+            return ctx
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .map(message_resource);
+        }
+        if let Some(rest) = id.strip_prefix("mail.attachment:")
+            && let Some((message_id, index)) = rest.rsplit_once(':')
+            && let Ok(index) = index.parse::<usize>()
+            && let Some(message) = ctx.messages.iter().find(|message| message.id == message_id)
+        {
+            return message_resource(message).children.into_iter().nth(index);
+        }
+        find(provide_resources(&ctx, doc), id)
     }
 }
 
@@ -543,6 +880,44 @@ mod tests {
         (app, state)
     }
 
+    #[test]
+    fn message_resource_distinguishes_open_from_read_state_neutral_preview() {
+        let (app, state) = seeded_app();
+        let message = app
+            .mail_resource_ctx(&state.doc)
+            .messages
+            .into_iter()
+            .find(|message| !message.read)
+            .expect("sample has an unread message");
+        let resource = message_resource(&message);
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("normal open action");
+        let preview = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "inspect")
+            .expect("explicit preview action");
+        assert_eq!(open.label, "Open message");
+        assert_eq!(preview.label, "Preview without marking read");
+        let ActionInput::Immediate(open_payload) = &open.input else {
+            panic!("open is an immediate view operation");
+        };
+        let ActionInput::Immediate(preview_payload) = &preview.input else {
+            panic!("preview is an immediate view operation");
+        };
+        assert!(matches!(
+            decode_operation(&open_payload.type_id, &open_payload.payload).unwrap(),
+            Some(MailOperation::RevealMessage { .. })
+        ));
+        assert!(matches!(
+            decode_operation(&preview_payload.type_id, &preview_payload.payload).unwrap(),
+            Some(MailOperation::InspectMessage { .. })
+        ));
+    }
+
     /// A sample message id (as a string) taken from the Inbox.
     fn an_inbox_id(st: &MailState) -> String {
         st.mailbox.messages_in(Folder::Inbox)[0].id.to_string()
@@ -573,11 +948,28 @@ mod tests {
             .iter()
             .find(|r| r.kind == "mail.folder")
             .expect("an open folder node");
-        let message = folder
-            .children
-            .iter()
-            .find(|r| r.kind == "mail.message")
-            .expect("a message resource in the open folder");
+        assert!(
+            !folder.children.is_empty() && folder.children.len() <= 100,
+            "the open folder publishes a bounded thread hierarchy"
+        );
+        assert!(
+            folder.children.iter().all(|thread| {
+                thread.kind == "mail.thread"
+                    && !thread.children.is_empty()
+                    && thread
+                        .children
+                        .iter()
+                        .all(|item| item.kind == "mail.message")
+            }),
+            "messages are grouped under searchable thread resources"
+        );
+        let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
+        let message = <MailApp as ResourceProvider>::resource(
+            &app,
+            &state.doc,
+            &format!("mail.message:{id}"),
+        )
+        .expect("a message remains addressable outside the snapshot");
         let msg_actions: Vec<&str> = message.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["read", "star", "archive", "delete", "add-label"] {
             assert!(
@@ -604,10 +996,43 @@ mod tests {
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn ten_thousand_messages_do_not_expand_the_open_snapshot() {
+        let mut ctx = MailResourceCtx {
+            mailbox_label: "Scale".into(),
+            current_folder: Folder::Inbox,
+            accounts: vec![(0, "Scale".into(), true)],
+            messages: Vec::new(),
+            custom_folders: Vec::new(),
+            has_draft: false,
+            can_sync: false,
+        };
+        ctx.messages.extend((0..10_000).map(|id| MessageRow {
+            id: id.to_string(),
+            subject: format!("Message {id}"),
+            thread_subject: format!("Message {id}"),
+            folder: Folder::Inbox,
+            read: false,
+            starred: false,
+            labels: Vec::new(),
+            attachments: Vec::new(),
+        }));
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let inbox = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "mail.folder:inbox")
+            .expect("inbox resource");
+        assert_eq!(inbox.children.len(), 100, "open hierarchy is bounded");
         assert!(
-            labels.iter().any(|l| l.contains("Archive")),
-            "the palette surfaces a message action: {labels:?}"
+            inbox
+                .children
+                .iter()
+                .all(|thread| { thread.kind == "mail.thread" && thread.children.len() == 1 })
         );
+        assert!(message_resource(&ctx.messages[9_999]).actions.len() >= 5);
     }
 
     /// The full undo covenant on one action: dispatched through the executor a
@@ -774,18 +1199,13 @@ mod tests {
     #[test]
     fn palette_and_builder_encode_identically() {
         let (app, state) = seeded_app();
-        let resources = Widget::resources(&app, &state.doc);
-        let folder = resources[0]
-            .children
-            .iter()
-            .find(|r| r.kind == "mail.folder")
-            .unwrap();
-        let message = folder
-            .children
-            .iter()
-            .find(|r| r.kind == "mail.message")
-            .unwrap();
-        let id = message.id.0.trim_start_matches("mail.message:").to_string();
+        let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
+        let message = <MailApp as ResourceProvider>::resource(
+            &app,
+            &state.doc,
+            &format!("mail.message:{id}"),
+        )
+        .unwrap();
 
         // Archive spec == move-to-Archive builder.
         let archive_spec = message.actions.iter().find(|a| a.id == "archive").unwrap();
@@ -850,5 +1270,97 @@ mod tests {
         );
         // And it really moved the message in the document.
         assert_eq!(MailDoc::get_folder_for(&doc, &id), Some(Folder::Archive));
+    }
+
+    #[test]
+    fn stale_or_unknown_message_actions_fail_closed_without_orphan_flags() {
+        let mut doc = AutoCommit::new();
+        let action = set_read_action(vec!["not-a-loaded-message".into()], true);
+        action.apply(&mut doc).unwrap();
+        assert_eq!(
+            MailDoc::get_read(&doc, "not-a-loaded-message"),
+            None,
+            "an action from a stale palette row cannot mint flags"
+        );
+
+        MailDoc::register_message(&mut doc, "gone");
+        MailDoc::mark_message_purged(&mut doc, "gone");
+        set_starred_action(vec!["gone".into()], true)
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(
+            MailDoc::get_starred(&doc, "gone"),
+            None,
+            "an explicit tombstone refuses delayed replay"
+        );
+    }
+
+    #[test]
+    fn replicated_text_and_batch_deltas_are_unicode_safe_and_bounded() {
+        let mut doc = AutoCommit::new();
+        MailDoc::register_message(&mut doc, "m");
+        let ids = std::iter::repeat_n("m".to_string(), MAX_MESSAGE_IDS_PER_ACTION + 20).collect();
+        let label = format!("  {}\0ignored", "🦀".repeat(MAX_LABEL_CHARS + 4));
+        MailAction::AddLabel { ids, label }.apply(&mut doc).unwrap();
+        let labels = MailDoc::get_labels(&doc, "m");
+        assert_eq!(labels.len(), 1, "duplicate ids are one logical target");
+        assert_eq!(labels[0].chars().count(), MAX_LABEL_CHARS);
+        assert!(labels[0].chars().all(|ch| !ch.is_control()));
+
+        let draft = Draft {
+            subject: "é".repeat(MAX_DRAFT_SUBJECT_CHARS + 10),
+            body: format!("{}\0", "🦀".repeat(MAX_DRAFT_BODY_CHARS + 10)),
+            ..Draft::default()
+        };
+        save_draft_action(&draft).apply(&mut doc).unwrap();
+        let stored = MailDoc::load_draft(&doc);
+        assert_eq!(stored.subject.chars().count(), MAX_DRAFT_SUBJECT_CHARS);
+        assert_eq!(stored.body.chars().count(), MAX_DRAFT_BODY_CHARS);
+        assert!(stored.body.is_char_boundary(stored.body.len()));
+        assert!(!stored.body.contains('\0'));
+    }
+
+    #[test]
+    fn purge_replays_to_peers_and_refuses_late_flag_resurrection() {
+        let mut a = AutoCommit::new();
+        MailDoc::register_message(&mut a, "m");
+        MailDoc::set_folder_for(&mut a, "m", Folder::Trash);
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+
+        let action = purge_action(vec!["m".into()]);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "purge is replay-identical");
+        assert!(!MailDoc::is_present_message(&b, "m"));
+
+        let late = set_read_action(vec!["m".into()], true);
+        late.apply(&mut b).unwrap();
+        assert_eq!(MailDoc::get_read(&b, "m"), None);
+    }
+
+    #[test]
+    fn trash_resource_uses_the_same_purge_action_as_the_delete_affordance() {
+        let row = MessageRow {
+            id: "m".into(),
+            subject: "Already trashed".into(),
+            thread_subject: "Already trashed".into(),
+            folder: Folder::Trash,
+            read: true,
+            starred: false,
+            labels: Vec::new(),
+            attachments: Vec::new(),
+        };
+        let resource = message_resource(&row);
+        let delete = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .expect("delete action");
+        assert_eq!(delete.label, "Delete permanently");
+        let encoded = immediate_encode(delete);
+        let expected = encode(&purge_action(vec!["m".into()]));
+        assert_eq!(encoded.type_id, expected.type_id);
+        assert_eq!(encoded.payload, expected.payload);
     }
 }

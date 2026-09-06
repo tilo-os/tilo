@@ -1,5 +1,5 @@
 //! Spawns the nirios shell headless, embeds a real terminal and a real
-//! file-explorer in tabs, and asserts their `AppWidget` metadata reaches
+//! file-explorer and browser in tabs, and asserts their `AppWidget` metadata reaches
 //! the live `Shell::workspace_tree()`. Also drives them through an
 //! abbreviated render pipeline and asserts visible content: a non-empty
 //! first terminal grid line once the PTY delivers bytes, and at least one
@@ -20,7 +20,7 @@ use std::time::Duration;
 use ui::AppKind;
 
 #[test]
-fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
+fn default_workspace_hosts_terminal_files_and_real_browser_widget() {
     let shell = Shell::new_with_default_demo_workspace();
     let tree = shell.workspace_tree();
     let tabs: Vec<&TileContent> = tree
@@ -49,7 +49,7 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
     );
     assert!(
         kinds.contains(&AppKind::Browser),
-        "default workspace must include a browser stub (kinds={kinds:?})"
+        "default workspace must include the browser app (kinds={kinds:?})"
     );
 }
 

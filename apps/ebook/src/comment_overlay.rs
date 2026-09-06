@@ -33,6 +33,11 @@ pub(crate) enum CommentAction {
     Delete(Uuid),
 }
 
+pub(crate) enum CommentSemanticOutcome {
+    Changed(Uuid, String),
+    Focused,
+}
+
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
@@ -62,6 +67,118 @@ impl Default for CommentOverlay {
                 .with_enter_submits(true)
                 .with_placeholder("Write a comment…"),
         }
+    }
+}
+
+impl CommentOverlay {
+    pub(crate) fn accessibility_nodes(
+        &self,
+        annotations: &[Annotation],
+        focused: Option<&str>,
+    ) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let Some(group) = self.group else {
+            return Vec::new();
+        };
+        let (_, excerpt, comments) = gather_content(annotations, group, HiColor::Yellow);
+        let mut controls = self
+            .hits
+            .iter()
+            .filter_map(|hit| {
+                let (target, label): (String, String) = match hit.action {
+                    CommentAction::Close => {
+                        ("books.comments.close".into(), "Close comments".into())
+                    }
+                    CommentAction::DeleteHighlight(id) => (
+                        format!("books.comments.delete-highlight:{id}"),
+                        "Delete highlight and comments".into(),
+                    ),
+                    CommentAction::Add(id) => {
+                        (format!("books.comments.add:{id}"), "Add comment".into())
+                    }
+                    CommentAction::Edit(id) => {
+                        (format!("books.comments.edit:{id}"), "Edit comment".into())
+                    }
+                    CommentAction::Delete(id) => (
+                        format!("books.comments.delete:{id}"),
+                        "Delete comment".into(),
+                    ),
+                    CommentAction::Swallow => return None,
+                };
+                Some(
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_bounds(hit.rect)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(focused == Some(target.as_str())),
+                        )
+                        .with_action_target(target),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(editing) = self.editing {
+            let mut editor = self
+                .editor
+                .accessibility()
+                .unwrap_or_else(|| AccessNode::new(Role::MultilineTextInput));
+            editor.name = Some("Comment text".into());
+            controls.push(
+                editor
+                    .with_bounds(self.editor.get_rect())
+                    .with_action_target(format!("books.comments.input:{editing}")),
+            );
+        }
+        controls.extend(comments.into_iter().map(|comment| {
+            AccessNode::new(Role::ListItem)
+                .with_name(comment_display(&comment))
+                .with_hashed_key(comment.id)
+        }));
+        vec![
+            AccessNode::new(Role::Dialog)
+                .with_name("Highlight comments")
+                .with_description(excerpt)
+                .with_state(AccessState::new().modal(true))
+                .with_children(controls),
+        ]
+    }
+
+    pub(crate) fn semantic_action(&self, target: &str) -> Option<CommentAction> {
+        self.hits.iter().rev().find_map(|hit| {
+            let candidate = match hit.action {
+                CommentAction::Close => "books.comments.close".into(),
+                CommentAction::DeleteHighlight(id) => {
+                    format!("books.comments.delete-highlight:{id}")
+                }
+                CommentAction::Add(id) => format!("books.comments.add:{id}"),
+                CommentAction::Edit(id) => format!("books.comments.edit:{id}"),
+                CommentAction::Delete(id) => format!("books.comments.delete:{id}"),
+                CommentAction::Swallow => return None,
+            };
+            (candidate == target).then_some(hit.action)
+        })
+    }
+
+    pub(crate) fn perform_editor_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> Option<CommentSemanticOutcome> {
+        let id = self.editing?;
+        if target != format!("books.comments.input:{id}") {
+            return None;
+        }
+        if !self.editor.perform_action(action, state, root) {
+            return None;
+        }
+        self.editor
+            .take_dirty()
+            .map_or(Some(CommentSemanticOutcome::Focused), |text| {
+                Some(CommentSemanticOutcome::Changed(id, text))
+            })
     }
 }
 

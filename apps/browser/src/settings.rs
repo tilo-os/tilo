@@ -37,6 +37,19 @@ use ui::widget::{
     Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Toggle, Widget,
 };
 
+/// Resource bindings injected by Browser when this pane is hosted. They keep
+/// pointer, keyboard and assistive-tech changes on the exact same action path
+/// used by Ctrl+K and agents.
+#[derive(Clone, Default)]
+pub struct SettingsActionBindings {
+    pub adblock: Option<qos_actions::ActionBinding<bool>>,
+    pub clear_on_exit: Option<qos_actions::ActionBinding<bool>>,
+    pub homepage: Option<qos_actions::ActionBinding<String>>,
+    pub search_engine: Option<qos_actions::ActionBinding<String>>,
+    pub clear_history: Option<qos_actions::ActionBinding<()>>,
+    pub clear_site_data: Option<qos_actions::ActionBinding<()>>,
+}
+
 /// Boxed-widget currency the `ui` tree speaks.
 type El = Box<dyn Widget>;
 
@@ -211,7 +224,7 @@ impl Settings {
 /// reflects the current toggle position (or `None` before the pane has
 /// seeded the document), so the chrome idempotently mirrors them into
 /// its [`Settings`] and the engine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettingsIntents {
     /// The "Clear history now" button was pressed this frame.
     pub clear_history: bool,
@@ -221,6 +234,10 @@ pub struct SettingsIntents {
     pub adblock_enabled: Option<bool>,
     /// Current clear-on-exit toggle state, or `None` before bootstrap.
     pub clear_on_exit: Option<bool>,
+    /// Current search-engine query template.
+    pub search_engine: Option<String>,
+    /// Current homepage URL.
+    pub homepage: Option<String>,
     /// The "Done" button was pressed this frame — close the pane.
     pub close: bool,
 }
@@ -235,6 +252,13 @@ fn read_bool(state: &AutoCommit, root: &ObjId, path: &str) -> Option<bool> {
         },
         _ => None,
     }
+}
+
+fn read_text(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
+    let (value, object) = state.get(root, path).ok()??;
+    matches!(value, Value::Object(automerge::ObjType::Text))
+        .then(|| state.text(&object).ok())
+        .flatten()
 }
 
 /// Read a click-flag and reset it to `false` if it was raised, returning
@@ -263,6 +287,7 @@ pub struct SettingsPane {
     composed: Option<Box<dyn Widget>>,
     /// True once the `settings.*` paths have been seeded into the CRDT.
     bootstrap_done: bool,
+    actions: SettingsActionBindings,
 }
 
 impl SettingsPane {
@@ -280,7 +305,15 @@ impl SettingsPane {
             initial: settings,
             composed: None,
             bootstrap_done: false,
+            actions: SettingsActionBindings::default(),
         }
+    }
+
+    /// Route hosted controls through Browser's canonical resource actions.
+    #[must_use]
+    pub fn with_action_bindings(mut self, actions: SettingsActionBindings) -> Self {
+        self.actions = actions;
+        self
     }
 
     /// Poll the pending settings intents for this frame and reset the
@@ -296,6 +329,8 @@ impl SettingsPane {
             clear_cookies: take_flag(state, root, CLEAR_COOKIES_FLAG),
             adblock_enabled: read_bool(state, root, ADBLOCK_PATH),
             clear_on_exit: read_bool(state, root, CLEAR_ON_EXIT_PATH),
+            search_engine: read_text(state, root, SEARCH_ENGINE_PATH),
+            homepage: read_text(state, root, HOMEPAGE_PATH),
             close: take_flag(state, root, CLOSE_FLAG),
         }
     }
@@ -322,7 +357,7 @@ impl SettingsPane {
     /// rhythm is done with explicit spacer rows because an intrinsic-height
     /// column lays out as a block stack that ignores taffy's inter-child
     /// gap — a plain `.push().push()` renders the rows touching.
-    fn build_composition() -> Box<dyn Widget> {
+    fn build_composition(&self) -> Box<dyn Widget> {
         let header = Row::new()
             .push(Box::new(Text::new("Settings").with_size(24.0)))
             .push(Box::new(Spacer::new()))
@@ -338,12 +373,14 @@ impl SettingsPane {
                     HOMEPAGE_PATH,
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
+                    self.actions.homepage.clone(),
                 ),
                 field_block(
                     "Search engine",
                     SEARCH_ENGINE_PATH,
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
+                    self.actions.search_engine.clone(),
                 ),
             ]),
         );
@@ -354,42 +391,46 @@ impl SettingsPane {
                 setting_row_described(
                     "Block ads & trackers",
                     "Blocks ads, trackers, and YouTube video ads.",
-                    Box::new(
+                    Box::new(toggle_with_action(
                         Toggle::new("settings.adblock", ADBLOCK_PATH)
                             .with_id("settings.adblock")
                             .with_accessible_name("Block ads & trackers"),
-                    ),
+                        self.actions.adblock.clone(),
+                    )),
                 ),
                 setting_row_described(
                     "Clear data when the browser closes",
                     "Wipe history and cookies on exit.",
-                    Box::new(
+                    Box::new(toggle_with_action(
                         Toggle::new("settings.clear_on_exit", CLEAR_ON_EXIT_PATH)
                             .with_id("settings.clear_on_exit")
                             .with_accessible_name("Clear data when the browser closes"),
-                    ),
+                        self.actions.clear_on_exit.clone(),
+                    )),
                 ),
                 setting_row_described(
                     "Browsing data",
                     "Clear stored history and site data now.",
                     Box::new(
                         Row::new()
-                            .push(Box::new(
+                            .push(Box::new(button_with_action(
                                 Button::new(
                                     "settings.clear_history",
                                     "Clear history",
                                     Some(CLEAR_HISTORY_FLAG),
                                 )
                                 .with_size(140.0, 36.0),
-                            ))
-                            .push(Box::new(
+                                self.actions.clear_history.clone(),
+                            )))
+                            .push(Box::new(button_with_action(
                                 Button::new(
                                     "settings.clear_cookies",
                                     "Clear cookies & data",
                                     Some(CLEAR_COOKIES_FLAG),
                                 )
                                 .with_size(200.0, 36.0),
-                            )),
+                                self.actions.clear_site_data.clone(),
+                            ))),
                     ),
                 ),
             ]),
@@ -434,10 +475,6 @@ const ROW_GAP: f32 = 12.0;
 
 /// The dim foreground colour, read from the OS dark theme (the builders
 /// run before `draw`, where the live `Theme` would otherwise supply it).
-fn dim() -> vello::peniko::Color {
-    Theme::dark().text_dim
-}
-
 /// A fixed-height empty box, to inject deliberate vertical space.
 fn vgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
@@ -483,9 +520,7 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_size(14.0)))
         .push(vgap(2.0))
-        .push(Box::new(
-            Text::new(description).with_size(12.0).with_color(dim()),
-        ));
+        .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
     Box::new(
         Row::new()
             .push(Box::new(text_block))
@@ -496,20 +531,43 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
 
 /// A labelled full-width text field: a caption above a [`TextInput`]
 /// bound to the CRDT `Text` object at `path`.
-fn field_block(label: &str, path: &str, id: &str, placeholder: &str) -> El {
+fn field_block(
+    label: &str,
+    path: &str,
+    id: &str,
+    placeholder: &str,
+    action: Option<qos_actions::ActionBinding<String>>,
+) -> El {
+    let input = TextInput::new(vec![])
+        .with_id(id)
+        .with_on_change_path(path)
+        .with_placeholder(placeholder);
+    let input = match action {
+        Some(binding) => input.on_action(binding),
+        None => input,
+    };
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(Text::new(label).with_size(14.0)))
             .push(vgap(6.0))
-            .push(Box::new(
-                TextInput::new(vec![])
-                    .with_id(id)
-                    .with_on_change_path(path)
-                    .with_placeholder(placeholder),
-            )),
+            .push(Box::new(input)),
     )
+}
+
+fn toggle_with_action(toggle: Toggle, action: Option<qos_actions::ActionBinding<bool>>) -> Toggle {
+    match action {
+        Some(binding) => toggle.on_action(binding),
+        None => toggle,
+    }
+}
+
+fn button_with_action(button: Button, action: Option<qos_actions::ActionBinding<()>>) -> Button {
+    match action {
+        Some(binding) => button.on_action(binding),
+        None => button,
+    }
 }
 
 /// Write `value` at `path` only when the path is currently absent.
@@ -545,7 +603,7 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = Self::build_composition();
+        let mut composed = self.build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -739,6 +797,13 @@ mod tests {
         assert_eq!(doc.text(&obj).unwrap(), "https://s.example/?q=");
         let (_, home_obj) = doc.get(&root, HOMEPAGE_PATH).unwrap().unwrap();
         assert_eq!(doc.text(&home_obj).unwrap(), "https://home.example");
+
+        let intents = SettingsPane::take_pending(&mut doc, &root);
+        assert_eq!(
+            intents.search_engine.as_deref(),
+            Some("https://s.example/?q=")
+        );
+        assert_eq!(intents.homepage.as_deref(), Some("https://home.example"));
     }
 
     #[test]

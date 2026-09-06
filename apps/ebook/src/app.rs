@@ -40,6 +40,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use std::time::{Duration, Instant};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -48,10 +49,12 @@ use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
-use crate::comment_overlay::{CommentAction, CommentOverlay};
+use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
-use crate::input_controls::{NoteAction, NoteComposer, NumberControls, NumberField};
+use crate::input_controls::{
+    NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
+};
 use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
@@ -375,6 +378,15 @@ impl BooksApp {
     pub(crate) fn open_book(&self) -> Option<&Book> {
         self.library.get(self.book_idx)
     }
+
+    pub(crate) fn library(&self) -> &[Book] {
+        &self.library
+    }
+
+    #[cfg(test)]
+    pub(crate) fn search_navigation_target(&self) -> (usize, Option<usize>) {
+        (self.chapter, self.pending_jump_block)
+    }
 }
 
 #[allow(
@@ -483,6 +495,9 @@ pub struct BooksApp {
     reader_bubble: ReaderBubble,
 
     cursor: Point,
+    /// Stable synthetic control focused by assistive technology. Pointer and
+    /// keyboard activation still dispatch through the same [`Action`] path.
+    semantic_focus: Option<String>,
     /// First block index visible on the current page (for bookmark targeting).
     page_top_block: usize,
     /// The note currently being typed into (a CRDT annotation id).
@@ -515,6 +530,9 @@ pub struct BooksApp {
     /// An in-flight page-turn slide (paged / two-up only). Drives the eased
     /// incoming-page reveal and keeps the loop pumping via `needs_animation_frame`.
     page_turn: Option<PageTurn>,
+    /// Effective host motion policy. Kept on the custom-painted root so its
+    /// frame-demand query cannot accidentally bypass the toolkit preference.
+    reduce_motion: bool,
 
     // --- draggable annotation markers -------------------------------------
     /// Per-frame grab handles for each highlight group's margin marker:
@@ -531,6 +549,9 @@ pub struct BooksApp {
     default_font_id: String,
     schemes: Vec<ColorScheme>,
     annotations: Vec<Annotation>,
+    /// Library-wide snapshot used by global search. The reader-facing
+    /// `annotations` cache above remains scoped to the open book.
+    all_annotations: Vec<Annotation>,
 
     // --- settings screen (ephemeral) --------------------------------------
     settings_tab: SettingsTab,
@@ -688,6 +709,7 @@ impl BooksApp {
             reading_settings: ReadingSettings::default(),
             reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
+            semantic_focus: None,
             page_top_block: 0,
             composing: None,
             note_composer: NoteComposer::default(),
@@ -700,6 +722,7 @@ impl BooksApp {
             flow_extent: (0.0, 0.0),
             pending_scroll_end: false,
             page_turn: None,
+            reduce_motion: false,
             hi_markers: Vec::new(),
             marker_drag: None,
             marker_group: None,
@@ -708,6 +731,7 @@ impl BooksApp {
             default_font_id: String::new(),
             schemes: default_schemes(),
             annotations: Vec::new(),
+            all_annotations: Vec::new(),
             settings_tab: SettingsTab::Fonts,
             renaming: None,
             number_controls: NumberControls::default(),
@@ -1295,6 +1319,7 @@ impl BooksApp {
         self.annotations = BooksDoc::annotations_for(doc, &cur_id);
 
         let all = BooksDoc::list_annotations(doc);
+        self.all_annotations.clone_from(&all);
         self.shelf_fraction.clear();
         self.shelf_annos.clear();
         self.shelf_opened.clear();
@@ -1323,16 +1348,18 @@ impl BooksApp {
         let in_ch = (self.page as f32 + 1.0) / self.cur_page_count.max(1) as f32;
         let fraction = ((self.chapter as f32 + in_ch) / nchap).clamp(0.0, 1.0);
         let id = book.id.clone();
-        BooksDoc::write_progress(
+        self.perform_action(
             doc,
-            &id,
-            &Progress {
-                chapter: self.chapter,
-                page: self.page,
-                fraction,
-                // 0 ⇒ write_progress leaves the recorded open time untouched.
-                opened: 0,
-            },
+            &crate::actions::set_progress_action(
+                &id,
+                Progress {
+                    chapter: self.chapter,
+                    page: self.page,
+                    fraction,
+                    // 0 ⇒ the action preserves the recorded open time.
+                    opened: 0,
+                },
+            ),
         );
         self.last_persisted = Some((self.chapter, self.page));
     }
@@ -1414,7 +1441,7 @@ impl BooksApp {
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
         p.opened = now_ms();
-        BooksDoc::write_progress(doc, &id, &p);
+        self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
         self.note_composer.close();
@@ -2958,15 +2985,19 @@ impl BooksApp {
         self.perform_action(doc, &action);
     }
 
-    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
+    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: &str) -> bool {
         let Some(id) = self.composing else {
             return false;
         };
         self.set_annotation_text(doc, id, text)
     }
 
-    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: String) -> bool {
-        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: &str) -> bool {
+        if !self
+            .annotations
+            .iter()
+            .any(|annotation| annotation.id == id)
+        {
             if self.composing == Some(id) {
                 self.composing = None;
                 self.note_composer.close();
@@ -2975,9 +3006,11 @@ impl BooksApp {
                 self.comment_overlay.finish_editing();
             }
             return false;
-        };
-        annotation.note = text;
-        BooksDoc::upsert_annotation(doc, &annotation);
+        }
+        // Editors use the same action builder as the canonical resource tree.
+        // This keeps typed input undoable/replayable instead of smuggling a
+        // direct CRDT mutation around the action executor.
+        self.perform_action(doc, &crate::actions::edit_note_action(id, text));
         true
     }
 
@@ -2989,11 +3022,18 @@ impl BooksApp {
         if note_editor_open {
             self.note_composer.close();
         }
-        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+        let Some(created) = self
+            .annotations
+            .iter()
+            .find(|annotation| annotation.id == id)
+            .map(|annotation| annotation.created)
+        else {
             return false;
         };
-        annotation.created = annotation.created.max(now_ms());
-        BooksDoc::upsert_annotation(doc, &annotation);
+        self.perform_action(
+            doc,
+            &crate::actions::finalize_annotation_action(id, created.max(now_ms())),
+        );
         true
     }
 
@@ -3005,6 +3045,321 @@ impl BooksApp {
 
     fn is_hover(&self, rect: Rect) -> bool {
         rect.contains(self.cursor)
+    }
+
+    /// Stable identity for a painted affordance. Model identities are used in
+    /// preference to display positions so an AT-held reference remains valid
+    /// when the shelf is sorted or annotations are reordered.
+    fn semantic_target(&self, action: &Action) -> Option<String> {
+        let target = match action {
+            Action::OpenBook(index) => format!("book.open:{}", self.library.get(*index)?.id),
+            Action::ShareToWorkspace(index) => {
+                format!("book.share:{}", self.library.get(*index)?.id)
+            }
+            Action::RemoveFromLibrary(index) => {
+                format!("book.remove:{}", self.library.get(*index)?.id)
+            }
+            Action::Back => "reader.back".into(),
+            Action::PrevPage => "reader.previous-page".into(),
+            Action::NextPage => "reader.next-page".into(),
+            Action::GotoChapter(index) => format!("reader.chapter:{index}"),
+            Action::ToggleToc => "reader.contents".into(),
+            Action::ToggleNotes => "reader.annotations".into(),
+            Action::ToggleTypePopover => "reader.typography".into(),
+            Action::ToggleBookmark => "reader.bookmark".into(),
+            Action::FontInc => "reader.font-size.increment".into(),
+            Action::FontDec => "reader.font-size.decrement".into(),
+            Action::SpacingInc => "reader.line-spacing.increment".into(),
+            Action::SpacingDec => "reader.line-spacing.decrement".into(),
+            Action::CycleFont => "reader.font.next".into(),
+            Action::SetFont(id) => format!("reader.font:{id}"),
+            Action::SetReadTheme(theme) => format!("reader.theme:{}", theme.as_str()),
+            Action::SetMode(mode) => format!("reader.mode:{}", mode.as_str()),
+            Action::SetComposition(style) => format!("reader.composition:{}", style.as_str()),
+            Action::SetColor(color) => format!("reader.highlight:{color:?}"),
+            Action::AddNote => "reader.add-note".into(),
+            Action::CopySelection => "reader.copy-selection".into(),
+            Action::JumpTo(id) => format!("annotation.reveal:{id}"),
+            Action::Delete(id) => format!("annotation.delete:{id}"),
+            Action::EditNote(id) => format!("annotation.edit:{id}"),
+            Action::OpenComments(id) => format!("highlight.comments:{id}"),
+            Action::CloseComments => "highlight.comments.close".into(),
+            Action::DeleteHighlight(id) => format!("highlight.delete:{id}"),
+            Action::AddComment(id) => format!("highlight.comment.add:{id}"),
+            Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
+            Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
+            Action::OpenViaPortal => "library.open".into(),
+            Action::ToggleWatchFolder(path) => {
+                format!("library.watch:{}", ui::a11y::hash_key(path))
+            }
+            Action::OpenSettings => "settings.open".into(),
+            Action::CloseSettings => "settings.close".into(),
+            Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
+            Action::SetScheme(id) => format!("settings.scheme.select:{id}"),
+            Action::ToggleSchemeEnabled(id) => format!("settings.scheme.enabled:{id}"),
+            Action::DuplicateScheme(id) => format!("settings.scheme.duplicate:{id}"),
+            Action::DeleteScheme(id) => format!("settings.scheme.delete:{id}"),
+            Action::EditScheme(id) => format!("settings.scheme.edit:{id}"),
+            Action::CloseSchemeEditor => "settings.scheme-editor.close".into(),
+            Action::NewSchemeViaPicker => "settings.scheme.new".into(),
+            Action::PickSchemeColor(id, slot) => format!("settings.scheme.color:{id}:{slot}"),
+            Action::BeginRenameScheme(id) => format!("settings.scheme.rename:{id}"),
+            Action::SetDefaultFont(id) => format!("settings.default-font:{id}"),
+            Action::ToggleDefaultFontMenu => "settings.default-font.menu".into(),
+            Action::ToggleFontShown(id) => format!("settings.font.shown:{id}"),
+            Action::RemoveFont(id) => format!("settings.font.remove:{id}"),
+            Action::OpenFontPicker => "settings.font.add".into(),
+            Action::CloseFontPicker => "settings.font-picker.close".into(),
+            Action::AddSystemFont(family) => {
+                format!("settings.font.add:{}", ui::a11y::hash_key(family))
+            }
+            Action::BeginRenameFont(id) => format!("settings.font.rename:{id}"),
+            Action::DismissOverlay | Action::Swallow => return None,
+        };
+        Some(format!("books.{target}"))
+    }
+
+    fn semantic_label(&self, action: &Action) -> String {
+        match action {
+            Action::OpenBook(index) => self
+                .library
+                .get(*index)
+                .map_or_else(|| "Open book".into(), |book| format!("Open {}", book.title)),
+            Action::ShareToWorkspace(index) => self.library.get(*index).map_or_else(
+                || "Share book with workspace".into(),
+                |book| format!("Share {} with workspace", book.title),
+            ),
+            Action::RemoveFromLibrary(index) => self.library.get(*index).map_or_else(
+                || "Remove book from library".into(),
+                |book| format!("Remove {} from library", book.title),
+            ),
+            Action::Back | Action::CloseSettings => "Back to library".into(),
+            Action::PrevPage => "Previous page".into(),
+            Action::NextPage => "Next page".into(),
+            Action::GotoChapter(index) => self
+                .open_book()
+                .and_then(|book| book.chapters.get(*index))
+                .map_or_else(
+                    || format!("Go to chapter {}", index + 1),
+                    |c| c.title.clone(),
+                ),
+            Action::ToggleToc => "Contents".into(),
+            Action::ToggleNotes => "Annotations".into(),
+            Action::ToggleTypePopover => "Reading appearance".into(),
+            Action::ToggleBookmark => "Bookmark this page".into(),
+            Action::FontInc => "Increase text size".into(),
+            Action::FontDec => "Decrease text size".into(),
+            Action::SpacingInc => "Increase line spacing".into(),
+            Action::SpacingDec => "Decrease line spacing".into(),
+            Action::CycleFont => "Use next typeface".into(),
+            Action::SetFont(id) | Action::SetDefaultFont(id) => self
+                .fonts
+                .iter()
+                .find(|font| font.id == *id)
+                .map_or_else(|| id.clone(), |font| font.name.clone()),
+            Action::SetReadTheme(theme) => format!("{} reading theme", theme.label()),
+            Action::SetMode(mode) => format!("{} reading mode", mode.label()),
+            Action::SetComposition(style) => format!("{} text composition", style.label()),
+            Action::SetColor(color) => format!("Highlight {color:?}").to_lowercase(),
+            Action::AddNote => "Add note".into(),
+            Action::CopySelection => "Copy selected text".into(),
+            Action::JumpTo(id) => self.annotation_label(*id, "Reveal annotation"),
+            Action::Delete(id) => self.annotation_label(*id, "Delete annotation"),
+            Action::EditNote(id) => self.annotation_label(*id, "Edit note"),
+            Action::OpenComments(_) => "Open highlight comments".into(),
+            Action::CloseComments => "Close comments".into(),
+            Action::DeleteHighlight(_) => "Delete highlight".into(),
+            Action::AddComment(_) => "Add comment".into(),
+            Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
+            Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
+            Action::OpenViaPortal => "Open book".into(),
+            Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
+            Action::OpenSettings => "Book settings".into(),
+            Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
+            Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
+            Action::SetSettingsTab(SettingsTab::Library) => "Library folders".into(),
+            Action::SetScheme(id) => self.scheme_name(id),
+            Action::ToggleSchemeEnabled(id) => format!("Show {} in reader", self.scheme_name(id)),
+            Action::DuplicateScheme(id) => format!("Duplicate {}", self.scheme_name(id)),
+            Action::DeleteScheme(id) => format!("Delete {}", self.scheme_name(id)),
+            Action::EditScheme(id) => format!("Edit {}", self.scheme_name(id)),
+            Action::CloseSchemeEditor => "Done editing theme".into(),
+            Action::NewSchemeViaPicker => "New colour theme".into(),
+            Action::PickSchemeColor(id, slot) => format!(
+                "Edit {} {} colour",
+                self.scheme_name(id),
+                ["page", "text", "accent"]
+                    .get(*slot)
+                    .copied()
+                    .unwrap_or("custom")
+            ),
+            Action::BeginRenameScheme(id) => format!("Rename {}", self.scheme_name(id)),
+            Action::ToggleDefaultFontMenu => "Default font".into(),
+            Action::ToggleFontShown(id) => format!("Show {} in reader", self.font_name(id)),
+            Action::RemoveFont(id) => format!("Remove {}", self.font_name(id)),
+            Action::OpenFontPicker => "Add font".into(),
+            Action::CloseFontPicker => "Close font picker".into(),
+            Action::AddSystemFont(family) => format!("Add {family}"),
+            Action::BeginRenameFont(id) => format!("Rename {}", self.font_name(id)),
+            Action::DismissOverlay | Action::Swallow => String::new(),
+        }
+    }
+
+    fn annotation_label(&self, id: Uuid, fallback: &str) -> String {
+        self.all_annotations
+            .iter()
+            .find(|annotation| annotation.id == id)
+            .map_or_else(
+                || fallback.into(),
+                |annotation| {
+                    let text = if annotation.note.trim().is_empty() {
+                        annotation.excerpt.trim()
+                    } else {
+                        annotation.note.trim()
+                    };
+                    if text.is_empty() {
+                        fallback.into()
+                    } else {
+                        format!("{fallback}: {text}")
+                    }
+                },
+            )
+    }
+
+    fn font_name(&self, id: &str) -> String {
+        self.fonts
+            .iter()
+            .find(|font| font.id == id)
+            .map_or_else(|| id.to_string(), |font| font.name.clone())
+    }
+
+    fn scheme_name(&self, id: &str) -> String {
+        self.schemes
+            .iter()
+            .find(|scheme| scheme.id == id)
+            .map_or_else(|| id.to_string(), |scheme| scheme.name.clone())
+    }
+
+    fn semantic_role_state(&self, action: &Action) -> (Role, AccessState) {
+        let focused = self
+            .semantic_target(action)
+            .is_some_and(|target| self.semantic_focus.as_deref() == Some(&target));
+        let base = AccessState::new().focusable(true).focused(focused);
+        match action {
+            Action::ToggleToc => (
+                Role::ToggleButton,
+                base.checked(self.toc_flap.is_open(self.toc_layout())),
+            ),
+            Action::ToggleNotes => (
+                Role::ToggleButton,
+                base.checked(self.notes_flap.is_open(self.notes_layout())),
+            ),
+            Action::ToggleTypePopover => (
+                Role::ToggleButton,
+                base.checked(self.reading_settings.is_open()),
+            ),
+            Action::ToggleBookmark => (Role::ToggleButton, base.checked(self.page_bookmarked())),
+            Action::SetSettingsTab(tab) => {
+                (Role::RadioButton, base.checked(self.settings_tab == *tab))
+            }
+            Action::SetReadTheme(theme) => (
+                Role::RadioButton,
+                base.checked(self.settings.theme == *theme && self.settings.scheme_id.is_empty()),
+            ),
+            Action::SetMode(mode) => (Role::RadioButton, base.checked(self.settings.mode == *mode)),
+            Action::SetComposition(style) => (
+                Role::RadioButton,
+                base.checked(self.settings.composition == *style),
+            ),
+            Action::SetFont(id) => (
+                Role::RadioButton,
+                base.checked(self.settings.font_id == *id),
+            ),
+            Action::SetDefaultFont(id) => {
+                (Role::RadioButton, base.checked(self.default_font_id == *id))
+            }
+            Action::SetScheme(id) => (
+                Role::RadioButton,
+                base.checked(self.settings.scheme_id == *id),
+            ),
+            Action::ToggleFontShown(id) => (
+                Role::Switch,
+                base.checked(
+                    self.fonts
+                        .iter()
+                        .find(|font| font.id == *id)
+                        .is_some_and(|f| f.shown),
+                ),
+            ),
+            Action::ToggleSchemeEnabled(id) => (
+                Role::Switch,
+                base.checked(
+                    self.schemes
+                        .iter()
+                        .find(|scheme| scheme.id == *id)
+                        .is_some_and(|s| s.enabled),
+                ),
+            ),
+            Action::ToggleWatchFolder(path) => (
+                Role::Checkbox,
+                base.checked(self.watched_folders.contains(path)),
+            ),
+            _ => (Role::Button, base),
+        }
+    }
+
+    fn page_bookmarked(&self) -> bool {
+        self.annotations.iter().any(|annotation| {
+            annotation.kind == AnnoKind::Bookmark
+                && annotation.chapter == self.chapter
+                && annotation.block == self.page_top_block
+        })
+    }
+
+    fn action_is_accessibly_visible(&self, action: &Action) -> bool {
+        if let Some(id) = &self.editing_scheme {
+            return matches!(action, Action::CloseSchemeEditor)
+                || matches!(action, Action::BeginRenameScheme(action_id) if action_id == id)
+                || matches!(action, Action::PickSchemeColor(action_id, _) if action_id == id);
+        }
+        if self.font_picker {
+            return matches!(action, Action::CloseFontPicker | Action::AddSystemFont(_));
+        }
+        true
+    }
+
+    fn reading_document_node(&self) -> Option<AccessNode> {
+        if self.view != View::Reader {
+            return None;
+        }
+        let chapter = self.open_book()?.chapters.get(self.chapter)?;
+        let first = self.page_first_doc.map_or(0, |position| position.block);
+        let last = self.page_last_doc.map_or_else(
+            || chapter.blocks.len().saturating_sub(1),
+            |position| position.block,
+        );
+        let children = chapter
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(index, block)| *index >= first && *index <= last && !block.is_separator())
+            .map(|(index, block)| {
+                let role = match block {
+                    crate::model::Block::Heading { level, .. } => Role::Heading { level: *level },
+                    _ => Role::Paragraph,
+                };
+                AccessNode::new(role)
+                    .with_name(block.plain_text())
+                    .with_hashed_key((self.chapter, index))
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name(chapter.title.clone())
+                .with_description("Current reading page")
+                .with_state(AccessState::new().read_only(true))
+                .with_children(children),
+        )
     }
 }
 
@@ -3051,12 +3406,16 @@ impl Widget for BooksApp {
         let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
             return false;
         };
+        let last_chapter = self
+            .library
+            .get(index)
+            .map_or(0, |book| book.chapters.len().saturating_sub(1));
         let chapter = value
             .get("chapter")
             .and_then(serde_json::Value::as_u64)
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0)
-            .min(self.library[index].chapters.len().saturating_sub(1));
+            .min(last_chapter);
         let page = value
             .get("page")
             .and_then(serde_json::Value::as_u64)
@@ -3080,19 +3439,71 @@ impl Widget for BooksApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        use crate::actions::EbookOperation;
+
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::EbookOperation;
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
         match operation {
             EbookOperation::PreviousPage => self.on_prev_page(),
             EbookOperation::NextPage => self.on_next_page(),
             EbookOperation::ToggleContents => self.on_toggle_toc(),
             EbookOperation::ToggleNotes => self.on_toggle_notes(),
             EbookOperation::OpenSettings => self.on_open_settings(),
+            EbookOperation::Reveal {
+                book_id,
+                chapter,
+                page,
+                block,
+            } => {
+                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
+                    return Err("book is no longer in the library".into());
+                };
+                let Some(book) = self.library.get(index) else {
+                    return Err("book is no longer in the library".into());
+                };
+                // A resource address is an authority-bearing snapshot. Do not
+                // silently clamp a chapter or annotation target from an old
+                // search/resource row: a peer may have replaced the EPUB, and
+                // opening a nearby passage would be materially misleading.
+                if book.chapters.is_empty() {
+                    if chapter != 0 || block.is_some() {
+                        return Err("book no longer contains the requested reading target".into());
+                    }
+                } else {
+                    let Some(chapter_item) = book.chapters.get(chapter) else {
+                        return Err("chapter is no longer available in this book".into());
+                    };
+                    if let Some(block) = block
+                        && block >= chapter_item.blocks.len()
+                    {
+                        return Err(
+                            "annotation target is no longer available in this chapter".into()
+                        );
+                    }
+                }
+                self.book_idx = index;
+                self.view = View::Reader;
+                self.chapter = chapter;
+                self.page = page;
+                self.pending_jump_block = block;
+                self.clear_selection();
+                self.composing = None;
+                self.note_composer.close();
+                self.comment_overlay.close();
+                self.layout = None;
+                self.last_persisted = None;
+                self.dirty = true;
+            }
             EbookOperation::OpenBook { .. } => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
@@ -3112,6 +3523,12 @@ impl Widget for BooksApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
         match operation {
             crate::actions::EbookOperation::OpenBook { path: file } => {
                 if self.resource_invocation.is_some() {
@@ -3180,36 +3597,13 @@ impl Widget for BooksApp {
         self.actions.take_committed()
     }
 
-    /// Make every book (by title/author) and every current-book bookmark (by
-    /// excerpt) findable in the unified Ctrl+K palette.
+    /// Make books, chapters and annotations findable through canonical
+    /// resource view actions in the unified Ctrl+K palette.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::BookSearchProvider::new(
             &self.library,
-            &self.annotations,
+            &self.all_annotations,
         ))]
-    }
-
-    /// Open the book, or jump to the annotation, a chosen palette row
-    /// identifies.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        match crate::search_provider::Activation::parse(action_id) {
-            Some(crate::search_provider::Activation::Book(id)) => {
-                if let Some(i) = self.library.iter().position(|b| b.id == id) {
-                    self.open_book_at(doc, i);
-                }
-            }
-            Some(crate::search_provider::Activation::Annotation(id)) => {
-                if let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() {
-                    self.view = View::Reader;
-                    self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
-                    self.pending_jump_block = Some(a.block);
-                    self.clear_selection();
-                    self.comment_overlay.close();
-                    self.layout = None;
-                }
-            }
-            None => {}
-        }
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
@@ -3371,8 +3765,16 @@ impl Widget for BooksApp {
         // frame uses the right mode default) before laying anything out.
         self.reconcile_flaps();
         let dt = 1.0 / 60.0;
-        self.toc_flap.tick(self.toc_layout(), dt);
-        self.notes_flap.tick(self.notes_layout(), dt);
+        if theme.reduce_motion {
+            let toc = self.toc_layout();
+            let notes = self.notes_layout();
+            self.toc_flap.snap(self.toc_flap.is_open(toc));
+            self.notes_flap.snap(self.notes_flap.is_open(notes));
+            self.page_turn = None;
+        } else {
+            self.toc_flap.tick(self.toc_layout(), dt);
+            self.notes_flap.tick(self.notes_layout(), dt);
+        }
         // App-base fill so nothing shows through.
         paint::fill_rect(
             scene,
@@ -3384,6 +3786,22 @@ impl Widget for BooksApp {
             View::Library => self.draw_library(scene, transform, tr, theme),
             View::Reader => self.draw_reader(scene, transform, tr, theme),
             View::Settings => self.draw_settings(scene, transform, tr, theme),
+        }
+        if let Some(focused) = self.semantic_focus.as_deref()
+            && let Some(hit) = self
+                .hits
+                .iter()
+                .rev()
+                .find(|hit| self.semantic_target(&hit.action).as_deref() == Some(focused))
+        {
+            paint::stroke_round(
+                scene,
+                transform,
+                hit.rect.inset(-2.0),
+                8.0,
+                theme.tokens.colors.border_focus,
+                2.0,
+            );
         }
     }
 
@@ -3474,6 +3892,305 @@ impl Widget for BooksApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut seen = std::collections::HashSet::new();
+        let mut controls = self
+            .hits
+            .iter()
+            .rev()
+            .filter_map(|hit| {
+                if !self.action_is_accessibly_visible(&hit.action) {
+                    return None;
+                }
+                let target = self.semantic_target(&hit.action)?;
+                if !seen.insert(target.clone()) {
+                    return None;
+                }
+                let (role, state) = self.semantic_role_state(&hit.action);
+                Some(
+                    AccessNode::new(role)
+                        .with_name(self.semantic_label(&hit.action))
+                        .with_state(state)
+                        .with_bounds(hit.rect)
+                        .with_action_target(target),
+                )
+            })
+            .collect::<Vec<_>>();
+        controls.reverse();
+        // A modal surface is the whole interactive world while it is open;
+        // do not leave the visually dimmed reader/settings controls navigable
+        // behind it. This also gives Tab a natural focus trap.
+        let modal_controls = if self.color_picker.is_open() {
+            self.color_picker.accessibility_nodes()
+        } else if self.note_composer.is_open() {
+            self.note_composer.accessibility_nodes()
+        } else if self.comment_overlay.is_open() {
+            self.comment_overlay
+                .accessibility_nodes(&self.annotations, self.semantic_focus.as_deref())
+        } else if self.reading_settings.is_open() {
+            self.reading_settings
+                .accessibility_nodes(&self.settings, self.semantic_focus.as_deref())
+        } else {
+            Vec::new()
+        };
+        let has_modal = !modal_controls.is_empty();
+        if has_modal {
+            controls = modal_controls;
+        } else {
+            if self.view == View::Library {
+                controls.extend(
+                    self.shelf_controls
+                        .accessibility_nodes(self.library_prefs, self.semantic_focus.as_deref()),
+                );
+            }
+            controls.extend(self.number_controls.accessibility_nodes());
+            if let Some(rename) = &self.renaming
+                && let Some(node) = rename.field.accessibility()
+            {
+                let target = match &rename.target {
+                    RenameTarget::Font(id) => format!("books.rename.font:{id}"),
+                    RenameTarget::Scheme(id) => format!("books.rename.scheme:{id}"),
+                };
+                controls.push(
+                    node.with_name("Name")
+                        .with_bounds(rename.field.get_rect())
+                        .with_action_target(target),
+                );
+            }
+        }
+
+        let (name, description) = match self.view {
+            View::Library => ("Books library", "Browse and open books"),
+            View::Reader => ("Book reader", "Read and annotate the current book"),
+            View::Settings => (
+                "Book settings",
+                "Manage reading fonts, colours, and library folders",
+            ),
+        };
+        let mut children = Vec::new();
+        if !has_modal && let Some(document) = self.reading_document_node() {
+            children.push(document);
+        }
+        children.extend(controls);
+        if let Some(error) = self.load_error.as_ref().filter(|error| !error.is_empty()) {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(error.clone())
+                    .with_live(ui::a11y::Politeness::Assertive),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name(name)
+                .with_description(description)
+                .with_bounds(self.rect)
+                .with_children(children),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one routing table keeps every synthetic Books control on its existing interaction path"
+    )]
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if let Some(shelf_action) = ShelfControls::semantic_action(target) {
+            self.semantic_focus = Some(target.to_string());
+            self.dirty = true;
+            if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
+                return true;
+            }
+            if matches!(
+                action,
+                A11yAction::Activate
+                    | A11yAction::ToggleCheck
+                    | A11yAction::Expand
+                    | A11yAction::Collapse
+            ) {
+                self.dispatch_shelf_control(shelf_action, doc);
+                self.refresh_from_doc(doc);
+                return true;
+            }
+            return false;
+        }
+        if let Some(settings_action) = self.reading_settings.semantic_action(target) {
+            self.semantic_focus = Some(target.to_string());
+            self.dirty = true;
+            if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
+                return true;
+            }
+            if matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+                self.dispatch_reading_settings(settings_action, doc);
+                self.refresh_from_doc(doc);
+                self.persist_progress(doc);
+                return true;
+            }
+            return false;
+        }
+        if let Some(settings_action) = self
+            .reading_settings
+            .perform_number_semantic_action(target, action, doc, path)
+        {
+            self.dispatch_reading_settings(settings_action, doc);
+            self.refresh_from_doc(doc);
+            self.persist_progress(doc);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(comment_action) = self.comment_overlay.semantic_action(target) {
+            self.semantic_focus = Some(target.to_string());
+            self.dirty = true;
+            if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
+                return true;
+            }
+            if matches!(action, A11yAction::Activate) {
+                self.dispatch_comment_action(comment_action, doc);
+                self.refresh_from_doc(doc);
+                return true;
+            }
+            return false;
+        }
+        if let Some(outcome) = self
+            .comment_overlay
+            .perform_editor_semantic_action(target, action, doc, path)
+        {
+            if let CommentSemanticOutcome::Changed(id, text) = outcome {
+                self.set_annotation_text(doc, id, &text);
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(outcome) = self
+            .note_composer
+            .perform_semantic_action(target, action, doc, path)
+        {
+            match outcome {
+                NoteSemanticOutcome::Changed(text) => {
+                    self.set_composing_text(doc, &text);
+                }
+                NoteSemanticOutcome::Save => {
+                    self.finish_composing(doc);
+                }
+                NoteSemanticOutcome::Delete(id) => self.on_delete_annotation(id, doc),
+                NoteSemanticOutcome::Focused => {}
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            return true;
+        }
+        if matches!(action, A11yAction::Activate)
+            && let Some(picker_action) = self.color_picker.semantic_press(target)
+        {
+            match picker_action {
+                PickerPress::Swallow => {}
+                PickerPress::Cancel => self.color_picker.cancel(),
+                PickerPress::Done => self.commit_picker(doc),
+                PickerPress::Edit(edit) => self.apply_live_pick(doc, &edit),
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            return true;
+        }
+        if let Some((field, value)) = self
+            .number_controls
+            .perform_semantic_action(target, action, doc, path)
+        {
+            if let Some(value) = value {
+                match field {
+                    NumberField::FontScale => self.bump_setting(doc, |settings| {
+                        settings.font_scale = (value / 100.0) as f32;
+                    }),
+                    NumberField::LineSpacing => self.bump_setting(doc, |settings| {
+                        settings.line_spacing = value as f32;
+                    }),
+                    NumberField::FontMult(id) => {
+                        let mut fonts = self.fonts.clone();
+                        if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
+                            font.size_mult = value as f32;
+                        }
+                        BooksDoc::write_fonts(doc, &fonts);
+                    }
+                }
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            return true;
+        }
+        let rename_matches = self.renaming.as_ref().is_some_and(|rename| {
+            let expected = match &rename.target {
+                RenameTarget::Font(id) => format!("books.rename.font:{id}"),
+                RenameTarget::Scheme(id) => format!("books.rename.scheme:{id}"),
+            };
+            expected == target
+        });
+        if rename_matches {
+            let handled = self
+                .renaming
+                .as_mut()
+                .is_some_and(|rename| rename.field.perform_action(action, doc, path));
+            if handled {
+                self.poll_rename_outcome(doc);
+                self.refresh_from_doc(doc);
+                self.dirty = true;
+            }
+            return handled;
+        }
+        let hit_action = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| self.semantic_target(&hit.action).as_deref() == Some(target))
+            .map(|hit| hit.action.clone());
+        let Some(hit_action) = hit_action else {
+            return false;
+        };
+        match action {
+            A11yAction::Focus | A11yAction::ScrollIntoView => {
+                self.semantic_focus = Some(target.to_string());
+                self.dirty = true;
+                true
+            }
+            A11yAction::Activate | A11yAction::ToggleCheck => {
+                self.semantic_focus = Some(target.to_string());
+                self.dispatch(hit_action, doc);
+                self.refresh_from_doc(doc);
+                self.persist_progress(doc);
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.semantic_focus = None;
+        }
+        self.dirty = true;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.semantic_focus.is_some()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.hits
+            .iter()
+            .rev()
+            .any(|hit| self.semantic_target(&hit.action).is_some() && hit.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty || self.flaps_animating()
     }
@@ -3481,9 +4198,22 @@ impl Widget for BooksApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep the loop pumping while a flap is mid-slide, a page turn is
         // easing in, or the floating page bubble is lingering/fading.
-        self.flaps_animating()
-            || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-            || self.reader_bubble.needs_frame(Instant::now())
+        !self.reduce_motion
+            && (self.flaps_animating()
+                || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
+                || self.reader_bubble.needs_frame(Instant::now()))
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
+        if reduced {
+            self.page_turn = None;
+            let toc = self.toc_layout();
+            let notes = self.notes_layout();
+            self.toc_flap.snap(self.toc_flap.is_open(toc));
+            self.notes_flap.snap(self.notes_flap.is_open(notes));
+            self.dirty = true;
+        }
     }
 
     fn mark_drawn(&mut self) {
@@ -3520,7 +4250,7 @@ impl BooksApp {
             &mut input_handled,
         );
         if let Some((id, text)) = comment_text {
-            self.set_annotation_text(doc, id, text);
+            self.set_annotation_text(doc, id, &text);
         }
         if comment_submitted {
             input_handled = true;
@@ -3537,7 +4267,7 @@ impl BooksApp {
             &mut input_handled,
         );
         if let Some(text) = note_text {
-            self.set_composing_text(doc, text);
+            self.set_composing_text(doc, &text);
         }
         if submit {
             self.finish_composing(doc);
@@ -4042,6 +4772,22 @@ impl BooksApp {
         // An in-progress inline rename owns the keyboard through its embedded
         // field via `handle_event`; no key handling for it belongs here.
 
+        if matches!(key, Key::Named(NamedKey::Tab)) && self.composing.is_none() {
+            self.focus_next_semantic(mods.shift_key());
+            return true;
+        }
+        if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
+            && let Some(target) = self.semantic_focus.clone()
+        {
+            return Widget::perform_semantic_action(
+                self,
+                &target,
+                &A11yAction::Activate,
+                doc,
+                &automerge::ROOT,
+            );
+        }
+
         if self.view == View::Settings {
             return self.handle_settings_escape_key(key, doc);
         }
@@ -4057,6 +4803,39 @@ impl BooksApp {
         }
 
         self.handle_reader_key(key, mods, doc)
+    }
+
+    fn focus_next_semantic(&mut self, reverse: bool) {
+        fn collect(node: &AccessNode, targets: &mut Vec<String>) {
+            if let Some(target) = &node.action_target {
+                targets.push(target.clone());
+            }
+            for child in &node.children {
+                collect(child, targets);
+            }
+        }
+        let Some(tree) = Widget::accessibility(self) else {
+            return;
+        };
+        let mut targets = Vec::new();
+        collect(&tree, &mut targets);
+        targets.dedup();
+        if targets.is_empty() {
+            self.semantic_focus = None;
+            return;
+        }
+        let current = self
+            .semantic_focus
+            .as_ref()
+            .and_then(|focused| targets.iter().position(|target| target == focused));
+        let index = match (current, reverse) {
+            (Some(0) | None, true) => targets.len() - 1,
+            (Some(index), true) => index - 1,
+            (Some(index), false) => (index + 1) % targets.len(),
+            (None, false) => 0,
+        };
+        self.semantic_focus = targets.get(index).cloned();
+        self.dirty = true;
     }
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
@@ -6060,7 +6839,12 @@ impl BooksApp {
         t: Affine,
         mode: ReadMode,
         paper_w: f64,
+        reduce_motion: bool,
     ) -> (bool, Affine, f32) {
+        if reduce_motion {
+            self.page_turn = None;
+            return (false, t, 1.0);
+        }
         let now = Instant::now();
         let turning = match self.page_turn {
             Some(pt) if !pt.done(now) && !mode.is_continuous() => true,
@@ -6107,7 +6891,8 @@ impl BooksApp {
         let mut sel_anchor: SelAnchor = None;
         let mut comment_box: CommentBoxBounds = None;
 
-        let (turning, content_t, turn_alpha) = self.page_turn_transform(t, mode, geom.paper_w);
+        let (turning, content_t, turn_alpha) =
+            self.page_turn_transform(t, mode, geom.paper_w, theme.reduce_motion);
         if turning {
             let clip = Rect::new(
                 geom.paper_x + 1.0,
@@ -9350,6 +10135,182 @@ mod interaction_tests {
         BooksApp::with_library(load_sample_library())
     }
 
+    fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_semantic_target(child, target))
+    }
+
+    #[test]
+    fn accessibility_exposes_library_controls_and_routes_their_real_actions() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.view = View::Library;
+        frame(&mut app, &mut doc, 1100.0, 760.0);
+
+        let tree = Widget::accessibility(&app).expect("Books semantic root");
+        assert_eq!(tree.role, Role::Window);
+        assert!(find_semantic_target(&tree, "books.library.open").is_some());
+        assert!(find_semantic_target(&tree, "books.library.sort").is_some());
+        let hide =
+            find_semantic_target(&tree, "books.library.hide-read").expect("hide-finished switch");
+        assert_eq!(hide.role, Role::Switch);
+        assert_eq!(hide.state.checked, Some(false));
+
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "books.library.hide-read",
+            &A11yAction::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(BooksDoc::read_library_prefs(&doc).hide_read);
+    }
+
+    #[test]
+    fn accessibility_reader_contains_visible_text_and_actionable_chrome() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+
+        let tree = Widget::accessibility(&app).expect("Books semantic root");
+        let document = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Document)
+            .expect("current page document");
+        assert!(!document.children.is_empty(), "visible prose is navigable");
+        assert!(document.children.iter().all(|node| node.name.is_some()));
+        assert!(find_semantic_target(&tree, "books.reader.back").is_some());
+        let bookmark =
+            find_semantic_target(&tree, "books.reader.bookmark").expect("bookmark toggle");
+        assert_eq!(bookmark.role, Role::ToggleButton);
+        assert_eq!(bookmark.state.checked, Some(false));
+
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "books.reader.bookmark",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            BooksDoc::list_annotations(&doc)
+                .iter()
+                .any(|annotation| annotation.kind == AnnoKind::Bookmark)
+        );
+    }
+
+    #[test]
+    fn accessibility_quick_settings_is_modal_and_numeric_controls_are_live() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.reading_settings.open();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+
+        let tree = Widget::accessibility(&app).expect("Books semantic root");
+        assert!(
+            tree.children.iter().all(|node| node.role != Role::Document),
+            "dimmed page content is absent while the popover is modal"
+        );
+        assert!(find_semantic_target(&tree, "books.reader.settings.close").is_some());
+        let size = find_semantic_target(&tree, "books.number.text-size")
+            .expect("shared numeric text-size control");
+        assert_eq!(size.role, Role::SpinButton);
+
+        let before = BooksDoc::read_settings(&doc).font_scale;
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "books.number.text-size",
+            &A11yAction::Increment,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(BooksDoc::read_settings(&doc).font_scale > before);
+    }
+
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let mut app = app_with_sample();
+        let doc = AutoCommit::new();
+        let view_before = std::mem::discriminant(&app.view);
+        let settings = serde_json::to_vec(&crate::actions::EbookOperation::OpenSettings).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &settings,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(std::mem::discriminant(&app.view), view_before);
+
+        let open = serde_json::to_vec(&crate::actions::EbookOperation::OpenBook {
+            path: Some("/tmp/wrong-kind.epub".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &open,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.resource_invocation.is_none());
+        assert!(app.resource_open_path.is_none());
+    }
+
+    #[test]
+    fn stale_resource_reveal_refuses_missing_chapter_or_annotation_target() {
+        let mut app = app_with_sample();
+        let doc = AutoCommit::new();
+        let book_id = app.open_book().expect("sample book").id.clone();
+        let before = (app.book_idx, app.chapter, app.page, app.pending_jump_block);
+        for operation in [
+            crate::actions::EbookOperation::Reveal {
+                book_id: book_id.clone(),
+                chapter: usize::MAX,
+                page: 0,
+                block: None,
+            },
+            crate::actions::EbookOperation::Reveal {
+                book_id,
+                chapter: 0,
+                page: 0,
+                block: Some(usize::MAX),
+            },
+        ] {
+            let payload = serde_json::to_vec(&operation).expect("operation serializes");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    qos_actions::OperationKind::View,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .is_err()
+            );
+            assert_eq!(
+                (app.book_idx, app.chapter, app.page, app.pending_jump_block),
+                before,
+                "a stale target must not navigate to a neighbouring passage"
+            );
+        }
+    }
+
     fn app_with_math_sample() -> BooksApp {
         let mut app = app_with_sample();
         let chapter = r#"<body xmlns="http://www.w3.org/1999/xhtml">
@@ -10310,7 +11271,10 @@ mod interaction_tests {
                 return;
             }
         };
-        let actual = renderer.render_rgba(&scene);
+        // A typography-heavy first submission can grow Vello's bump budget;
+        // compare only the confirmed-fit frame so missing glyph-atlas spans
+        // cannot masquerade as a legitimate baseline change.
+        let actual = renderer.render_rgba_resilient(&scene);
         let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/typography/serif-reader.png");
         if std::env::var_os("UPDATE_EBOOK_TYPOGRAPHY_BASELINE").is_some() {
@@ -10360,7 +11324,7 @@ mod interaction_tests {
                 return;
             }
         };
-        let actual = renderer.render_rgba(&scene);
+        let actual = renderer.render_rgba_resilient(&scene);
         let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/typography/math-reader.png");
         if std::env::var_os("UPDATE_EBOOK_MATH_BASELINE").is_some() {
@@ -10591,6 +11555,20 @@ mod interaction_tests {
             app.page_turn.is_none(),
             "continuous mode never starts a page-turn slide"
         );
+    }
+
+    #[test]
+    fn reduced_motion_settles_an_in_flight_page_turn_immediately() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        app.dispatch(Action::NextPage, &mut doc);
+        assert!(app.page_turn.is_some());
+
+        Widget::set_motion_reduced(&mut app, true);
+
+        assert!(app.page_turn.is_none());
+        assert!(!app.needs_animation_frame());
     }
 
     /// A highlight's margin marker is a draggable handle: grabbing it and dropping

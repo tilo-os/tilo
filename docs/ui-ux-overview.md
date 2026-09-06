@@ -1,6 +1,6 @@
 # qOS UI/UX release ledger
 
-Status: active implementation ledger, updated 2026-09-01.
+Status: active implementation ledger, updated 2026-09-05.
 
 This document describes the current UX bar and the release-relevant work that
 is actually verified in the tree. It is not a backlog, a design diary, or a
@@ -96,8 +96,11 @@ acceptance record.
 
 1. **Accessibility acceptance.** Core journeys still require recorded
    screen-reader, 200% scale and high-contrast acceptance evidence on the
-   supported desktop stack. The semantic and keyboard implementation is no
-   longer the blocker.
+   supported desktop stack. The installed-image VM now fails unless an external
+   AT-SPI client can read the compositor-owned OOBE, desktop and protected lock
+   screen, in addition to the deeper Files tree smoke. Monolithic custom-painted
+   apps are being converted to complete semantic/action trees app by app; a
+   committed gate is not a recorded successful external run.
 2. **Localisation.** Public shell and app strings need Fluent ownership and
    expansion-safe layouts. English literals are not a release-ready fallback.
 3. **Standard-app journey acceptance.** The visible-control audit is complete,

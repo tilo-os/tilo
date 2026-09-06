@@ -12,6 +12,10 @@
 
 use crate::backend::{BackendResult, YtBackend};
 
+/// Hard projection budget for one provider query. The UI may render fewer;
+/// global search must never materialise a backend-sized catalogue in one turn.
+pub const MAX_SEARCH_HITS: usize = 50;
+
 /// A unique, stable id for a searchable result type so the framework can
 /// deduplicate providers and persist per-type preferences.
 pub const VIDEO_TYPE_ID: &str = "tube.video";
@@ -111,10 +115,14 @@ impl<'a> VideoSearchProvider<'a> {
     /// Contribute hits for `query`. Errors collapse to an empty contribution —
     /// a failing video search must not break OS-wide search.
     pub fn query(&self, query: &str) -> Vec<SearchHit> {
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
         let Ok(BackendResult::Videos(vids)) = self.backend.search(query) else {
             return Vec::new();
         };
         vids.into_iter()
+            .take(MAX_SEARCH_HITS)
             .map(|v| SearchHit {
                 type_id: VIDEO_TYPE_ID,
                 title: v.display_title(self.dearrow).to_string(),
@@ -142,7 +150,11 @@ pub fn palette_hits(
     }
     let mut hits = provider.query(q);
     let ql = q.to_lowercase();
-    for ch in &model.channels {
+    for ch in model
+        .channels
+        .iter()
+        .take(MAX_SEARCH_HITS.saturating_sub(hits.len()))
+    {
         if ch.name.to_lowercase().contains(&ql) || ch.handle.to_lowercase().contains(&ql) {
             hits.push(SearchHit {
                 type_id: CHANNEL_TYPE_ID,
@@ -154,6 +166,7 @@ pub fn palette_hits(
             });
         }
     }
+    hits.truncate(MAX_SEARCH_HITS);
     hits
 }
 
