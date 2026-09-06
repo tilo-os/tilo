@@ -714,6 +714,15 @@ pub struct ShellOverlayHost {
     qs_transition: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
+    /// Offset into notification history in newest-first order. This is
+    /// session-local view state: notifications themselves remain owned by
+    /// `ChromeState`, while this only says which retained records the compact
+    /// Quick Settings pane is currently showing.
+    qs_notification_history_start: usize,
+    /// Fractional touchpad-wheel movement waiting to become a whole history
+    /// row. Keeping it here makes pixel scrolling work without a tiny motion
+    /// either leaking into the desktop or jumping a full card at a time.
+    qs_notification_wheel_remainder: f64,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -1551,6 +1560,7 @@ impl ShellOverlayHost {
                 matches!(
                     chrome.borrow().quick_settings.current_level(),
                     crate::shell::quick_settings::QsLevel::Root
+                        | crate::shell::quick_settings::QsLevel::Notifications
                 )
             })
         {
@@ -1672,6 +1682,8 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
+            qs_notification_history_start: 0,
+            qs_notification_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -6238,6 +6250,140 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Number of complete notification cards the current compact pane can
+    /// show. The status/footer band is reserved even when the history is
+    /// short, so its position and keyboard hint never overlap the final body
+    /// line on small displays or at enlarged text sizes.
+    fn qs_notification_visible_rows(&self) -> usize {
+        const HEADER_HEIGHT: f64 = 64.0;
+        const FOOTER_HEIGHT: f64 = 26.0;
+        const ROW_HEIGHT: f64 = 70.0;
+        f64_floor_to_usize_saturating(
+            (self.quick_settings_rect().height() - HEADER_HEIGHT - FOOTER_HEIGHT) / ROW_HEIGHT,
+        )
+        .max(1)
+    }
+
+    /// Largest valid newest-first notification offset for the current pane.
+    fn qs_notification_max_start(&self, history_len: usize) -> usize {
+        history_len.saturating_sub(self.qs_notification_visible_rows())
+    }
+
+    /// Keep the current window valid when records expire, are cleared, or the
+    /// viewport shrinks. Returns whether a paint is needed to show the new
+    /// position.
+    fn clamp_qs_notification_history_start(&mut self, history_len: usize) -> bool {
+        let max_start = self.qs_notification_max_start(history_len);
+        let next = self.qs_notification_history_start.min(max_start);
+        let changed = next != self.qs_notification_history_start;
+        self.qs_notification_history_start = next;
+        changed
+    }
+
+    /// Move through retained notifications in newest-first order. Positive
+    /// movement reveals older records; negative movement returns toward the
+    /// newest. This is intentionally row-based so mouse wheels and keyboard
+    /// arrows have identical, predictable landing positions.
+    fn scroll_qs_notification_history(&mut self, movement: isize) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let history_len = chrome.borrow().notification_history().len();
+        let max_start = self.qs_notification_max_start(history_len);
+        let current = self.qs_notification_history_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_notification_history_start {
+            return false;
+        }
+        self.qs_notification_history_start = next;
+        chrome.borrow_mut().bump();
+        true
+    }
+
+    /// Scroll the notification history from a pointer wheel event. Pixel
+    /// deltas accumulate into 48px card steps; line-wheel deltas already name
+    /// rows and apply immediately.
+    fn handle_qs_notification_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        let notifications_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+        });
+        if !notifications_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_notification_wheel_remainder += rows;
+        // `trunc` preserves direction. A small touchpad movement remains
+        // owned by this pane until it accumulates to a complete row rather
+        // than accidentally scrolling the desktop below it.
+        let whole = self.qs_notification_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_notification_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_notification_history(movement);
+        }
+        true
+    }
+
+    /// Keyboard navigation for the notification drill-in. It is deliberately
+    /// available without pointer hover so the retained error history remains
+    /// usable by keyboard and assistive-technology users.
+    fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
+        let history_len = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let page = isize::try_from(self.qs_notification_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_notification_history(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_notification_history(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_notification_history(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_notification_history(-page);
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_notification_history(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_notification_history(isize::MAX);
+            }
+            _ => return false,
+        }
+        // Consume at either edge too: arrows should not start moving a hidden
+        // workspace after the visible history has reached its beginning/end.
+        let _ = self.clamp_qs_notification_history_start(history_len);
+        true
+    }
+
     /// The strip ribbon for the active workspace, anchored to the content
     /// area's right edge. Costs no layout — it sits in
     /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.
@@ -9031,6 +9177,8 @@ impl ShellOverlayHost {
             && let Some(chrome) = self.chrome.clone()
         {
             chrome.borrow_mut().clear_notification_history();
+            self.qs_notification_history_start = 0;
+            self.qs_notification_wheel_remainder = 0.0;
         }
     }
     /// Routes a click through the root-page component, then applies the
@@ -9060,6 +9208,19 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let notifications_open = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+        };
+        if notifications_open {
+            let consumed = self.handle_qs_notification_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
         let at_root = {
             let state = chrome.borrow();
             state.overlays.quick_settings
@@ -9178,6 +9339,9 @@ impl ShellOverlayHost {
                 st.quick_settings
                     .push_level(crate::shell::quick_settings::QsLevel::Notifications);
                 st.bump();
+                drop(st);
+                self.qs_notification_history_start = 0;
+                self.qs_notification_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -10808,6 +10972,12 @@ impl Widget for ShellOverlayHost {
         if self.route_room_activity_event(event, scale_factor, *modifiers, handled) {
             return;
         }
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.handle_qs_notification_wheel(*delta, scale_factor)
+        {
+            *handled = true;
+            return;
+        }
         if self.route_absorbable_pointer_and_toast_click(event, handled) {
             return;
         }
@@ -10948,10 +11118,64 @@ impl Widget for ShellOverlayHost {
                     .push(self.room_activity.accessibility_snapshot()),
                 AccessibleOverlay::QuickSettings => {
                     if let Some(chrome) = self.chrome.as_ref() {
-                        root.children.push(
-                            self.qs_root
-                                .accessibility_snapshot(&chrome.borrow().quick_settings),
-                        );
+                        let state = chrome.borrow();
+                        if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Notifications
+                        ) {
+                            let total = state.notification_history().len();
+                            let visible = self.qs_notification_visible_rows();
+                            let start = self.qs_notification_history_start.min(total.saturating_sub(visible));
+                            let shown = visible.min(total.saturating_sub(start));
+                            let description = if total == 0 {
+                                "No retained notifications.".to_string()
+                            } else {
+                                format!(
+                                    "Showing newest notifications {} through {} of {total}. Use Up and Down to move one notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification.",
+                                    start.saturating_add(1),
+                                    start.saturating_add(shown),
+                                )
+                            };
+                            let items = state
+                                .notification_history()
+                                .iter()
+                                .rev()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, notification)| {
+                                    let source = notification
+                                        .app_name
+                                        .as_deref()
+                                        .or(notification.app_id.as_deref())
+                                        .unwrap_or("System");
+                                    let item_description = if notification.body.is_empty() {
+                                        format!("From {source}")
+                                    } else {
+                                        format!("From {source}. {}", notification.body)
+                                    };
+                                    AccessNode::new(Role::ListItem)
+                                        .with_name(notification.title.clone())
+                                        .with_description(item_description)
+                                        .with_position(index.saturating_add(1), shown)
+                                })
+                                .collect();
+                            let history = AccessNode::new(Role::List)
+                                .with_name("Retained notifications")
+                                .with_children(items);
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Notifications")
+                                    .with_description(description)
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![history]),
+                            );
+                        } else {
+                            root.children.push(
+                                self.qs_root
+                                    .accessibility_snapshot(&state.quick_settings),
+                            );
+                        }
                     }
                 }
                 AccessibleOverlay::ShortcutHelp => {
@@ -14704,6 +14928,7 @@ impl ShellOverlayHost {
             .map(|chrome| chrome.borrow().notification_history().to_vec())
             .unwrap_or_default();
         if history.is_empty() {
+            self.qs_notification_history_start = 0;
             self.draw_qs_drill_in_empty(
                 scene,
                 transform,
@@ -14713,6 +14938,11 @@ impl ShellOverlayHost {
             );
             return;
         }
+
+        let visible_rows = self.qs_notification_visible_rows();
+        let _ = self.clamp_qs_notification_history_start(history.len());
+        let start = self.qs_notification_history_start;
+        let shown = visible_rows.min(history.len().saturating_sub(start));
 
         let clear = self.qs_notification_clear_rect();
         scene.fill(
@@ -14739,11 +14969,36 @@ impl ShellOverlayHost {
             None,
         );
 
-        let row_h = 70.0;
-        let max_rows = f64_floor_to_usize_saturating((rect.height() - 64.0) / row_h).max(1);
-        for (index, notification) in history.iter().rev().take(max_rows).enumerate() {
-            let y0 = rect.y0 + 54.0 + usize_to_f64_lossy(index) * row_h;
-            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + row_h - 6.0);
+        let position = if history.len() > visible_rows {
+            let first = start.saturating_add(1);
+            let last = start.saturating_add(shown);
+            format!("Newest {first}\u{2013}{last} of {}", history.len())
+        } else {
+            format!(
+                "{} notification{}",
+                history.len(),
+                if history.len() == 1 { "" } else { "s" }
+            )
+        };
+        text_renderer.draw_text(
+            scene,
+            &position,
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((rect.x0 + 12.0, rect.y0 + 46.0).into()),
+            Some(f64_to_f32_lossy(rect.width() - 24.0)),
+        );
+
+        const ROW_HEIGHT: f64 = 70.0;
+        for (index, notification) in history
+            .iter()
+            .rev()
+            .skip(start)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y0 = rect.y0 + 64.0 + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + ROW_HEIGHT - 6.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -14783,6 +15038,29 @@ impl ShellOverlayHost {
                     Some(f64_to_f32_lossy(row.width() - 24.0)),
                 );
             }
+        }
+
+        if history.len() > visible_rows {
+            let newer = if start > 0 {
+                "\u{2191} newer"
+            } else {
+                "at newest"
+            };
+            let older = if start.saturating_add(shown) < history.len() {
+                "\u{2193} older"
+            } else {
+                "at oldest"
+            };
+            let hint =
+                format!("{newer}  \u{00b7}  {older}  \u{00b7}  \u{2191}\u{2193} / PgUp PgDn");
+            text_renderer.draw_text(
+                scene,
+                &hint,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((rect.x0 + 12.0, rect.y1 - 17.0).into()),
+                Some(f64_to_f32_lossy(rect.width() - 24.0)),
+            );
         }
     }
 
@@ -17336,7 +17614,8 @@ mod overlay_event_absorb_tests {
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
+    use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
     /// Mock content widget recording every [`Widget::handle_event`] call by
     /// event-variant name, so tests can assert which events reached it —
@@ -17500,10 +17779,21 @@ mod overlay_event_absorb_tests {
     /// after a paint — what the shell does when a draw finds the palette
     /// needs more room than the last layout gave it.
     fn lay_out_host(host: &mut ShellOverlayHost, vw: f64, vh: f64) -> (TaffyTree<()>, NodeId) {
-        let theme = Theme::dark();
+        lay_out_host_with_theme(host, vw, vh, &Theme::dark())
+    }
+
+    /// Same compositor layout pass with the caller's production theme. This
+    /// keeps the visual-review fixtures honest for large-text and
+    /// high-contrast variants without changing their chrome state.
+    fn lay_out_host_with_theme(
+        host: &mut ShellOverlayHost,
+        vw: f64,
+        vh: f64,
+        theme: &Theme,
+    ) -> (TaffyTree<()>, NodeId) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = host.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy
             .new_with_children(
                 Style {
@@ -17715,15 +18005,35 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    fn key_pressed(key: Key) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
     /// One production paint, so the chip / scope rects a click router
     /// (or an assertion) reads are the ones that were actually drawn.
-    fn paint(h: &mut AbsorbHarness) {
-        let theme = Theme::dark();
+    fn paint_scene(h: &mut AbsorbHarness, theme: &Theme) -> vello::Scene {
         let mut tr = TextRenderer::new();
         let mut scene = vello::Scene::new();
         let presence = ui::presence::PresenceCtx::default();
         h.host
-            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        scene
+    }
+
+    fn paint(h: &mut AbsorbHarness) {
+        let _ = paint_scene(h, &Theme::dark());
     }
 
     /// Paints (see [`paint`]), then clicks a point.
@@ -17743,6 +18053,14 @@ mod overlay_event_absorb_tests {
         h.taffy = taffy;
         h.root_node = child;
         paint(h);
+    }
+
+    fn settle_with_theme(h: &mut AbsorbHarness, vw: f64, vh: f64, theme: &Theme) {
+        let _ = paint_scene(h, theme);
+        let (taffy, child) = lay_out_host_with_theme(&mut h.host, vw, vh, theme);
+        h.taffy = taffy;
+        h.root_node = child;
+        let _ = paint_scene(h, theme);
     }
 
     /// Every filter must be reachable at every width. An unpainted chip has
@@ -18051,6 +18369,170 @@ mod overlay_event_absorb_tests {
             "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
             *log
         );
+    }
+
+    fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f64) {
+        {
+            let mut state = h.chrome.borrow_mut();
+            for index in 0..count {
+                state.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        format!("Sync error {index}"),
+                        format!("Detailed recovery guidance for retained notification {index}."),
+                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error),
+                );
+            }
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+            state.bump();
+        }
+        h.host.force_quick_settings_settled();
+        settle(h, vw, vh);
+        // The active toast cap moves the oldest records through the same
+        // history path that real errors take, instead of seeding internals.
+        assert!(
+            h.chrome.borrow().notification_history().len() > 7,
+            "fixture must exceed the old seven-row ceiling"
+        );
+    }
+
+    #[test]
+    fn notification_history_wheel_reaches_older_retained_errors_on_compact_layouts() {
+        for (vw, vh) in [(960.0, 540.0), (1280.0, 720.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            open_notification_history(&mut h, 18, vw, vh);
+            let visible = h.host.qs_notification_visible_rows();
+            let total = h.chrome.borrow().notification_history().len();
+            assert!(visible < total, "the fixture must overflow at {vw}x{vh}");
+            let panel = h.host.quick_settings_rect();
+            assert!(
+                panel.y1 <= vh - 16.0,
+                "panel must stay within the bottom inset"
+            );
+
+            assert!(pump(&mut h, &cursor_moved_at(panel.center())));
+            let wheel = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
+            assert_eq!(
+                h.host.qs_notification_history_start, 2,
+                "wheel down reveals older retained errors at {vw}x{vh}"
+            );
+            assert!(
+                !h.log.borrow().iter().any(|entry| entry == "MouseWheel"),
+                "a notification-pane wheel must not scroll content underneath"
+            );
+        }
+    }
+
+    #[test]
+    fn notification_history_keyboard_reaches_both_ends_and_exposes_navigation() {
+        let mut h = build_harness_sized(1280.0, 720.0);
+        open_notification_history(&mut h, 22, 1280.0, 720.0);
+        let total = h.chrome.borrow().notification_history().len();
+        let max_start = h.host.qs_notification_max_start(total);
+
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+        assert_eq!(h.host.qs_notification_history_start, max_start);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
+        assert_eq!(h.host.qs_notification_history_start, 0);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageDown))));
+        assert_eq!(
+            h.host.qs_notification_history_start,
+            h.host.qs_notification_visible_rows().min(max_start),
+            "Page Down advances by exactly the visible card count"
+        );
+
+        paint(&mut h);
+        let semantics = h.host.accessibility().expect("notification pane semantics");
+        let notifications = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Notifications"))
+            .expect("Quick Settings exposes the notification drill-in as a dialog");
+        assert!(
+            notifications
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("Page Up and Page Down")),
+            "screen-reader instructions must name retained-history navigation"
+        );
+        let retained = notifications
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Retained notifications"))
+            .expect("the visible notification cards must be exposed as a list");
+        assert_eq!(
+            retained.children.len(),
+            h.host.qs_notification_visible_rows().min(total),
+            "screen readers receive every currently visible title/body card"
+        );
+    }
+
+    /// Keep visual review on the exact production draw path at 1:1 pixels.
+    /// This is intentionally opt-in because it needs a wgpu adapter and
+    /// creates review PNGs, but its fixture has more than the former
+    /// seven-card ceiling and exercises the same status/footer treatment as
+    /// the normal event tests above.
+    #[test]
+    #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
+    #[allow(
+        clippy::expect_used,
+        reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
+    )]
+    fn render_notification_history_accessibility_matrix_at_1x() {
+        use std::path::PathBuf;
+        use ui::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        let root = std::env::var_os("QOS_NOTIFICATION_HISTORY_SHOT_DIR").map_or_else(
+            || std::env::temp_dir().join("qos-notification-history-shots"),
+            PathBuf::from,
+        );
+        std::fs::create_dir_all(&root).expect("create notification-history screenshot directory");
+
+        for (label, width, height, theme) in [
+            ("960x540-normal", 960_u32, 540_u32, Theme::dark()),
+            ("1280x720-normal", 1280_u32, 720_u32, Theme::dark()),
+            (
+                "960x540-large-text",
+                960_u32,
+                540_u32,
+                Theme::dark().with_text_scale(1.3),
+            ),
+            (
+                "1280x720-high-contrast",
+                1280_u32,
+                720_u32,
+                Theme::high_contrast().with_ui_scale(1.25),
+            ),
+        ] {
+            let mut h = build_harness_sized(f64::from(width), f64::from(height));
+            open_notification_history(&mut h, 18, f64::from(width), f64::from(height));
+            settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+            let panel = h.host.quick_settings_rect();
+            let visible = h.host.qs_notification_visible_rows();
+            assert!(visible < h.chrome.borrow().notification_history().len());
+            assert!(
+                panel.y1 <= f64::from(height) - 16.0,
+                "{label}: panel must stay above the desktop bottom inset: {panel:?}"
+            );
+            assert!(
+                panel.y0 + 64.0 + usize_to_f64_lossy(visible) * 70.0 <= panel.y1 - 26.0,
+                "{label}: cards must leave the visible navigation footer clear"
+            );
+
+            let scene = paint_scene(&mut h, &theme);
+            let mut renderer = OffscreenRenderer::new(width, height);
+            renderer.render_png(&scene, Color::BLACK, root.join(format!("{label}.png")));
+        }
+        println!("notification-history review PNGs: {}", root.display());
     }
 
     #[test]
