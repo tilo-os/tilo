@@ -8,13 +8,18 @@
 //! resource. The shared broker therefore owns activation for pointer,
 //! keyboard, assistive technology, search and agents alike.
 //!
-//! The provider is deliberately **library-scoped and synchronous**: its page
-//! metadata and plain-text blocks are snapshotted when the search surface
-//! opens, so query keystrokes never touch disk or the network.
+//! The provider is deliberately **library-scoped and synchronous**: a retained
+//! complete catalogue is incrementally updated from the app's in-memory CRDT
+//! projection, so opening or querying search never touches disk, network, or
+//! the full notebook.
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
 };
 
 use crate::model::{PageId, PageMeta, Workspace};
@@ -26,50 +31,37 @@ pub const BLOCK_KIND: &str = "Note blocks";
 /// The title shown for a page whose title is still blank.
 const UNTITLED: &str = "Untitled";
 
-/// A [`SearchProvider`] over a snapshot of the page tree. Rebuild it (cheap —
-/// it clones only the lightweight [`PageMeta`] list, not the bodies) whenever
-/// the search surface opens.
+/// A retained complete catalogue. Cloning this provider when Ctrl+K opens is
+/// O(1); the app incrementally updates only changed page/block resources.
+#[derive(Clone)]
 pub struct NoteSearchProvider {
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<Snapshot>>,
+}
+
+#[derive(Default)]
+struct Snapshot {
     pages: Vec<PageMeta>,
-    blocks: std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
 }
 
 impl NoteSearchProvider {
     /// Snapshot the current page tree into a provider.
     pub fn new(workspace: &Workspace) -> Self {
-        Self {
-            pages: workspace
-                .pages()
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
-            blocks: std::collections::HashMap::new(),
-        }
+        Self::with_blocks(workspace, &HashMap::new())
     }
 
     /// Snapshot page metadata together with searchable plain-text blocks.
     pub fn with_blocks(
         workspace: &Workspace,
-        blocks: &std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+        blocks: &HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
     ) -> Self {
-        let pages = workspace
-            .pages()
-            .iter()
-            .take(DEFAULT_SEARCH_INDEX_LIMIT)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut remaining = DEFAULT_SEARCH_INDEX_LIMIT;
-        let blocks = pages
-            .iter()
-            .filter_map(|page| {
-                let rows = blocks.get(&page.id)?;
-                let kept = rows.iter().take(remaining).cloned().collect::<Vec<_>>();
-                remaining = remaining.saturating_sub(kept.len());
-                Some((page.id, kept))
-            })
-            .collect();
-        Self { pages, blocks }
+        let mut provider = Self {
+            catalog: SearchCatalog::new(NOTE_KIND),
+            snapshot: Arc::new(RwLock::new(Snapshot::default())),
+        };
+        provider.update(workspace, blocks);
+        provider
     }
 
     /// The display title for a page, substituting a placeholder for a blank
@@ -80,6 +72,105 @@ impl NoteSearchProvider {
         } else {
             page.title.as_str()
         }
+    }
+
+    /// Reconcile only changed durable resources into the retained catalogue.
+    pub fn update(
+        &mut self,
+        workspace: &Workspace,
+        blocks: &HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    ) {
+        let pages = workspace.pages().to_vec();
+        let blocks = pages
+            .iter()
+            .filter_map(|page| blocks.get(&page.id).map(|rows| (page.id, rows.clone())))
+            .collect::<HashMap<_, _>>();
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let old_pages = snapshot
+            .pages
+            .iter()
+            .map(|page| (page.id, page))
+            .collect::<HashMap<_, _>>();
+        let new_pages = pages
+            .iter()
+            .map(|page| (page.id, page))
+            .collect::<HashMap<_, _>>();
+        for page in old_pages.keys().filter(|id| !new_pages.contains_key(*id)) {
+            self.catalog
+                .remove(&crate::actions::page_resource_id(*page));
+        }
+        for (page, old_blocks) in &snapshot.blocks {
+            if new_pages.contains_key(page) {
+                continue;
+            }
+            for block in old_blocks {
+                self.catalog
+                    .remove(&crate::actions::block_resource_id(*page, &block.id));
+            }
+        }
+        for page in &pages {
+            let page_changed = old_pages.get(&page.id).copied() != Some(page);
+            if page_changed {
+                let result = SearchResult::for_action(
+                    NOTE_KIND,
+                    Self::display_title(page),
+                    crate::actions::open_page_address(page.id),
+                )
+                .with_icon(Icon::FileText);
+                let _ = self.catalog.upsert(
+                    crate::actions::page_resource_id(page.id),
+                    Self::display_title(page),
+                    result,
+                );
+            }
+            let old_blocks = snapshot.blocks.get(&page.id).cloned().unwrap_or_default();
+            let new_blocks = blocks.get(&page.id).cloned().unwrap_or_default();
+            let old = old_blocks
+                .iter()
+                .map(|block| (block.id.as_str(), block))
+                .collect::<HashMap<_, _>>();
+            let new = new_blocks
+                .iter()
+                .map(|block| (block.id.as_str(), block))
+                .collect::<HashMap<_, _>>();
+            for id in old.keys().filter(|id| !new.contains_key(**id)) {
+                self.catalog
+                    .remove(&crate::actions::block_resource_id(page.id, id));
+            }
+            for block in &new_blocks {
+                if !page_changed && old.get(block.id.as_str()).copied() == Some(block) {
+                    continue;
+                }
+                let resource = crate::actions::block_resource_id(page.id, &block.id);
+                let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if collapsed.is_empty() {
+                    self.catalog.remove(&resource);
+                    continue;
+                }
+                let label = if collapsed.chars().count() > 72 {
+                    collapsed.chars().take(69).collect::<String>() + "…"
+                } else {
+                    collapsed
+                };
+                let result = SearchResult::for_action(
+                    BLOCK_KIND,
+                    label,
+                    crate::actions::open_block_address(page.id, &block.id),
+                )
+                .with_subtitle(Self::display_title(page))
+                .with_icon(Icon::List);
+                let _ = self.catalog.upsert(
+                    resource,
+                    format!("{}\n{}", Self::display_title(page), block.text),
+                    result,
+                );
+            }
+        }
+        snapshot.pages = pages;
+        snapshot.blocks = blocks;
     }
 }
 
@@ -97,59 +188,36 @@ impl SearchProvider for NoteSearchProvider {
         if limit == 0 {
             return Vec::new();
         }
-        // Substring filter over page titles and block text; the registry
-        // re-ranks the survivors by `fuzzy_score` against the visible label.
-        // An empty query browses the complete snapshot.
-        let q = query.to_lowercase();
-        let mut out = Vec::new();
-        for page in &self.pages {
-            let page_title = Self::display_title(page);
-            if page_title.to_lowercase().contains(&q) {
-                out.push(
-                    SearchResult::for_action(
-                        NOTE_KIND,
-                        page_title,
-                        crate::actions::open_page_address(page.id),
-                    )
-                    .with_icon(Icon::FileText),
-                );
-                if out.len() == limit {
-                    return out;
-                }
-            }
-            for block in self.blocks.get(&page.id).into_iter().flatten() {
-                let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if collapsed.is_empty() || (!q.is_empty() && !collapsed.to_lowercase().contains(&q))
-                {
-                    continue;
-                }
-                let title = if collapsed.chars().count() > 72 {
-                    collapsed.chars().take(69).collect::<String>() + "…"
-                } else {
-                    collapsed
-                };
-                out.push(
-                    SearchResult::for_action(
-                        BLOCK_KIND,
-                        title,
-                        crate::actions::open_block_address(page.id, &block.id),
-                    )
-                    .with_subtitle(page_title)
-                    .with_icon(Icon::List),
-                );
-                if out.len() == limit {
-                    return out;
-                }
-            }
-        }
-        out
+        self.catalog.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 
     fn resolve_action_resource(
         &self,
         address: &qos_actions::ActionAddress,
     ) -> Option<qos_actions::Resource> {
-        self.blocks.iter().find_map(|(page, blocks)| {
+        let snapshot = self
+            .snapshot
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(page) = snapshot
+            .pages
+            .iter()
+            .find(|page| crate::actions::open_page_address(page.id) == *address)
+        {
+            return Some(crate::actions::page_resource(page, &snapshot.pages));
+        }
+        snapshot.blocks.iter().find_map(|(page, blocks)| {
             blocks
                 .iter()
                 .find(|block| crate::actions::open_block_address(*page, &block.id) == *address)
@@ -255,6 +323,33 @@ mod tests {
             hit.action_address(),
             Some(crate::actions::open_block_address(page.id, "block-object"))
         );
+    }
+
+    #[test]
+    fn retained_catalog_pages_adversarial_queries_without_omitting_late_blocks() {
+        let ws = populated();
+        let page = ws.pages()[0].id;
+        let mut blocks = Vec::with_capacity(100_001);
+        for index in 0..100_001 {
+            blocks.push(crate::actions::NoteBlockResource {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: format!("shared ordinary text {index}"),
+            });
+        }
+        blocks.last_mut().unwrap().text = "needle-at-the-end".into();
+        let provider = NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]));
+        assert!(
+            provider
+                .search("needle-at-the-end")
+                .iter()
+                .any(|result| result.title == "needle-at-the-end"),
+            "the final record of a >100k catalogue remains reachable"
+        );
+        let first = provider.search_page("shared", None, 7, 3);
+        assert!(first.next.is_some(), "broad query exposes a continuation");
+        assert!(first.inspected <= 7 && first.results.len() <= 3);
+        let second = provider.search_page("shared", first.next.as_ref(), 7, 3);
+        assert!(second.inspected <= 7 && second.results.len() <= 3);
     }
 
     #[test]

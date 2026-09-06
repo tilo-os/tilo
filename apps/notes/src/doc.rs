@@ -25,6 +25,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{put_if_changed, put_text_diffed};
+use ui::widget::BlockEditOp;
+use uuid::Uuid;
 
 use crate::model::{PageId, PageMeta};
 use crate::num;
@@ -89,6 +91,16 @@ impl NotesDoc {
 
         // order (int)
         put_if_changed(doc, &page, "order", i64::from(meta.order));
+
+        // A page owns a durable block list from its very first action. This
+        // avoids a later editor bind creating collaborative structure outside
+        // the canonical action path.
+        if !matches!(
+            doc.get(&page, "blocks"),
+            Ok(Some((Value::Object(ObjType::List), _)))
+        ) {
+            let _ = doc.put_object(&page, "blocks", ObjType::List);
+        }
     }
 
     /// Remove a page's entry from the shared doc. Called when a page is
@@ -145,30 +157,22 @@ impl NotesDoc {
         out
     }
 
-    /// Get-or-create the `blocks` List for an existing page. Returns
-    /// `None` if the page Map doesn't exist yet (caller must
-    /// `upsert_page_meta` first).
+    /// Return an existing page's `blocks` List. Page creation ensures the
+    /// list exists as part of `UpsertPage`; this read helper intentionally
+    /// never creates document state from an editor/widget path.
     ///
-    /// # Panics
-    /// Never in practice: `page` was just fetched above (and matched as a
-    /// Map), so `put_object` on it only fails for an already-corrupted
-    /// document.
-    #[allow(
-        clippy::expect_used,
-        reason = "page was just fetched-and-matched as a Map above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-    )]
-    pub fn page_blocks_list(doc: &mut AutoCommit, id: PageId) -> Option<ObjId> {
-        let pages = Self::pages_map(doc);
+    pub fn page_blocks_list(doc: &AutoCommit, id: PageId) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
+            return None;
+        };
         let key = id.to_string();
         let Ok(Some((Value::Object(ObjType::Map), page))) = doc.get(&pages, key.as_str()) else {
             return None;
         };
-        Some(match doc.get(&page, "blocks") {
-            Ok(Some((Value::Object(ObjType::List), lid))) => lid,
-            _ => doc
-                .put_object(&page, "blocks", ObjType::List)
-                .expect("put_object blocks never fails"),
-        })
+        match doc.get(&page, "blocks") {
+            Ok(Some((Value::Object(ObjType::List), lid))) => Some(lid),
+            _ => None,
+        }
     }
 
     /// The `Text` `ObjId` for block `index` in a `blocks` List, if that
@@ -213,7 +217,23 @@ impl NotesDoc {
         (0..doc.length(&blocks))
             .filter_map(|index| {
                 let text = Self::block_text_obj(doc, &blocks, index)?;
-                Some((text.to_string(), doc.text(&text).unwrap_or_default()))
+                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&blocks, index) else {
+                    return None;
+                };
+                // Pre-action Notes documents used the Text object id as the
+                // public identity. Keep that as a read-only compatibility
+                // fallback, but all action-created blocks persist an explicit
+                // UUID so identities remain stable across move/reinsert.
+                let body = doc.text(&text).unwrap_or_default();
+                let id = block_id(doc, &block).unwrap_or_else(|| {
+                    ui::widget::legacy_block_id(
+                        &blocks,
+                        index,
+                        &Self::block_kind(doc, &blocks, index),
+                        &body,
+                    )
+                });
+                Some((id, body))
             })
             .collect()
     }
@@ -235,6 +255,7 @@ impl NotesDoc {
             .insert_object(blocks, index, ObjType::Map)
             .expect("insert block map never fails");
         let _ = doc.put(&block, "kind", kind);
+        let _ = doc.put(&block, "id", Uuid::new_v4().to_string());
         let text_id = doc
             .put_object(&block, "text", ObjType::Text)
             .expect("put_object block text never fails");
@@ -242,6 +263,267 @@ impl NotesDoc {
             let _ = doc.splice_text(&text_id, 0, 0, text);
         }
         text_id
+    }
+
+    /// Apply semantic editor operations through a page's durable block list.
+    /// Every existing target is UUID-addressed, stale predecessor/target ids
+    /// refuse, and malformed UTF-8 byte offsets refuse before a write. This
+    /// keeps agents and peers from accidentally applying an edit to a nearby
+    /// block after concurrent structure changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the page or addressed block no longer exists, an
+    /// operation is malformed or stale, or Automerge refuses the requested
+    /// structural/text mutation.
+    pub fn apply_block_ops(
+        doc: &mut AutoCommit,
+        page: PageId,
+        ops: &[BlockEditOp],
+    ) -> Result<(), String> {
+        let Some(list) = Self::page_blocks_list(doc, page) else {
+            return Err("page no longer exists".into());
+        };
+        // Pre-action documents did not persist a block UUID. Materialise the
+        // shared widget's deterministic legacy identity *inside this action*,
+        // never during widget binding, so a first edit remains replayable.
+        ensure_block_ids(doc, &list)?;
+        for op in ops {
+            apply_block_op(doc, &list, op)?;
+        }
+        Ok(())
+    }
+}
+
+fn block_id(doc: &AutoCommit, block: &ObjId) -> Option<String> {
+    match doc.get(block, "id") {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            automerge::ScalarValue::Str(id) if Uuid::parse_str(id).is_ok() => Some(id.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn block_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
+    (0..doc.length(list)).find(|index| {
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, *index) else {
+            return false;
+        };
+        if block_id(doc, &block).as_deref() == Some(id) {
+            return true;
+        }
+        let kind = block_kind_value(doc, &block).unwrap_or_default();
+        let text = match doc.get(&block, "text") {
+            Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
+            _ => String::new(),
+        };
+        ui::widget::legacy_block_id(list, *index, &kind, &text) == id
+    })
+}
+
+fn ensure_block_ids(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> {
+    for index in 0..doc.length(list) {
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, index) else {
+            return Err("page block no longer exists".into());
+        };
+        if block_id(doc, &block).is_some() {
+            continue;
+        }
+        let kind = block_kind_value(doc, &block)
+            .ok_or_else(|| "block kind no longer exists".to_string())?;
+        let text = match doc.get(&block, "text") {
+            Ok(Some((Value::Object(ObjType::Text), text))) => {
+                doc.text(&text).map_err(|_| "block text no longer exists")?
+            }
+            _ => return Err("block text no longer exists".into()),
+        };
+        let id = ui::widget::legacy_block_id(list, index, &kind, &text);
+        doc.put(&block, "id", id)
+            .map_err(|_| "page block list no longer exists")?;
+    }
+    Ok(())
+}
+
+fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)> {
+    let index = block_index(doc, list, id)?;
+    match doc.get(list, index) {
+        Ok(Some((Value::Object(ObjType::Map), block))) => Some((index, block)),
+        _ => None,
+    }
+}
+
+fn valid_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+    ) || kind
+        .strip_prefix("bullet:")
+        .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+        || kind
+            .strip_prefix("numbered:")
+            .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+        || kind.strip_prefix("checklist:").is_some_and(|rest| {
+            let mut parts = rest.split(':');
+            parts
+                .next()
+                .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+                && matches!(parts.next(), Some("0" | "1"))
+                && parts.next().is_none()
+        })
+        || kind.starts_with("code:")
+}
+
+fn insert_block(
+    doc: &mut AutoCommit,
+    list: &ObjId,
+    index: usize,
+    id: &str,
+    kind: &str,
+    text: &str,
+) -> Result<(), String> {
+    if Uuid::parse_str(id).is_err() || !valid_kind(kind) {
+        return Err("block operation is invalid".into());
+    }
+    let block = doc
+        .insert_object(list, index.min(doc.length(list)), ObjType::Map)
+        .map_err(|_| "page block list no longer exists")?;
+    doc.put(&block, "id", id)
+        .map_err(|_| "page block list no longer exists")?;
+    doc.put(&block, "kind", kind)
+        .map_err(|_| "page block list no longer exists")?;
+    let text_obj = doc
+        .put_object(&block, "text", ObjType::Text)
+        .map_err(|_| "page block list no longer exists")?;
+    if !text.is_empty() {
+        doc.splice_text(&text_obj, 0, 0, text)
+            .map_err(|_| "block text could not be written")?;
+    }
+    Ok(())
+}
+
+fn byte_to_char_index(text: &str, byte: usize) -> Option<usize> {
+    text.get(..byte).map(|prefix| prefix.chars().count())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeping the exhaustive BlockEditOp interpreter in one match makes its validation and mutation rules auditable together"
+)]
+fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
+    match op {
+        BlockEditOp::Insert {
+            block_id: id,
+            after,
+            kind,
+            text,
+        } => {
+            if block_index(doc, list, id).is_some() {
+                return Err("block already exists".into());
+            }
+            let index = match after {
+                Some(after) => block_index(doc, list, after)
+                    .map(|index| index.saturating_add(1))
+                    .ok_or_else(|| "block predecessor no longer exists".to_string())?,
+                None => 0,
+            };
+            insert_block(doc, list, index, id, kind, text)
+        }
+        BlockEditOp::Delete { block_id: id } => {
+            let (index, _) =
+                block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            doc.delete(list, index)
+                .map_err(|_| "page block list no longer exists".into())
+        }
+        BlockEditOp::SetKind { block_id: id, kind } => {
+            if !valid_kind(kind) {
+                return Err("block kind is invalid".into());
+            }
+            let (_, block) =
+                block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            doc.put(&block, "kind", kind)
+                .map_err(|_| "page block list no longer exists".into())
+        }
+        BlockEditOp::SetChecklist { block_id: id, done } => {
+            let (_, block) =
+                block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            let Some(kind) = block_kind_value(doc, &block) else {
+                return Err("block kind no longer exists".into());
+            };
+            let Some((prefix, _)) = kind.rsplit_once(':') else {
+                return Err("block is not a checklist".into());
+            };
+            if !prefix.starts_with("checklist:") {
+                return Err("block is not a checklist".into());
+            }
+            doc.put(&block, "kind", format!("{prefix}:{}", i32::from(*done)))
+                .map_err(|_| "page block list no longer exists".into())
+        }
+        BlockEditOp::TextSplice {
+            block_id: id,
+            start,
+            end,
+            text,
+        } => {
+            let (_, block) =
+                block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
+                return Err("block text no longer exists".into());
+            };
+            let current = doc
+                .text(&text_obj)
+                .map_err(|_| "block text no longer exists")?;
+            if start > end || *end > current.len() {
+                return Err("block splice is out of bounds".into());
+            }
+            let (Some(start), Some(end)) = (
+                byte_to_char_index(&current, *start),
+                byte_to_char_index(&current, *end),
+            ) else {
+                return Err("block splice is not on a character boundary".into());
+            };
+            let deleted = isize::try_from(end.saturating_sub(start))
+                .map_err(|_| "block splice is too large")?;
+            doc.splice_text(&text_obj, start, deleted, text)
+                .map_err(|_| "block text could not be written".into())
+        }
+        BlockEditOp::Move {
+            block_id: id,
+            after,
+        } => {
+            if after.as_deref() == Some(id) {
+                return Err("block cannot follow itself".into());
+            }
+            let (old_index, block) =
+                block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            let kind = block_kind_value(doc, &block)
+                .ok_or_else(|| "block kind no longer exists".to_string())?;
+            let text = match doc.get(&block, "text") {
+                Ok(Some((Value::Object(ObjType::Text), text))) => {
+                    doc.text(&text).map_err(|_| "block text no longer exists")?
+                }
+                _ => return Err("block text no longer exists".into()),
+            };
+            doc.delete(list, old_index)
+                .map_err(|_| "page block list no longer exists")?;
+            let index = match after {
+                Some(after) => block_index(doc, list, after)
+                    .map(|index| index.saturating_add(1))
+                    .ok_or_else(|| "block predecessor no longer exists".to_string())?,
+                None => 0,
+            };
+            insert_block(doc, list, index, id, &kind, &text)
+        }
+    }
+}
+
+fn block_kind_value(doc: &AutoCommit, block: &ObjId) -> Option<String> {
+    match doc.get(block, "kind") {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            automerge::ScalarValue::Str(kind) => Some(kind.to_string()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -453,11 +735,49 @@ mod tests {
                 order: 0,
             },
         );
-        let blocks = NotesDoc::page_blocks_list(&mut doc, id).unwrap();
+        let blocks = NotesDoc::page_blocks_list(&doc, id).unwrap();
         let _t = NotesDoc::push_block(&mut doc, &blocks, "paragraph", "hi");
         assert_eq!(doc.length(&blocks), 1);
         assert_eq!(NotesDoc::block_kind(&doc, &blocks, 0), "paragraph");
         let tid = NotesDoc::block_text_obj(&doc, &blocks, 0).unwrap();
         assert_eq!(doc.text(&tid).unwrap(), "hi");
+    }
+
+    #[test]
+    fn legacy_block_identity_is_read_only_until_an_action_persists_it() {
+        let mut doc = AutoCommit::new();
+        let page = Uuid::new_v4();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id: page,
+                title: "Legacy".into(),
+                parent: None,
+                order: 0,
+            },
+        );
+        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
+        NotesDoc::push_block(&mut doc, &list, "paragraph", "old");
+        let (_, map) = doc.get(&list, 0).unwrap().unwrap();
+        doc.delete(&map, "id").unwrap();
+        let legacy = ui::widget::legacy_block_id(&list, 0, "paragraph", "old");
+        assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].0, legacy);
+
+        NotesDoc::apply_block_ops(
+            &mut doc,
+            page,
+            &[BlockEditOp::TextSplice {
+                block_id: legacy,
+                start: 0,
+                end: 3,
+                text: "new".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(NotesDoc::page_block_snapshots(&doc, page)[0].1, "new");
+        assert!(
+            block_id(&doc, &map).is_some(),
+            "action persisted the legacy id"
+        );
     }
 }
