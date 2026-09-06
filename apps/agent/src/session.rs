@@ -2103,7 +2103,10 @@ fn word_action_anchor(
             }
         }
         WordProcessorAction::InsertImage { block, .. }
-        | WordProcessorAction::InsertPageBreak { block, .. } => {
+        | WordProcessorAction::InsertPageBreak { block, .. }
+        | WordProcessorAction::SetImageCrop { block, .. }
+        | WordProcessorAction::SetImageSize { block, .. }
+        | WordProcessorAction::SetImagePlacement { block, .. } => {
             qos_actions::InteractionAnchor::Objects {
                 ids: vec![block.clone()],
             }
@@ -2140,6 +2143,41 @@ fn describe(action: &WordProcessorAction) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_layout_actions_anchor_the_exact_document_object() {
+        let actions = [
+            WordProcessorAction::SetImageCrop {
+                block: "image-7".into(),
+                left: 250,
+                top: 250,
+                right: 250,
+                bottom: 250,
+            },
+            WordProcessorAction::SetImageSize {
+                block: "image-7".into(),
+                width: 300,
+                height: 180,
+            },
+            WordProcessorAction::SetImagePlacement {
+                block: "image-7".into(),
+                anchor: "page".into(),
+                wrap: "none".into(),
+                x: 24,
+                y: 36,
+                page: 0,
+            },
+        ];
+
+        for action in actions {
+            assert_eq!(
+                word_action_anchor(&action, "unused-focus"),
+                qos_actions::InteractionAnchor::Objects {
+                    ids: vec!["image-7".into()],
+                }
+            );
+        }
+    }
 
     fn task_run() -> runtime_collab::TaskRunEnvelope {
         runtime_collab::TaskRunEnvelope {
