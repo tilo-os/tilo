@@ -10,8 +10,10 @@
 //! attached — keeps playback in sync across peers via the shared [`media`]
 //! transport.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -30,6 +32,7 @@ use ui::theme::Theme;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
 
+use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
 use crate::preferences::PlaybackPreferences;
 
@@ -51,8 +54,9 @@ fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
 }
 
 fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enabled: bool) {
-    // These two settings are implemented by this app (unlike decoder-provided
-    // track/rate controls), so the shared settings popover is never decorative.
+    const RATES: [&str; 8] = ["0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×", "4×"];
+    // These settings are implemented by this app, so the shared settings
+    // popover is never decorative.
     player.set_setting(PlayerSetting::toggle(
         "autoplay",
         Icon::Play,
@@ -66,6 +70,19 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         "Repeat current video",
         0,
         loop_enabled,
+    ));
+    let rate = player.engine().map_or(1.0, media::MediaEngine::rate);
+    let selected = [0.25_f32, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0]
+        .iter()
+        .position(|candidate| (*candidate - rate).abs() < f32::EPSILON)
+        .unwrap_or(3);
+    player.set_setting(PlayerSetting::choice(
+        "playback-rate",
+        Icon::Refresh,
+        "Playback speed",
+        0,
+        RATES.into_iter().map(str::to_string).collect(),
+        selected,
     ));
 }
 
@@ -131,10 +148,193 @@ pub struct PlayerApp {
     manager: Option<CollaborationManager>,
     /// App-owned options whose state is surfaced through the settings resource.
     preferences: PlaybackPreferences,
+    /// Deterministic decoder metadata used only by the explicit headless
+    /// `metadata` screenshot fixture. Live runs always read the active engine.
+    shot_metadata: Option<DecoderMetadata>,
+    current_source_id: Option<String>,
+    source_generation: u64,
+    search_cache: RefCell<Option<SearchCache>>,
+    search_catalog_builds: Cell<u64>,
+    metadata_revision: u64,
+    search_metadata: DecoderMetadata,
     dirty: bool,
 }
 
+#[derive(Clone, Default, PartialEq)]
+struct DecoderMetadata {
+    audio_tracks: Vec<crate::actions::TrackState>,
+    subtitle_tracks: Vec<crate::actions::TrackState>,
+    chapters: Vec<crate::actions::ChapterState>,
+}
+
+struct SearchCache {
+    source_id: Option<String>,
+    revision: u64,
+    provider: Arc<crate::search::VideoPlayerSearchProvider>,
+}
+
 impl PlayerApp {
+    fn action_context<'a>(
+        &'a self,
+        audio_tracks: &'a [crate::actions::TrackState],
+        subtitle_tracks: &'a [crate::actions::TrackState],
+        chapters: &'a [crate::actions::ChapterState],
+    ) -> crate::actions::PlayerResourceCtx<'a> {
+        crate::actions::PlayerResourceCtx {
+            title: &self.title,
+            media: crate::actions::MediaAvailability {
+                has_media: self.player.has_media(),
+                source_id: self.current_source_id.clone(),
+                can_control_transport: self
+                    .collab
+                    .as_ref()
+                    .is_none_or(|collab| collab.role() == Role::Host),
+            },
+            settings: crate::actions::PlaybackSettingsState {
+                autoplay: self.preferences.autoplay,
+                loop_enabled: self.preferences.loop_enabled,
+                rate: self.player.engine().map_or(1.0, media::MediaEngine::rate),
+            },
+            audio_tracks,
+            subtitle_tracks,
+            chapters,
+        }
+    }
+
+    fn decoder_metadata(
+        &self,
+    ) -> (
+        Vec<crate::actions::TrackState>,
+        Vec<crate::actions::TrackState>,
+        Vec<crate::actions::ChapterState>,
+    ) {
+        if let Some(metadata) = &self.shot_metadata {
+            return (
+                metadata.audio_tracks.clone(),
+                metadata.subtitle_tracks.clone(),
+                metadata.chapters.clone(),
+            );
+        }
+        let audio_tracks = self
+            .player
+            .engine()
+            .map(media::MediaEngine::audio_tracks)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|track| crate::actions::TrackState {
+                stream_id: track.id,
+                index: track.index,
+                label: track.label,
+                selected: track.selected,
+            })
+            .collect();
+        let subtitle_tracks = self
+            .player
+            .engine()
+            .map(media::MediaEngine::subtitle_tracks)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|track| crate::actions::TrackState {
+                stream_id: track.id,
+                index: track.index,
+                label: track.label,
+                selected: track.selected,
+            })
+            .collect();
+        let chapters = self
+            .player
+            .engine()
+            .map(media::MediaEngine::chapters)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|chapter| crate::actions::ChapterState {
+                id: chapter.id,
+                label: chapter.label,
+                seconds: chapter.start_ms as f64 / 1000.0,
+            })
+            .collect();
+        (audio_tracks, subtitle_tracks, chapters)
+    }
+
+    fn sync_decoder_settings(&mut self) {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        let metadata = DecoderMetadata {
+            audio_tracks: audio_tracks.clone(),
+            subtitle_tracks: subtitle_tracks.clone(),
+            chapters: chapters.clone(),
+        };
+        if self.search_metadata == metadata {
+            return;
+        }
+        self.search_metadata = metadata;
+        self.metadata_revision = self.metadata_revision.wrapping_add(1);
+        self.search_cache.get_mut().take();
+        let audio_limit = audio_tracks
+            .len()
+            .min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
+        let subtitle_limit = subtitle_tracks
+            .len()
+            .min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
+        let chapter_limit = chapters.len().min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
+        let audio_tracks = audio_tracks.get(..audio_limit).unwrap_or(&audio_tracks);
+        let subtitle_tracks = subtitle_tracks
+            .get(..subtitle_limit)
+            .unwrap_or(&subtitle_tracks);
+        let chapters = chapters.get(..chapter_limit).unwrap_or(&chapters);
+        if audio_tracks.is_empty() {
+            self.player.remove_setting("audio-track");
+        } else {
+            let selected = audio_tracks
+                .iter()
+                .position(|track| track.selected)
+                .unwrap_or(0);
+            self.player.set_setting(PlayerSetting::choice(
+                "audio-track",
+                Icon::Settings,
+                "Audio track",
+                0,
+                audio_tracks
+                    .iter()
+                    .map(|track| track.label.clone())
+                    .collect(),
+                selected,
+            ));
+        }
+        if subtitle_tracks.is_empty() {
+            self.player.remove_setting("subtitle-track");
+        } else {
+            let selected = subtitle_tracks
+                .iter()
+                .position(|track| track.selected)
+                .map_or(0, |index| index.saturating_add(1));
+            let mut options = vec!["Off".to_string()];
+            options.extend(subtitle_tracks.iter().map(|track| track.label.clone()));
+            self.player.set_setting(PlayerSetting::choice(
+                "subtitle-track",
+                Icon::Settings,
+                "Subtitles",
+                0,
+                options,
+                selected,
+            ));
+        }
+        if chapters.is_empty() {
+            self.player.remove_setting("chapters");
+        } else {
+            self.player.set_setting(PlayerSetting::choice(
+                "chapters",
+                Icon::ListVideo,
+                "Chapters",
+                0,
+                chapters
+                    .iter()
+                    .map(|chapter| chapter.label.clone())
+                    .collect(),
+                0,
+            ));
+        }
+    }
+
     /// A player with a fresh engine and no media loaded.
     pub fn new() -> Self {
         Self::new_with_preferences(PlaybackPreferences::load())
@@ -146,12 +346,17 @@ impl PlayerApp {
             title: "No media",
             media: crate::actions::MediaAvailability {
                 has_media: false,
+                source_id: None,
                 can_control_transport: true,
             },
             settings: crate::actions::PlaybackSettingsState {
                 autoplay: preferences.autoplay,
                 loop_enabled: preferences.loop_enabled,
+                rate: player.engine().map_or(1.0, media::MediaEngine::rate),
             },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
         };
         let action_surface = crate::actions::resources(&action_ctx, &AutoCommit::new());
         let open_action = action_surface
@@ -172,6 +377,13 @@ impl PlayerApp {
             collab: None,
             manager: None,
             preferences,
+            shot_metadata: None,
+            current_source_id: None,
+            source_generation: 0,
+            search_cache: RefCell::new(None),
+            search_catalog_builds: Cell::new(0),
+            metadata_revision: 0,
+            search_metadata: DecoderMetadata::default(),
             dirty: true,
         }
     }
@@ -194,6 +406,8 @@ impl PlayerApp {
     ///   * `"settings"` — open the real autoplay/repeat settings menu.
     ///   * `"fullscreen"` — toggle fullscreen so the control bar shows its
     ///     immersive (exit-fullscreen) state.
+    ///   * `"metadata"` — open the controls menu with deterministic embedded
+    ///     audio/subtitle/chapter metadata.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
@@ -207,9 +421,11 @@ impl PlayerApp {
                 // contacted — even though `decode` compiles the real backend in
                 // by default. `--shots --open <file>` is the real-decode path.
                 app.player.set_engine(media::MediaEngine::new_synthesized());
-                app.player.open(media::Source::Remote {
+                let source = media::Source::Remote {
                     url: "https://demo.local/clip.mp4".into(),
-                });
+                };
+                app.set_current_source(&source);
+                app.player.open(source);
                 app.title = "Demo clip".to_string();
                 // Park at a fixed position and pause so the synthesized frame and
                 // the transport read-out are byte-deterministic across runs: a
@@ -222,6 +438,44 @@ impl PlayerApp {
         }
         match scenario {
             Some("settings") => app.player.open_settings_menu(None),
+            Some("metadata") => {
+                app.shot_metadata = Some(DecoderMetadata {
+                    audio_tracks: vec![
+                        crate::actions::TrackState {
+                            stream_id: "fixture-audio-en".into(),
+                            index: 0,
+                            label: "English stereo".into(),
+                            selected: true,
+                        },
+                        crate::actions::TrackState {
+                            stream_id: "fixture-audio-de".into(),
+                            index: 1,
+                            label: "Deutsch 5.1".into(),
+                            selected: false,
+                        },
+                    ],
+                    subtitle_tracks: vec![crate::actions::TrackState {
+                        stream_id: "fixture-subtitles-en".into(),
+                        index: 0,
+                        label: "English captions".into(),
+                        selected: true,
+                    }],
+                    chapters: vec![
+                        crate::actions::ChapterState {
+                            id: "intro".into(),
+                            label: "Introduction · 0:00".into(),
+                            seconds: 0.0,
+                        },
+                        crate::actions::ChapterState {
+                            id: "scene".into(),
+                            label: "Second act · 0:45".into(),
+                            seconds: 45.0,
+                        },
+                    ],
+                });
+                app.sync_decoder_settings();
+                app.player.open_settings_menu(None);
+            }
             Some("fullscreen") => app.player.toggle_fullscreen(),
             _ => {}
         }
@@ -263,6 +517,9 @@ impl PlayerApp {
 
     fn open_path(&mut self, path: &Path) {
         let source = source_for_path(path);
+        self.set_current_source(&source);
+        self.search_cache.get_mut().take();
+        self.metadata_revision = self.metadata_revision.wrapping_add(1);
         self.title = path.file_name().map_or_else(
             || path.to_string_lossy().into_owned(),
             |n| n.to_string_lossy().into_owned(),
@@ -284,6 +541,15 @@ impl PlayerApp {
         self.dirty = true;
     }
 
+    fn set_current_source(&mut self, source: &media::Source) {
+        self.source_generation = self.source_generation.wrapping_add(1);
+        self.current_source_id = Some(format!(
+            "{}#open-{}",
+            source.to_uri(),
+            self.source_generation
+        ));
+    }
+
     fn close_media(&mut self) {
         let mut player =
             configured_player(self.preferences.autoplay, self.preferences.loop_enabled);
@@ -301,6 +567,10 @@ impl PlayerApp {
         }
         self.player = player;
         self.title = "No media".into();
+        self.current_source_id = None;
+        self.source_generation = self.source_generation.wrapping_add(1);
+        self.search_cache.get_mut().take();
+        self.metadata_revision = self.metadata_revision.wrapping_add(1);
         self.dirty = true;
     }
 
@@ -326,7 +596,9 @@ impl PlayerApp {
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
             PlayerOperation::ToggleMute => self.player.toggle_mute(),
-            PlayerOperation::SeekSeconds(seconds) => {
+            PlayerOperation::Reveal => self.player.reveal_controls(),
+            PlayerOperation::SeekSeconds(seconds)
+            | PlayerOperation::JumpToChapter { seconds, .. } => {
                 self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
             }
             PlayerOperation::SeekBySeconds(seconds) => {
@@ -361,12 +633,104 @@ impl PlayerApp {
                     self.persist_preferences();
                 }
             }
-            PlayerOperation::ShowTracksUnavailable
-            | PlayerOperation::ShowChaptersUnavailable
-            | PlayerOperation::SetPlaybackRateUnavailable(_) => {}
+            PlayerOperation::SetPlaybackRate(rate) => {
+                if let Some(engine) = self.player.engine_mut() {
+                    engine.set_rate(rate as f32);
+                }
+                let selected = [0.25_f64, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0]
+                    .iter()
+                    .position(|candidate| (*candidate - rate).abs() < f64::EPSILON);
+                if let Some(selected) = selected {
+                    self.player.set_choice_selection("playback-rate", selected);
+                }
+            }
+            PlayerOperation::SelectAudioTrack { index, .. } => {
+                if !self
+                    .player
+                    .engine_mut()
+                    .is_some_and(|engine| engine.select_audio_track(index))
+                {
+                    tracing::warn!(index, "video player: refused stale audio-track selection");
+                }
+            }
+            PlayerOperation::SelectSubtitleTrack { target_index, .. } => {
+                if !self
+                    .player
+                    .engine_mut()
+                    .is_some_and(|engine| engine.select_subtitle_track(target_index))
+                {
+                    tracing::warn!(
+                        ?target_index,
+                        "video player: refused stale subtitle-track selection"
+                    );
+                }
+            }
             PlayerOperation::ToggleFullscreen => self.player.toggle_fullscreen(),
         }
         self.dirty = true;
+    }
+
+    fn validate_dynamic_target(&self, operation: &PlayerOperation) -> Result<(), String> {
+        let (audio, subtitles, chapters) = self.decoder_metadata();
+        match operation {
+            PlayerOperation::SelectAudioTrack {
+                source_id,
+                stream_id,
+                index,
+            } => {
+                if self.current_source_id.as_deref() != Some(source_id)
+                    || !audio
+                        .iter()
+                        .any(|track| track.index == *index && track.stream_id == *stream_id)
+                {
+                    return Err("the audio track changed; refresh search and try again".into());
+                }
+            }
+            PlayerOperation::SelectSubtitleTrack {
+                source_id,
+                target_stream_id,
+                target_index,
+                expected_stream_id,
+                expected_index,
+            } => {
+                if target_index.is_some() != target_stream_id.is_some()
+                    || expected_index.is_some() != expected_stream_id.is_some()
+                {
+                    return Err(
+                        "subtitle target was malformed; refresh search and try again".into(),
+                    );
+                }
+                let desired = target_index.zip(target_stream_id.as_deref());
+                let expected = expected_index.zip(expected_stream_id.as_deref());
+                let actual = subtitles
+                    .iter()
+                    .find(|track| track.selected)
+                    .map(|track| (track.index, track.stream_id.as_str()));
+                if self.current_source_id.as_deref() != Some(source_id)
+                    || desired.is_some_and(|(index, stream_id)| {
+                        !subtitles
+                            .iter()
+                            .any(|track| track.index == index && track.stream_id == stream_id)
+                    })
+                    || actual != expected
+                {
+                    return Err("the subtitle track changed; refresh search and try again".into());
+                }
+            }
+            PlayerOperation::JumpToChapter {
+                source_id,
+                id,
+                seconds,
+            } if self.current_source_id.as_deref() != Some(source_id)
+                || !chapters.iter().any(|chapter| {
+                    chapter.id == *id && (chapter.seconds - *seconds).abs() < f64::EPSILON
+                }) =>
+            {
+                return Err("the chapter changed; refresh search and try again".into());
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Drain a pending portal outcome, opening the chosen file.
@@ -470,12 +834,10 @@ impl PlayerApp {
     }
 
     fn drain_player_settings(&mut self) {
-        let before = self.preferences;
         for event in self.player.take_setting_events() {
             match event {
                 PlayerSettingEvent::Toggled { id, on } if id == "autoplay" => {
-                    self.preferences.autoplay = on;
-                    self.dirty = true;
+                    self.perform_resource_operation(PlayerOperation::SetAutoplay(on));
                 }
                 PlayerSettingEvent::Toggled { id, on } if id == "loop" => {
                     if self
@@ -483,17 +845,64 @@ impl PlayerApp {
                         .as_ref()
                         .is_none_or(|collab| collab.role() == Role::Host)
                     {
-                        self.preferences.loop_enabled = on;
-                        self.dirty = true;
+                        self.perform_resource_operation(PlayerOperation::SetLoop(on));
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => {
+                    const RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
+                    if self
+                        .collab
+                        .as_ref()
+                        .is_none_or(|collab| collab.role() == Role::Host)
+                        && let Some(rate) = RATES.get(index)
+                    {
+                        self.perform_resource_operation(PlayerOperation::SetPlaybackRate(
+                            f64::from(*rate),
+                        ));
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "audio-track" => {
+                    let (audio_tracks, _, _) = self.decoder_metadata();
+                    if let Some(track) = audio_tracks.get(index)
+                        && let Some(source_id) = self.current_source_id.clone()
+                    {
+                        self.perform_resource_operation(PlayerOperation::SelectAudioTrack {
+                            source_id,
+                            stream_id: track.stream_id.clone(),
+                            index: track.index,
+                        });
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "subtitle-track" => {
+                    let (_, subtitle_tracks, _) = self.decoder_metadata();
+                    let target = index
+                        .checked_sub(1)
+                        .and_then(|index| subtitle_tracks.get(index));
+                    if let Some(source_id) = self.current_source_id.clone() {
+                        let selected = subtitle_tracks.iter().find(|track| track.selected);
+                        self.perform_resource_operation(PlayerOperation::SelectSubtitleTrack {
+                            source_id,
+                            target_stream_id: target.map(|track| track.stream_id.clone()),
+                            target_index: target.map(|track| track.index),
+                            expected_stream_id: selected.map(|track| track.stream_id.clone()),
+                            expected_index: selected.map(|track| track.index),
+                        });
+                    }
+                }
+                PlayerSettingEvent::Chose { id, index } if id == "chapters" => {
+                    let (_, _, chapters) = self.decoder_metadata();
+                    if let Some(chapter) = chapters.get(index) {
+                        self.perform_resource_operation(PlayerOperation::JumpToChapter {
+                            source_id: self.current_source_id.clone().unwrap_or_default(),
+                            id: chapter.id.clone(),
+                            seconds: chapter.seconds,
+                        });
                     }
                 }
                 PlayerSettingEvent::Toggled { .. }
                 | PlayerSettingEvent::Chose { .. }
                 | PlayerSettingEvent::Activated { .. } => {}
             }
-        }
-        if self.preferences != before {
-            self.persist_preferences();
         }
     }
 
@@ -666,23 +1075,49 @@ impl Widget for PlayerApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resources(
-            &crate::actions::PlayerResourceCtx {
-                title: &self.title,
-                media: crate::actions::MediaAvailability {
-                    has_media: self.player.has_media(),
-                    can_control_transport: self
-                        .collab
-                        .as_ref()
-                        .is_none_or(|collab| collab.role() == Role::Host),
-                },
-                settings: crate::actions::PlaybackSettingsState {
-                    autoplay: self.preferences.autoplay,
-                    loop_enabled: self.preferences.loop_enabled,
-                },
-            },
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
             doc,
         )
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resource(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            id,
+        )
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        let source_id = self.current_source_id.clone();
+        let revision = self.metadata_revision;
+        let mut cache = self.search_cache.borrow_mut();
+        let reusable = cache
+            .as_ref()
+            .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
+        if !reusable {
+            let provider = crate::search::VideoPlayerSearchProvider::new(&self.action_context(
+                &self.search_metadata.audio_tracks,
+                &self.search_metadata.subtitle_tracks,
+                &self.search_metadata.chapters,
+            ));
+            *cache = Some(SearchCache {
+                source_id,
+                revision,
+                provider: Arc::new(provider),
+            });
+            self.search_catalog_builds
+                .set(self.search_catalog_builds.get().saturating_add(1));
+        }
+        if let Some(cached) = cache.as_ref() {
+            vec![Box::new((*cached.provider).clone())]
+        } else {
+            // The cache was initialized immediately above. Returning no stale
+            // provider is safer than panicking if that invariant ever changes.
+            Vec::new()
+        }
     }
 
     fn invoke_resource_operation(
@@ -702,6 +1137,7 @@ impl Widget for PlayerApp {
         if operation.requires_media() && !self.player.has_media() {
             return Err("open a video before using this playback control".into());
         }
+        self.validate_dynamic_target(&operation)?;
         if self
             .collab
             .as_ref()
@@ -714,17 +1150,11 @@ impl Widget for PlayerApp {
                     | crate::actions::PlayerOperation::Restart
                     | crate::actions::PlayerOperation::SeekToEnd
                     | crate::actions::PlayerOperation::SetLoop(_)
+                    | crate::actions::PlayerOperation::SetPlaybackRate(_)
+                    | crate::actions::PlayerOperation::JumpToChapter { .. }
             )
         {
             return Err("this player is following the collaborative host".into());
-        }
-        if matches!(
-            &operation,
-            crate::actions::PlayerOperation::ShowTracksUnavailable
-                | crate::actions::PlayerOperation::ShowChaptersUnavailable
-                | crate::actions::PlayerOperation::SetPlaybackRateUnavailable(_)
-        ) {
-            return Err("this capability is not available in the shared media decoder".into());
         }
         if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
             if !Path::new(path).is_file() {
@@ -795,6 +1225,7 @@ impl Widget for PlayerApp {
         self.drain_portal();
         self.tick_collab();
         self.player.sync(state, path);
+        self.sync_decoder_settings();
         self.drain_player_settings();
         self.maybe_loop_current_media();
     }
@@ -1313,6 +1744,16 @@ mod tests {
     }
 
     #[test]
+    fn playback_speed_action_changes_the_engine_and_collaborative_snapshot() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.perform_resource_operation(crate::actions::PlayerOperation::SetPlaybackRate(2.0));
+        let engine = app.player.engine().expect("engine");
+        assert!((engine.rate() - 2.0).abs() < f32::EPSILON);
+        assert!((engine.transport_state(media::now_ms()).rate - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn space_key_routed_through_the_app_toggles_playback() {
         let mut app = synth_app();
         app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
@@ -1372,6 +1813,108 @@ mod tests {
             app.player.is_playing(),
             was_playing,
             "Space toggled playback via the app"
+        );
+    }
+
+    #[test]
+    fn repeated_search_provider_retrieval_does_not_reindex_metadata() {
+        let app = PlayerApp::for_shot(None, Some("metadata"));
+        let first = app.search_providers();
+        assert_eq!(app.search_catalog_builds.get(), 1);
+        let second = app.search_providers();
+        assert_eq!(
+            app.search_catalog_builds.get(),
+            1,
+            "unchanged Ctrl+K opens reuse the Arc catalog"
+        );
+        assert_eq!(
+            first[0].search("Deutsch").len(),
+            second[0].search("Deutsch").len()
+        );
+    }
+
+    #[test]
+    fn search_reveal_operation_never_changes_transport() {
+        let mut app = PlayerApp::for_shot(None, None);
+        app.player.pause();
+        let position = app.player.position_ms();
+        app.perform_resource_operation(PlayerOperation::Reveal);
+        assert!(!app.player.is_playing());
+        assert_eq!(app.player.position_ms(), position);
+    }
+
+    #[test]
+    fn stale_stream_and_chapter_targets_are_refused_before_engine_mutation() {
+        let app = PlayerApp::for_shot(None, Some("metadata"));
+        let audio = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
+        let chapter = app.shot_metadata.as_ref().unwrap().chapters[0].clone();
+        let stale_source = "https://old.example/clip.mkv".to_string();
+        assert!(
+            app.validate_dynamic_target(&PlayerOperation::SelectAudioTrack {
+                source_id: stale_source.clone(),
+                stream_id: audio.stream_id,
+                index: audio.index,
+            })
+            .is_err()
+        );
+        assert!(
+            app.validate_dynamic_target(&PlayerOperation::JumpToChapter {
+                source_id: stale_source,
+                id: chapter.id,
+                seconds: chapter.seconds,
+            })
+            .is_err()
+        );
+        // Reordered array positions are rejected even for the same source.
+        let source_id = app.current_source_id.clone().unwrap();
+        assert!(
+            app.validate_dynamic_target(&PlayerOperation::SelectAudioTrack {
+                source_id,
+                stream_id: "different-stream".into(),
+                index: 0,
+            })
+            .is_err()
+        );
+        let source_id = app.current_source_id.clone().unwrap();
+        let selected = app.shot_metadata.as_ref().unwrap().subtitle_tracks[0].clone();
+        let off = PlayerOperation::SelectSubtitleTrack {
+            source_id: source_id.clone(),
+            target_stream_id: None,
+            target_index: None,
+            expected_stream_id: Some(selected.stream_id.clone()),
+            expected_index: Some(selected.index),
+        };
+        assert!(app.validate_dynamic_target(&off).is_ok());
+        assert!(
+            app.validate_dynamic_target(&PlayerOperation::SelectSubtitleTrack {
+                source_id,
+                target_stream_id: Some(selected.stream_id),
+                target_index: None,
+                expected_stream_id: None,
+                expected_index: None,
+            })
+            .is_err(),
+            "mismatched target pairs are rejected"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_uri_invalidates_old_dynamic_targets() {
+        let mut app = PlayerApp::for_shot(None, Some("metadata"));
+        let old_source = app.current_source_id.clone().unwrap();
+        let source = media::Source::Remote {
+            url: "https://demo.local/clip.mp4".into(),
+        };
+        app.set_current_source(&source);
+        assert_ne!(app.current_source_id.as_deref(), Some(old_source.as_str()));
+        let track = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
+        assert!(
+            app.validate_dynamic_target(&PlayerOperation::SelectAudioTrack {
+                source_id: old_source,
+                stream_id: track.stream_id,
+                index: track.index,
+            })
+            .is_err()
         );
     }
 }
