@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 
 
@@ -10,6 +11,7 @@ import app_release  # noqa: E402
 
 
 CATALOG = {name: {} for name in ("files", "notes", "settings")}
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppReleaseTests(unittest.TestCase):
@@ -129,6 +131,17 @@ class AppReleaseTests(unittest.TestCase):
         self.assertEqual(
             app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), []
         )
+
+    def test_release_graph_keeps_image_codecs_explicit(self) -> None:
+        """One app must not enable unused image codecs in every thin qpkg."""
+        expected = {
+            ROOT / "apps/slides/Cargo.toml": ["jpeg", "png", "gif", "webp"],
+            ROOT / "crates/doc/qdoc-pdf/Cargo.toml": ["jpeg", "png"],
+        }
+        for manifest, formats in expected.items():
+            dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]
+            self.assertFalse(dependency["default-features"], manifest)
+            self.assertEqual(dependency["features"], formats, manifest)
 
 
 if __name__ == "__main__":
