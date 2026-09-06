@@ -1850,8 +1850,10 @@ fn map_mouse_button(code: u32) -> Option<MouseButton> {
         0x110 => Some(MouseButton::Left),
         0x111 => Some(MouseButton::Right),
         0x112 => Some(MouseButton::Middle),
-        0x115 => Some(MouseButton::Forward),
-        0x116 => Some(MouseButton::Back),
+        // Both pairs are defined by input-event-codes.h and real devices use
+        // both. winit intentionally normalises either pair to Back/Forward.
+        0x113 | 0x116 => Some(MouseButton::Back),
+        0x114 | 0x115 => Some(MouseButton::Forward),
         _ => None,
     }
 }
@@ -3116,9 +3118,11 @@ mod tests {
         assert_eq!(map_mouse_button(0x110), Some(MouseButton::Left));
         assert_eq!(map_mouse_button(0x111), Some(MouseButton::Right));
         assert_eq!(map_mouse_button(0x112), Some(MouseButton::Middle));
+        assert_eq!(map_mouse_button(0x113), Some(MouseButton::Back));
+        assert_eq!(map_mouse_button(0x114), Some(MouseButton::Forward));
         assert_eq!(map_mouse_button(0x115), Some(MouseButton::Forward));
         assert_eq!(map_mouse_button(0x116), Some(MouseButton::Back));
-        assert_eq!(map_mouse_button(0x113), None);
+        assert_eq!(map_mouse_button(0x117), None);
     }
 
     #[test]
