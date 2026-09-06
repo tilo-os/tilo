@@ -273,7 +273,7 @@ pub(crate) enum Hit {
 }
 
 impl Hit {
-    fn semantic_id(&self) -> String {
+    pub(crate) fn semantic_id(&self) -> String {
         match self {
             Self::Inbox => "chat.inbox".into(),
             Self::CurrentContext => "chat.current-context".into(),
@@ -287,14 +287,20 @@ impl Hit {
             Self::AddCategory(id) => format!("chat.add-category:{id}"),
             Self::FocusMain => "chat.composer".into(),
             Self::FocusThread => "chat.thread-composer".into(),
+            Self::FocusRename => "chat.rename".into(),
+            Self::FocusEdit => "chat.message-edit".into(),
             Self::Send => "chat.send".into(),
+            Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
+            Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::StartCall => "chat.start-call".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
             Self::CloseThread => "chat.close-thread".into(),
+            Self::Reaction { msg, emoji } => format!("chat.reaction:{msg}:{emoji}"),
             Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
+            Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
             Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
@@ -302,6 +308,7 @@ impl Hit {
             Self::CallDeafen => "chat.call-deafen".into(),
             Self::CallAudioOnly => "chat.call-audio-only".into(),
             Self::CallShareScreen => "chat.call-share-screen".into(),
+            Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
             other => format!("chat.control:{other:?}"),
@@ -2230,15 +2237,19 @@ impl ChatApp {
                         )
                     }
                     Hit::CategoryToggle(id) => {
-                        let name = self
-                            .categories
-                            .iter()
-                            .find(|category| category.id == *id)
-                            .map_or("category", |category| category.name.as_str());
-                        (format!("Expand or collapse {name}"), Role::Button, false)
+                        let category = self.categories.iter().find(|category| category.id == *id);
+                        let name = category.map_or("category", |category| category.name.as_str());
+                        let collapsed = category.is_some_and(|category| category.collapsed);
+                        (
+                            format!("{} {name}", if collapsed { "Expand" } else { "Collapse" }),
+                            Role::ToggleButton,
+                            !collapsed,
+                        )
                     }
                     Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
                     Hit::AddCategory(_) => ("Add category".into(), Role::Button, false),
+                    Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
+                    Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
                     Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
                     Hit::FocusThread => (
                         "Thread reply composer".into(),
@@ -2246,7 +2257,19 @@ impl ChatApp {
                         false,
                     ),
                     Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::ComposerEmoji(_) => ("Insert emoji".into(), Role::Button, false),
                     Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
+                    Hit::AttachPick(path) => (
+                        format!(
+                            "Attach {}",
+                            std::path::Path::new(path)
+                                .file_name()
+                                .and_then(std::ffi::OsStr::to_str)
+                                .unwrap_or(path)
+                        ),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::StartCall => ("Start or open call".into(), Role::Button, false),
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
@@ -2254,7 +2277,24 @@ impl ChatApp {
                     Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
                     Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
                     Hit::CloseThread => ("Close thread".into(), Role::Button, false),
+                    Hit::Reaction { msg, emoji } => {
+                        let mine = self
+                            .message(msg)
+                            .and_then(|message| {
+                                message
+                                    .reactions
+                                    .iter()
+                                    .find(|reaction| reaction.emoji == *emoji)
+                            })
+                            .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
+                        (
+                            format!("{} {} reaction", if mine { "Remove" } else { "Add" }, emoji),
+                            Role::ToggleButton,
+                            mine,
+                        )
+                    }
                     Hit::AddReaction { .. } => ("Add reaction".into(), Role::Button, false),
+                    Hit::EmojiChoice(emoji) => (format!("Choose {emoji}"), Role::Button, false),
                     Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
                     Hit::EditSave => ("Save message edit".into(), Role::Button, false),
                     Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
@@ -2276,6 +2316,11 @@ impl ChatApp {
                     Hit::CallShareScreen => {
                         ("Share screen".into(), Role::ToggleButton, self.call.sharing)
                     }
+                    Hit::CallParticipantsToggle => (
+                        "Show call participants".into(),
+                        Role::ToggleButton,
+                        self.call.participants_expanded,
+                    ),
                     Hit::CallExpand => (
                         "Expand or restore call".into(),
                         Role::Button,
@@ -2290,7 +2335,19 @@ impl ChatApp {
     }
 
     pub(crate) fn semantic_hits(&self) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
-        self.semantic_hits_from(&self.hits)
+        Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.hits))
+    }
+
+    /// A semantic target names an operation, not a particular paint pass. A
+    /// message can appear in both timeline and thread briefly; exporting one
+    /// retained node keeps that operation's target unambiguous.
+    fn deduplicate_semantic_hits(
+        hits: Vec<(Rect, Hit, String, ui::a11y::Role, bool)>,
+    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+        let mut targets = std::collections::HashSet::new();
+        hits.into_iter()
+            .filter(|(_, hit, ..)| targets.insert(hit.semantic_id()))
+            .collect()
     }
 }
 
@@ -2592,7 +2649,7 @@ impl Widget for ChatApp {
 
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
-        let semantic = self.semantic_hits_from(&hits);
+        let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
         if let Some(index) = self.keyboard_target {
             if let Some((rect, ..)) = semantic.get(index) {
                 crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
@@ -2672,12 +2729,28 @@ impl Widget for ChatApp {
                 if matches!(role, Role::ToggleButton) {
                     state = state.checked(selected);
                 }
-                AccessNode::new(role)
+                let mut node = AccessNode::new(role)
                     .with_name(name)
                     .with_state(state)
                     .with_bounds(rect)
                     .with_key(index as u64)
-                    .with_action_target(hit.semantic_id())
+                    .with_action_target(hit.semantic_id());
+                let input = match hit {
+                    Hit::FocusMain => Some(&self.composer_main),
+                    Hit::FocusThread => Some(&self.composer_thread),
+                    Hit::FocusRename => Some(&self.rename_input),
+                    Hit::FocusEdit => Some(&self.edit_input),
+                    _ => None,
+                };
+                if let Some(input) = input {
+                    let (anchor, focus) = input
+                        .selection_range_public()
+                        .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
+                    node = node
+                        .with_value(input.value())
+                        .with_text_selection(anchor, focus);
+                }
+                node
             })
             .collect();
 
@@ -2728,6 +2801,101 @@ impl Widget for ChatApp {
             return false;
         }
         self.keyboard_target = Some(*index);
+        true
+    }
+
+    /// Semantic targets are the same inventory used by pointer and Tab/Enter
+    /// input. Keeping this adapter at the widget boundary prevents an
+    /// assistive-technology activation from taking a separate, untracked
+    /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
+    /// to `ActionHost` for history and collaboration.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let hit = self
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| (hit.semantic_id() == target).then_some(hit));
+        let Some(hit) = hit else {
+            return false;
+        };
+        // These immediate-mode editors are real TextInputs, even though their
+        // chrome is painted by Chat. Preserve their truthful text semantics:
+        // focus goes through the same focus route as a click, values remain a
+        // local draft until Send/Save, and selections stay inside the toolkit
+        // editor rather than becoming a second text model.
+        if matches!(
+            hit,
+            Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
+        ) {
+            use ui::a11y::Action;
+
+            match action {
+                Action::Focus | Action::Activate => {
+                    self.on_hit(hit, state);
+                    return true;
+                }
+                Action::SetValue(_) | Action::SetSelection { .. } => match hit {
+                    Hit::FocusMain => {
+                        self.focus = Focus::Main;
+                        if !ui::Widget::perform_action(&mut self.composer_main, action, state, path)
+                        {
+                            return false;
+                        }
+                        ChatDoc::set_draft(state, &self.active_channel, self.composer_main.value());
+                        self.reload(state);
+                    }
+                    Hit::FocusThread => {
+                        let Some(key) = self.thread_draft_key() else {
+                            return false;
+                        };
+                        self.focus = Focus::Thread;
+                        if !ui::Widget::perform_action(
+                            &mut self.composer_thread,
+                            action,
+                            state,
+                            path,
+                        ) {
+                            return false;
+                        }
+                        ChatDoc::set_draft(state, &key, self.composer_thread.value());
+                        self.reload(state);
+                    }
+                    Hit::FocusRename => {
+                        if self.rename.is_none() {
+                            return false;
+                        }
+                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
+                        {
+                            return false;
+                        }
+                    }
+                    Hit::FocusEdit => {
+                        if self.editing.is_none() {
+                            return false;
+                        }
+                        if !ui::Widget::perform_action(&mut self.edit_input, action, state, path) {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                },
+                _ => return false,
+            }
+            self.set_composer_focus();
+            return true;
+        }
+        if !matches!(
+            action,
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        self.on_hit(hit, state);
         true
     }
 
