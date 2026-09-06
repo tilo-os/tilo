@@ -644,6 +644,15 @@ pub trait Widget {
         false
     }
 
+    /// Whether a focused widget owns Tab instead of the host's focus
+    /// traversal. This is deliberately opt-in: ordinary form fields and
+    /// controls retain platform-standard Tab/Shift+Tab navigation, while a
+    /// code editor or terminal can receive the key for indentation or
+    /// completion.
+    fn wants_tab_input(&self) -> bool {
+        false
+    }
+
     /// Caret rectangle for the platform input method, in window-logical
     /// coordinates. Returning `Some` enables IME for the focused widget and
     /// positions its candidate window; non-text controls keep the default
