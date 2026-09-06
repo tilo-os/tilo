@@ -27,17 +27,21 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-fn render_state(app: &mut NotesApp, out: &str, w: u16, h: u16) -> Result<(), String> {
-    let theme = Theme::dark();
+fn render_state(
+    app: &mut NotesApp,
+    state: &mut ui::State,
+    out: &str,
+    w: u16,
+    h: u16,
+    theme: &Theme,
+) -> Result<(), String> {
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut state = ui::State::new();
-
     (app as &mut dyn Widget).sync(&mut state.doc, &state.root);
-    let child = (app as &mut dyn Widget).build_layout(&mut taffy, &theme, &mut node_map);
+    let child = (app as &mut dyn Widget).build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy
         .new_with_children(
             Style {
@@ -77,7 +81,7 @@ fn render_state(app: &mut NotesApp, out: &str, w: u16, h: u16) -> Result<(), Str
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
@@ -88,6 +92,10 @@ fn render_state(app: &mut NotesApp, out: &str, w: u16, h: u16) -> Result<(), Str
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the linear visual-review scenario list is clearer when every captured state remains together"
+)]
 fn critique_state_dump() {
     let Ok(dir) = std::env::var("NOTES_CRITIQUE_DIR") else {
         return;
@@ -95,20 +103,45 @@ fn critique_state_dump() {
     std::fs::create_dir_all(&dir).unwrap();
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
+    let mut state = ui::State::new();
     app.tick_for_test();
 
     // 1) Default landing state — full Welcome page.
-    render_state(&mut app, &format!("{dir}/01-welcome.png"), 1280, 800).unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/01-welcome.png"),
+        1280,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
 
     // 2) Shortcuts overlay open (the user pressed `?`).
     app.shortcuts_mut().set_visible(true);
-    render_state(&mut app, &format!("{dir}/02-shortcuts.png"), 1280, 800).unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/02-shortcuts.png"),
+        1280,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
     app.shortcuts_mut().set_visible(false);
 
     // 3) Cmd-K palette open.
     app.palette_mut().set_visible(true);
     app.palette_mut().set_anchor(Point::new(450.0, 200.0));
-    render_state(&mut app, &format!("{dir}/03-palette.png"), 1280, 800).unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/03-palette.png"),
+        1280,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
     app.palette_mut().set_visible(false);
 
     // 4) Empty page (a brand new page with no body yet).
@@ -118,7 +151,15 @@ fn critique_state_dump() {
         panel.load_page(new_id, "New page", String::new());
     }
     app.tick_for_test();
-    render_state(&mut app, &format!("{dir}/04-empty-page.png"), 1280, 800).unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/04-empty-page.png"),
+        1280,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
 
     // 5) Many pages in the sidebar so the tree pattern shows up.
     let many = [
@@ -130,17 +171,71 @@ fn critique_state_dump() {
         "Inbox",
     ];
     for title in many {
-        let id = uuid::Uuid::new_v4();
-        app.apply_event_for_test(notes::sidebar::OutEvent::CreateChild { parent: None });
+        app.dispatch_event_for_test(
+            &mut state.doc,
+            notes::sidebar::OutEvent::CreateChild { parent: None },
+        );
         // Find the most recent page and rename it
         if let Some(last) = app.workspace_pages_for_test().last().cloned() {
-            app.apply_event_for_test(notes::sidebar::OutEvent::Rename {
-                id: last.id,
-                new_title: title.to_string(),
-            });
+            app.dispatch_event_for_test(
+                &mut state.doc,
+                notes::sidebar::OutEvent::Rename {
+                    id: last.id,
+                    new_title: title.to_string(),
+                },
+            );
         }
-        let _ = id;
     }
+    app.sync_sidebar_for_test();
     app.tick_for_test();
-    render_state(&mut app, &format!("{dir}/05-many-pages.png"), 1280, 800).unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/05-many-pages.png"),
+        1280,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
+
+    // Narrow layout takes one frame to rebuild from the wide tree. Warm it
+    // first, then capture the drawer/top-bar composition at phone width.
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/warm-narrow.png"),
+        540,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/06-narrow.png"),
+        540,
+        800,
+        &Theme::dark(),
+    )
+    .unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/warm-wide.png"),
+        1280,
+        800,
+        &Theme::high_contrast(),
+    )
+    .unwrap();
+    render_state(
+        &mut app,
+        &mut state,
+        &format!("{dir}/07-high-contrast.png"),
+        1280,
+        800,
+        &Theme::high_contrast(),
+    )
+    .unwrap();
+    let _ = std::fs::remove_file(format!("{dir}/warm-narrow.png"));
+    let _ = std::fs::remove_file(format!("{dir}/warm-wide.png"));
 }
