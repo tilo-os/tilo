@@ -894,6 +894,7 @@ mod tests {
         );
         // Invert flips the colour.
         let inv = c.with_effects(&[ClipEffect {
+            id: uuid::Uuid::new_v4(),
             kind: EffectKind::Invert,
             amount: 1.0,
         }]);
@@ -913,6 +914,7 @@ mod tests {
             _ => panic!("expected clip"),
         };
         p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
+            id: uuid::Uuid::new_v4(),
             kind: EffectKind::Grayscale,
             amount: 1.0,
         }];
@@ -1551,6 +1553,7 @@ mod tests {
                 saturation: 0.9,
             };
             c.effects = vec![ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Sepia,
                 amount: 0.5,
             }];
