@@ -47,6 +47,45 @@ const BUTTON_GAP: f64 = 8.0;
 const HEADER_ICON_PX: f64 = 18.0;
 const ROW_ICON_PX: f64 = 16.0;
 
+/// The file chooser is an immediate-mode modal, so its controls do not each
+/// have a retained Taffy node.  Keep their keyboard order in the toolkit's
+/// standard [`crate::overlay::FocusTrap`] instead of reimplementing wrapping
+/// Tab logic locally.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PickerFocus {
+    Up,
+    List,
+    Filter,
+    Filename,
+    Cancel,
+    Confirm,
+}
+
+impl PickerFocus {
+    const fn id(self) -> u64 {
+        match self {
+            Self::Up => 1,
+            Self::List => 2,
+            Self::Filter => 3,
+            Self::Filename => 4,
+            Self::Cancel => 5,
+            Self::Confirm => 6,
+        }
+    }
+
+    const fn from_id(id: u64) -> Option<Self> {
+        match id {
+            1 => Some(Self::Up),
+            2 => Some(Self::List),
+            3 => Some(Self::Filter),
+            4 => Some(Self::Filename),
+            5 => Some(Self::Cancel),
+            6 => Some(Self::Confirm),
+            _ => None,
+        }
+    }
+}
+
 /// A named file-type filter. An empty `extensions` list matches every
 /// file (the conventional "All files" entry).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +176,7 @@ pub struct FilePicker {
     cancel_rect: Rect,
     up_rect: Rect,
     filter_rect: Rect,
+    filename_rect: Rect,
     /// `(entry_index, rect)` for the currently-visible rows only.
     entry_rows: Vec<(usize, Rect)>,
     /// `(ancestor_path, rect)` for each clickable breadcrumb segment.
@@ -151,6 +191,10 @@ pub struct FilePicker {
     hover_entry: Option<usize>,
     /// `0` = Cancel, `1` = Open.
     hover_button: Option<u8>,
+    /// The active control inside this immediate-mode modal.  It is reflected
+    /// in both paint and accessibility semantics.
+    focus: Option<PickerFocus>,
+    has_keyboard_focus: bool,
 }
 
 impl FilePicker {
@@ -184,12 +228,15 @@ impl FilePicker {
             cancel_rect: Rect::ZERO,
             up_rect: Rect::ZERO,
             filter_rect: Rect::ZERO,
+            filename_rect: Rect::ZERO,
             entry_rows: Vec::new(),
             crumb_rects: Vec::new(),
             last_cursor: Point::ZERO,
             last_click: None,
             hover_entry: None,
             hover_button: None,
+            focus: None,
+            has_keyboard_focus: false,
         };
         me.refresh_entries();
         me
@@ -198,6 +245,10 @@ impl FilePicker {
     #[must_use]
     pub fn with_mode(mut self, mode: FilePickerMode) -> Self {
         self.mode = mode;
+        // Construction begins in Open mode so a later `.with_mode(Save)` must
+        // reset the initial target from the listbox to Filename.
+        self.focus = None;
+        self.ensure_valid_focus();
         self
     }
 
@@ -274,7 +325,9 @@ impl FilePicker {
     }
 
     pub fn click_open(&mut self) {
-        self.commit_open();
+        if self.can_commit_open() {
+            self.commit_open();
+        }
     }
 
     pub fn click_cancel(&mut self) {
@@ -299,6 +352,10 @@ impl FilePicker {
 
     pub fn up_rect(&self) -> Rect {
         self.up_rect
+    }
+
+    pub fn filename_rect(&self) -> Rect {
+        self.filename_rect
     }
 
     /// `None` unless `i` is currently scrolled into view.
@@ -382,6 +439,7 @@ impl FilePicker {
             (false, true) => std::cmp::Ordering::Greater,
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
+        self.ensure_valid_focus();
     }
 
     fn visible_rows(&self) -> usize {
@@ -441,6 +499,13 @@ impl FilePicker {
             self.rect.x0 + PADDING + 160.0,
             by1,
         );
+        let filename_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
+        self.filename_rect = Rect::new(
+            self.rect.x0 + PADDING,
+            filename_top + 4.0,
+            self.rect.x1 - PADDING,
+            filename_top + FILENAME_HEIGHT - 4.0,
+        );
 
         let up_x1 = self.rect.x1 - PADDING;
         let up_x0 = up_x1 - 28.0;
@@ -470,6 +535,150 @@ impl FilePicker {
             let y0 = list_top + (vis as f64) * ROW_HEIGHT;
             self.entry_rows
                 .push((i, Rect::new(row_x0, y0, row_x1, y0 + ROW_HEIGHT)));
+        }
+        self.ensure_valid_focus();
+    }
+
+    /// Native dialog focus order, kept in one place so keyboard, AT focus
+    /// and paint cannot drift.  The list is one focus target: arrow keys move
+    /// its selected row, exactly like a native listbox, rather than making a
+    /// long directory consume every Tab press.
+    fn focus_targets(&self) -> Vec<PickerFocus> {
+        let mut targets = Vec::with_capacity(6);
+        if self.can_go_up() {
+            targets.push(PickerFocus::Up);
+        }
+        if !self.entries.is_empty() {
+            targets.push(PickerFocus::List);
+        }
+        if self.filters.len() > 1 {
+            targets.push(PickerFocus::Filter);
+        }
+        if self.mode == FilePickerMode::Save {
+            targets.push(PickerFocus::Filename);
+        }
+        targets.push(PickerFocus::Cancel);
+        if self.can_commit_open() {
+            targets.push(PickerFocus::Confirm);
+        }
+        targets
+    }
+
+    fn focus_trap(&self) -> crate::overlay::FocusTrap {
+        crate::overlay::FocusTrap::new(
+            self.focus_targets()
+                .into_iter()
+                .map(PickerFocus::id)
+                .collect(),
+        )
+    }
+
+    fn ensure_valid_focus(&mut self) {
+        let targets = self.focus_targets();
+        if self.focus.is_none_or(|focused| !targets.contains(&focused)) {
+            // Save dialogs start where text entry is expected; Open dialogs
+            // start on the listbox so arrows/type-ahead work immediately.
+            self.focus = if self.mode == FilePickerMode::Save {
+                targets
+                    .iter()
+                    .copied()
+                    .find(|target| *target == PickerFocus::Filename)
+                    .or_else(|| targets.first().copied())
+            } else {
+                targets.first().copied()
+            };
+        }
+    }
+
+    fn move_focus(&mut self, backwards: bool) {
+        self.ensure_valid_focus();
+        let Some(current) = self.focus else {
+            return;
+        };
+        let trap = self.focus_trap();
+        let next = if backwards {
+            trap.prev_from(current.id())
+        } else {
+            trap.next_from(current.id())
+        };
+        self.focus = next.and_then(PickerFocus::from_id);
+    }
+
+    fn focus_control(&mut self, focus: PickerFocus) {
+        if self.focus_targets().contains(&focus) {
+            self.focus = Some(focus);
+            self.has_keyboard_focus = true;
+        }
+    }
+
+    fn can_commit_open(&self) -> bool {
+        match self.mode {
+            FilePickerMode::Open => self.first_selected_file().is_some(),
+            FilePickerMode::Save => {
+                (!self.filename.trim().is_empty()
+                    && self.safe_save_target(self.filename.trim()).is_some())
+                    || self.first_selected_file().is_some()
+            }
+        }
+    }
+
+    /// Every visible control belongs in the semantic tree.  Unlike
+    /// `focus_targets`, this includes a disabled confirmation button so AT
+    /// can explain why it cannot yet be activated.
+    fn a11y_controls(&self) -> Vec<PickerFocus> {
+        let mut controls = Vec::with_capacity(6);
+        if self.can_go_up() {
+            controls.push(PickerFocus::Up);
+        }
+        if !self.entries.is_empty() {
+            controls.push(PickerFocus::List);
+        }
+        if self.filters.len() > 1 {
+            controls.push(PickerFocus::Filter);
+        }
+        if self.mode == FilePickerMode::Save {
+            controls.push(PickerFocus::Filename);
+        }
+        controls.extend([PickerFocus::Cancel, PickerFocus::Confirm]);
+        controls
+    }
+
+    fn list_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.x1 - PADDING,
+            self.list_bottom(),
+        )
+    }
+
+    fn activate_focus(&mut self) -> bool {
+        match self.focus {
+            Some(PickerFocus::Cancel) => {
+                self.click_cancel();
+                true
+            }
+            Some(PickerFocus::Confirm) if self.can_commit_open() => {
+                self.click_open();
+                true
+            }
+            Some(PickerFocus::Up) => {
+                self.go_up();
+                true
+            }
+            Some(PickerFocus::Filter) => {
+                self.cycle_filter();
+                true
+            }
+            Some(PickerFocus::List) => {
+                self.activate_selected_entry();
+                true
+            }
+            Some(PickerFocus::Filename) if self.can_commit_open() => {
+                self.click_open();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -749,18 +958,237 @@ impl Widget for FilePicker {
         "FilePicker"
     }
 
-    /// Reports [`Role::Dialog`] with `modal` set and the header title as
-    /// the accessible name.
+    /// Reports the modal and every currently visible interactive target. The
+    /// same `focus` field drives the painted ring and these semantics.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let controls = self
+            .a11y_controls()
+            .into_iter()
+            .map(|control| match control {
+                PickerFocus::Up => AccessNode::new(Role::Button)
+                    .with_name("Up")
+                    .with_key(control.id())
+                    .with_bounds(self.up_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.has_keyboard_focus && self.focus == Some(control),
+                        ..Default::default()
+                    }),
+                PickerFocus::List => {
+                    let total = self.entries.len();
+                    let rows = self
+                        .entry_rows
+                        .iter()
+                        .filter_map(|(index, rect)| {
+                            let entry = self.entries.get(*index)?;
+                            Some(
+                                AccessNode::new(Role::ListItem)
+                                    .with_name(entry.name.clone())
+                                    .with_hashed_key(&entry.path)
+                                    .with_bounds(*rect)
+                                    .with_position(index.saturating_add(1), total)
+                                    .with_state(AccessState {
+                                        focusable: true,
+                                        focused: self.has_keyboard_focus
+                                            && self.focus == Some(PickerFocus::List)
+                                            && self.selection.primary().or_else(|| {
+                                                self.entry_rows.first().map(|(first, _)| *first)
+                                            }) == Some(*index),
+                                        selected: self.selection.is_selected(*index),
+                                        expanded: entry.is_dir.then_some(false),
+                                        ..Default::default()
+                                    }),
+                            )
+                        })
+                        .collect();
+                    AccessNode::new(Role::List)
+                        .with_name("Files")
+                        .with_key(control.id())
+                        .with_bounds(self.list_rect())
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.has_keyboard_focus && self.focus == Some(control),
+                            ..Default::default()
+                        })
+                        .with_children(rows)
+                }
+                PickerFocus::Filter => AccessNode::new(Role::ComboBox)
+                    .with_name("File type")
+                    .with_value(self.active_filter_label())
+                    .with_key(control.id())
+                    .with_bounds(self.filter_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.has_keyboard_focus && self.focus == Some(control),
+                        expanded: Some(false),
+                        ..Default::default()
+                    }),
+                PickerFocus::Filename => AccessNode::new(Role::TextInput)
+                    .with_name("Filename")
+                    .with_value(self.filename.clone())
+                    .with_text_selection(self.filename.len(), self.filename.len())
+                    .with_key(control.id())
+                    .with_bounds(self.filename_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.has_keyboard_focus && self.focus == Some(control),
+                        ..Default::default()
+                    }),
+                PickerFocus::Cancel | PickerFocus::Confirm => {
+                    let (label, rect, enabled) = if control == PickerFocus::Cancel {
+                        ("Cancel", self.cancel_rect, true)
+                    } else {
+                        (
+                            if self.mode == FilePickerMode::Save {
+                                "Save"
+                            } else {
+                                "Open"
+                            },
+                            self.open_rect,
+                            self.can_commit_open(),
+                        )
+                    };
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_key(control.id())
+                        .with_bounds(rect)
+                        .with_state(AccessState {
+                            focusable: enabled,
+                            focused: enabled
+                                && self.has_keyboard_focus
+                                && self.focus == Some(control),
+                            disabled: !enabled,
+                            ..Default::default()
+                        })
+                }
+            })
+            .collect();
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(self.title.clone())
                 .with_state(AccessState {
                     modal: true,
+                    focusable: true,
+                    focused: self.has_keyboard_focus,
                     ..Default::default()
-                }),
+                })
+                .with_children(controls),
         )
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.has_keyboard_focus = focused;
+        if focused {
+            self.ensure_valid_focus();
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_keyboard_focus
+    }
+
+    fn traps_focus(&self) -> bool {
+        true
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let (&control_index, rest) = path.split_first()?;
+        let control = *self.a11y_controls().get(control_index)?;
+        match (control, rest) {
+            (PickerFocus::Up, []) => Some(self.up_rect),
+            (PickerFocus::List, []) => Some(self.list_rect()),
+            (PickerFocus::List, [row_index]) => {
+                self.entry_rows.get(*row_index).map(|(_, rect)| *rect)
+            }
+            (PickerFocus::Filter, []) => Some(self.filter_rect),
+            (PickerFocus::Filename, []) => Some(self.filename_rect),
+            (PickerFocus::Cancel, []) => Some(self.cancel_rect),
+            (PickerFocus::Confirm, []) => Some(self.open_rect),
+            _ => None,
+        }
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let Some((&control_index, rest)) = path.split_first() else {
+            return false;
+        };
+        let Some(control) = self.a11y_controls().get(control_index).copied() else {
+            return false;
+        };
+        if control == PickerFocus::Confirm && !self.can_commit_open() {
+            return false;
+        }
+        if control == PickerFocus::List {
+            if let [row_index] = rest {
+                let Some((entry_index, _)) = self.entry_rows.get(*row_index) else {
+                    return false;
+                };
+                self.selection.select_only(*entry_index);
+            } else if !rest.is_empty() {
+                return false;
+            }
+        } else if !rest.is_empty() {
+            return false;
+        }
+        self.focus_control(control);
+        true
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use crate::a11y::{Action, hash_key};
+        let Some((&control_key, rest)) = key_path.split_first() else {
+            return false;
+        };
+        let Some(control) = PickerFocus::from_id(control_key) else {
+            return false;
+        };
+        if control == PickerFocus::List {
+            if let [entry_key] = rest {
+                let Some(index) = self
+                    .entries
+                    .iter()
+                    .position(|entry| hash_key(&entry.path) == *entry_key)
+                else {
+                    return false;
+                };
+                self.selection.select_only(index);
+            } else if !rest.is_empty() {
+                return false;
+            }
+        } else if !rest.is_empty() {
+            return false;
+        }
+        match action {
+            Action::Focus => {
+                self.focus_control(control);
+                true
+            }
+            Action::Activate => {
+                self.focus_control(control);
+                self.activate_focus()
+            }
+            _ => false,
+        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -797,6 +1225,16 @@ impl FilePicker {
             if up_hovered {
                 let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
                 scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
+            }
+            if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &s,
+                );
             }
             let ix = self.up_rect.x0 + (self.up_rect.width() - HEADER_ICON_PX) / 2.0;
             let iy = self.up_rect.y0 + (self.up_rect.height() - HEADER_ICON_PX) / 2.0;
@@ -866,6 +1304,22 @@ impl FilePicker {
             };
             let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
+            let list_cursor = self
+                .selection
+                .primary()
+                .or_else(|| self.entry_rows.first().map(|(first, _)| *first));
+            if self.has_keyboard_focus
+                && self.focus == Some(PickerFocus::List)
+                && list_cursor == Some(i)
+            {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &row_shape,
+                );
+            }
 
             if let Some(entry) = self.entries.get(i) {
                 let fg = if is_selected {
@@ -932,6 +1386,8 @@ impl FilePicker {
             "Cancel",
             self.hover_button == Some(0),
             false,
+            self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel),
+            false,
         );
         let open_label = match self.mode {
             FilePickerMode::Open => "Open",
@@ -946,6 +1402,8 @@ impl FilePicker {
             open_label,
             self.hover_button == Some(1),
             true,
+            self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm),
+            !self.can_commit_open(),
         );
     }
 
@@ -960,13 +1418,7 @@ impl FilePicker {
         row_size: f32,
     ) {
         let tokens = &theme.tokens;
-        let field_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
-        let field = Rect::new(
-            self.rect.x0 + PADDING,
-            field_top + 4.0,
-            self.rect.x1 - PADDING,
-            field_top + FILENAME_HEIGHT - 4.0,
-        );
+        let field = self.filename_rect;
         let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
         scene.fill(
             Fill::NonZero,
@@ -978,10 +1430,23 @@ impl FilePicker {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_focus,
+            if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
+                tokens.colors.border_focus
+            } else {
+                tokens.colors.border_standard
+            },
             None,
             &s,
         );
+        if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                tokens.colors.border_focus,
+                None,
+                &s,
+            );
+        }
         let shown = if self.filename.is_empty() {
             "Filename…"
         } else {
@@ -1037,6 +1502,15 @@ impl FilePicker {
             None,
             &s,
         );
+        if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filter) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                tokens.colors.border_focus,
+                None,
+                &s,
+            );
+        }
         text_renderer.draw_text(
             scene,
             self.active_filter_label(),
@@ -1124,22 +1598,31 @@ impl FilePicker {
     fn on_left_click(&mut self, modifiers: winit::event::Modifiers, handled: &mut bool) {
         let p = self.last_cursor;
         if self.cancel_rect.contains(p) {
+            self.focus_control(PickerFocus::Cancel);
             self.click_cancel();
             *handled = true;
             return;
         }
-        if self.open_rect.contains(p) {
+        if self.open_rect.contains(p) && self.can_commit_open() {
+            self.focus_control(PickerFocus::Confirm);
             self.click_open();
             *handled = true;
             return;
         }
         if self.can_go_up() && self.up_rect.contains(p) {
+            self.focus_control(PickerFocus::Up);
             self.go_up();
             *handled = true;
             return;
         }
         if self.filters.len() > 1 && self.filter_rect.contains(p) {
+            self.focus_control(PickerFocus::Filter);
             self.cycle_filter();
+            *handled = true;
+            return;
+        }
+        if self.mode == FilePickerMode::Save && self.filename_rect.contains(p) {
+            self.focus_control(PickerFocus::Filename);
             *handled = true;
             return;
         }
@@ -1154,6 +1637,7 @@ impl FilePicker {
             return;
         }
         if let Some((i, _)) = self.entry_rows.iter().find(|(_, r)| r.contains(p)).copied() {
+            self.focus_control(PickerFocus::List);
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             let shift = modifiers.state().shift_key();
             self.activate_entry(i, ctrl, shift);
@@ -1171,59 +1655,88 @@ impl FilePicker {
     ) {
         use winit::keyboard::{Key, NamedKey};
         let shift = modifiers.state().shift_key();
+        self.has_keyboard_focus = true;
+        self.ensure_valid_focus();
         match &ke.logical_key {
+            Key::Named(NamedKey::Tab) => {
+                self.move_focus(shift);
+                *handled = true;
+            }
             Key::Named(NamedKey::Escape) => {
                 self.click_cancel();
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowDown) => {
+            Key::Named(NamedKey::ArrowDown) if self.focus == Some(PickerFocus::List) => {
                 self.move_selection(1, shift);
                 *handled = true;
             }
-            Key::Named(NamedKey::ArrowUp) => {
+            Key::Named(NamedKey::ArrowUp) if self.focus == Some(PickerFocus::List) => {
                 self.move_selection(-1, shift);
                 *handled = true;
             }
-            Key::Named(NamedKey::Enter) => {
-                if let Some(i) = self.selection.primary() {
-                    // Capture what we need before calling into &mut self
-                    // methods, so the immutable borrow of `self.entries`
-                    // ends before `navigate_to`/`commit_open` run.
-                    let dir_target = self
-                        .entries
-                        .get(i)
-                        .and_then(|e| e.is_dir.then(|| e.path.clone()));
-                    match dir_target {
-                        Some(path) => self.navigate_to(&path),
-                        None => self.commit_open(),
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                match self.focus {
+                    Some(PickerFocus::Cancel) => self.click_cancel(),
+                    Some(PickerFocus::Confirm) if self.can_commit_open() => self.click_open(),
+                    Some(PickerFocus::Up) => self.go_up(),
+                    Some(PickerFocus::Filter) => self.cycle_filter(),
+                    Some(PickerFocus::List)
+                        if matches!(ke.logical_key, Key::Named(NamedKey::Enter)) =>
+                    {
+                        self.activate_selected_entry();
                     }
-                } else {
-                    self.commit_open();
+                    Some(PickerFocus::Filename)
+                        if matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+                            && self.can_commit_open() =>
+                    {
+                        self.click_open()
+                    }
+                    Some(PickerFocus::Filename)
+                        if matches!(ke.logical_key, Key::Named(NamedKey::Space)) =>
+                    {
+                        self.filename.push(' ');
+                    }
+                    _ => {}
                 }
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) => {
-                if self.mode == FilePickerMode::Save && !self.filename.is_empty() {
-                    self.filename.pop();
-                } else {
-                    self.go_up();
-                }
+            Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::Filename) => {
+                self.filename.pop();
+                self.ensure_valid_focus();
                 *handled = true;
             }
-            Key::Character(s) => {
-                if self.mode == FilePickerMode::Save {
-                    self.filename.push_str(s);
-                    *handled = true;
-                } else if let Some(ch) = s.chars().next() {
+            Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::List) => {
+                self.go_up();
+                *handled = true;
+            }
+            Key::Character(s) if self.focus == Some(PickerFocus::Filename) => {
+                self.filename.push_str(s);
+                self.ensure_valid_focus();
+                *handled = true;
+            }
+            Key::Character(s) if self.focus == Some(PickerFocus::List) => {
+                if let Some(ch) = s.chars().next() {
                     self.type_ahead(ch);
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Space) if self.mode == FilePickerMode::Save => {
-                self.filename.push(' ');
-                *handled = true;
-            }
             _ => {}
+        }
+    }
+
+    fn activate_selected_entry(&mut self) {
+        if let Some(i) = self.selection.primary() {
+            // Capture what we need before calling into &mut self methods, so
+            // the immutable borrow of `self.entries` ends before the action.
+            let dir_target = self
+                .entries
+                .get(i)
+                .and_then(|e| e.is_dir.then(|| e.path.clone()));
+            match dir_target {
+                Some(path) => self.navigate_to(&path),
+                None if self.can_commit_open() => self.click_open(),
+                None => {}
+            }
         }
     }
 }
@@ -1241,6 +1754,8 @@ fn draw_button(
     label: &str,
     is_hover: bool,
     is_primary: bool,
+    is_focused: bool,
+    is_disabled: bool,
 ) {
     // Share the canonical immediate-mode button face so the picker footer
     // stays visually locked to the retained widget and every converted app.
@@ -1249,6 +1764,8 @@ fn draw_button(
         .text_size(theme.tokens.typography.scale.sm)
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)
+        .focused(is_focused)
+        .disabled(is_disabled)
         .style(if is_primary {
             crate::widget::ButtonStyle::Primary
         } else {
@@ -1360,11 +1877,19 @@ mod tests {
     }
 
     #[test]
-    fn open_with_no_selection_cancels() {
+    fn open_with_no_selection_is_disabled_and_does_not_cancel_the_dialog() {
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]);
         picker.click_open();
-        assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
+        assert!(picker.take_outcome().is_none());
+        let node = Widget::accessibility(&picker).expect("dialog semantics");
+        let open = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Open"))
+            .expect("Open action");
+        assert!(open.state.disabled);
+        assert!(!open.state.focusable);
     }
 
     #[test]
@@ -1514,6 +2039,12 @@ mod tests {
         }
     }
 
+    fn shift() -> winit::event::Modifiers {
+        let mut state = winit::keyboard::ModifiersState::empty();
+        state.set(winit::keyboard::ModifiersState::SHIFT, true);
+        winit::event::Modifiers::from(state)
+    }
+
     /// `n` numbered files so the list overflows a short dialog and
     /// exercises scrolling.
     fn temp_many(n: usize) -> (tempfile::TempDir, PathBuf) {
@@ -1577,13 +2108,90 @@ mod tests {
     }
 
     #[test]
+    fn tab_and_shift_tab_cycle_only_enabled_modal_controls() {
+        let (_g, root) = temp_tree();
+        let mut picker = FilePicker::new("Open", &root, vec![root.clone()]);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+
+        // The Open action is disabled with no selected file, so focus wraps
+        // List → Cancel → List instead of landing on a destructive-looking
+        // button that cannot act.
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Cancel));
+        dispatch_mods(
+            &mut picker,
+            &key_named(winit::keyboard::NamedKey::Tab),
+            shift(),
+        );
+        assert_eq!(picker.focus, Some(PickerFocus::List));
+
+        picker.set_selection(1);
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Cancel));
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Confirm));
+    }
+
+    #[test]
+    fn list_arrows_select_rows_and_enter_accepts_the_selected_file() {
+        let (_g, root) = temp_tree();
+        let mut picker = FilePicker::new("Open", &root, vec![root.clone()]);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        dispatch(
+            &mut picker,
+            &key_named(winit::keyboard::NamedKey::ArrowDown),
+        );
+        dispatch(
+            &mut picker,
+            &key_named(winit::keyboard::NamedKey::ArrowDown),
+        );
+        assert_eq!(picker.selection(), Some(1), "second row is alpha.txt");
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Enter));
+        assert_eq!(
+            picker.take_outcome(),
+            Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
+        );
+    }
+
+    #[test]
+    fn save_filename_uses_the_same_focus_ring_and_accessibility_target() {
+        use crate::a11y::Role;
+        let (_g, root) = temp_tree();
+        let mut picker =
+            FilePicker::new("Save", &root, vec![root.clone()]).with_mode(FilePickerMode::Save);
+        picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        // Save starts on Filename. Tab leaves it for the next modal control;
+        // Shift+Tab returns to the exact editable target.
+        dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
+        assert_eq!(picker.focus, Some(PickerFocus::Cancel));
+        dispatch_mods(
+            &mut picker,
+            &key_named(winit::keyboard::NamedKey::Tab),
+            shift(),
+        );
+        assert_eq!(picker.focus, Some(PickerFocus::Filename));
+        dispatch(&mut picker, &key_char("x"));
+        assert_eq!(picker.filename(), "x");
+        let node = Widget::accessibility(&picker).expect("dialog semantics");
+        let filename = node
+            .children
+            .iter()
+            .find(|child| child.role == Role::TextInput)
+            .expect("Filename field");
+        assert!(filename.state.focused);
+        assert_eq!(filename.value.as_deref(), Some("x"));
+    }
+
+    #[test]
     fn save_mode_rejects_absolute_and_traversal_filenames() {
         let (_guard, root) = temp_tree();
         for unsafe_name in ["/tmp/stolen", "../outside", "sub/file", ".", ".."] {
             let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
                 .with_mode(FilePickerMode::Save)
                 .with_filename(unsafe_name);
-            picker.click_open();
+            // The disabled UI action cannot be activated; exercise the
+            // resolver directly so this remains a security regression test.
+            picker.commit_open();
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Cancelled),
@@ -1607,7 +2215,7 @@ mod tests {
         // Navigation is lexically within `root`; commit must catch where it
         // actually resolves before returning a privileged save target.
         picker.navigate_to(&escape);
-        picker.click_open();
+        picker.commit_open();
         assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
     }
 
@@ -1718,5 +2326,104 @@ mod tests {
         dispatch(&mut picker, &key_char("c")); // jump to cherry.txt
         let sel = picker.selection().unwrap();
         assert_eq!(picker.entries()[sel].name, "cherry.txt");
+    }
+
+    /// Writes native-size and accessibility-state GPU renders for the manual visual audit. Kept
+    /// ignored so ordinary unit runs remain hermetic; run with
+    /// `cargo test -p ui file_picker_visual_audit -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "developer visual audit writes /tmp/qos-file-picker-focus"]
+    fn file_picker_visual_audit() {
+        use vello::peniko::Color;
+
+        let (_guard, root) = temp_tree();
+        let output = Path::new("/tmp/qos-file-picker-focus");
+        fs::create_dir_all(output).expect("visual-audit output directory");
+        for (name, width, height, mode, theme) in [
+            (
+                "open-800x600",
+                800,
+                600,
+                FilePickerMode::Open,
+                Theme::dark(),
+            ),
+            (
+                "save-800x600",
+                800,
+                600,
+                FilePickerMode::Save,
+                Theme::dark(),
+            ),
+            (
+                "open-1280x800",
+                1280,
+                800,
+                FilePickerMode::Open,
+                Theme::dark(),
+            ),
+            (
+                "save-1280x800",
+                1280,
+                800,
+                FilePickerMode::Save,
+                Theme::dark(),
+            ),
+            (
+                "open-800x600-large-text",
+                800,
+                600,
+                FilePickerMode::Open,
+                Theme::dark().with_text_scale(1.5),
+            ),
+            (
+                "save-800x600-large-text",
+                800,
+                600,
+                FilePickerMode::Save,
+                Theme::dark().with_text_scale(1.5),
+            ),
+            (
+                "open-800x600-high-contrast",
+                800,
+                600,
+                FilePickerMode::Open,
+                Theme::high_contrast(),
+            ),
+            (
+                "save-800x600-high-contrast",
+                800,
+                600,
+                FilePickerMode::Save,
+                Theme::high_contrast(),
+            ),
+        ] {
+            let mut picker =
+                FilePicker::new("Choose a file", &root, vec![root.clone()]).with_mode(mode);
+            let width = f64::from(width);
+            let height = f64::from(height);
+            picker.set_rect(Rect::new(
+                width * 0.19,
+                height * 0.14,
+                width * 0.81,
+                height * 0.86,
+            ));
+            Widget::set_focus(&mut picker, true);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            picker.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let mut renderer =
+                crate::offscreen::OffscreenRenderer::new(width as u32, height as u32);
+            renderer.render_png(
+                &scene,
+                Color::from_rgba8(20, 24, 32, 255),
+                output.join(format!("{name}.png")),
+            );
+        }
     }
 }

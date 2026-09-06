@@ -82,6 +82,22 @@ fn key_press(ch: char) -> winit::event::WindowEvent {
     }
 }
 
+fn key_named(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
+    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+    // SAFETY: see `key_press`; the host only reads the overwritten fields.
+    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = Key::Named(named);
+    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = winit::event::ElementState::Pressed;
+    ev.repeat = false;
+    winit::event::WindowEvent::KeyboardInput {
+        device_id: synth_device(),
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
 /// Goes through the host's own `handle_event` — the modal intercept the
 /// compositor installs, not the widget in isolation.
 fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
@@ -457,8 +473,10 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
         "the typed filename must reach the dialog through the modal route"
     );
 
-    let confirm = host.file_picker().expect("dialog").open_rect();
-    click_at(&mut host, confirm.center());
+    // Save starts on the filename control; Enter accepts only after the name
+    // made the primary action valid. This goes through the host modal route,
+    // not a widget-only helper or a pointer click.
+    dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Enter));
 
     pump_until(&mut host, "the save dialog to close", |h| {
         h.file_picker().is_none()
@@ -538,13 +556,9 @@ async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
     })
     .await;
 
-    let rect = picker_rect();
-    let cancel = {
-        let picker = host.file_picker_mut().expect("dialog");
-        picker.set_rect(rect);
-        picker.cancel_rect()
-    };
-    click_at(&mut host, cancel.center());
+    // Escape is routed to the modal, not through to the requesting app, and
+    // resolves the parked portal call exactly like the visible Cancel button.
+    dispatch(&mut host, &key_named(winit::keyboard::NamedKey::Escape));
 
     pump_until(&mut host, "the dialog to close", |h| {
         h.file_picker().is_none()

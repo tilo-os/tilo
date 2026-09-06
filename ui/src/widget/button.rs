@@ -79,7 +79,7 @@ pub struct Button {
     /// the cache.
     cache_rect: Rect,
     /// Snapshot the cache was emitted from; any change invalidates it.
-    last_state: (bool, bool, bool), // (hovered, pressed, focused)
+    last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
 }
 
 impl Button {
@@ -116,7 +116,7 @@ impl Button {
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
-            last_state: (false, false, false),
+            last_state: (false, false, false, true),
         }
     }
 
@@ -388,6 +388,24 @@ pub fn face_colors(
     vello::peniko::Color,
 ) {
     use vello::peniko::Color;
+
+    // Disabled actions must not retain the semantic fill of an enabled
+    // primary or destructive action. A translucent blue "Save" still reads
+    // as actionable (and its label loses contrast once the whole face is
+    // dimmed), especially in the high-contrast track. Resolve one opaque,
+    // neutral disabled face instead. `on_surface_at` keeps its quieter ink
+    // readable on every shipped theme while the border makes the control's
+    // bounds discoverable without implying that it can be activated.
+    if interact.disabled {
+        let bg = theme.tokens.colors.surfaces.raised;
+        let fg = theme
+            .tokens
+            .colors
+            .on_surface_at(bg, ON_FILL_MIN_CONTRAST)
+            .ink_dim;
+        return (bg, Some(theme.tokens.colors.border_standard), fg);
+    }
+
     match style {
         ButtonStyle::Neutral => {
             let rest = theme.tokens.colors.surfaces.raised;
@@ -704,21 +722,8 @@ impl Button {
         let (bg, border, fg) = face_colors(theme, face.style, face.interact);
         let shape = RoundedRect::from_rect(face.rect, face.radius);
 
-        // One layer so fill + border + label dim together, matching the
-        // retained widget's DISABLED_ALPHA look.
-        let dim = face.interact.disabled;
-        if dim {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &shape,
-            );
-        }
-
         scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
-        if face.interact.focused {
+        if face.interact.focused && !face.interact.disabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
@@ -742,38 +747,13 @@ impl Button {
             face.weight,
             fg,
         );
-
-        if dim {
-            scene.pop_layer();
-        }
     }
 
-    /// Appends the cached face scene, wrapped in the `DISABLED_ALPHA` dim
-    /// layer when the button is disabled. `inner` lets the fast
-    /// (no re-encode) path in [`Widget::draw`] pass a translated
-    /// transform while the freshly-encoded path passes `out_transform`
-    /// unchanged.
-    fn append_cached(
-        &self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
-        inner: Affine,
-        theme: &Theme,
-    ) {
-        if self.effectively_enabled() {
-            out_scene.append(&self.cached, Some(inner));
-        } else {
-            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-            out_scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                out_transform,
-                &clip,
-            );
-            out_scene.append(&self.cached, Some(inner));
-            out_scene.pop_layer();
-        }
+    /// Appends the cached face scene. Disabled state is already represented
+    /// by the canonical opaque palette in [`face_colors`], so the cache must
+    /// not apply a second whole-face alpha layer.
+    fn append_cached(&self, out_scene: &mut Scene, inner: Affine) {
+        out_scene.append(&self.cached, Some(inner));
     }
 }
 
@@ -851,7 +831,12 @@ impl Widget for Button {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_i18n_revision();
-        let current_state = (self.is_hovered, self.is_pressed, self.is_focused);
+        let current_state = (
+            self.is_hovered,
+            self.is_pressed,
+            self.is_focused,
+            self.effectively_enabled(),
+        );
         if current_state != self.last_state {
             self.dirty = true;
             self.last_state = current_state;
@@ -861,16 +846,15 @@ impl Widget for Button {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
             let inner = out_transform.pre_translate(Vec2::new(dx, dy));
-            self.append_cached(out_scene, out_transform, inner, theme);
+            self.append_cached(out_scene, inner);
             return;
         }
         // cache_rect tracks *where* the cache was emitted so subsequent
         // frames can translate without re-encoding.
         self.cached.reset();
+        let enabled = self.effectively_enabled();
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
-        // `disabled` is left false — the dimmed look is applied by the
-        // `DISABLED_ALPHA` layer around the cache append, not the colours.
         let (bg_color, border_opt, fg_color) = face_colors(
             theme,
             self.style,
@@ -878,7 +862,7 @@ impl Widget for Button {
                 hovered: self.is_hovered,
                 pressed: self.is_pressed,
                 focused: self.is_focused,
-                disabled: false,
+                disabled: !enabled,
             },
         );
 
@@ -893,7 +877,7 @@ impl Widget for Button {
 
         // Focus ring wins over the style border; an accent-filled style
         // has no rest border, so it only strokes when focused.
-        if self.is_focused {
+        if self.is_focused && enabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
@@ -928,13 +912,18 @@ impl Widget for Button {
             fg_color,
         );
         self.cache_rect = self.rect;
-        self.append_cached(out_scene, out_transform, out_transform, theme);
+        self.append_cached(out_scene, out_transform);
     }
 
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
-            || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
+            || (
+                self.is_hovered,
+                self.is_pressed,
+                self.is_focused,
+                self.effectively_enabled(),
+            ) != self.last_state
     }
 
     fn mark_drawn(&mut self) {
@@ -1263,6 +1252,7 @@ impl Button {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ColorCompat;
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1464,6 +1454,89 @@ mod tests {
             hfg, fg,
             "the label must not change colour under the pointer"
         );
+    }
+
+    #[test]
+    fn disabled_faces_are_neutral_bordered_and_readable_in_every_theme() {
+        use crate::a11y::contrast_ratio;
+
+        let disabled = ButtonInteract {
+            hovered: true,
+            pressed: true,
+            focused: true,
+            disabled: true,
+        };
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            for style in [
+                ButtonStyle::Primary,
+                ButtonStyle::Neutral,
+                ButtonStyle::Danger,
+                ButtonStyle::Ghost,
+            ] {
+                let (bg, border, fg) = face_colors(&theme, style, disabled);
+                assert_eq!(
+                    bg, theme.tokens.colors.surfaces.raised,
+                    "{name} {style:?}: disabled face uses the neutral raised surface"
+                );
+                assert_eq!(
+                    border,
+                    Some(theme.tokens.colors.border_standard),
+                    "{name} {style:?}: disabled face remains findable without a semantic fill"
+                );
+                let ratio = contrast_ratio(fg, bg);
+                assert!(
+                    ratio >= ON_FILL_MIN_CONTRAST,
+                    "{name} {style:?}: disabled label is only {ratio:.2}:1 on {bg:?}"
+                );
+            }
+        }
+    }
+
+    /// Writes a small disabled-button matrix for human visual review. The
+    /// controls intentionally carry hover/focus input too: disabled state
+    /// must win over stale pointer/focus state and never recover a semantic
+    /// action colour or focus ring.
+    #[test]
+    #[ignore = "developer visual audit writes /tmp/qos-button-disabled-audit"]
+    fn disabled_button_visual_audit() {
+        use std::path::Path;
+        use vello::peniko::Color;
+
+        let output = Path::new("/tmp/qos-button-disabled-audit");
+        std::fs::create_dir_all(output).expect("visual-audit output directory");
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let faces = [
+                (ButtonStyle::Primary, "Primary", None),
+                (ButtonStyle::Neutral, "Secondary", None),
+                (ButtonStyle::Danger, "Destructive", None),
+                (ButtonStyle::Primary, "", Some(crate::icons::Icon::Check)),
+            ];
+            for (index, (style, label, icon)) in faces.into_iter().enumerate() {
+                let y = 88.0 + index as f64 * 86.0;
+                let mut face = ButtonFace::new(Rect::new(80.0, y, 360.0, y + 52.0), label)
+                    .style(style)
+                    .disabled(true)
+                    .hovered(true)
+                    .focused(true);
+                if let Some(icon) = icon {
+                    face = face.icon(icon).accessible_name("Confirm");
+                }
+                Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+            }
+            let mut renderer = crate::offscreen::OffscreenRenderer::new(440, 480);
+            renderer.render_png(
+                &scene,
+                Color::from_rgba8(theme.bg_app.r(), theme.bg_app.g(), theme.bg_app.b(), 255),
+                output.join(format!("{name}.png")),
+            );
+        }
     }
 
     #[test]
