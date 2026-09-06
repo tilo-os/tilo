@@ -671,6 +671,14 @@ mechanism is how a strong one gets "simplified" later.
 `SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
 
+**Resolved.** Required-invariant failures now accumulate and return a non-zero
+health result. The unit is wanted rather than required, so this remains
+diagnostic and cannot strand the user during boot, but system health, logs and
+agents can no longer mistake a failed audit for success. The image-policy check
+binds the qOS registry scope, `sigstoreSigned` rule, pinned key path and the
+installed non-empty verification key instead of accepting an unrelated string.
+Held by `os/tests/kernel_hardening_invariants.sh`.
+
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
 `os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/qos/qos`
