@@ -523,27 +523,27 @@ impl QuickFS {
         let (Some(sync), Some(enforcement)) = (&self.sync, self.enforcement.clone()) else {
             return;
         };
-        let mut generations = sync.subscribe_record_index_generation();
-        self.start_record_index_refresh_worker(&mut generations, enforcement);
+        self.start_record_index_refresh_worker(
+            sync.subscribe_record_index_generation(),
+            enforcement,
+        );
     }
 
     fn start_record_index_acl_worker(&self) {
         let Some((acl, identity)) = self.enforcement.clone() else {
             return;
         };
-        let mut generations = acl.subscribe_revision();
-        self.start_record_index_refresh_worker(&mut generations, (acl, identity));
+        self.start_record_index_refresh_worker(acl.subscribe_revision(), (acl, identity));
     }
 
     fn start_record_index_refresh_worker(
         &self,
-        generations: &mut tokio::sync::watch::Receiver<u64>,
+        mut generations: tokio::sync::watch::Receiver<u64>,
         enforcement: (AclHandle, crate::acl::IdentityKey),
     ) {
-        let mut generations = generations.clone();
         let namespace = Arc::clone(&self.namespace);
         let retained = Arc::downgrade(&self.acl_visible_record_index);
-        let _ = self.hydrator.runtime_handle.spawn(async move {
+        drop(self.hydrator.runtime_handle.spawn(async move {
             while generations.changed().await.is_ok() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 while generations.has_changed().unwrap_or(false) {
@@ -558,7 +558,7 @@ impl QuickFS {
                     &retained,
                 );
             }
-        });
+        }));
     }
 
     /// Attach a host-side thumbnail provider (cache under `dir`). The mount then
@@ -1198,7 +1198,7 @@ impl QuickFS {
                 offset = offset.saturating_add(candidates.len());
                 records.extend(candidates.into_iter().filter_map(|entry| {
                     enforcement
-                        .map_or(true, |(acl, identity)| acl.visible(identity, &entry.path))
+                        .is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
                         .then_some(crate::syncstate::RecordIndexEntryV1 {
                             record_id: entry.record_id,
                             path: entry.path,
@@ -1221,10 +1221,8 @@ impl QuickFS {
         hasher.update(&(records.len() as u64).to_be_bytes());
         for record in &records {
             hasher.update(record.record_id.0.as_bytes());
-            for field in [&record.path] {
-                hasher.update(&(field.len() as u64).to_be_bytes());
-                hasher.update(field.as_bytes());
-            }
+            hasher.update(&(record.path.len() as u64).to_be_bytes());
+            hasher.update(record.path.as_bytes());
             hasher.update(&[u8::from(record.is_dir)]);
         }
         let revision = hasher.finalize().to_hex().to_string();
@@ -1362,10 +1360,10 @@ impl QuickFS {
             .record_index_cursors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cursors.len() >= 1024 {
-            if let Some(evicted) = cursors.keys().next().cloned() {
-                cursors.remove(&evicted);
-            }
+        if cursors.len() >= 1024
+            && let Some(evicted) = cursors.keys().next().cloned()
+        {
+            cursors.remove(&evicted);
         }
         cursors.insert(
             cursor.clone(),
@@ -1403,10 +1401,10 @@ impl QuickFS {
                 .record_index_initial_cursors
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if initials.len() >= 128 {
-                if let Some(evicted) = initials.keys().next().cloned() {
-                    initials.remove(&evicted);
-                }
+            if initials.len() >= 128
+                && let Some(evicted) = initials.keys().next().cloned()
+            {
+                initials.remove(&evicted);
             }
             initials.insert(key, cursor.clone());
             cursor
@@ -6497,6 +6495,11 @@ mod predictive_tests {
         );
     }
 
+    #[allow(
+        clippy::range_plus_one,
+        clippy::needless_borrows_for_generic_args,
+        clippy::significant_drop_tightening
+    )]
     #[tokio::test]
     async fn record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions() {
         let (namespace, fs) = fixture().await;
@@ -6683,6 +6686,7 @@ mod predictive_tests {
         assert!(fs.record_index_by_id_v2(first_record).is_none());
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     #[tokio::test]
     async fn record_catalog_v3_pages_a_large_visible_view_without_source_rescans() {
         const ME: [u8; 32] = [0xA6; 32];
