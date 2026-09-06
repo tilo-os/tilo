@@ -30,6 +30,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::prefs::{AppearancePrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
 
@@ -103,6 +104,11 @@ pub struct AppearancePane {
     prefs: AppearancePrefs,
     needs_seed: bool,
     commit_context_pending: bool,
+    /// The only writer for durable appearance values. Controls edit a local
+    /// draft key and this host dispatches the same action exported by Settings'
+    /// resource tree; a click, keyboard activation, Ctrl+K, replay, and undo
+    /// therefore all share one canonical mutation path.
+    actions: ui::ActionHost,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -125,6 +131,7 @@ impl AppearancePane {
             prefs,
             needs_seed: true,
             commit_context_pending: false,
+            actions: ui::ActionHost::new(),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -139,17 +146,20 @@ impl AppearancePane {
             .iter()
             .map(std::string::ToString::to_string)
             .collect();
-        let theme = Dropdown::new(theme_opts, THEME_KEY)
+        let theme_path = Self::draft_key(THEME_KEY);
+        let theme = Dropdown::new(theme_opts, &theme_path)
             .with_id("appearance.theme")
             .with_placeholder(&self.prefs.resolve_theme().name);
 
         let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
-        let size = Dropdown::new(size_opts, TEXT_SIZE_KEY)
+        let size_path = Self::draft_key(TEXT_SIZE_KEY);
+        let size = Dropdown::new(size_opts, &size_path)
             .with_id("appearance.text_size")
             .with_placeholder(text_size_label(self.prefs.text_scale));
 
         let ui_scale_opts: Vec<String> = UI_SCALES.iter().map(|(l, _)| l.to_string()).collect();
-        let ui_scale = Dropdown::new(ui_scale_opts, UI_SCALE_KEY)
+        let ui_scale_path = Self::draft_key(UI_SCALE_KEY);
+        let ui_scale = Dropdown::new(ui_scale_opts, &ui_scale_path)
             .with_id("appearance.ui_scale")
             .with_placeholder(ui_scale_label(self.prefs.ui_scale));
 
@@ -172,16 +182,22 @@ impl AppearancePane {
                     "High contrast",
                     "Maximise contrast for low-vision comfort",
                     Box::new(
-                        Toggle::new("settings.appearance.high_contrast", HIGH_CONTRAST_KEY)
-                            .with_id("appearance.high_contrast"),
+                        Toggle::new(
+                            "settings.appearance.high_contrast",
+                            "appearance.high_contrast.edit",
+                        )
+                        .with_id("appearance.high_contrast"),
                     ),
                 ),
                 setting_row_described(
                     "Reduce motion",
                     "Skip animations and transitions",
                     Box::new(
-                        Toggle::new("settings.appearance.reduce_motion", REDUCE_MOTION_KEY)
-                            .with_id("appearance.reduce_motion"),
+                        Toggle::new(
+                            "settings.appearance.reduce_motion",
+                            "appearance.reduce_motion.edit",
+                        )
+                        .with_id("appearance.reduce_motion"),
                     ),
                 ),
             ]),
@@ -253,6 +269,66 @@ impl AppearancePane {
             _ => None,
         }
     }
+
+    fn draft_key(canonical: &str) -> String {
+        format!("{canonical}.edit")
+    }
+
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
+    }
+
+    /// Reconcile a dropdown draft with its action-owned value. The draft is
+    /// presentation state only; it is deliberately never read by other apps
+    /// or published as a setting.
+    fn reconcile_text(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        canonical: &str,
+        current: &str,
+    ) -> (String, bool) {
+        let canonical_value =
+            Self::read_str(state, root, canonical).unwrap_or_else(|| current.to_string());
+        let draft = Self::draft_key(canonical);
+        let draft_value =
+            Self::read_str(state, root, &draft).unwrap_or_else(|| canonical_value.clone());
+        if canonical_value != current {
+            let _ = state.put(root, draft, canonical_value.as_str());
+            (canonical_value, true)
+        } else if draft_value != canonical_value {
+            self.dispatch(state, &set_text_action(canonical, draft_value.clone()));
+            (draft_value, true)
+        } else {
+            (current.to_string(), false)
+        }
+    }
+
+    fn reconcile_bool(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        canonical: &str,
+        current: bool,
+    ) -> (bool, bool) {
+        let canonical_value = Self::read_bool(state, root, canonical).unwrap_or(current);
+        let draft = Self::draft_key(canonical);
+        let draft_value = Self::read_bool(state, root, &draft).unwrap_or(canonical_value);
+        if canonical_value != current {
+            let _ = state.put(root, draft, canonical_value);
+            (canonical_value, true)
+        } else if draft_value != canonical_value {
+            self.dispatch(state, &set_bool_action(canonical, draft_value));
+            (draft_value, true)
+        } else {
+            (current, false)
+        }
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -262,56 +338,60 @@ pub fn build() -> Box<dyn Widget> {
 impl Widget for AppearancePane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
-            let _ = state.put(root, THEME_KEY, self.prefs.theme.as_str());
-            let _ = state.put(root, TEXT_SIZE_KEY, text_size_label(self.prefs.text_scale));
-            let _ = state.put(root, UI_SCALE_KEY, ui_scale_label(self.prefs.ui_scale));
-            let _ = state.put(
-                root,
-                HIGH_CONTRAST_KEY,
-                automerge::ScalarValue::Boolean(self.prefs.high_contrast),
+            self.dispatch(state, &set_text_action(THEME_KEY, self.prefs.theme.clone()));
+            self.dispatch(
+                state,
+                &set_text_action(TEXT_SIZE_KEY, text_size_label(self.prefs.text_scale)),
             );
-            let _ = state.put(
-                root,
-                REDUCE_MOTION_KEY,
-                automerge::ScalarValue::Boolean(self.prefs.reduce_motion),
+            self.dispatch(
+                state,
+                &set_text_action(UI_SCALE_KEY, ui_scale_label(self.prefs.ui_scale)),
+            );
+            self.dispatch(
+                state,
+                &set_bool_action(HIGH_CONTRAST_KEY, self.prefs.high_contrast),
+            );
+            self.dispatch(
+                state,
+                &set_bool_action(REDUCE_MOTION_KEY, self.prefs.reduce_motion),
             );
             self.needs_seed = false;
         }
 
-        let mut changed = false;
-
-        if let Some(name) = Self::read_str(state, root, THEME_KEY)
-            && AppearancePrefs::THEMES.contains(&name.as_str())
-            && name != self.prefs.theme
-        {
-            self.prefs.theme = name;
-            changed = true;
+        let current_theme = self.prefs.theme.clone();
+        let (theme, mut changed) = self.reconcile_text(state, root, THEME_KEY, &current_theme);
+        if AppearancePrefs::THEMES.contains(&theme.as_str()) && theme != self.prefs.theme {
+            self.prefs.theme = theme;
         }
-        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY)
-            && let Some(scale) = text_size_scale(&label)
+        let current_text_size = text_size_label(self.prefs.text_scale);
+        let (text_size, text_changed) =
+            self.reconcile_text(state, root, TEXT_SIZE_KEY, current_text_size);
+        changed |= text_changed;
+        if let Some(scale) = text_size_scale(&text_size)
             && (scale - self.prefs.text_scale).abs() > f64::EPSILON
         {
             self.prefs.text_scale = scale;
-            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY)
-            && let Some(factor) = ui_scale_factor(&label)
+        let current_ui_scale = ui_scale_label(self.prefs.ui_scale);
+        let (ui_scale, scale_changed) =
+            self.reconcile_text(state, root, UI_SCALE_KEY, current_ui_scale);
+        changed |= scale_changed;
+        if let Some(factor) = ui_scale_factor(&ui_scale)
             && (factor - self.prefs.ui_scale).abs() > f64::EPSILON
         {
             self.prefs.ui_scale = factor;
-            changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY)
-            && b != self.prefs.high_contrast
-        {
-            self.prefs.high_contrast = b;
-            changed = true;
+        let (high_contrast, contrast_changed) =
+            self.reconcile_bool(state, root, HIGH_CONTRAST_KEY, self.prefs.high_contrast);
+        changed |= contrast_changed;
+        if high_contrast != self.prefs.high_contrast {
+            self.prefs.high_contrast = high_contrast;
         }
-        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY)
-            && b != self.prefs.reduce_motion
-        {
-            self.prefs.reduce_motion = b;
-            changed = true;
+        let (reduce_motion, motion_changed) =
+            self.reconcile_bool(state, root, REDUCE_MOTION_KEY, self.prefs.reduce_motion);
+        changed |= motion_changed;
+        if reduce_motion != self.prefs.reduce_motion {
+            self.prefs.reduce_motion = reduce_motion;
         }
 
         if changed {
