@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::entry::{DesktopEntry, EntryType, parse};
+use crate::entry::{DesktopEntry, EntrySource, EntryType, parse};
 use crate::locale::locale_candidates;
 
 /// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
@@ -37,10 +37,10 @@ pub struct ScanStats {
     pub unparseable: usize,
     /// Dropped because a higher-precedence directory already provided the same ID.
     pub shadowed: usize,
-    /// A differently-named desktop file described the exact same visible
-    /// application command.  Packaging aliases are common when an app moves
-    /// between distribution and Flatpak ownership; presenting both is not a
-    /// useful second application.
+    /// A differently-named desktop file described the same visible
+    /// application. Packaging aliases are common when an app moves between
+    /// distribution and Flatpak ownership; presenting both is not a useful
+    /// second application.
     pub duplicate_aliases: usize,
     /// Removed by a `Hidden=true` tombstone.
     pub tombstoned: usize,
@@ -187,13 +187,17 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             stats.try_exec_missing = stats.try_exec_missing.saturating_add(1);
             continue;
         }
-        let duplicate = entries.iter().any(|existing| {
-            existing.name.eq_ignore_ascii_case(&entry.name)
-                && existing.exec == entry.exec
-                && existing.source == entry.source
-        });
-        if duplicate {
+        if let Some(existing_index) = entries
+            .iter()
+            .position(|existing| desktop_entries_are_aliases(existing, &entry))
+        {
             stats.duplicate_aliases = stats.duplicate_aliases.saturating_add(1);
+            // Where a host package and an identically identified Flatpak are
+            // both installed, retain the Flatpak. It has its own confinement,
+            // and this matches the host-app catalogue's existing preference.
+            if entry_is_flatpak(&entry) && !entry_is_flatpak(&entries[existing_index]) {
+                entries[existing_index] = entry;
+            }
         } else {
             entries.push(entry);
         }
@@ -210,6 +214,39 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
         stats,
         dirs: dirs.to_vec(),
     }
+}
+
+/// Two separate desktop-file ids may be aliases, but name equality alone is
+/// far too broad ("Settings" and "Terminal" are common independent apps).
+/// The raw-command case is exact and source-agnostic.  A host/Flatpak pair
+/// with different launcher commands needs a stronger, stable identity: both
+/// files must declare the same `StartupWMClass`, and it must be exactly the
+/// Flatpak application id.  That is the freedesktop identity a compositor
+/// later uses to associate the mapped window with its launcher entry.
+fn desktop_entries_are_aliases(existing: &DesktopEntry, candidate: &DesktopEntry) -> bool {
+    if !existing.name.eq_ignore_ascii_case(&candidate.name) {
+        return false;
+    }
+    if existing.exec == candidate.exec {
+        return true;
+    }
+    let (flatpak, host) = match (&existing.source, &candidate.source) {
+        (EntrySource::Flatpak { .. }, EntrySource::Host) => (existing, candidate),
+        (EntrySource::Host, EntrySource::Flatpak { .. }) => (candidate, existing),
+        _ => return false,
+    };
+    let EntrySource::Flatpak { app_id } = &flatpak.source else {
+        return false;
+    };
+    flatpak
+        .startup_wm_class
+        .as_deref()
+        .zip(host.startup_wm_class.as_deref())
+        .is_some_and(|(flatpak_class, host_class)| flatpak_class == app_id && host_class == app_id)
+}
+
+fn entry_is_flatpak(entry: &DesktopEntry) -> bool {
+    matches!(entry.source, EntrySource::Flatpak { .. })
 }
 
 /// Every `.desktop` file under `dir`, with its desktop-file ID. The spec makes subdirectories
@@ -352,6 +389,54 @@ mod tests {
         let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
         assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
         assert_eq!(scan.stats.duplicate_aliases, 1);
+    }
+
+    #[test]
+    fn host_and_flatpak_exports_with_the_same_stable_identity_are_one_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "chat-system.desktop",
+            "[Desktop Entry]\nType=Application\nName=Chat\n\
+             Exec=/usr/bin/chat\nStartupWMClass=org.example.Chat\n",
+        );
+        write(
+            tmp.path(),
+            "org.example.Chat.desktop",
+            "[Desktop Entry]\nType=Application\nName=Chat\n\
+             Exec=/usr/bin/flatpak run org.example.Chat\n\
+             X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
+        );
+
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 1, "one application must have one row");
+        assert_eq!(scan.stats.duplicate_aliases, 1);
+        assert!(matches!(
+            scan.entries[0].source,
+            EntrySource::Flatpak { .. }
+        ));
+    }
+
+    #[test]
+    fn same_name_host_and_flatpak_entries_without_a_shared_stable_identity_remain_distinct() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "chat-system.desktop",
+            "[Desktop Entry]\nType=Application\nName=Chat\n\
+             Exec=/usr/bin/chat\nStartupWMClass=chat-system\n",
+        );
+        write(
+            tmp.path(),
+            "org.example.Chat.desktop",
+            "[Desktop Entry]\nType=Application\nName=Chat\n\
+             Exec=/usr/bin/flatpak run org.example.Chat\n\
+             X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
+        );
+
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
+        assert_eq!(scan.stats.duplicate_aliases, 0);
     }
 
     #[test]
