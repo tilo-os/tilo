@@ -4685,6 +4685,7 @@ pub fn run() -> ! {
                 let center = surface.content_rect.center();
                 (surface.surface_id, (center.x, center.y))
             }));
+            placements.extend(state.output_presentation_placements());
             state.update_surface_scales(&placements);
         }
 
@@ -4882,6 +4883,7 @@ pub fn run() -> ! {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
+        let presentation_frame_changed = state.output_presentation_frame_changed();
         let keepalive_due = last_paint.elapsed() >= keepalive;
         metrics.mark_pump(
             iter_t0
@@ -4899,6 +4901,7 @@ pub fn run() -> ! {
             || animating
             || apps_changed
             || peers_moved
+            || presentation_frame_changed
             || capture_executor.has_live_mirrors()
             || capture_executor.is_recording()
             || portal_backend
@@ -5076,6 +5079,16 @@ pub fn run() -> ! {
                 )
             } else {
                 let mut scene = frame_builder.paint();
+                // Audience presentation surfaces bypass WorkspaceTree and
+                // paint only into their requested output rectangles. The DRM
+                // backend splits this combined scene per scanout afterwards.
+                for surface in &state.output_presentation_surfaces {
+                    foreign::paint_output_presentation_surface(
+                        &mut scene,
+                        surface.surface_id,
+                        surface.rect,
+                    );
+                }
                 // On top of everything, since a drag is over whatever it's over — drawn
                 // here (not by either app) because once the pointer leaves the source window, neither end can paint the carried item.
                 if state.selection.dnd_active || state.selection.chrome_drag.is_some() {

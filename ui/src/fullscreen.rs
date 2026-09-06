@@ -8,10 +8,10 @@
 //! [`select_output`] is pure over [`MonitorInfo`] so it's unit-tested
 //! without a live window.
 //!
-//! The current qOS compositor advertises no `wl_output` globals, so the
-//! enumerated list is empty and this degrades to `Borderless(None)` — still
-//! real fullscreen, just compositor-placed. Selection logic is already
-//! correct for when the compositor advertises monitors.
+//! A headless session or a compositor which cannot expose its output globals
+//! yields an empty monitor list; that degrades to `Borderless(None)` — still
+//! real fullscreen, just compositor-placed. Multi-output presentation is
+//! activated only after a distinct monitor is actually enumerated.
 
 /// Which output an app wants its fullscreen surface promoted onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -66,6 +66,24 @@ pub struct FullscreenRequest {
     pub view: FullscreenView,
 }
 
+/// A second, audience-only surface requested by a root widget.
+///
+/// Unlike [`FullscreenRequest`], this never repurposes the application's
+/// existing window. The host creates a separate borderless toplevel only when
+/// it can bind it to a monitor other than the window the presenter is using.
+/// This makes the API safe on one-output and headless sessions: callers get
+/// the ordinary fullscreen fallback instead of two panes in one surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudiencePresentationRequest {
+    pub target: FullscreenTarget,
+}
+
+impl AudiencePresentationRequest {
+    pub const fn new(target: FullscreenTarget) -> Self {
+        Self { target }
+    }
+}
+
 impl FullscreenRequest {
     /// A request to fullscreen the app's own window on `target` (immersive).
     pub fn mirror(target: FullscreenTarget) -> Self {
@@ -115,6 +133,48 @@ pub fn select_output(monitors: &[MonitorInfo], target: FullscreenTarget) -> Opti
             .or_else(|| monitors.first())
             .map(|m| m.index),
         FullscreenTarget::Output(i) => monitors.iter().find(|m| m.index == i).map(|m| m.index),
+    }
+}
+
+/// Pick an audience display which is *not* the display containing the
+/// presenter window. `None` means that there is no honest second output.
+///
+/// An explicit request for the presenter's own output is rejected rather than
+/// silently putting a second surface on top of the dashboard. For broad
+/// targets, selection is deterministic among the remaining outputs.
+pub fn select_audience_output(
+    monitors: &[MonitorInfo],
+    target: FullscreenTarget,
+    presenter_output: Option<u32>,
+) -> Option<u32> {
+    let candidates: Vec<MonitorInfo> = monitors
+        .iter()
+        .copied()
+        .filter(|monitor| Some(monitor.index) != presenter_output)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    match target {
+        FullscreenTarget::Auto => candidates.first().map(|monitor| monitor.index),
+        FullscreenTarget::Largest => candidates
+            .iter()
+            .max_by(|a, b| {
+                a.area()
+                    .cmp(&b.area())
+                    .then(a.primary.cmp(&b.primary))
+                    .then(b.index.cmp(&a.index))
+            })
+            .map(|monitor| monitor.index),
+        FullscreenTarget::Primary => candidates
+            .iter()
+            .find(|monitor| monitor.primary)
+            .or_else(|| candidates.first())
+            .map(|monitor| monitor.index),
+        FullscreenTarget::Output(index) => candidates
+            .iter()
+            .find(|monitor| monitor.index == index)
+            .map(|monitor| monitor.index),
     }
 }
 
@@ -187,5 +247,32 @@ mod tests {
     fn request_constructors_carry_view() {
         assert!(!FullscreenRequest::mirror(FullscreenTarget::Largest).is_distinct());
         assert!(FullscreenRequest::distinct(FullscreenTarget::Largest).is_distinct());
+    }
+
+    #[test]
+    fn audience_selection_never_reuses_the_presenter_output() {
+        let mons = vec![
+            mon(0, 1920, 1080, true),
+            mon(1, 3840, 2160, false),
+            mon(2, 1280, 720, false),
+        ];
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
+            Some(0),
+            "the largest display is already the local presenter output"
+        );
+        assert_eq!(
+            select_audience_output(&mons, FullscreenTarget::Output(1), Some(1)),
+            None,
+            "an explicit self-target must not fake dual display mode"
+        );
+        assert_eq!(
+            select_audience_output(
+                &[mon(0, 1920, 1080, true)],
+                FullscreenTarget::Largest,
+                Some(0)
+            ),
+            None
+        );
     }
 }
