@@ -2851,6 +2851,11 @@ async fn run_mount(
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let predictive_policy_task =
         fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
+    // Settings' socket receives these same durable services below; it must
+    // never fall back to Hydrator-only proof or direct blob deletion.
+    let storage_availability = availability.clone();
+    let storage_eviction_queue = eviction_queue.clone();
+    let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let fs = QuickFS::new(namespace, hydrator, heuristics);
     let fs = if allow_legacy_record_migration {
         fs
@@ -2919,8 +2924,10 @@ async fn run_mount(
         fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
-            Arc::clone(&fs.hydrator.store),
             fs.write_buffers_handle(),
+            storage_availability,
+            storage_eviction_queue,
+            storage_history,
             "Current workspace",
         )
     });
