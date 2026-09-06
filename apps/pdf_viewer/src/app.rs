@@ -899,6 +899,7 @@ impl PdfApp {
             page: self.current_page,
             page_count: self.doc.page_count(),
             author: self.author.clone(),
+            signature_date: today_ymd(),
             created_seed: self.created_counter,
             search_query: self.query().to_string(),
             search_pages: if self.raster.is_some() {
@@ -3634,6 +3635,17 @@ mod tests {
         (app, st)
     }
 
+    fn any_access_node(
+        node: &ui::a11y::AccessNode,
+        predicate: &impl Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> bool {
+        predicate(node)
+            || node
+                .children
+                .iter()
+                .any(|child| any_access_node(child, predicate))
+    }
+
     #[test]
     fn accessibility_exposes_reader_state_and_routes_toolbar_operations() {
         use ui::a11y::Action;
@@ -3642,17 +3654,13 @@ mod tests {
         let (mut app, mut state) = app_with_state();
         let tree = app.accessibility().expect("reader semantics");
         assert_eq!(tree.role, ui::a11y::Role::Window);
-        fn any(
-            node: &ui::a11y::AccessNode,
-            predicate: &impl Fn(&ui::a11y::AccessNode) -> bool,
-        ) -> bool {
-            predicate(node) || node.children.iter().any(|child| any(child, predicate))
-        }
-        assert!(any(&tree, &|node| node
+        assert!(any_access_node(&tree, &|node| node
             .name
             .as_deref()
             .is_some_and(|value| value.contains("Page"))));
-        assert!(any(&tree, &|node| node.action_target.as_deref()
+        assert!(any_access_node(&tree, &|node| node
+            .action_target
+            .as_deref()
             == Some("pdf.zoom-in")));
 
         let sidebar_before = app.show_sidebar;
