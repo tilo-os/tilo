@@ -62,8 +62,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: fs-fuse-${{ github.ref }}
-  cancel-in-progress: true
+  # The privileged runner exposes one kernel-backed FUSE lane. Jobs from
+  # different refs must queue behind each other rather than contend for that
+  # device and get killed immediately after preflight.
+  group: fs-fuse
+  cancel-in-progress: false
 
 env:
   CARGO_HOME: /cargo-home
