@@ -972,6 +972,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::ShortcutHelp, super_chord("/")),
             (ShortcutAction::FocusPreviousWindow, alt_shift_chord("tab")),
             (ShortcutAction::FocusNextWindow, alt_chord("tab")),
+            // Conventional application tab cycling belongs to the focused
+            // qOS window group too. Keeping this distinct from Super+Tab
+            // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::PreviousStrip, super_shift_chord("up")),

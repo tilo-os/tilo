@@ -227,7 +227,7 @@ const NAVIGATE_CARDS: &[(&str, &str)] = &[
         "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
     ),
     (
-        "Overview  ·  Ctrl+Tab or four-finger swipe",
+        "Overview  ·  Super+Tab or four-finger swipe",
         "See every workspace and window group, then use Up, Down, and Enter to choose one.",
     ),
     (
@@ -3039,7 +3039,7 @@ mod tests {
         assert!(navigation.contains("Super+K"));
         assert!(navigation.contains("Super+Space"));
         assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
-        assert!(navigation.contains("Ctrl+Tab"));
+        assert!(navigation.contains("Super+Tab"));
         assert!(navigation.contains("four-finger swipe"));
         assert!(navigation.contains("Super+arrow keys"));
         assert!(navigation.contains("three-finger swipe"));
