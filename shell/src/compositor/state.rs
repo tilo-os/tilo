@@ -35,6 +35,7 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::output::Output as SmithayOutput;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::input_method::{
     InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
@@ -75,11 +76,64 @@ use crate::wayland::color_management::ColorManagerState;
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
+use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/qos-app.toml`. It is necessary but never
 /// sufficient for promotion: the connection must also be accepted on the
 /// compositor's private OSK socket.
 pub const OSK_APP_ID: &str = "dev.qos.osk";
+
+/// A deliberately narrow app-id convention for the clean, audience-facing
+/// side of a presentation.  It is a normal xdg toplevel, but qOS owns its
+/// placement so it cannot collapse the presenter's workspace group.
+pub const OUTPUT_PRESENTATION_APP_ID_SUFFIX: &str = ".audience";
+
+fn is_output_presentation_app_id(app_id: &str) -> bool {
+    app_id
+        .strip_suffix(OUTPUT_PRESENTATION_APP_ID_SUFFIX)
+        .is_some_and(|base| !base.is_empty())
+}
+
+/// `.audience` is not a privilege a random client can claim. The matching
+/// presenter must already be a live, ordinary toplevel from the *same*
+/// Wayland connection, with the exact base app-id.
+fn output_presentation_owner_is_live(
+    tree: &WorkspaceTree,
+    audience_surface: SurfaceId,
+    audience_app_id: &str,
+) -> bool {
+    let Some(base) = audience_app_id.strip_suffix(OUTPUT_PRESENTATION_APP_ID_SUFFIX) else {
+        return false;
+    };
+    let client = audience_surface >> 32;
+    tree.workspaces.iter().any(|workspace| {
+        workspace.strips.iter().any(|strip| {
+            strip.window_groups.iter().any(|group| {
+                group.tabs.iter().any(|tab| {
+                    matches!(
+                        &tab.tile,
+                        crate::shell::state::TileContent::Foreign { surface_id, app_id }
+                            if *surface_id != audience_surface
+                                && (*surface_id >> 32) == client
+                                && app_id == base
+                    )
+                })
+            })
+        })
+    })
+}
+
+/// A foreign surface painted directly into one physical output rather than
+/// through the workspace tree.  This is intentionally transient: removing a
+/// display or destroying the toplevel cannot leave persisted workspace state
+/// pointing at a vanished projector.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OutputPresentationSurface {
+    pub surface_id: SurfaceId,
+    pub app_id: String,
+    pub output: crate::compositor::backend::OutputId,
+    pub rect: Rect,
+}
 
 /// Frozen pixels from the final app-owned frame. The shell moves this exact
 /// image under the pointer while the authenticated secondary surface warms,
@@ -473,6 +527,11 @@ pub struct State {
     /// [`Self::scale`] is one number for the whole session, only right on a
     /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
     pub output_layout: Vec<OutputPlacement>,
+    /// Configurable dimensions keyed by the stable backend output identity.
+    /// This is intentionally separate from `output_layout`, whose tuple is
+    /// consumed by scale/pointer code and predates targeted fullscreen.
+    output_sizes: HashMap<crate::compositor::backend::OutputId, (i32, i32)>,
+    output_rects: HashMap<crate::compositor::backend::OutputId, Rect>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
     pub surface_scales: HashMap<u64, f64>,
     /// **Transient fullscreen surface** — the window group id of the
@@ -483,6 +542,23 @@ pub struct State {
     /// mirrors this into the `FrameBuilder` each frame; deliberately NOT
     /// part of the persisted `WorkspaceTree` (a live presentation must never survive a reboot).
     pub fullscreen_group: Option<u64>,
+    /// Physical/virtual output requested by the fullscreen client. Kept
+    /// separately from the group because hotplug can invalidate the output
+    /// while the toplevel still exists; the native loop then reconciles to a
+    /// safe fallback before it paints another frame.
+    pub fullscreen_output: Option<crate::compositor::backend::OutputId>,
+    /// Audience presentation surfaces kept out of `WorkspaceTree`. Each one
+    /// is painted into exactly one output rectangle by the native compositor.
+    pub(crate) output_presentation_surfaces: Vec<OutputPresentationSurface>,
+    /// A fullscreen request can arrive before `set_app_id`; retain its output
+    /// hint until the audience convention is known rather than briefly
+    /// fullscreening the anonymous tab in the presenter's workspace.
+    pending_presentation_outputs: HashMap<SurfaceId, Option<crate::compositor::backend::OutputId>>,
+    /// Pointer clicks opt into audience keyboard focus.  Keeping this
+    /// separate from workspace focus means starting a presentation never
+    /// steals the presenter's local keyboard.
+    output_presentation_focus: Option<SurfaceId>,
+    output_presentation_sequences: HashMap<SurfaceId, u64>,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -806,8 +882,15 @@ impl State {
             viewporter,
             scale,
             output_layout: Vec::new(),
+            output_sizes: HashMap::new(),
+            output_rects: HashMap::new(),
             surface_scales: HashMap::new(),
             fullscreen_group: None,
+            fullscreen_output: None,
+            output_presentation_surfaces: Vec::new(),
+            pending_presentation_outputs: HashMap::new(),
+            output_presentation_focus: None,
+            output_presentation_sequences: HashMap::new(),
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
@@ -999,7 +1082,248 @@ impl State {
             .iter()
             .map(|o| (o.position, o.size, f64::from(o.scale)))
             .collect();
+        self.output_sizes = outputs
+            .iter()
+            .filter_map(|output| {
+                let width = i32::try_from(output.size.0).ok()?;
+                let height = i32::try_from(output.size.1).ok()?;
+                (width > 0 && height > 0).then_some((output.id, (width, height)))
+            })
+            .collect();
+        self.output_rects = outputs
+            .iter()
+            .filter_map(|output| {
+                Self::output_rect(outputs, output.id).map(|rect| (output.id, rect))
+            })
+            .collect();
         self.surface_scales.clear();
+        if self
+            .fullscreen_output
+            .is_some_and(|wanted| !outputs.iter().any(|o| o.id == wanted))
+        {
+            // The target was unplugged. Keep the fullscreen request alive but
+            // select the first viable output; this is the protocol equivalent
+            // of a window manager moving a fullscreen client off a removed
+            // monitor rather than leaving an invisible surface behind.
+            self.fullscreen_output = outputs
+                .iter()
+                .find(|output| output.size.0 > 0 && output.size.1 > 0)
+                .map(|output| output.id);
+        }
+        self.rehome_output_presentation_surfaces(outputs);
+    }
+
+    fn output_rect(
+        outputs: &[crate::compositor::backend::Output],
+        id: crate::compositor::backend::OutputId,
+    ) -> Option<Rect> {
+        let output = outputs
+            .iter()
+            .find(|output| output.id == id && output.size.0 > 0 && output.size.1 > 0)?;
+        Some(Rect::new(
+            f64::from(output.position.0),
+            f64::from(output.position.1),
+            f64::from(output.position.0) + f64::from(output.size.0),
+            f64::from(output.position.1) + f64::from(output.size.1),
+        ))
+    }
+
+    /// Rehome an audience surface deterministically when its chosen output
+    /// disappears.  The first usable backend output is also the normal
+    /// single-display fallback; no stale desktop-coordinate rect survives a
+    /// modeset.
+    fn rehome_output_presentation_surfaces(
+        &mut self,
+        outputs: &[crate::compositor::backend::Output],
+    ) {
+        for surface in &mut self.output_presentation_surfaces {
+            if Self::output_rect(outputs, surface.output).is_none() {
+                // Never rehome the audience onto an arbitrary remaining
+                // output: in the common unplug case that is the local
+                // presenter display. Hide until the client explicitly picks
+                // a distinct output or falls back to its single-window mode.
+                surface.rect = Rect::ZERO;
+                crate::compositor::foreign::store().note_placement(surface.surface_id, Rect::ZERO);
+                continue;
+            }
+            if let Some(rect) = Self::output_rect(outputs, surface.output) {
+                surface.rect = rect;
+                crate::compositor::foreign::store().note_placement(surface.surface_id, rect);
+            }
+        }
+    }
+
+    fn promote_output_presentation_toplevel(
+        &mut self,
+        surface_id: SurfaceId,
+        app_id: String,
+    ) -> bool {
+        if !output_presentation_owner_is_live(&self.workspace_tree, surface_id, &app_id) {
+            tracing::warn!(surface_id, %app_id, "rejected unpaired audience presentation surface");
+            return false;
+        }
+        if self
+            .output_presentation_surfaces
+            .iter()
+            .any(|surface| surface.surface_id == surface_id)
+        {
+            return true;
+        }
+        let requested = self
+            .pending_presentation_outputs
+            .remove(&surface_id)
+            .flatten();
+        let output = requested
+            .filter(|id| self.output_sizes.contains_key(id))
+            .or_else(|| self.output_sizes.keys().min_by_key(|id| id.0).copied());
+        let Some(output) = output else {
+            // Keep the ordinary tab when there is genuinely no output yet;
+            // `app_id_changed` will be called again only on a client change,
+            // so an eventual output update promotes through fullscreen.
+            self.pending_presentation_outputs
+                .insert(surface_id, requested);
+            return false;
+        };
+        let Some((width, height)) = self.output_sizes.get(&output).copied() else {
+            return false;
+        };
+        let rect = self.output_rects.get(&output).copied().unwrap_or_else(|| {
+            // A size without a position exists only in bare unit fixtures; a
+            // real output update replaces this before the first frame.
+            Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+        });
+        self.client_input.promote_to_overlay(surface_id);
+        crate::compositor::foreign::store().note_placement(surface_id, rect);
+        self.output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id,
+                app_id,
+                output,
+                rect,
+            });
+        true
+    }
+
+    pub(crate) fn is_output_presentation_surface(&self, surface_id: SurfaceId) -> bool {
+        self.output_presentation_surfaces
+            .iter()
+            .any(|surface| surface.surface_id == surface_id)
+    }
+
+    pub(crate) fn output_presentation_rect(&self, surface_id: SurfaceId) -> Option<Rect> {
+        self.output_presentation_surfaces
+            .iter()
+            .find(|surface| surface.surface_id == surface_id)
+            .map(|surface| surface.rect)
+    }
+
+    pub(crate) fn output_presentation_hit(
+        &self,
+        point: (f64, f64),
+    ) -> Option<crate::compositor::client_input::TileHit> {
+        self.output_presentation_hit_unchecked(point)
+            .filter(|hit| self.client_input.surface(hit.surface_id).is_some())
+    }
+
+    fn output_presentation_hit_unchecked(
+        &self,
+        point: (f64, f64),
+    ) -> Option<crate::compositor::client_input::TileHit> {
+        let point = vello::kurbo::Point::new(point.0, point.1);
+        self.output_presentation_surfaces
+            .iter()
+            .rev()
+            .find(|surface| surface.rect.contains(point))
+            .map(|surface| crate::compositor::client_input::TileHit {
+                surface_id: surface.surface_id,
+                strip: crate::shell::state::StripId::default(),
+                group: 0,
+                rect: surface.rect,
+            })
+    }
+
+    pub(crate) fn focus_output_presentation_surface(&mut self, surface_id: SurfaceId) {
+        self.output_presentation_focus = self
+            .is_output_presentation_surface(surface_id)
+            .then_some(surface_id);
+    }
+
+    pub(crate) fn clear_output_presentation_focus(&mut self) {
+        self.output_presentation_focus = None;
+    }
+
+    fn remove_output_presentation_surface(&mut self, surface_id: SurfaceId) -> bool {
+        let before = self.output_presentation_surfaces.len();
+        self.output_presentation_surfaces
+            .retain(|candidate| candidate.surface_id != surface_id);
+        self.pending_presentation_outputs.remove(&surface_id);
+        if self.output_presentation_focus == Some(surface_id) {
+            self.output_presentation_focus = None;
+        }
+        before != self.output_presentation_surfaces.len()
+    }
+
+    pub(crate) fn focused_output_presentation_surface(&self) -> Option<SurfaceId> {
+        self.output_presentation_focus
+            .filter(|id| self.is_output_presentation_surface(*id))
+            .filter(|id| self.client_input.surface(*id).is_some())
+    }
+
+    pub(crate) fn output_presentation_placements(&self) -> Vec<(SurfaceId, (f64, f64))> {
+        self.output_presentation_surfaces
+            .iter()
+            .map(|surface| (surface.surface_id, (surface.rect.x0, surface.rect.y0)))
+            .collect()
+    }
+
+    pub(crate) fn output_presentation_remote_tiles(&self) -> Vec<(SurfaceId, Rect)> {
+        self.output_presentation_remote_tiles_for(|surface_id| {
+            self.client_input.surface(surface_id).is_some()
+        })
+    }
+
+    fn output_presentation_remote_tiles_for(
+        &self,
+        known: impl Fn(SurfaceId) -> bool,
+    ) -> Vec<(SurfaceId, Rect)> {
+        self.output_presentation_surfaces
+            .iter()
+            .filter(|surface| known(surface.surface_id))
+            .map(|surface| (surface.surface_id, surface.rect))
+            .collect()
+    }
+
+    /// Direct surfaces are outside the widget tree, so their foreign-frame
+    /// sequence is an explicit repaint edge rather than an animation-frame
+    /// request from `ForeignSurfaceWidget`.
+    pub(crate) fn output_presentation_frame_changed(&mut self) -> bool {
+        let mut changed = false;
+        let live = self
+            .output_presentation_surfaces
+            .iter()
+            .map(|surface| surface.surface_id)
+            .collect::<Vec<_>>();
+        self.output_presentation_sequences
+            .retain(|surface_id, _| live.contains(surface_id));
+        for surface in &self.output_presentation_surfaces {
+            let seq = crate::compositor::foreign::store().frame_seq(surface.surface_id);
+            if self
+                .output_presentation_sequences
+                .insert(surface.surface_id, seq)
+                != Some(seq)
+            {
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Resolve the live output rectangle used for a fullscreen configure.
+    /// `None` means no usable output is currently known, so the client keeps
+    /// its last configured size rather than receiving a fabricated zero size.
+    pub fn fullscreen_output_size(&self) -> Option<(i32, i32)> {
+        let target = self.fullscreen_output?;
+        self.output_sizes.get(&target).copied()
     }
 
     /// The scale a surface whose tile sits at `origin` should render at.
@@ -1224,6 +1548,15 @@ impl State {
                 }
             }
         });
+    }
+
+    /// The exact `commit` capture gate, kept named so output-owned surfaces
+    /// cannot silently regress back to “only workspace tabs have pixels”.
+    fn should_capture_foreign_surface(&self, surface_id: SurfaceId) -> bool {
+        tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some()
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id)
+            || self.is_output_presentation_surface(surface_id)
     }
 
     /// Pump the share-session encoder for `surface_id` on a fresh commit.
@@ -1942,7 +2275,7 @@ impl CompositorHandler for State {
         // scale of the *output it is on*, not one session-wide number,
         // since a docked laptop has two different right answers. Runs for
         // every surface so any HiDPI-aware client with a `wp_fractional_scale_v1` object learns its scale. `set_preferred_scale` is idempotent, only emitting a wire event on real change, and stores the value even before the client creates the object (smithay replays it on `get_fractional_scale`).
-        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
+        let scale = self.surface_scale(crate::compositor::state::surface_id(surface));
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -1958,12 +2291,7 @@ impl CompositorHandler for State {
             .any(|ws| ws.is_surface_shared(surface_id))
             || self.active_sessions.contains_key(&surface_id);
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
-        let is_foreign_tab =
-            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
-        if is_foreign_tab
-            || self.osk_surface == Some(surface_id)
-            || self.is_floating_toplevel(surface_id)
-        {
+        if self.should_capture_foreign_surface(surface_id) {
             Self::capture_foreign_surface(surface, surface_id);
         }
         let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
@@ -2152,6 +2480,19 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
+/// Map the client-bound `wl_output` object back to the stable backend id.
+/// `OutputGlobals` names its Smithay outputs `qOS-<OutputId>`; parsing only
+/// that compositor-owned prefix rejects arbitrary/foreign output objects.
+fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
+    let output = SmithayOutput::from_resource(output?)?;
+    output
+        .name()
+        .strip_prefix("qOS-")?
+        .parse::<u32>()
+        .ok()
+        .map(crate::compositor::backend::OutputId)
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -2185,13 +2526,18 @@ impl XdgShellHandler for State {
             app_id.clone(),
         );
 
+        let presentation = app_id.as_deref().is_some_and(is_output_presentation_app_id)
+            && self.promote_output_presentation_toplevel(
+                surface_id,
+                app_id.clone().unwrap_or_default(),
+            );
         let floating = app_id
             .as_deref()
             .is_some_and(|app_id| self.promote_floating_toplevel(surface_id, app_id));
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
-        } else if !floating {
+        } else if !floating && !presentation {
             tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
         }
 
@@ -2205,6 +2551,7 @@ impl XdgShellHandler for State {
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }
+        let _ = self.remove_output_presentation_surface(surface_id);
         if let Some(index) = self
             .floating_toplevels
             .iter()
@@ -2222,6 +2569,7 @@ impl XdgShellHandler for State {
             == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
         {
             self.fullscreen_group = None;
+            self.fullscreen_output = None;
         }
         let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
@@ -2269,6 +2617,26 @@ impl XdgShellHandler for State {
                 );
                 return;
             }
+            if is_output_presentation_app_id(&app_id)
+                && self.promote_output_presentation_toplevel(surface_id, app_id.clone())
+            {
+                let provisional_group =
+                    tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+                // The provisional anonymous tab must never share the
+                // presenter's workspace with the clean audience surface.
+                let _ = tab_binding::close_tab_for_destroyed_surface(
+                    &mut self.workspace_tree,
+                    surface_id,
+                );
+                // `set_fullscreen` is permitted to arrive before
+                // `set_app_id`; undo that provisional group promotion now
+                // that the toplevel has become output-scoped.
+                if self.fullscreen_group == provisional_group {
+                    self.fullscreen_group = None;
+                    self.fullscreen_output = None;
+                }
+                return;
+            }
             let _ = tab_binding::rename_tab_for_app_id(
                 &mut self.workspace_tree,
                 surface_id,
@@ -2301,11 +2669,44 @@ impl XdgShellHandler for State {
     /// group the surface belongs to (so the native render loop promotes it,
     /// suppressing top bar/sidebar/other strips, and restores exactly on
     /// exit), and send a configure carrying `Fullscreen` + the full output
-    /// size. The `_wl_output` hint is ignored: this compositor spans one combined scene across all outputs.
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _wl_output: Option<WlOutput>) {
+    /// size. A valid `wl_output` hint selects that physical/virtual output;
+    /// an absent or stale hint falls back to the combined-session configure
+    /// until the native placement path can choose a viable display.
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        self.fullscreen_group = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
-        let (w, h) = self.output_size;
+        let requested = requested_output_id(wl_output.as_ref())
+            .filter(|output| self.output_sizes.contains_key(output));
+        let presentation = self.is_output_presentation_surface(surface_id);
+        if presentation {
+            if let Some(surface) = self
+                .output_presentation_surfaces
+                .iter_mut()
+                .find(|candidate| candidate.surface_id == surface_id)
+            {
+                if let Some(output) = requested {
+                    surface.output = output;
+                }
+                if let Some(rect) = self.output_rects.get(&surface.output).copied() {
+                    surface.rect = rect;
+                    crate::compositor::foreign::store().note_placement(surface_id, rect);
+                }
+            }
+        } else {
+            self.pending_presentation_outputs
+                .insert(surface_id, requested);
+            self.fullscreen_group =
+                tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+            self.fullscreen_output = requested;
+        }
+        let (w, h) = if presentation {
+            self.output_presentation_surfaces
+                .iter()
+                .find(|candidate| candidate.surface_id == surface_id)
+                .and_then(|candidate| self.output_sizes.get(&candidate.output).copied())
+                .unwrap_or(self.output_size)
+        } else {
+            self.fullscreen_output_size().unwrap_or(self.output_size)
+        };
         surface.with_pending_state(|state| {
             state.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
@@ -2323,11 +2724,15 @@ impl XdgShellHandler for State {
     /// promotion (the native loop restores exact prior tiling) and send a configure clearing `Fullscreen` + the imposed size.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        if self.is_output_presentation_surface(surface_id) {
+            let _ = self.remove_output_presentation_surface(surface_id);
+        }
         // Only clear if THIS surface was the fullscreen one — a stale request from a background toplevel must not steal another's.
         if self.fullscreen_group
             == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
         {
             self.fullscreen_group = None;
+            self.fullscreen_output = None;
         }
         surface.with_pending_state(|state| {
             state.states.unset(
@@ -2441,7 +2846,7 @@ impl FractionalScaleHandler for State {
         // A client just created a `wp_fractional_scale_v1` for this
         // surface. Seed it with the output's scale (or session-wide if not
         // yet placed) immediately so it doesn't wait for its first commit; `set_preferred_scale` is idempotent and safe before any buffer is attached.
-        let scale = self.surface_scale(u64::from(surface.id().protocol_id()));
+        let scale = self.surface_scale(crate::compositor::state::surface_id(&surface));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -2749,6 +3154,172 @@ mod tick_hook_tests {
         assert_eq!(state.surface_scale(7), 1.75);
     }
 
+    #[test]
+    fn packed_nonzero_client_surface_id_keeps_its_own_scale() {
+        let mut state = make_state();
+        let id = (17_u64 << 32) | 42;
+        state.surface_scales.insert(id, 1.5);
+        assert_eq!(state.surface_scale(id), 1.5);
+        assert_ne!(state.surface_scale(42), 1.5);
+    }
+
+    #[test]
+    fn audience_identity_is_narrow_and_does_not_match_the_presenter() {
+        assert!(is_output_presentation_app_id("dev.qos.slides.audience"));
+        assert!(!is_output_presentation_app_id("dev.qos.slides"));
+        assert!(!is_output_presentation_app_id(".audience"));
+    }
+
+    #[test]
+    fn audience_role_requires_an_exact_same_client_presenter() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.qos.slides".into()));
+        assert!(output_presentation_owner_is_live(
+            &tree,
+            (9_u64 << 32) | 2,
+            "dev.qos.slides.audience"
+        ));
+        assert!(!output_presentation_owner_is_live(
+            &tree,
+            (10_u64 << 32) | 2,
+            "dev.qos.slides.audience"
+        ));
+        assert!(!output_presentation_owner_is_live(
+            &tree,
+            (9_u64 << 32) | 2,
+            "dev.qos.evil.audience"
+        ));
+    }
+
+    #[test]
+    fn audience_surface_hides_when_its_distinct_output_is_unplugged() {
+        let mut state = make_state();
+        state.set_output_layout(&[
+            out(1, (0, 0), (1280, 720), 1.0),
+            out(2, (1280, 0), (1920, 1080), 1.0),
+        ]);
+        let presenter_groups = state.workspace_tree.active_workspace().unwrap().strips[0]
+            .window_groups
+            .len();
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: 77,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(2),
+                rect: Rect::ZERO,
+            });
+        state.set_output_layout(&[out(1, (0, 0), (1280, 720), 1.0)]);
+        let audience = &state.output_presentation_surfaces[0];
+        assert_eq!(audience.output, crate::compositor::backend::OutputId(2));
+        assert_eq!(audience.rect, Rect::ZERO);
+        assert_eq!(
+            state.workspace_tree.active_workspace().unwrap().strips[0]
+                .window_groups
+                .len(),
+            presenter_groups,
+            "hotplug never moves the presenter into the audience layer"
+        );
+    }
+
+    #[test]
+    fn audience_teardown_releases_its_output_and_focus_only() {
+        let mut state = make_state();
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: 88,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(2),
+                rect: Rect::new(100.0, 0.0, 200.0, 100.0),
+            });
+        state.output_presentation_focus = Some(88);
+        state
+            .pending_presentation_outputs
+            .insert(88, Some(crate::compositor::backend::OutputId(2)));
+        assert!(state.remove_output_presentation_surface(88));
+        assert!(state.output_presentation_surfaces.is_empty());
+        assert!(state.output_presentation_focus.is_none());
+        assert!(!state.pending_presentation_outputs.contains_key(&88));
+    }
+
+    #[test]
+    fn commit_capture_gate_includes_audience_surface_without_a_workspace_tab() {
+        let mut state = make_state();
+        let id = (31_u64 << 32) | 9;
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: id,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(2),
+                rect: Rect::new(100.0, 0.0, 200.0, 100.0),
+            });
+        assert!(state.should_capture_foreign_surface(id));
+        assert!(tab_binding::group_id_for_surface(&state.workspace_tree, id).is_none());
+    }
+
+    #[test]
+    fn unpaired_audience_is_rejected_by_the_actual_promotion_gate() {
+        let mut state = make_state();
+        state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
+        assert!(!state.promote_output_presentation_toplevel(
+            (44_u64 << 32) | 2,
+            "dev.qos.evil.audience".into()
+        ));
+        assert!(state.output_presentation_surfaces.is_empty());
+    }
+
+    #[test]
+    fn audience_hit_and_focus_are_scoped_before_workspace_rows() {
+        let mut state = make_state();
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: (8_u64 << 32) | 5,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(2),
+                rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
+            });
+        let hit = state
+            .output_presentation_hit_unchecked((1400.0, 100.0))
+            .expect("audience output hit takes precedence");
+        assert_eq!(hit.surface_id, (8_u64 << 32) | 5);
+        state.focus_output_presentation_surface(hit.surface_id);
+        assert_eq!(state.output_presentation_focus, Some(hit.surface_id));
+        assert!(
+            state
+                .output_presentation_hit_unchecked((100.0, 100.0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn audience_remote_view_includes_only_live_direct_surface_tiles() {
+        let mut state = make_state();
+        let live = (3_u64 << 32) | 7;
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: live,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(2),
+                rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
+            });
+        state
+            .output_presentation_surfaces
+            .push(OutputPresentationSurface {
+                surface_id: live + 1,
+                app_id: "dev.qos.slides.audience".into(),
+                output: crate::compositor::backend::OutputId(3),
+                rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
+            });
+        assert_eq!(
+            state.output_presentation_remote_tiles_for(|id| id == live),
+            vec![(live, Rect::new(1280.0, 0.0, 1920.0, 720.0))]
+        );
+    }
+
     /// The docked-laptop case: a dense built-in panel beside a sparse external monitor — one session-wide number is wrong for one of them.
     #[test]
     fn a_surface_is_told_the_scale_of_the_output_it_sits_on() {
@@ -2760,6 +3331,25 @@ mod tick_hook_tests {
         ]);
         assert_eq!(state.scale_for_origin((100.0, 100.0)), 1.5);
         assert_eq!(state.scale_for_origin((2000.0, 100.0)), 1.0);
+    }
+
+    #[test]
+    fn fullscreen_target_uses_requested_output_dimensions_and_rehomes_on_hotplug() {
+        let mut state = make_state();
+        state.set_output_layout(&[
+            out(10, (0, 0), (1920, 1080), 1.0),
+            out(20, (1920, 0), (3840, 2160), 1.0),
+        ]);
+        state.fullscreen_output = Some(crate::compositor::backend::OutputId(20));
+        assert_eq!(state.fullscreen_output_size(), Some((3840, 2160)));
+
+        state.set_output_layout(&[out(10, (0, 0), (1920, 1080), 1.0)]);
+        assert_eq!(
+            state.fullscreen_output,
+            Some(crate::compositor::backend::OutputId(10)),
+            "unplugging the target must rehome rather than retaining a dead output id"
+        );
+        assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
     }
 
     /// A window dragged to the external monitor has to re-render at its density — the cache is what makes that observable to the commit hook.

@@ -49,7 +49,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{
+    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
@@ -1035,6 +1037,48 @@ fn translated_and_scaled(base: Affine, dx: f64, dy: f64, sx: f64, sy: f64) -> Af
     base * Affine::translate((dx, dy)) * Affine::scale_non_uniform(sx, sy)
 }
 
+/// Paint an output-owned presentation surface directly into its physical
+/// output rectangle.  Unlike [`ForeignSurfaceWidget`], this deliberately
+/// bypasses the workspace tree: a clean audience output must not consume or
+/// redraw the presenter's local group.
+pub fn paint_output_presentation_surface(scene: &mut Scene, surface_id: SurfaceId, rect: Rect) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    // An audience surface is deliberately opaque: its renderer may carry
+    // transparent margins while loading, but projector pixels must never
+    // reveal the presenter's desktop behind the slide.
+    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &rect);
+    let Some(frame) = store().snapshot(surface_id) else {
+        return;
+    };
+    let image = ImageData {
+        data: Blob::new(std::sync::Arc::new(frame.rgba)),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: frame.width,
+        height: frame.height,
+    };
+    if image.width == 0 || image.height == 0 {
+        return;
+    }
+    let transform = translated_and_scaled(
+        Affine::IDENTITY,
+        rect.x0,
+        rect.y0,
+        rect.width() / f64::from(image.width),
+        rect.height() / f64::from(image.height),
+    );
+    let brush = ImageBrush::new(image).with_extend(Extend::Pad);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        None,
+        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
+    );
+}
+
 impl Widget for ForeignSurfaceWidget {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -1436,14 +1480,13 @@ fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
 ///
 /// Returns the number of configures sent — used by the wiring test.
 pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
-    let scale = state.scale;
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        if let Some((w, h)) = store().take_pending_configure(id, scale) {
+        if let Some((w, h)) = store().take_pending_configure(id, state.surface_scale(id)) {
             configure_to(&toplevel, w, h);
             sent = sent.saturating_add(1);
             tracing::debug!(

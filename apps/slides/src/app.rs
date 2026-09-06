@@ -450,6 +450,9 @@ pub struct SlidesApp {
     title_caret: usize,
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
+    /// Local routing policy selected from the presentation resource actions.
+    /// Never sync this through the deck: collaborators do not share hardware.
+    presentation_target: ui::fullscreen::FullscreenTarget,
 
     /// Modal keyboard-shortcuts overlay. Owns its visibility, drawing, and
     /// pointer/keyboard capture policy in every editor and presentation mode.
@@ -650,6 +653,7 @@ impl SlidesApp {
             editing_title: false,
             title_caret: 0,
             presentation: Presentation::default(),
+            presentation_target: ui::fullscreen::FullscreenTarget::Largest,
             help_overlay: HelpOverlay::default(),
             active_guides: Vec::new(),
             last_mouse: Point::ZERO,
@@ -2809,17 +2813,11 @@ impl SlidesApp {
     ///     on either output is reflected on both instantly (the model is
     ///     already per-deck, with `cur_slide` per-peer view state).
     ///
-    /// Why it is a seam, not implemented here: `ui::App` is strictly
-    /// single-window, so one process cannot open a second window on a second
-    /// output. True dual-output present needs the compositor to either spawn
-    /// a second slides surface bound to the presenter output, or to composite
-    /// two views of the same surface. Until then, the presenter dashboard is
-    /// a **togglable full-window view** on this one monitor (press `P` while
-    /// presenting), using the same presentation renderer.
-    ///
-    /// Returns `(audience_on_larger, presenter_on_other)` as a hint a
-    /// compositor integration can act on; both are always available because
-    /// both views are pure functions of the shared deck + `cur_slide`.
+    /// `ui::App` turns this into a real second winit toplevel when the session
+    /// exposes a monitor distinct from this window. The primary window then
+    /// becomes this dashboard; a one-output session keeps the regular
+    /// fullscreen audience fallback. Both views are pure projections of the
+    /// same deck + `cur_slide` and therefore stay in lock-step.
     pub fn present_output_plan(&self) -> (PresentSurface, PresentSurface) {
         (PresentSurface::Audience, PresentSurface::Presenter)
     }
@@ -4843,6 +4841,17 @@ impl Widget for SlidesApp {
             SlidesOperation::ShowEditor => self.mode = Mode::Edit,
             SlidesOperation::ShowOverview => self.mode = Mode::Overview,
             SlidesOperation::StartPresentation => self.enter_present(),
+            SlidesOperation::StartPresentationOn { output } => {
+                self.presentation_target = match output {
+                    crate::actions::PresentationOutput::LargestExternal => {
+                        ui::fullscreen::FullscreenTarget::Largest
+                    }
+                    crate::actions::PresentationOutput::PrimaryExternal => {
+                        ui::fullscreen::FullscreenTarget::Primary
+                    }
+                };
+                self.enter_present();
+            }
             SlidesOperation::EndPresentation => self.exit_present(),
             SlidesOperation::RevealSlide { slide } => {
                 let Some(idx) = self.deck.index_of(&slide) else {
@@ -5177,7 +5186,7 @@ impl Widget for SlidesApp {
     /// `xdg_toplevel.set_fullscreen` request. Level-triggered: a steady
     /// `Some(true)` for the whole talk is correct and idempotent.
     fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.wants_fullscreen())
+        Some(self.wants_fullscreen() && !self.presentation.has_external_audience())
     }
 
     /// Present is a *distinct* view (the slideshow, not the editor) that wants
@@ -5188,7 +5197,7 @@ impl Widget for SlidesApp {
     /// immersive fullscreen — only the target output + the distinct-view flag
     /// differ.
     fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        ui::fullscreen::FullscreenRequest::distinct(ui::fullscreen::FullscreenTarget::Largest)
+        ui::fullscreen::FullscreenRequest::distinct(self.presentation_target)
     }
 
     /// React to the *actual* fullscreen state reported by the host. A
@@ -5198,9 +5207,83 @@ impl Widget for SlidesApp {
     /// in a now-windowed surface. App-initiated exits (Esc → `exit_present`)
     /// already left present mode, so this is a no-op for them.
     fn on_fullscreen_changed(&mut self, active: bool) {
-        if !active && self.mode == Mode::Present {
+        // When a second output appears, the host deliberately removes
+        // fullscreen from this *presenter* window after it has installed the
+        // clean audience surface. That transition is not a revoked talk.
+        if !active && self.mode == Mode::Present && !self.presentation.has_external_audience() {
             self.exit_present();
         }
+    }
+
+    fn audience_presentation_request(&self) -> Option<ui::fullscreen::AudiencePresentationRequest> {
+        (self.mode == Mode::Present)
+            .then(|| ui::fullscreen::AudiencePresentationRequest::new(self.presentation_target))
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        self.presentation.set_external_audience(active);
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        let frame = PresentationFrame::new(
+            rect,
+            &self.deck,
+            self.cur_slide,
+            self.deck_rev,
+            &self.images,
+        );
+        self.presentation
+            .draw_audience(scene, transform, text_renderer, theme, &frame);
+        true
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        ..
+                    },
+                ..
+            } => {
+                let mut handled = false;
+                self.on_key_present(logical_key, &mut handled);
+                handled
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.next_slide(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        self.exit_present();
     }
 
     fn draw_with_presence(
@@ -7246,6 +7329,62 @@ mod tests {
             Widget::fullscreen_intent(&app),
             Some(true),
             "and it drives the shared reconcile"
+        );
+    }
+
+    #[test]
+    fn audience_lifecycle_keeps_dashboard_local_and_preserves_single_output_fallback() {
+        use ui::fullscreen::{AudiencePresentationRequest, FullscreenTarget};
+
+        let mut app = presenting_app();
+        assert_eq!(
+            Widget::audience_presentation_request(&app),
+            Some(AudiencePresentationRequest::new(FullscreenTarget::Largest))
+        );
+        Widget::on_audience_presentation_changed(&mut app, true);
+        assert!(app.presentation.has_external_audience());
+        assert_eq!(
+            Widget::fullscreen_intent(&app),
+            Some(false),
+            "the original local window must not become the audience surface"
+        );
+        Widget::on_fullscreen_changed(&mut app, false);
+        assert_eq!(
+            app.mode,
+            Mode::Present,
+            "the host's intentional presenter unfullscreen must not end the talk"
+        );
+        Widget::on_audience_presentation_changed(&mut app, false);
+        assert_eq!(
+            Widget::fullscreen_intent(&app),
+            Some(true),
+            "loss of the external output returns to the established one-output slideshow"
+        );
+    }
+
+    #[test]
+    fn presentation_output_resource_policy_is_local_and_selects_primary() {
+        let mut app = SlidesApp::new();
+        let doc = AutoCommit::new();
+        let payload = serde_json::to_vec(&crate::actions::SlidesOperation::StartPresentationOn {
+            output: crate::actions::PresentationOutput::PrimaryExternal,
+        })
+        .expect("presentation output operation serializes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::SLIDES_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("presentation output operation is accepted")
+        );
+        assert_eq!(app.mode, Mode::Present);
+        assert_eq!(
+            app.presentation_target,
+            ui::fullscreen::FullscreenTarget::Primary
         );
     }
 

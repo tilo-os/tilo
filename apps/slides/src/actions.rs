@@ -25,8 +25,11 @@
 //! same reason Sheets keeps a cell *body* out of the action model would be the
 //! opposite (a cell is a discrete value; a slide's body is a rich-text run).
 //!
-//! Presentation → never an action: the current slide, the selection, the zoom /
-//! drag preview, the active tool, which panel flap is open, present mode.
+//! Presentation → never a document action: the current slide, the selection,
+//! zoom / drag preview, active tool, panel flaps and present mode are local.
+//! Start/stop and output-policy commands are view operations so the resource
+//! surface can expose their user-visible lifecycle without sharing hardware
+//! choices with collaborators.
 //!
 //! External → never an action: `.odp` import / export (a whole-deck swap, not a
 //! stored mutation) and the per-peer image decode cache.
@@ -99,6 +102,12 @@ pub enum SlidesOperation {
     ShowEditor,
     ShowOverview,
     StartPresentation,
+    /// Starts presenting with an explicit local output policy. This is view
+    /// state, not a CRDT mutation: each collaborator keeps control of their
+    /// own physical displays.
+    StartPresentationOn {
+        output: PresentationOutput,
+    },
     EndPresentation,
     RevealSlide {
         slide: String,
@@ -117,6 +126,15 @@ pub enum SlidesOperation {
     SaveAs {
         path: Option<String>,
     },
+}
+
+/// User-visible audience-output policies. Kept serializable at the action
+/// boundary instead of leaking host monitor indices into documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PresentationOutput {
+    LargestExternal,
+    PrimaryExternal,
 }
 
 #[cfg(test)]
@@ -166,9 +184,9 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation)
         | SlidesOperation::RevealNotes { .. } => spec
             .with_contract(ActionContract::view())
             .retry_policy(RetryPolicy::Idempotent),
-        SlidesOperation::StartPresentation | SlidesOperation::EndPresentation => {
-            spec.with_contract(ActionContract::view())
-        }
+        SlidesOperation::StartPresentation
+        | SlidesOperation::StartPresentationOn { .. }
+        | SlidesOperation::EndPresentation => spec.with_contract(ActionContract::view()),
         SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
     }
 }
@@ -1085,6 +1103,22 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
             SlidesOperation::StartPresentation,
         ),
         (
+            "present-largest-external",
+            "Present on largest external display",
+            OperationKind::View,
+            SlidesOperation::StartPresentationOn {
+                output: PresentationOutput::LargestExternal,
+            },
+        ),
+        (
+            "present-primary-external",
+            "Present on primary external display",
+            OperationKind::View,
+            SlidesOperation::StartPresentationOn {
+                output: PresentationOutput::PrimaryExternal,
+            },
+        ),
+        (
             "end-presentation",
             "End presentation",
             OperationKind::View,
@@ -1362,6 +1396,11 @@ mod tests {
         let deck_actions: Vec<&str> = deck.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
         assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
+        assert!(
+            deck_actions.contains(&"present-largest-external")
+                && deck_actions.contains(&"present-primary-external"),
+            "presentation output policies must be available through the same resource surface: {deck_actions:?}"
+        );
 
         assert_eq!(
             deck.children.len(),
