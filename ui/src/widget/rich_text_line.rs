@@ -158,6 +158,12 @@ impl RichTextLine {
         self.inner.bound_obj().cloned()
     }
 
+    /// Retain document reconciliation while routing edits through an owning
+    /// action bridge instead of allowing `TextInput` to splice Automerge.
+    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
+        self.inner.set_direct_crdt_writes(enabled);
+    }
+
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
     }
