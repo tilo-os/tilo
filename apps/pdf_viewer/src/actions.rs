@@ -868,7 +868,9 @@ fn contextual_pages(ctx: &PdfResourceCtx) -> impl Iterator<Item = (usize, &str)>
     clippy::too_many_lines,
     reason = "the resource tree is deliberately assembled in one linear document hierarchy"
 )]
-pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+/// Stable document root only; pages, outline entries and annotations are
+/// retained/paged separately and are never materialized for root browsing.
+pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
     let mut root = Resource::new(
         format!("pdf.document:{}", ctx.doc_id),
         "pdf.document",
@@ -943,6 +945,11 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
     root = root.with_action(file_operation("open", "Open PDF", false));
     root = root.with_action(file_operation("save-as", "Save annotated PDF", true));
 
+    root
+}
+
+pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = document_root(ctx);
     for (page, page_id) in contextual_pages(ctx) {
         root = root.with_child(page_resource(ctx, page, page_id));
     }

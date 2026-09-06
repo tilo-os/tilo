@@ -99,6 +99,19 @@ impl ResourceKind {
 pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
 pub type InvokeFn =
     dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<ActionReceipt, ActionError>;
+/// A non-blocking admission poll. `None` means the broker has not answered
+/// yet; the compositor keeps the ticket and polls again next frame.
+pub type PendingInvocation = Rc<dyn Fn() -> Result<Option<ActionReceipt>, ActionError>>;
+pub enum InvocationDisposition {
+    Accepted(ActionReceipt),
+    Pending(PendingInvocation),
+}
+pub type BeginInvokeFn = dyn Fn(
+    &mut AutoCommit,
+    &ObjId,
+    &Chrome,
+    &ActionArgs,
+) -> Result<InvocationDisposition, ActionError>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActionReceipt {
@@ -141,6 +154,88 @@ pub struct SearchResult {
     pub contract: Option<qos_actions::ActionContract>,
     pub on_open: Rc<OpenFn>,
     pub on_invoke: Option<Rc<InvokeFn>>,
+    /// Used only when admission itself is asynchronous. It must not claim an
+    /// accepted action until its retained ticket resolves current authority.
+    pub on_begin_invoke: Option<Rc<BeginInvokeFn>>,
+}
+
+/// Hard ceilings for one provider page.  These are deliberately expressed in
+/// the protocol rather than as palette constants: the same limits protect the
+/// visual palette, headless agents, and a future remote directory source.
+/// A provider may stop sooner, but must never exceed any non-zero ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchBudget {
+    pub max_results: usize,
+    pub max_bytes: usize,
+    pub max_work: usize,
+}
+
+impl SearchBudget {
+    pub const PALETTE: Self = Self {
+        max_results: 48,
+        max_bytes: 48 * 1024,
+        max_work: 4_096,
+    };
+}
+
+/// An opaque provider-owned continuation.  The revision is carried alongside
+/// the provider-local payload, so a result page can never silently advance
+/// across a changed ordering.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchCursor {
+    pub revision: String,
+    pub token: String,
+}
+
+/// One bounded answer from a [`SearchProvider`].  `stale_cursor` is a
+/// protocol outcome rather than an empty page: callers restart explicitly,
+/// preserving the distinction between "there are no more hits" and "the
+/// source changed while you were paging".
+#[derive(Clone)]
+pub struct SearchPage {
+    pub revision: String,
+    pub results: Vec<SearchResult>,
+    pub next_cursor: Option<SearchCursor>,
+    pub exhausted: bool,
+    pub stale_cursor: bool,
+    pub budget_exhausted: bool,
+}
+
+impl std::fmt::Debug for SearchPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchPage")
+            .field("revision", &self.revision)
+            .field("results", &self.results)
+            .field("next_cursor", &self.next_cursor)
+            .field("exhausted", &self.exhausted)
+            .field("stale_cursor", &self.stale_cursor)
+            .field("budget_exhausted", &self.budget_exhausted)
+            .finish()
+    }
+}
+
+impl SearchPage {
+    pub fn exhausted(revision: impl Into<String>, results: Vec<SearchResult>) -> Self {
+        Self {
+            revision: revision.into(),
+            results,
+            next_cursor: None,
+            exhausted: true,
+            stale_cursor: false,
+            budget_exhausted: false,
+        }
+    }
+
+    pub fn stale(revision: impl Into<String>) -> Self {
+        Self {
+            revision: revision.into(),
+            results: Vec::new(),
+            next_cursor: None,
+            exhausted: false,
+            stale_cursor: true,
+            budget_exhausted: false,
+        }
+    }
 }
 
 impl SearchResult {
@@ -170,6 +265,7 @@ impl SearchResult {
                 Ok(())
             }),
             on_invoke: None,
+            on_begin_invoke: None,
         }
     }
 
@@ -197,6 +293,7 @@ impl SearchResult {
             contract: None,
             on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
             on_invoke: None,
+            on_begin_invoke: None,
         }
     }
 }
@@ -213,6 +310,7 @@ impl std::fmt::Debug for SearchResult {
             .field("params", &self.params)
             .field("contract", &self.contract)
             .field("has_invoke_receipt", &self.on_invoke.is_some())
+            .field("has_pending_invoke", &self.on_begin_invoke.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -233,6 +331,51 @@ pub trait SearchProvider {
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
+
+    /// Version of the retained index used by [`Self::query_page`].  A
+    /// provider whose data is immutable may keep the default.  Mutable
+    /// providers must change it whenever their ordering or disclosure can
+    /// change; cursors are then rejected instead of silently skipping rows.
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        "static".into()
+    }
+
+    /// Page a retained search index.  This is the canonical shell query
+    /// surface.  `query` remains for small, direct callers and backwards
+    /// compatible provider tests; registry/palette/agent discovery always
+    /// call this method.
+    ///
+    /// The conservative default is intentionally only suitable for tiny,
+    /// static providers. Keeping the fallback lets third-party providers
+    /// upgrade without an ABI-breaking trait change; shell providers that
+    /// can grow must override it with retained-index paging.
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        let revision = self.search_revision(&ctx);
+        if cursor.is_some_and(|cursor| cursor.revision != revision || !cursor.token.is_empty()) {
+            return SearchPage::stale(revision);
+        }
+        let mut results = self.query(ctx);
+        let total = results.len();
+        let emitted = total.min(budget.max_results);
+        results.truncate(emitted);
+        let exhausted = emitted == total;
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: (!exhausted).then(|| SearchCursor {
+                revision: revision.clone(),
+                token: "legacy-truncated".into(),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
+    }
     /// Top of this provider's own score scale. Scores are only meaningful
     /// within one provider — files award 120 for a leaf-name prefix while
     /// applications cap at 100, so raw numbers would rank `Calculator.h`
@@ -320,6 +463,50 @@ impl SearchRegistry {
         self.providers.iter().map(std::convert::AsRef::as_ref)
     }
 
+    /// Page one named source without flattening every provider into a single
+    /// transient vector.  This is the agent-facing primitive behind
+    /// hierarchy/navigation UIs: callers retain the opaque cursor and repeat
+    /// only the provider they are currently exploring.
+    pub fn query_provider_page(
+        &self,
+        provider_id: &str,
+        args: &QueryArgs<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> Option<SearchPage> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)?;
+        if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+            return None;
+        }
+        let wanted = if args.wanted_kinds.is_empty() {
+            provider.resource_kinds().to_vec()
+        } else {
+            provider
+                .resource_kinds()
+                .iter()
+                .filter(|kind| args.wanted_kinds.contains(kind))
+                .cloned()
+                .collect()
+        };
+        if wanted.is_empty() {
+            return Some(SearchPage::exhausted("not-wanted", Vec::new()));
+        }
+        Some(provider.query_page(
+            SearchContext {
+                needle: args.needle,
+                wanted: &wanted,
+                chrome: args.chrome,
+                doc: args.doc,
+                doc_root: args.doc_root,
+            },
+            cursor,
+            budget,
+        ))
+    }
+
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
     /// [`ResourceKind::sort_key`] — one chip per kind in the palette.
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
@@ -332,6 +519,30 @@ impl SearchRegistry {
             }
         }
         out.sort_by_key(ResourceKind::sort_key);
+        out
+    }
+
+    /// Snapshot the revisions of exactly the providers a query can reach.
+    /// Overlay refresh uses this together with its text field, so live app
+    /// resources appearing/disappearing update an open palette without
+    /// making the user type a throwaway character.
+    pub fn query_revision(&self, args: &QueryArgs<'_>) -> String {
+        let mut out = String::new();
+        for provider in &self.providers {
+            if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+                continue;
+            }
+            out.push_str(provider.id());
+            out.push('\0');
+            out.push_str(&provider.search_revision(&SearchContext {
+                needle: args.needle,
+                wanted: args.wanted_kinds,
+                chrome: args.chrome,
+                doc: args.doc,
+                doc_root: args.doc_root,
+            }));
+            out.push('\0');
+        }
         out
     }
 
@@ -375,7 +586,15 @@ impl SearchRegistry {
                 doc_root,
             };
             let top = provider.max_score().max(1);
-            for r in provider.query(ctx) {
+            let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            // A source changed between the call's routing snapshot and its
+            // index read.  Treat it as unavailable for this keystroke rather
+            // than presenting a misleading empty continuation; the next
+            // input/poll retries from the fresh revision.
+            if page.stale_cursor {
+                continue;
+            }
+            for r in page.results {
                 // A score above `top` exceeds strength 1.0 and silently
                 // outranks every other provider's perfect match.
                 debug_assert!(

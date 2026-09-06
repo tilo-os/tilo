@@ -11,6 +11,28 @@ use winit::{
 /// route; this payload restores the complementary local presentation state.
 pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
 
+/// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
+/// providers own their retained indexes; this retains just the provider slot
+/// and its bounded continuation token, so no full app resource tree is ever
+/// copied into the broker bridge.
+#[derive(Clone)]
+struct ActionDirectoryCursor {
+    revision: String,
+    needle: String,
+    parent_resource: String,
+    provider_index: usize,
+    provider_cursor: Option<crate::search::SearchCursor>,
+    browse_offset: usize,
+    root_widget_index: usize,
+    root_provider_cursor: Option<Vec<u8>>,
+}
+
+const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
+const ACTION_DIRECTORY_MAX_WORK: usize = 512;
+const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
+const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
+const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
+
 /// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
 /// strings and `RecordId::for_file` values: both may contain local paths or
 /// app secrets. File navigation is restored by the shell's typed
@@ -121,7 +143,9 @@ impl From<accesskit_winit::Event> for UserEvent {
         UserEvent::AccessKit(e.window_event)
     }
 }
-use crate::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
+use crate::collaboration::{
+    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
+};
 use crate::gpu::RenderContext;
 use crate::permissions::PermissionContext;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -520,6 +544,11 @@ pub struct App {
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
     last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
+    /// Opaque, revision-bound continuation state for the broker pull
+    /// directory. It holds provider cursors, never resource bodies, and is
+    /// touched only by the main/UI thread.
+    action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
+    next_action_directory_cursor: u64,
     /// Last app-owned continuation projection sent to the local shell.
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
     pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
@@ -604,6 +633,10 @@ impl App {
     /// a connected endpoint, so accepting it here avoids process-global
     /// environment mutation and keeps those callers on the production typed
     /// transport.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered App bootstrap is intentionally one construction transaction"
+    )]
     pub fn with_collaboration_manager(
         state: State,
         root_widget: Box<dyn Widget>,
@@ -679,6 +712,8 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             last_published_actions: None,
+            action_directory_cursors: std::collections::HashMap::new(),
+            next_action_directory_cursor: 0,
             last_published_continuation: None,
             pending_continuation_restore: crate::collaboration::continuation_restore_env(),
             pending_continuation_view: None,
@@ -1219,6 +1254,12 @@ impl App {
         if !self.collab_manager.is_connected() {
             return;
         }
+        // This is independent of the legacy eager surface below.  The
+        // broker owns the capability and asks the UI thread to materialise a
+        // bounded page; large apps therefore do not become a flattened RPC
+        // catalogue just because they are visible in shell search.
+        self.collab_manager
+            .publish_action_directory(crate::collaboration::local_app_id());
         let resources = self.collect_resources();
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
@@ -1314,6 +1355,562 @@ impl App {
             actions,
         });
         self.last_published_actions = Some(descriptors);
+    }
+
+    fn action_directory_revision(&mut self) -> String {
+        // Automerge heads are the authority generation for document-backed
+        // resources. Remote revisions never call legacy `resources()`: that
+        // hook predates paging and may allocate an unbounded contextual tree.
+        let heads = self
+            .state
+            .doc
+            .get_heads()
+            .iter()
+            .map(|head| format!("{head:?}"))
+            .collect::<Vec<_>>();
+        let root_revision = self
+            .root_widget
+            .action_directory_revision(&self.state.doc)
+            .unwrap_or_default();
+        let provider_generations = self
+            .root_widget
+            .search_providers()
+            .into_iter()
+            .filter_map(|provider| {
+                provider
+                    .action_directory_generation()
+                    .map(|generation| format!("{}:{generation}", provider.name()))
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "v3:{}:{}:{}",
+            heads.join(","),
+            root_revision,
+            provider_generations.join("\u{1e}")
+        )
+    }
+
+    fn exported_directory_action(
+        descriptor: &qos_actions::ActionDescriptor,
+    ) -> runtime_collab::ExportedAction {
+        runtime_collab::ExportedAction {
+            resource: descriptor.address.resource.clone(),
+            action: descriptor.address.action.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource_label: descriptor.resource_label.clone(),
+            action_label: descriptor.action_label.clone(),
+            description: descriptor.description.clone(),
+            operation_kind: descriptor.kind.as_str().to_string(),
+            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
+            input: match &descriptor.input {
+                qos_actions::InputSpec::None => runtime_collab::ExportedInput::None,
+                qos_actions::InputSpec::Text {
+                    prompt,
+                    placeholder,
+                    collects,
+                } => runtime_collab::ExportedInput::Text {
+                    prompt: prompt.clone(),
+                    placeholder: placeholder.clone(),
+                    wants_content: *collects == qos_actions::Collects::Content,
+                },
+            },
+        }
+    }
+
+    fn directory_resource_row(
+        &self,
+        resource: &qos_actions::Resource,
+        parent_resource: &str,
+        may_descend: bool,
+    ) -> Option<runtime_collab::ActionDirectoryRow> {
+        let descriptors = qos_actions::door::survey(std::slice::from_ref(resource));
+        let explicit = crate::widget::resolve_action_directory_visibility(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            resource.id.as_str(),
+        );
+        // A view operation is a safe derived disclosure policy: it does not
+        // mutate or trigger an external effect, and the broker still checks
+        // its action contract before forwarding this container label.
+        let visibility = descriptors.into_iter().find(|descriptor| {
+            explicit
+                .as_ref()
+                .is_some_and(|address| &descriptor.address == address)
+                || (explicit.is_none() && descriptor.kind == qos_actions::OperationKind::View)
+        })?;
+        Some(runtime_collab::ActionDirectoryRow {
+            parent_resource: parent_resource.to_owned(),
+            resource: resource.id.as_str().to_owned(),
+            resource_kind: resource.kind.clone(),
+            resource_label: resource.label.clone(),
+            action: None,
+            descriptor: None,
+            has_children: may_descend
+                && (!resource.children.is_empty() || !resource.actions.is_empty()),
+            visibility_action: Some(visibility.address.action),
+            visibility_contract_json: serde_json::to_string(&visibility.contract).ok()?,
+        })
+    }
+
+    fn directory_action_row(
+        resource: &qos_actions::Resource,
+        action_id: &str,
+    ) -> Option<runtime_collab::ActionDirectoryRow> {
+        let descriptor = qos_actions::door::survey(std::slice::from_ref(resource))
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == action_id)?;
+        let exported = Self::exported_directory_action(&descriptor);
+        Some(runtime_collab::ActionDirectoryRow {
+            parent_resource: resource.id.as_str().to_owned(),
+            resource: resource.id.as_str().to_owned(),
+            resource_kind: exported.resource_kind.clone(),
+            resource_label: exported.resource_label.clone(),
+            action: Some(action_id.to_owned()),
+            descriptor: Some(exported.clone()),
+            has_children: false,
+            visibility_action: Some(action_id.to_owned()),
+            visibility_contract_json: exported.contract_json,
+        })
+    }
+
+    fn action_directory_cursor_key(&mut self) -> String {
+        self.next_action_directory_cursor = self.next_action_directory_cursor.wrapping_add(1);
+        let sequence = self.next_action_directory_cursor;
+        let revision = self.action_directory_revision();
+        format!("qos-dir-{sequence}-{revision}")
+    }
+
+    fn action_directory_next_cursor(&mut self, state: ActionDirectoryCursor) -> Vec<u8> {
+        if self.action_directory_cursors.len() >= ACTION_DIRECTORY_MAX_CURSORS {
+            // Bound memory even when a remote peer starts many abandoned
+            // searches. Old cursors become stale rather than holding a tree.
+            self.action_directory_cursors.clear();
+        }
+        let key = self.action_directory_cursor_key();
+        self.action_directory_cursors.insert(key.clone(), state);
+        key.into_bytes()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "every directory arithmetic/index is guarded by the hard page budgets and loop bounds directly above it"
+    )]
+    fn action_directory_page(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> runtime_collab::ActionDirectoryPage {
+        let revision = self.action_directory_revision();
+        let requested_revision = query.revision;
+        if !requested_revision.is_empty() && requested_revision != revision {
+            return runtime_collab::ActionDirectoryPage {
+                revision,
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: true,
+                budget_exhausted: false,
+            };
+        }
+        let max_results = usize::try_from(query.max_results)
+            .unwrap_or(ACTION_DIRECTORY_MAX_RESULTS)
+            .clamp(1, ACTION_DIRECTORY_MAX_RESULTS);
+        let max_work = usize::try_from(query.max_work)
+            .unwrap_or(ACTION_DIRECTORY_MAX_WORK)
+            .clamp(1, ACTION_DIRECTORY_MAX_WORK);
+        let max_bytes = usize::try_from(query.max_bytes)
+            .unwrap_or(ACTION_DIRECTORY_MAX_BYTES)
+            .clamp(1, ACTION_DIRECTORY_MAX_BYTES);
+        let max_depth = query.max_depth.min(ACTION_DIRECTORY_MAX_DEPTH);
+        let cursor_key = if query.cursor.is_empty() {
+            None
+        } else {
+            match String::from_utf8(query.cursor) {
+                Ok(cursor) => Some(cursor),
+                Err(_) => {
+                    return runtime_collab::ActionDirectoryPage {
+                        revision,
+                        rows: Vec::new(),
+                        next_cursor: Vec::new(),
+                        exhausted: false,
+                        stale_cursor: true,
+                        budget_exhausted: false,
+                    };
+                }
+            }
+        };
+        let previous = cursor_key
+            .as_deref()
+            .and_then(|key| self.action_directory_cursors.remove(key));
+        if cursor_key.is_some() && previous.is_none() {
+            return runtime_collab::ActionDirectoryPage {
+                revision,
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: true,
+                budget_exhausted: false,
+            };
+        }
+        let state = previous.unwrap_or_else(|| ActionDirectoryCursor {
+            revision: revision.clone(),
+            needle: query.needle.clone(),
+            parent_resource: query.parent_resource.clone(),
+            provider_index: 0,
+            provider_cursor: None,
+            browse_offset: 0,
+            root_widget_index: 0,
+            root_provider_cursor: None,
+        });
+        if state.revision != revision
+            || state.needle != query.needle
+            || state.parent_resource != query.parent_resource
+        {
+            return runtime_collab::ActionDirectoryPage {
+                revision,
+                rows: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: false,
+                stale_cursor: true,
+                budget_exhausted: false,
+            };
+        }
+
+        let mut rows = Vec::new();
+        let mut estimated_bytes = 0usize;
+        let add = |row: runtime_collab::ActionDirectoryRow,
+                   rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
+                   bytes: &mut usize| {
+            let descriptor_bytes = row.descriptor.as_ref().map_or(0, |descriptor| {
+                let input_bytes = match &descriptor.input {
+                    runtime_collab::ExportedInput::None => 0,
+                    runtime_collab::ExportedInput::Text {
+                        prompt,
+                        placeholder,
+                        ..
+                    } => prompt.len() + placeholder.len() + 8,
+                };
+                descriptor.resource.len()
+                    + descriptor.action.len()
+                    + descriptor.resource_kind.len()
+                    + descriptor.resource_label.len()
+                    + descriptor.action_label.len()
+                    + descriptor.description.as_ref().map_or(0, String::len)
+                    + descriptor.params_json.len()
+                    + descriptor.contract_json.len()
+                    + input_bytes
+            });
+            *bytes += row.parent_resource.len()
+                + row.resource.len()
+                + row.resource_kind.len()
+                + row.resource_label.len()
+                + row.action.as_ref().map_or(0, String::len)
+                + row.visibility_action.as_ref().map_or(0, String::len)
+                + row.visibility_contract_json.len()
+                + descriptor_bytes
+                + 64;
+            rows.push(row);
+        };
+
+        if query.needle.is_empty() {
+            if query.parent_resource.is_empty() {
+                let mut widget_index = state.root_widget_index;
+                let mut provider_cursor = state.root_provider_cursor;
+                let mut inspected = 0usize;
+                let mut exhausted = false;
+                while rows.len() < max_results && inspected < max_work {
+                    let mut ordinal = 0usize;
+                    let Some(widget) = crate::widget::action_directory_widget_at(
+                        self.root_widget.as_ref(),
+                        widget_index,
+                        &mut ordinal,
+                    ) else {
+                        exhausted = true;
+                        break;
+                    };
+                    let Some(page) = widget.action_directory_resource_page(
+                        &self.state.doc,
+                        provider_cursor.as_deref().unwrap_or_default(),
+                        1,
+                    ) else {
+                        widget_index = widget_index.saturating_add(1);
+                        provider_cursor = None;
+                        inspected = inspected.saturating_add(1);
+                        continue;
+                    };
+                    if page.resources.len() > 1 || (!page.exhausted && page.next_cursor.is_empty())
+                    {
+                        // The declared page contract was violated. A hidden
+                        // tail is worse than no remote hierarchy at all.
+                        return runtime_collab::ActionDirectoryPage {
+                            revision,
+                            rows: Vec::new(),
+                            next_cursor: Vec::new(),
+                            exhausted: false,
+                            stale_cursor: false,
+                            budget_exhausted: true,
+                        };
+                    }
+                    let before_index = widget_index;
+                    let before_cursor = provider_cursor.clone();
+                    if let Some(resource) = page.resources.first() {
+                        if let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
+                        {
+                            add(row, &mut rows, &mut estimated_bytes);
+                            if estimated_bytes > max_bytes {
+                                rows.pop();
+                                break;
+                            }
+                        }
+                    }
+                    if page.exhausted {
+                        widget_index = widget_index.saturating_add(1);
+                        provider_cursor = None;
+                    } else {
+                        provider_cursor = Some(page.next_cursor);
+                    }
+                    inspected = inspected.saturating_add(1);
+                    if rows.len() >= max_results {
+                        break;
+                    }
+                    // An empty non-exhausted source page may not advance
+                    // indefinitely; its opaque cursor must still change.
+                    if rows.is_empty()
+                        && before_index == widget_index
+                        && before_cursor == provider_cursor
+                    {
+                        return runtime_collab::ActionDirectoryPage {
+                            revision,
+                            rows: Vec::new(),
+                            next_cursor: Vec::new(),
+                            exhausted: false,
+                            stale_cursor: false,
+                            budget_exhausted: true,
+                        };
+                    }
+                }
+                let next_cursor = (!exhausted).then(|| {
+                    self.action_directory_next_cursor(ActionDirectoryCursor {
+                        root_widget_index: widget_index,
+                        root_provider_cursor: provider_cursor,
+                        ..state
+                    })
+                });
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows,
+                    next_cursor: next_cursor.unwrap_or_default(),
+                    exhausted,
+                    stale_cursor: false,
+                    budget_exhausted: !exhausted,
+                };
+            }
+            let parent = crate::widget::resolve_widget_resource(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &query.parent_resource,
+            );
+            let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
+                resource
+                    .actions
+                    .iter()
+                    .map(|action| action.id.clone())
+                    .collect()
+            });
+            let direct = parent
+                .as_ref()
+                .map_or_else(Vec::new, |resource| resource.children.clone());
+            let mut offset = state.browse_offset;
+            let mut inspected = 0usize;
+            let total = parent_actions.len().saturating_add(direct.len());
+            while offset < total && rows.len() < max_results && inspected < max_work {
+                let row = if offset < parent_actions.len() {
+                    parent.as_ref().and_then(|resource| {
+                        Self::directory_action_row(resource, &parent_actions[offset])
+                    })
+                } else {
+                    self.directory_resource_row(
+                        &direct[offset - parent_actions.len()],
+                        &query.parent_resource,
+                        max_depth > 0,
+                    )
+                };
+                if let Some(row) = row {
+                    add(row, &mut rows, &mut estimated_bytes);
+                    if estimated_bytes > max_bytes {
+                        rows.pop();
+                        break;
+                    }
+                }
+                offset += 1;
+                inspected += 1;
+            }
+            let exhausted = offset >= total;
+            let next_cursor = (!exhausted).then(|| {
+                self.action_directory_next_cursor(ActionDirectoryCursor {
+                    browse_offset: offset,
+                    ..state
+                })
+            });
+            return runtime_collab::ActionDirectoryPage {
+                revision,
+                rows,
+                next_cursor: next_cursor.unwrap_or_default(),
+                exhausted,
+                stale_cursor: false,
+                budget_exhausted: !exhausted,
+            };
+        }
+
+        let providers = self
+            .root_widget
+            .search_providers()
+            .into_iter()
+            .filter(|provider| provider.action_directory_generation().is_some())
+            .collect::<Vec<_>>();
+        let mut provider_index = state.provider_index;
+        let mut provider_cursor = state.provider_cursor;
+        let mut work_left = max_work;
+        let mut byte_exhausted = false;
+        while provider_index < providers.len() && rows.len() < max_results && work_left > 0 {
+            if provider_cursor.as_ref().is_some_and(|cursor| {
+                !providers[provider_index].action_directory_cursor_is_current(cursor)
+            }) {
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows: Vec::new(),
+                    next_cursor: Vec::new(),
+                    exhausted: false,
+                    stale_cursor: true,
+                    budget_exhausted: false,
+                };
+            }
+            // Request one row at a time.  The provider's opaque cursor is
+            // after its returned page, so asking for a larger page and then
+            // stopping at the byte ceiling would silently skip the unfit tail.
+            // This preserves every canonical result while still bounding this
+            // request to `max_results` provider steps.
+            let room = 1;
+            let page = providers[provider_index].search_page(
+                &query.needle,
+                provider_cursor.as_ref(),
+                work_left,
+                room,
+            );
+            work_left = work_left.saturating_sub(page.inspected);
+            for hit in page.results {
+                let Some(address) = hit.action_address() else {
+                    continue;
+                };
+                let resource = providers[provider_index]
+                    .resolve_action_resource(&address)
+                    .or_else(|| {
+                        crate::widget::resolve_widget_resource(
+                            self.root_widget.as_ref(),
+                            &self.state.doc,
+                            &address.resource,
+                        )
+                    });
+                let Some(resource) = resource else { continue };
+                let Some(row) = Self::directory_action_row(&resource, &address.action) else {
+                    continue;
+                };
+                let before = estimated_bytes;
+                add(row, &mut rows, &mut estimated_bytes);
+                if estimated_bytes > max_bytes {
+                    rows.pop();
+                    estimated_bytes = before;
+                    byte_exhausted = true;
+                    break;
+                }
+            }
+            if byte_exhausted {
+                break;
+            }
+            if let Some(next) = page.next {
+                provider_cursor = Some(next);
+                if rows.len() < max_results && estimated_bytes < max_bytes && work_left > 0 {
+                    continue;
+                }
+                break;
+            }
+            provider_index += 1;
+            provider_cursor = None;
+        }
+        let exhausted = !byte_exhausted && provider_index >= providers.len();
+        // Keep the source cursor *before* an oversized row when earlier rows
+        // fitted. A caller that raises maxBytes resumes exactly at that row;
+        // dropping it would restart and duplicate the fitted prefix.
+        let next_cursor = (!exhausted && (!byte_exhausted || !rows.is_empty())).then(|| {
+            self.action_directory_next_cursor(ActionDirectoryCursor {
+                provider_index,
+                provider_cursor,
+                ..state
+            })
+        });
+        runtime_collab::ActionDirectoryPage {
+            revision,
+            rows,
+            next_cursor: next_cursor.unwrap_or_default(),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
+    }
+
+    fn resolve_action_directory(
+        &mut self,
+        revision: &str,
+        resource_id: &str,
+        action_id: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        if revision != self.action_directory_revision() {
+            return runtime_collab::ActionDirectoryResolution::StaleRevision;
+        }
+        let resource = crate::widget::resolve_widget_resource(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            resource_id,
+        )
+        .or_else(|| {
+            self.root_widget
+                .search_providers()
+                .into_iter()
+                .filter(|provider| provider.action_directory_generation().is_some())
+                .find_map(|provider| {
+                    provider.resolve_action_resource(&qos_actions::ActionAddress::new(
+                        resource_id,
+                        action_id,
+                    ))
+                })
+        });
+        resource
+            .as_ref()
+            .and_then(|resource| Self::directory_action_row(resource, action_id))
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
+                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
+            })
+    }
+
+    fn pump_action_directory_requests(&mut self) {
+        for request in self.collab_manager.take_action_directory_requests() {
+            match request {
+                ActionDirectoryRequest::Query { query, reply } => {
+                    let _ = reply.send(self.action_directory_page(query));
+                }
+                ActionDirectoryRequest::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                } => {
+                    let _ =
+                        reply.send(self.resolve_action_directory(&revision, &resource, &action));
+                }
+            }
+        }
     }
 
     /// Publish only a changed, app-declared resume projection. This remains
@@ -2930,6 +3527,11 @@ impl App {
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
+        // Replies to broker pull-directory callbacks must run before regular
+        // inbound events. This is the sole place capability requests acquire
+        // widget/document authority, and it always runs on the App owner
+        // thread.
+        self.pump_action_directory_requests();
         for request in self.root_widget.take_collab_requests() {
             self.collab_manager.send(request);
         }
@@ -9560,6 +10162,101 @@ mod semantic_tree_app_tests {
     }
     const COUNTER_TYPE: &str = "test.counter";
 
+    #[derive(Clone)]
+    struct LargeDirectoryProvider {
+        catalog: crate::search::SearchCatalog,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        largest_budget: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl LargeDirectoryProvider {
+        fn new(records: usize) -> Self {
+            let catalog = crate::search::SearchCatalog::new("Large directory");
+            for index in 0..records {
+                let resource = format!("test.item:{index}");
+                let address = qos_actions::ActionAddress::new(resource.clone(), "open");
+                catalog
+                    .upsert(
+                        resource,
+                        format!("record {index} needle-{index}"),
+                        crate::search::SearchResult::for_action(
+                            "Large directory",
+                            index.to_string(),
+                            address,
+                        ),
+                    )
+                    .expect("canonical synthetic directory row");
+            }
+            Self {
+                catalog,
+                calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                largest_budget: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn resource_for(address: &qos_actions::ActionAddress) -> Option<Resource> {
+            address
+                .resource
+                .strip_prefix("test.item:")?
+                .parse::<usize>()
+                .ok()?;
+            Some(
+                Resource::new(address.resource.clone(), "test.item", "Synthetic record")
+                    .with_action(
+                        ActionSpec::operation(
+                            "open",
+                            "Open",
+                            OperationKind::View,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .ok()?
+                        .with_contract(qos_actions::ActionContract::view()),
+                    ),
+            )
+        }
+    }
+
+    impl crate::search::SearchProvider for LargeDirectoryProvider {
+        fn name(&self) -> &str {
+            "Large directory"
+        }
+
+        fn action_directory_generation(&self) -> Option<u64> {
+            Some(self.catalog.stats().generation)
+        }
+
+        fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
+            self.catalog.cursor_is_current(cursor)
+        }
+
+        fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
+            self.catalog.search(query)
+        }
+
+        fn search_page(
+            &self,
+            query: &str,
+            cursor: Option<&crate::search::SearchCursor>,
+            work_budget: usize,
+            result_limit: usize,
+        ) -> crate::search::SearchPage {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.largest_budget
+                .fetch_max(work_budget, std::sync::atomic::Ordering::Relaxed);
+            self.catalog
+                .query_page(query, cursor, work_budget, result_limit)
+        }
+
+        fn resolve_action_resource(
+            &self,
+            address: &qos_actions::ActionAddress,
+        ) -> Option<Resource> {
+            Self::resource_for(address)
+        }
+    }
+
     impl QAction for CounterAction {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
             match self {
@@ -9590,6 +10287,8 @@ mod semantic_tree_app_tests {
     struct CounterCard {
         button: Button,
         destructive: bool,
+        directory_provider: Option<LargeDirectoryProvider>,
+        directory_roots: usize,
     }
 
     fn counter_resource(destructive: bool) -> Resource {
@@ -9659,7 +10358,21 @@ mod semantic_tree_app_tests {
             Self {
                 button: Button::new("bump", "Bump", None).on_action(binding),
                 destructive,
+                directory_provider: None,
+                directory_roots: 1,
             }
+        }
+
+        fn with_directory_provider(provider: LargeDirectoryProvider) -> Self {
+            let mut card = Self::new();
+            card.directory_provider = Some(provider);
+            card
+        }
+
+        fn with_directory_roots(count: usize) -> Self {
+            let mut card = Self::new();
+            card.directory_roots = count;
+            card
         }
     }
     impl Widget for CounterCard {
@@ -9716,6 +10429,79 @@ mod semantic_tree_app_tests {
         }
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
             vec![counter_resource(self.destructive)]
+        }
+        fn action_directory_resource_page(
+            &self,
+            _doc: &automerge::AutoCommit,
+            cursor: &[u8],
+            max_results: usize,
+        ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+            let offset = std::str::from_utf8(cursor)
+                .ok()
+                .and_then(|cursor| cursor.parse::<usize>().ok())
+                .unwrap_or(0);
+            let end = offset.saturating_add(max_results).min(self.directory_roots);
+            let resources = (offset..end)
+                .map(|index| {
+                    if index == 0 {
+                        counter_resource(self.destructive)
+                    } else {
+                        Resource::new(
+                            format!("test.counter:{index}"),
+                            "test.counter",
+                            format!("Counter {index}"),
+                        )
+                        .with_action(
+                            ActionSpec::operation(
+                                "inspect",
+                                "Inspect counter",
+                                OperationKind::View,
+                                COUNTER_TYPE,
+                                &CounterAction::Bump,
+                            )
+                            .unwrap()
+                            .with_contract(qos_actions::ActionContract::view()),
+                        )
+                    }
+                })
+                .collect();
+            Some(crate::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: end.to_string().into_bytes(),
+                exhausted: end >= self.directory_roots,
+            })
+        }
+        fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+            if id == "test.counter" {
+                return Some(counter_resource(self.destructive));
+            }
+            id.strip_prefix("test.counter:")
+                .and_then(|suffix| suffix.parse::<usize>().ok())
+                .filter(|index| *index < self.directory_roots)
+                .map(|index| {
+                    Resource::new(
+                        format!("test.counter:{index}"),
+                        "test.counter",
+                        format!("Counter {index}"),
+                    )
+                    .with_action(
+                        ActionSpec::operation(
+                            "inspect",
+                            "Inspect counter",
+                            OperationKind::View,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .unwrap()
+                        .with_contract(qos_actions::ActionContract::view()),
+                    )
+                })
+        }
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            self.directory_provider
+                .clone()
+                .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+                .unwrap_or_default()
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[COUNTER_TYPE]
@@ -10311,5 +11097,168 @@ mod semantic_tree_app_tests {
                 .all(|action| action.id != "activate")
         }));
         assert_eq!(presses.get(), 0);
+    }
+
+    fn directory_query(
+        revision: impl Into<String>,
+        parent_resource: impl Into<String>,
+        max_results: u32,
+        max_bytes: u32,
+        max_work: u32,
+    ) -> runtime_collab::ActionDirectoryQuery {
+        runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: revision.into(),
+            cursor: Vec::new(),
+            needle: String::new(),
+            parent_resource: parent_resource.into(),
+            max_results,
+            max_bytes,
+            max_work,
+            max_depth: 8,
+        }
+    }
+
+    #[test]
+    fn directory_pages_parent_actions_and_refuses_stale_resolution() {
+        let mut app = app();
+        let root = app.action_directory_page(directory_query("", "", 8, 8_192, 8));
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(root.rows[0].resource, "test.counter");
+        assert!(root.rows[0].action.is_none());
+        assert!(root.rows[0].has_children);
+
+        let actions = app.action_directory_page(directory_query(
+            root.revision.clone(),
+            "test.counter",
+            8,
+            8_192,
+            8,
+        ));
+        assert!(actions.rows.len() >= 5, "parent exposes its action rows");
+        assert!(actions.rows.iter().all(|row| row.action.is_some()));
+        assert!(matches!(
+            app.resolve_action_directory("stale", "test.counter", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
+
+    #[test]
+    fn directory_hard_caps_never_materialize_an_oversized_row() {
+        let mut app = app();
+        let page = app.action_directory_page(directory_query("", "", 1, 1, 1));
+        assert!(
+            page.rows.is_empty(),
+            "one byte cannot contain a resource row"
+        );
+        assert!(page.budget_exhausted);
+        assert!(!page.exhausted);
+    }
+
+    #[test]
+    fn directory_pages_the_129th_widget_root_without_hiding_it() {
+        let mut app = App::new(
+            State::new(),
+            Box::new(CounterCard::with_directory_roots(
+                ACTION_DIRECTORY_MAX_RESULTS + 1,
+            )),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        let first = app.action_directory_page(directory_query(
+            "",
+            "",
+            u32::try_from(ACTION_DIRECTORY_MAX_RESULTS).unwrap_or(u32::MAX),
+            64 * 1024,
+            u32::try_from(ACTION_DIRECTORY_MAX_WORK).unwrap_or(u32::MAX),
+        ));
+        assert_eq!(first.rows.len(), ACTION_DIRECTORY_MAX_RESULTS);
+        assert!(!first.exhausted);
+        let tail = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: first.revision.clone(),
+            cursor: first.next_cursor,
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 8,
+            max_bytes: 8_192,
+            max_work: 32,
+            max_depth: 8,
+        });
+        assert_eq!(tail.rows.len(), 1);
+        assert_eq!(tail.rows[0].resource, "test.counter:128");
+        assert!(tail.exhausted);
+    }
+
+    #[test]
+    fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
+        let provider = LargeDirectoryProvider::new(100_000);
+        let calls = std::sync::Arc::clone(&provider.calls);
+        let largest_budget = std::sync::Arc::clone(&provider.largest_budget);
+        let mut app = App::new(
+            State::new(),
+            Box::new(CounterCard::with_directory_provider(provider)),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        let page = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: String::new(),
+            cursor: Vec::new(),
+            needle: "needle-99999".into(),
+            parent_resource: String::new(),
+            max_results: 8,
+            max_bytes: 8_192,
+            max_work: 8,
+            max_depth: 8,
+        });
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].resource, "test.item:99999");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            largest_budget.load(std::sync::atomic::Ordering::Relaxed) <= 8,
+            "the adapter passed the caller's bounded work budget to the retained index"
+        );
+    }
+
+    #[test]
+    fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
+        let mut app = app();
+        let revision = app.action_directory_revision();
+        let first = app.action_directory_next_cursor(ActionDirectoryCursor {
+            revision: revision.clone(),
+            needle: String::new(),
+            parent_resource: String::new(),
+            provider_index: 0,
+            provider_cursor: None,
+            browse_offset: 0,
+            root_widget_index: 0,
+            root_provider_cursor: None,
+        });
+        for offset in 1..=ACTION_DIRECTORY_MAX_CURSORS {
+            let _ = app.action_directory_next_cursor(ActionDirectoryCursor {
+                revision: revision.clone(),
+                needle: String::new(),
+                parent_resource: String::new(),
+                provider_index: 0,
+                provider_cursor: None,
+                browse_offset: offset,
+                root_widget_index: 0,
+                root_provider_cursor: None,
+            });
+        }
+        assert!(app.action_directory_cursors.len() <= ACTION_DIRECTORY_MAX_CURSORS);
+        let page = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision,
+            cursor: first,
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 1,
+            max_bytes: 1_024,
+            max_work: 1,
+            max_depth: 1,
+        });
+        assert!(page.stale_cursor);
     }
 }
