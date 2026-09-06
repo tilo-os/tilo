@@ -148,6 +148,20 @@ pub(crate) fn step_active_window(
     Some((strip.id, group, tab))
 }
 
+/// Conventional switcher traversal over the same flat window sequence as
+/// [`step_active_window`], wrapping only when the requested direction reaches
+/// an edge. Spatial Super+Arrow navigation continues to use the clamped form.
+pub(crate) fn cycle_active_window(
+    tree: &WorkspaceTree,
+    direction: i32,
+) -> Option<(StripId, GroupId, u64)> {
+    if direction == 0 {
+        return None;
+    }
+    step_active_window(tree, direction)
+        .or_else(|| step_active_window(tree, if direction > 0 { i32::MIN } else { i32::MAX }))
+}
+
 impl ClientInput {
     /// Record a freshly-created foreign toplevel — called from `XdgShellHandler::new_toplevel`; the chrome-side tab is spliced in by [`sync_foreign_tabs`] next tick.
     pub fn register_toplevel(
@@ -487,7 +501,7 @@ impl From<&Modifiers> for ChordMods {
 }
 
 /// The shell's chord table, expressed once: every `Super` chord, `Ctrl+K`/
-/// `Alt+Space`, `Alt+Tab`, `Ctrl+Tab`, and `Escape` *only while an overlay is
+/// `Alt+Space`, `Alt+Tab`, `Ctrl+Tab`, F1, and `Escape` *only while an overlay is
 /// open* — an unconditional Escape grab would break every modal editor
 /// running as a client. Ctrl+Arrow remains an application chord; desktop
 /// navigation uses Super+Arrow. Print Screen is always compositor-owned.
@@ -505,6 +519,11 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         ChordKey::ArrowUp | ChordKey::ArrowDown => false,
         ChordKey::Escape => overlay_open,
         ChordKey::Char(c) => mods.ctrl && c == 'k',
+        // The shell visibly advertises F1 as the hardware-neutral route to
+        // its desktop guide. Reserving it here is essential: otherwise a
+        // focused client consumes the event before the guide dispatcher can
+        // see it. Other function keys remain application-owned.
+        ChordKey::Function(1) => true,
         ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
     }
 }
@@ -849,17 +868,21 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         return true;
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
+    let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
         || chrome.overlays.ws_settings
         || chrome.overlays.collaborators
         || chrome.overlays.room_activity
+        || chrome.overlays.projection
+        || chrome.overlays.shortcut_help
         // The peer-sync card, on the same two fields the overlay host
         // paints it from — its handler runs before every other overlay,
         // but this predicate decides whether an event reaches it. Without
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
         || peer_sync_visible
+        || inner_surface_captures
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
@@ -1731,19 +1754,43 @@ fn route_keyboard_input(
     };
     // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
     let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-    let shell_owns = captured || is_shell_chord(event, &modifiers, overlay_open);
-    let forward = if pressed {
-        let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
-        if forward {
-            state.client_input.forwarded_keys.insert(code);
-        }
-        forward
-    } else {
-        // A release mirrors its press exactly — see `ClientInput::forwarded_keys`.
-        state.client_input.forwarded_keys.remove(&code)
-    };
+    // Static safety chords and user-edited shortcuts share the same
+    // client-first boundary. Without the host-side check, a valid binding
+    // such as Alt+G is shown and saved by Settings but disappears whenever a
+    // real app holds focus because that app consumes the press first.
+    let configured_shortcut = pressed
+        && fb
+            .host()
+            .configured_shortcut_matches(&key.logical_key, modifiers);
+    let shell_owns =
+        captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+    let forward = track_forwarded_key(
+        &mut state.client_input.forwarded_keys,
+        code,
+        pressed,
+        !shell_owns && state.client_input.keyboard_focus.is_some(),
+    );
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
     state.deliver_client_key(code, pressed, forward)
+}
+
+/// Record exactly which key presses reached a client and mirror that decision
+/// on release. A shell-owned press must never be followed by an unmatched
+/// client release, even when its ownership came from a live custom binding.
+fn track_forwarded_key(
+    forwarded: &mut std::collections::HashSet<u32>,
+    code: u32,
+    pressed: bool,
+    press_can_forward: bool,
+) -> bool {
+    if pressed {
+        if press_can_forward {
+            forwarded.insert(code);
+        }
+        press_can_forward
+    } else {
+        forwarded.remove(&code)
+    }
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.
@@ -2124,6 +2171,26 @@ mod tests {
         // Switching the active group onto the foreign one moves focus.
         tree.set_active_group(strip, foreign_group);
         assert_eq!(active_foreign_surface(&tree), Some(4242));
+    }
+
+    #[test]
+    fn conventional_window_cycle_wraps_while_spatial_step_clamps() {
+        let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
+        let first_group = tree.workspaces[0].strips[0].window_groups[0].id;
+        assert_eq!(
+            cycle_active_window(&tree, -1).map(|(_, group, _)| group),
+            Some(foreign_group),
+            "Alt+Shift+Tab from the first window wraps to the last"
+        );
+        assert_eq!(step_active_window(&tree, -1), None);
+
+        tree.set_active_group(strip, foreign_group);
+        assert_eq!(
+            cycle_active_window(&tree, 1).map(|(_, group, _)| group),
+            Some(first_group),
+            "Alt+Tab from the last window wraps to the first"
+        );
+        assert_eq!(step_active_window(&tree, 1), None);
     }
 
     #[test]
@@ -2586,6 +2653,46 @@ mod tests {
                  and the card can never be dismissed"
             );
         }
+    }
+
+    /// These surfaces are modal in the rendered shell, so the compositor
+    /// boundary—not merely their widget handler—must take the seat away from
+    /// the app underneath. Direct host tests cannot catch this regression:
+    /// they bypass the client-first router entirely.
+    #[test]
+    fn desktop_modals_take_input_before_a_focused_client_can_consume_it() {
+        for overlay in ["shortcut_help", "projection"] {
+            let mut fb = FrameBuilder::new((1600, 900));
+            fb.with_chrome(|chrome| match overlay {
+                "shortcut_help" => chrome.overlays.shortcut_help = true,
+                "projection" => chrome.overlays.projection = true,
+                _ => unreachable!(),
+            });
+            assert!(
+                chrome_captures_input(&fb),
+                "{overlay} is painted as modal and must revoke client focus"
+            );
+        }
+
+        let mut capture = FrameBuilder::new((1600, 900));
+        assert!(
+            capture
+                .host_mut()
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        assert!(
+            chrome_captures_input(&capture),
+            "Print Screen's chooser must receive its follow-up keys and clicks"
+        );
+
+        let mut markup = FrameBuilder::new((1600, 900));
+        markup
+            .host_mut()
+            .open_screenshot_markup(std::sync::Arc::from([0_u8; 4]), 1, 1, None);
+        assert!(
+            chrome_captures_input(&markup),
+            "screenshot editing must not leak input into the captured app"
+        );
     }
 
     /// The portal's file chooser is modal, so it must hold input while it is
@@ -3178,9 +3285,15 @@ mod tests {
         );
     }
 
-    /// Function keys carry no chord on their own — the compositor hands `F2` to a focused client; it's the `Ctrl+Alt` combination the kernel takes.
+    /// F1 is the advertised desktop-guide key and must beat a focused client;
+    /// every other bare function key remains application-owned.
     #[test]
-    fn function_keys_are_not_shell_chords_on_their_own() {
+    fn only_f1_is_a_shell_chord_on_its_own() {
+        assert!(shell_owns_chord(
+            ChordKey::Function(1),
+            ChordMods::default(),
+            false
+        ));
         assert!(!shell_owns_chord(
             ChordKey::Function(2),
             ChordMods::default(),
@@ -3194,6 +3307,17 @@ mod tests {
             },
             false
         ));
+    }
+
+    #[test]
+    fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
+        let mut forwarded = std::collections::HashSet::new();
+        assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
+        assert!(!track_forwarded_key(&mut forwarded, 34, false, true));
+
+        assert!(track_forwarded_key(&mut forwarded, 35, true, true));
+        assert!(track_forwarded_key(&mut forwarded, 35, false, false));
+        assert!(forwarded.is_empty());
     }
 
     #[test]

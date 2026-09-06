@@ -6607,9 +6607,26 @@ mod tests {
     fn super_l_press_is_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
         assert!(is_lock_chord(&ev, mods_with_super(true)));
-        // Upper-case 'L' (Shift+Super+L) also counts.
+        // A layout/caps state may report an upper-case logical key without an
+        // extra Shift modifier; key comparison remains case-insensitive.
         let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
         assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
+    }
+
+    #[test]
+    fn other_super_chords_and_extra_modifiers_do_not_lock() {
+        let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
+        assert!(
+            !is_lock_chord(&search, mods_with_super(true)),
+            "Super+K must reach Search instead of locking the session"
+        );
+
+        let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+        assert!(
+            !is_lock_chord(&lock, shifted),
+            "an extra modifier must not broaden Super+L into a lock chord"
+        );
     }
 
     /// Without Super held, plain `l` is not the lock chord (it types).
