@@ -81,6 +81,7 @@ enum SeedMode {
 
 pub struct AuthenticatorApp {
     vault: Vault,
+    search_provider: crate::search_provider::TotpSearchProvider,
     search: TextInput,
     list: AccountList,
     add_panel: AddAccountPanel,
@@ -156,6 +157,7 @@ impl AuthenticatorApp {
     fn with_mode(seed_mode: SeedMode) -> Self {
         Self {
             vault: Vault::new(),
+            search_provider: crate::search_provider::TotpSearchProvider::new(&Vault::new()),
             search: TextInput::local().with_kind(ui::widget::TextInputKind::Search),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
@@ -195,6 +197,7 @@ impl AuthenticatorApp {
         };
         vault.renumber();
         self.selected = vault.ordered().first().map(|a| a.id);
+        self.search_provider.update(&self.vault, &vault);
         self.vault = vault;
         self.doc_dirty = true;
         self.list_dirty = true;
@@ -233,7 +236,11 @@ impl AuthenticatorApp {
         if projected == self.vault.ordered() {
             return; // nothing changed
         }
-        self.vault.accounts = projected;
+        let next = Vault {
+            accounts: projected,
+        };
+        self.search_provider.update(&self.vault, &next);
+        self.vault = next;
         self.list_dirty = true;
         if self.seed_mode == SeedMode::Live {
             storage::save(&self.vault);
@@ -998,8 +1005,23 @@ impl Widget for AuthenticatorApp {
     /// to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        crate::actions::provide_contextual_resources(&self.vault.accounts)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        if id == "totp.vault" {
+            return crate::actions::provide_contextual_resources(&self.vault.accounts).pop();
+        }
+        let raw_id = id.strip_prefix("totp.account:")?;
+        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
+        let ordered = self.vault.ordered();
+        let index = ordered
+            .iter()
+            .position(|account| account.id == account_id)?;
+        ordered
+            .get(index)
+            .map(|account| crate::actions::provide_account_resource(account, index, ordered.len()))
     }
 
     fn invoke_resource_operation(
@@ -1048,14 +1070,13 @@ impl Widget for AuthenticatorApp {
         self.actions.take_committed()
     }
 
-    /// Fold the vault into the unified Ctrl+K palette: a snapshot
-    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider) makes
-    /// every account findable there by issuer or account name, alongside the
-    /// actions the app exports.
+    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
+    /// the retained
+    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
+    /// makes every account findable there by issuer or account name alongside
+    /// the actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::TotpSearchProvider::new(
-            &self.vault,
-        ))]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn name(&self) -> &'static str {
