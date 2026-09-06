@@ -19,7 +19,7 @@ use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
     draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    permissions_pane_layout,
+    ownership_action_rect, ownership_transfer_resource, permissions_pane_layout,
 };
 
 /// Duration shared by the workspace-settings lens and the global-search
@@ -47,6 +47,8 @@ pub enum EventOutcome {
     ComposerSubmit,
     MemberRole(UserId),
     RemoveMember(UserId),
+    /// Opens the canonical, resource-addressed ownership actions.
+    ManageOwnership,
     /// Starts a named, explicit agent setup in the command palette.
     AddAgent,
     /// Opens Privacy & Security with this agent preselected as the subject.
@@ -109,6 +111,7 @@ pub struct WorkspaceSettingsOverlay {
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
+    ownership_action_rect: Rect,
     agent_add_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
     member_sheet: Option<MemberSheet>,
@@ -126,6 +129,7 @@ impl Default for WorkspaceSettingsOverlay {
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
+            ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
             member_sheet: None,
@@ -259,6 +263,13 @@ impl WorkspaceSettingsOverlay {
         &self.member_control_rects
     }
 
+    /// Bounds of the resource-addressed ownership entry point painted in the
+    /// Members pane. The shell accessibility bridge uses the exact same rect
+    /// for assistive-technology activation as pointer input.
+    pub fn ownership_action_rect(&self) -> Rect {
+        self.ownership_action_rect
+    }
+
     /// Button bounds from the currently focused role / confirmation sheet.
     /// Kept primarily for end-to-end pointer coverage; the bounds are still
     /// produced by the same draw pass as the visible controls.
@@ -348,6 +359,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.member_sheet_option_rects.clear();
@@ -508,6 +520,9 @@ impl WorkspaceSettingsOverlay {
             if remove.area() > 0.0 && remove.contains(point) {
                 return EventOutcome::RemoveMember(user.clone());
             }
+        }
+        if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
+            return EventOutcome::ManageOwnership;
         }
         if matches!(active_tab, WsTab::Agents)
             && self.agent_add_rect.area() > 0.0
@@ -1234,6 +1249,7 @@ impl WorkspaceSettingsOverlay {
                 self.revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
+                self.ownership_action_rect = Rect::ZERO;
                 self.agent_add_rect = Rect::ZERO;
                 self.agent_control_rects.clear();
                 self.default_app_rects.clear();
@@ -1261,11 +1277,16 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = is_active_workspace_owner(state);
         if let Some(ws) = tree.active_workspace() {
+            let actor = state.active_local_user();
+            if !ownership_transfer_resource(ws, &actor).actions.is_empty() {
+                self.ownership_action_rect = ownership_action_rect(body_rect);
+            }
             for row in members_pane_rows(ws, body_rect) {
                 self.member_control_rects
                     .push((row.user.clone(), row.role_rect, row.remove_rect));
@@ -1303,6 +1324,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.ownership_action_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
@@ -1352,6 +1374,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = tree.active_workspace() {
             let layout = permissions_pane_layout(ws, body_rect);
@@ -1398,6 +1421,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
@@ -1855,6 +1879,17 @@ mod tests {
         assert_eq!(
             overlay.hit_test(revoke.center(), WsTab::Agents),
             EventOutcome::RemoveAgent("scribe".into()),
+        );
+    }
+
+    #[test]
+    fn ownership_entry_point_is_a_typed_actionable_control() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let action = Rect::new(900.0, 220.0, 1_020.0, 258.0);
+        overlay.ownership_action_rect = action;
+        assert_eq!(
+            overlay.hit_test(action.center(), WsTab::Members),
+            EventOutcome::ManageOwnership
         );
     }
 

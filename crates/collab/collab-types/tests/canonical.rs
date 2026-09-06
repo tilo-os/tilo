@@ -248,11 +248,6 @@ fn round_trip_all_channel_event_variants() {
             signed_by: pk,
             signature: fake_sig(0x03),
         },
-        ChannelEvent::OwnershipTransfer {
-            new_owner: fake_pk(8),
-            signed_by: pk,
-            signature: fake_sig(0x04),
-        },
         ChannelEvent::Rename {
             new_name: "renamed".into(),
             signed_by: pk,
