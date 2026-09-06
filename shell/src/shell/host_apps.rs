@@ -40,6 +40,36 @@ pub struct HostApp {
     pub window_identities: Vec<String>,
 }
 
+/// A palette launch held until the compositor can mint its external
+/// `xdg_activation_v1` token on the compositor thread.
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedLaunch {
+    pub desktop_id: String,
+    pub display_name: String,
+    pub placement: crate::compositor::tab_binding::Placement,
+    pub portal_workspace_id: Option<String>,
+}
+
+fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
+    static QUEUED: OnceLock<std::sync::Mutex<Vec<QueuedLaunch>>> = OnceLock::new();
+    QUEUED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+pub(crate) fn queue_launch(request: QueuedLaunch) {
+    queued_launches()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(request);
+}
+
+pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
+    std::mem::take(
+        &mut *queued_launches()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct X11Session {
     pub display: String,
@@ -139,6 +169,7 @@ pub(crate) fn build_launch_command(
     document: Option<&Path>,
     x11: Option<&X11Session>,
     portal_workspace_id: Option<String>,
+    activation_token: Option<&str>,
 ) -> launcher::LaunchCommand {
     let mut args = vec![
         "run-host".to_string(),
@@ -157,13 +188,19 @@ pub(crate) fn build_launch_command(
         args.push("--x11-authority".to_string());
         args.push(x11.authority.display().to_string());
     }
+    let mut env = vec![(
+        "XDG_RUNTIME_DIR".to_string(),
+        launcher::runtime_dir().display().to_string(),
+    )];
+    if let Some(token) = activation_token.filter(|token| !token.is_empty()) {
+        // The launcher is an intermediary. Keep this out of argv/process
+        // listings; it converts it into the standard child-facing variable.
+        env.push(("QOS_HOST_ACTIVATION_TOKEN".to_string(), token.to_string()));
+    }
     launcher::LaunchCommand {
         program: launcher_bin.to_path_buf(),
         args,
-        env: vec![(
-            "XDG_RUNTIME_DIR".to_string(),
-            launcher::runtime_dir().display().to_string(),
-        )],
+        env,
         service_identity: None,
         portal_workspace_id,
         managed_agent_id: None,
@@ -184,7 +221,7 @@ pub fn launch(
     desktop_id: &str,
     portal_workspace_id: Option<String>,
 ) -> Result<HostApp, LaunchError> {
-    launch_with_document(desktop_id, None, portal_workspace_id)
+    launch_with_document_and_activation(desktop_id, None, portal_workspace_id, None)
 }
 
 /// Unlike a qOS launch there's no grant to make alongside it — the app
@@ -200,11 +237,45 @@ pub fn launch_with_document(
     document: Option<&Path>,
     portal_workspace_id: Option<String>,
 ) -> Result<HostApp, LaunchError> {
-    let app = find(desktop_id).ok_or_else(|| LaunchError::HostAppNotFound {
-        desktop_id: desktop_id.to_string(),
-    })?;
-    let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
-    let launcher_bin = launcher::resolve_launcher_bin()?;
+    launch_with_document_and_activation(desktop_id, document, portal_workspace_id, None)
+}
+
+/// Host launch with a compositor-minted `xdg_activation_v1` token. The token
+/// travels only as the standard desktop environment variable and grants no
+/// qOS sandbox or service authority.
+pub fn launch_with_document_and_activation(
+    desktop_id: &str,
+    document: Option<&Path>,
+    portal_workspace_id: Option<String>,
+    activation_token: Option<&str>,
+) -> Result<HostApp, LaunchError> {
+    // Placement is recorded before this function is called, while the user
+    // action's layout is still current.  A refusal before the worker starts
+    // must retire that one-shot note or a later independently-opened window
+    // could inherit this dead launch's destination.
+    let app = match find(desktop_id) {
+        Some(app) => app,
+        None => {
+            launcher::clear_pending_placement(desktop_id);
+            return Err(LaunchError::HostAppNotFound {
+                desktop_id: desktop_id.to_string(),
+            });
+        }
+    };
+    let socket = match launcher::wayland_socket() {
+        Some(socket) => socket,
+        None => {
+            launcher::clear_pending_placement(&app.desktop_id);
+            return Err(LaunchError::NoDisplay);
+        }
+    };
+    let launcher_bin = match launcher::resolve_launcher_bin() {
+        Ok(launcher_bin) => launcher_bin,
+        Err(error) => {
+            launcher::clear_pending_placement(&app.desktop_id);
+            return Err(error);
+        }
+    };
     let x11 = x11_session();
     let command = build_launch_command(
         &app,
@@ -213,6 +284,7 @@ pub fn launch_with_document(
         document,
         x11.as_ref(),
         portal_workspace_id,
+        activation_token,
     );
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
@@ -281,6 +353,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(cmd.program, PathBuf::from("/usr/libexec/qos-launcher"));
         assert_eq!(
@@ -317,6 +390,7 @@ mod tests {
             Some(Path::new("/home/u/notes.txt")),
             None,
             None,
+            None,
         );
         assert_eq!(cmd.args[5], "--open");
         assert_eq!(cmd.args[6], "/home/u/notes.txt");
@@ -336,6 +410,7 @@ mod tests {
             None,
             Some(&x11),
             Some("room-7".into()),
+            None,
         );
         assert!(
             cmd.args
@@ -412,5 +487,25 @@ mod tests {
         };
         let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
         assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_refused_host_launch_cannot_leave_a_stale_placement() {
+        const MISSING: &str = "org.qos.test.definitely-not-a-desktop-entry";
+        launcher::clear_pending_placements();
+        launcher::set_pending_placement(
+            MISSING,
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+
+        assert!(matches!(
+            launch(MISSING, None),
+            Err(LaunchError::HostAppNotFound { .. })
+        ));
+        assert!(
+            launcher::placement_for_toplevel(MISSING, 0xC105ED).is_none(),
+            "a later unrelated window must not inherit a launch that was refused"
+        );
     }
 }

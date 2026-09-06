@@ -118,7 +118,11 @@ impl PresentPipe {
                 let _done = FinishedOnDrop(thread_finished);
                 for msg in rx {
                     match msg {
-                        PresentMsg::Frame { frame, output, serial } => {
+                        PresentMsg::Frame {
+                            frame,
+                            output,
+                            serial,
+                        } => {
                             presenter.present_frame(&frame, output);
                             thread_presented.store(serial, Ordering::Release);
                             // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.

@@ -91,6 +91,8 @@ mod headless_examples_smoke;
 mod hevc_hardware_encode;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "keyboard_focus_wire.rs"]
+mod keyboard_focus_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "lock_screen_visual.rs"]

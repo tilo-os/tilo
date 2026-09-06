@@ -514,6 +514,19 @@ fn walk_json(value: &serde_json::Value, f: &mut impl FnMut(&serde_json::Value)) 
     }
 }
 
+fn window_group_count(tree: &serde_json::Value) -> usize {
+    let mut count = 0usize;
+    walk_json(tree, &mut |value| {
+        count = count.saturating_add(
+            value
+                .get("window_groups")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len),
+        );
+    });
+    count
+}
+
 /// Monotonic suffix so two compositors in one test process never collide on a
 /// runtime-dir name.
 fn next_id() -> u64 {
@@ -1426,27 +1439,168 @@ fn translated_keysyms(keymap_text: &str, trace: &[(u32, bool)]) -> Vec<u32> {
 /// A GUI application can spawn helpers. Put it in its own process group so a
 /// failed live-client probe cannot leave an Electron renderer attached to the
 /// developer's machine after the isolated compositor is gone.
-struct KillProcessGroup(Child);
+struct KillProcessGroup {
+    child: Child,
+    groups: std::collections::BTreeSet<i32>,
+}
+
+impl KillProcessGroup {
+    fn new(child: Child, direct_group: bool) -> Self {
+        let mut groups = std::collections::BTreeSet::new();
+        if direct_group {
+            groups.insert(i32::try_from(child.id()).unwrap_or(i32::MAX));
+        }
+        Self { child, groups }
+    }
+
+    fn remember_group(&mut self, group: i32) {
+        if group > 1 {
+            self.groups.insert(group);
+        }
+    }
+}
 
 impl Drop for KillProcessGroup {
     fn drop(&mut self) {
-        let pid = i32::try_from(self.0.id()).unwrap_or(i32::MAX);
-        // `-pid` targets the group established immediately before exec. It
-        // contains only the throwaway client command below, never this test
-        // runner or the caller's graphical session.
-        let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
+        let pid = i32::try_from(self.child.id()).unwrap_or(i32::MAX);
+        // The direct probe owns `pid`'s group.  The production launcher path
+        // records only process groups found below its own child, never the
+        // test runner's inherited group.
+        for group in &self.groups {
+            let _ = unsafe { libc::kill(-*group, libc::SIGTERM) };
+        }
+        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            if self.0.try_wait().ok().flatten().is_some() {
+            if self.child.try_wait().ok().flatten().is_some() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        // A wedged Electron renderer must not wedge the test runner. The PID
-        // is also the private process-group id established in `pre_exec`.
-        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-        let _ = self.0.wait();
+        // A wedged Electron renderer must not wedge the test runner.
+        for group in &self.groups {
+            let _ = unsafe { libc::kill(-*group, libc::SIGKILL) };
+        }
+        let _ = self.child.wait();
     }
+}
+
+/// Inspect only the throwaway process group created by this test.  This tells
+/// an Electron wrapper dropping a launch token apart from a satellite bridge
+/// dropping one, without reading the user's running desktop processes or
+/// printing the opaque capability value.
+fn private_process_group_has_env(child: &mut KillProcessGroup, key: &[u8]) -> bool {
+    let child_pid = match i32::try_from(child.child.id()) {
+        Ok(pid) => pid,
+        Err(_) => return false,
+    };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            return false;
+        };
+        // Do not inspect arbitrary same-UID programs: only the bounded
+        // descendant chain of the launcher process this test created.
+        let mut ancestor = pid;
+        let mut belongs_to_launch = false;
+        for _ in 0..=16 {
+            if ancestor == child_pid {
+                belongs_to_launch = true;
+                break;
+            }
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{ancestor}/stat")) else {
+                break;
+            };
+            let Some((_, fields)) = stat.rsplit_once(") ") else {
+                break;
+            };
+            let Some(parent) = fields
+                .split_ascii_whitespace()
+                .nth(1)
+                .and_then(|parent| parent.parse::<i32>().ok())
+            else {
+                break;
+            };
+            if parent <= 1 || parent == ancestor {
+                break;
+            }
+            ancestor = parent;
+        }
+        if !belongs_to_launch {
+            return false;
+        }
+        let has_key = std::fs::read(entry.path().join("environ"))
+            .ok()
+            .is_some_and(|env| {
+                env.split(|byte| *byte == 0)
+                    .any(|item| item.starts_with(key))
+            });
+        if has_key {
+            // SAFETY: querying a process group is read-only; a process
+            // exiting between enumeration and this call simply returns -1.
+            let group = unsafe { libc::getpgid(pid) };
+            child.remember_group(group);
+        }
+        has_key
+    })
+}
+
+/// Read the mapped X11 window's advertised PID/startup properties through the
+/// private satellite display.  Returns only booleans and PIDs, never an
+/// activation token, so diagnostics cannot disclose the one-shot capability.
+fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool)> {
+    let Some((display, authority)) = private_xwayland_connection(compositor) else {
+        return Vec::new();
+    };
+    let run_xprop = |args: &[String]| {
+        Command::new("/usr/bin/xprop")
+            .args(args)
+            .env_clear()
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &authority)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let root_args = vec!["-root".to_string(), "_NET_CLIENT_LIST".to_string()];
+    let Some(root) = run_xprop(&root_args) else {
+        return Vec::new();
+    };
+    root.split_whitespace()
+        .filter_map(|word| word.strip_prefix("0x"))
+        .filter_map(|hex| u64::from_str_radix(hex.trim_end_matches(','), 16).ok())
+        .filter_map(|id| u32::try_from(id).ok())
+        .filter_map(|id| {
+            let args = vec![
+                "-id".to_string(),
+                format!("0x{id:x}"),
+                "_NET_WM_PID".to_string(),
+                "_NET_STARTUP_ID".to_string(),
+            ];
+            let props = run_xprop(&args)?;
+            let pid = props
+                .lines()
+                .find(|line| line.starts_with("_NET_WM_PID"))?
+                .split_whitespace()
+                .last()?
+                .parse::<u32>()
+                .ok()?;
+            let has_startup_id = props
+                .lines()
+                .any(|line| line.starts_with("_NET_STARTUP_ID"));
+            let has_token = std::fs::read(format!("/proc/{pid}/environ"))
+                .ok()
+                .is_some_and(|env| {
+                    env.split(|byte| *byte == 0)
+                        .any(|item| item.starts_with(b"XDG_ACTIVATION_TOKEN="))
+                });
+            Some((pid, has_token, has_startup_id))
+        })
+        .collect()
 }
 
 /// Start the installed ChatGPT Electron client strictly through qOS's
@@ -1454,38 +1608,7 @@ impl Drop for KillProcessGroup {
 /// heavyweight graphical process, but it is a genuine compatibility lane:
 /// private HOME/XDG state, qOS-created Xauthority, no inherited display or
 /// D-Bus session, and a child process group that is always torn down.
-fn spawn_isolated_chatgpt_x11(
-    compositor: &Compositor,
-) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
-    let configured = std::env::var_os("QOS_TEST_ELECTRON_BINARY").map(PathBuf::from);
-    let launch = configured
-        .filter(|path| path.is_file())
-        .map(|path| (path, None))
-        .or_else(|| {
-            let local = PathBuf::from("/usr/bin/chatgpt");
-            local.is_file().then_some((local, None))
-        })
-        .or_else(|| {
-            // Distrobox exposes the immutable host payload directly. Running
-            // the Electron executable in the test environment preserves the
-            // private DISPLAY/Xauthority and process-group cleanup; routing
-            // through `distrobox-host-exec` rewrites XDG_RUNTIME_DIR and loses
-            // the throwaway qOS socket namespace.
-            let mounted = PathBuf::from("/run/host/usr/lib/chatgpt/ChatGPT");
-            mounted.is_file().then_some((mounted, None))
-        })
-        .or_else(|| {
-            let bridge = PathBuf::from("/usr/bin/distrobox-host-exec");
-            let host_app = PathBuf::from("/run/host/usr/bin/chatgpt");
-            (bridge.is_file() && host_app.is_file())
-                .then_some((bridge, Some(PathBuf::from("/usr/bin/chatgpt"))))
-        });
-    let Some((program, host_program)) = launch else {
-        eprintln!(
-            "SKIP Xwayland/Electron lane: no installed ChatGPT binary (set QOS_TEST_ELECTRON_BINARY to override)"
-        );
-        return None;
-    };
+fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("qos-session/xwayland");
     let deadline = Instant::now() + Duration::from_secs(10);
     let authority = loop {
@@ -1513,20 +1636,101 @@ fn spawn_isolated_chatgpt_x11(
         .to_string_lossy()
         .strip_prefix("Xauthority-")?
         .to_string();
+    Some((format!(":{number}"), authority))
+}
+
+fn spawn_isolated_chatgpt_x11(
+    compositor: &Compositor,
+    activation_token: Option<&str>,
+) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
+    let launcher = std::env::var_os("QOS_TEST_LAUNCHER_BINARY")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
+    let Some(launcher) = launcher else {
+        eprintln!(
+            "SKIP Xwayland/Electron lane: set QOS_TEST_LAUNCHER_BINARY to the built qos-launcher; this test intentionally exercises the production host-launch process-group path"
+        );
+        return None;
+    };
+    let (display, authority) = private_xwayland_connection(compositor)?;
     let profile = compositor.runtime_dir.join("chatgpt-profile");
     std::fs::create_dir_all(&profile).expect("create isolated Electron profile");
+    // The test runs in a disposable distrobox where the installed host entry
+    // is visible under `/run/host`, while production qos-launcher runs on the
+    // host where its `Exec=/usr/bin/chatgpt` is correct.  Preserve every
+    // installed entry field and rewrite only that mount boundary in a private
+    // first-precedence XDG data root, so this remains a real `run-host`
+    // launch rather than a direct Electron invocation.
+    let installed_entry = [
+        PathBuf::from("/usr/share/applications/chatgpt.desktop"),
+        PathBuf::from("/run/host/usr/share/applications/chatgpt.desktop"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())?;
+    let entry = std::fs::read_to_string(&installed_entry).ok()?;
+    let exec = entry
+        .lines()
+        .find(|line| line == &"Exec=chatgpt %U")
+        .map(|_| "Exec=/run/host/usr/bin/chatgpt %U")?;
+    let entry = entry.replacen("Exec=chatgpt %U", exec, 1);
+    let data_home = profile.join("share");
+    let applications = data_home.join("applications");
+    std::fs::create_dir_all(&applications).ok()?;
+    std::fs::write(applications.join("chatgpt.desktop"), entry).ok()?;
 
-    let mut command = Command::new(&program);
-    if let Some(host_program) = host_program {
-        command.arg(host_program);
-    }
-    command
-        .arg("--ozone-platform=x11")
-        .env("DISPLAY", format!(":{number}"))
-        .env("XAUTHORITY", authority)
+    let desktop_id = "chatgpt";
+    let xdg_data_dirs = "/nonexistent/qos-private-host-launch-fixture";
+    let mut preflight = Command::new(&launcher);
+    preflight
+        .env_clear()
+        .args([
+            "run-host",
+            "--desktop-id",
+            desktop_id,
+            "--x11-display",
+            &display,
+            "--x11-authority",
+        ])
+        .arg(&authority)
+        .arg("--dry-run")
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
         .env("HOME", &profile)
         .env("XDG_CONFIG_HOME", profile.join("config"))
-        .env("XDG_DATA_HOME", profile.join("data"))
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_DATA_DIRS", xdg_data_dirs)
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir);
+    let preflight = preflight.output().expect("run host-launch preflight");
+    assert!(
+        preflight.status.success(),
+        "private host-entry fixture must resolve through qos-launcher before Electron starts: {}",
+        String::from_utf8_lossy(&preflight.stderr)
+    );
+
+    let mut command = Command::new(launcher);
+    command
+        // Match `HostLaunch::to_command`: the test must not accidentally
+        // inherit the user's desktop/display or a prior launch capability.
+        .env_clear()
+        .args([
+            "run-host",
+            "--desktop-id",
+            desktop_id,
+            "--x11-display",
+            &display,
+            "--x11-authority",
+        ])
+        .arg(&authority)
+        .env("DISPLAY", display)
+        .env("XAUTHORITY", authority)
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .env("HOME", &profile)
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_DATA_DIRS", xdg_data_dirs)
         .env("XDG_CACHE_HOME", profile.join("cache"))
         .env("XDG_STATE_HOME", profile.join("state"))
         .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
@@ -1534,15 +1738,11 @@ fn spawn_isolated_chatgpt_x11(
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // SAFETY: `setpgid` is one async-signal-safe syscall before exec, with no
-    // captured Rust state. The new process group makes the Drop cleanup exact.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+    if let Some(token) = activation_token {
+        // qOS's compositor passes this intermediary only to qos-launcher.
+        // The launcher clears it, creates the production per-launch process
+        // group, then gives the final host child only the standard variables.
+        command.env("QOS_HOST_ACTIVATION_TOKEN", token);
     }
     let mut child = command
         .spawn()
@@ -1557,12 +1757,58 @@ fn spawn_isolated_chatgpt_x11(
             }
         }
     });
-    Some((KillProcessGroup(child), log))
+    Some((KillProcessGroup::new(child, false), log))
+}
+
+fn spawn_isolated_x11_probe(
+    compositor: &Compositor,
+    activation_token: &str,
+) -> Option<KillProcessGroup> {
+    let program = Path::new("/usr/bin/zenity");
+    if !program.is_file() {
+        eprintln!("SKIP Xwayland token probe: zenity is not installed");
+        return None;
+    }
+    let (display, authority) = private_xwayland_connection(compositor)?;
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .args([
+            "--info",
+            "--text=private xwayland activation probe",
+            "--timeout=8",
+        ])
+        .env("DISPLAY", display)
+        .env("XAUTHORITY", authority)
+        .env("GDK_BACKEND", "x11")
+        .env("XDG_ACTIVATION_TOKEN", activation_token)
+        .env("DESKTOP_STARTUP_ID", activation_token)
+        .env("HOME", compositor.runtime_dir.join("x11-probe-home"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the probe's new process group is established before exec and
+    // contains no user-session process, so `Drop` can reclaim it exactly.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+        .spawn()
+        .ok()
+        .map(|child| KillProcessGroup::new(child, true))
 }
 
 #[test]
-#[ignore = "starts an installed Electron client in a private Xwayland session; opt in for compatibility review"]
-fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
+#[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
+fn installed_electron_client_consumes_host_launch_token_through_private_xwayland() {
     let compositor = Compositor::start_host_desktop();
     // Keep one ordinary native Wayland client alive throughout the Electron
     // launch. A bridge that only works in an otherwise empty compositor is
@@ -1576,11 +1822,21 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
         .and_then(|payload| payload.get("frames"))
         .and_then(serde_json::Value::as_array)
         .map_or(0, Vec::len);
-    let Some((_child, log)) = spawn_isolated_chatgpt_x11(&compositor) else {
+    let before_state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+    let before_groups = before_state
+        .get("state")
+        .and_then(|state| state.get("workspace_tree"))
+        .map_or(0, window_group_count);
+    let display_name = "ChatGPT host activation test";
+    let token = compositor.mint_host_launch_activation("chatgpt", display_name);
+    let Some((mut child, log)) = spawn_isolated_chatgpt_x11(&compositor, Some(&token)) else {
         return;
     };
     let started = Instant::now();
+    let mut token_reached_electron_process_group = false;
     loop {
+        token_reached_electron_process_group |=
+            private_process_group_has_env(&mut child, b"XDG_ACTIVATION_TOKEN=");
         let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
         let mapped = frames
             .get("foreign_frames")
@@ -1588,7 +1844,7 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
             .and_then(serde_json::Value::as_array)
             .is_some_and(|entries| entries.len() > before);
         if mapped {
-            return;
+            break;
         }
         assert!(
             started.elapsed() < Duration::from_secs(45),
@@ -1599,6 +1855,117 @@ fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    let x11_facts = private_x11_activation_facts(&compositor);
+    assert!(
+        token_reached_electron_process_group,
+        "the ChatGPT launcher/Electron process group discarded XDG_ACTIVATION_TOKEN before satellite could read it"
+    );
+    // Rootless satellite identifies the client with XRes.  It does not have
+    // to publish the non-standard `_NET_WM_PID` EWMH property, so use it only
+    // as supplementary evidence when available rather than making the
+    // standards-path regression depend on it.
+    if !x11_facts.is_empty() {
+        assert!(
+            x11_facts.iter().any(|(_, has_token, _)| *has_token),
+            "the mapped Electron _NET_WM_PID has no XDG_ACTIVATION_TOKEN; X11 facts (pid, has_token, has_startup_id): {x11_facts:?}"
+        );
+    }
+    native.wait_until(
+        |state| !state.keyboard_focused,
+        "the X11/Electron toplevel mapped but did not consume the host activation token to take focus",
+    );
+    // Xwayland maps before satellite's Wayland activation request reaches the
+    // compositor.  Wait for the token-bound relocation rather than racing a
+    // state snapshot against that final protocol round trip.
+    let activation_started = Instant::now();
+    let (tree, titles) = loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        let tree = state
+            .get("state")
+            .and_then(|state| state.get("workspace_tree"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state dump did not contain a workspace tree: {state:?}"));
+        let mut titles = Vec::new();
+        walk_json(&tree, &mut |value| {
+            if let (Some(title), Some(_tile)) = (value.get("title"), value.get("tile")) {
+                titles.push(title.as_str().unwrap_or_default().to_string());
+            }
+        });
+        if titles.iter().any(|title| title == display_name)
+            || activation_started.elapsed() >= Duration::from_secs(9)
+        {
+            break (tree, titles);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        titles.iter().any(|title| title == display_name),
+        "satellite mapped Electron but did not route its XDG_ACTIVATION_TOKEN through qOS relocation/name handling. tabs: {titles:?}\nElectron log:\n{}\nCompositor log:\n{}",
+        log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
+        compositor.recent_log(),
+    );
+    assert_eq!(
+        window_group_count(&tree),
+        before_groups + 1,
+        "the token-bound Electron surface must be relocated into its requested NewGroup placement"
+    );
+}
+
+#[test]
+#[ignore = "starts a private generic X11 client through xwayland-satellite; opt in for compatibility review"]
+fn generic_x11_client_relays_compositor_token_through_private_satellite() {
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-x11-token");
+    native.map_window(&compositor);
+    let before = compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let display_name = "Generic X11 activation probe";
+    let token = compositor.mint_host_launch_activation("org.example.x11-probe", display_name);
+    let Some(_probe) = spawn_isolated_x11_probe(&compositor, &token) else {
+        return;
+    };
+    let started = Instant::now();
+    loop {
+        let mapped = compositor
+            .control(&serde_json::json!({ "op": "foreign_frames" }))
+            .get("foreign_frames")
+            .and_then(|payload| payload.get("frames"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|frames| frames.len() > before);
+        if mapped {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the private generic X11 probe did not map through satellite. compositor log:\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    native.wait_until(
+        |state| !state.keyboard_focused,
+        "the private generic X11 probe mapped but did not consume the compositor activation token",
+    );
+    let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+    let tree = state
+        .get("state")
+        .and_then(|state| state.get("workspace_tree"))
+        .unwrap_or_else(|| panic!("state dump did not contain workspace tree: {state:?}"));
+    let mut titles = Vec::new();
+    walk_json(tree, &mut |value| {
+        if let (Some(title), Some(_tile)) = (value.get("title"), value.get("tile")) {
+            titles.push(title.as_str().unwrap_or_default().to_string());
+        }
+    });
+    assert!(
+        titles.iter().any(|title| title == display_name),
+        "generic X11 token was not relayed through satellite/qOS relocation. tabs: {titles:?}\ncompositor log:\n{}",
+        compositor.recent_log(),
+    );
 }
 
 /// This is deliberately a real client-to-compositor exercise, not a unit
@@ -2059,6 +2426,22 @@ fn drag_and_drop_carries_data_between_two_clients() {
 }
 
 impl Compositor {
+    /// Ask the private test-control transport to mint the exact external
+    /// activation token a user-selected host launch receives.  The token is
+    /// passed only to the throwaway client below, never to the user's session.
+    fn mint_host_launch_activation(&self, desktop_id: &str, display_name: &str) -> String {
+        let resp = self.control(&serde_json::json!({
+            "op": "mint_host_launch_activation",
+            "desktop_id": desktop_id,
+            "display_name": display_name,
+        }));
+        resp.get("answer")
+            .and_then(|answer| answer.get("activation_token"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("mint_host_launch_activation failed: {resp:?}"))
+    }
+
     /// Open the next window of `app_id` in its own group, so two client windows
     /// can be on screen at once.
     fn place_next_window(&self, app_id: &str) {

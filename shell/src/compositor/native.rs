@@ -1579,6 +1579,46 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
     !fb.host().onboarding_active()
 }
 
+/// Host palette actions are queued by chrome, then launched here so the
+/// compositor can mint an external xdg-activation token before the child is
+/// spawned. This keeps the token single-use and binds it to the exact user
+/// action rather than accepting an app-id guess later.
+fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+    let requests = crate::shell::host_apps::drain_queued_launches();
+    let mut changed = false;
+    for request in requests {
+        let token = state.issue_host_launch_activation(
+            request.desktop_id.clone(),
+            request.display_name.clone(),
+            request.placement,
+        );
+        if let Err(error) = crate::shell::host_apps::launch_with_document_and_activation(
+            &request.desktop_id,
+            None,
+            request.portal_workspace_id,
+            Some(&token),
+        ) {
+            // Nothing can consume this external token after a preflight
+            // refusal. Remove it immediately, alongside the staged placement.
+            state.cancel_host_launch_activation(&token);
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        crate::shell::launcher::launch_failure_title(&request.display_name),
+                        error.notification_message(),
+                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_app_name("Host Apps")
+                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+                );
+                chrome.bump();
+            });
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn to_client(
     state: &mut Option<&mut State>,
     fb: &mut FrameBuilder,
@@ -1812,11 +1852,20 @@ struct InvokeFailure {
 /// via the same winit→`LockKey` routing; pointer/modifier/snapshot actions
 /// are swallowed (a snapshot must not leak the hidden chrome). A submit
 /// starts an async verify; `lock.poll_verification()` delivers the actual unlock.
-fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
+fn execute_locked_action(
+    action: &PlannedAction,
+    lock: &mut LockController,
+    state: &mut State,
+    ctx: &mut TestControlCtx,
+) {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
+            if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
+                client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+            }
+            client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
         }
         // Pointer, modifiers, snapshots and action invocations are all swallowed
@@ -2112,11 +2161,31 @@ fn pump_test_control_conn(
                         // the round-trip that asked for it.
                         frame_builder.relayout();
                         frame_builder.reconcile_native_focus(&mut ctx.focus);
-                        let state = FrameBuilderControlState {
-                            fb: frame_builder,
-                            doc: Some((&ctx.doc, &ctx.root_obj)),
-                        };
-                        test_control::dispatch_command(&cmd, &state)
+                        match cmd {
+                            test_control::Command::MintHostLaunchActivation {
+                                desktop_id,
+                                display_name,
+                            } => {
+                                let token = state.issue_host_launch_activation(
+                                    desktop_id,
+                                    display_name,
+                                    crate::compositor::tab_binding::Placement::NewGroup,
+                                );
+                                (
+                                    test_control::Response::Answer(serde_json::json!({
+                                        "activation_token": token,
+                                    })),
+                                    Vec::new(),
+                                )
+                            }
+                            cmd => {
+                                let state = FrameBuilderControlState {
+                                    fb: frame_builder,
+                                    doc: Some((&ctx.doc, &ctx.root_obj)),
+                                };
+                                test_control::dispatch_command(&cmd, &state)
+                            }
+                        }
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
@@ -2128,7 +2197,7 @@ fn pump_test_control_conn(
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
-                        execute_locked_action(action, lock);
+                        execute_locked_action(action, lock, state, ctx);
                     } else if let Some(outcome) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
@@ -4330,6 +4399,16 @@ pub fn run() -> ! {
                     if session.is_locked() {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
+                            // Keep both chord routing and Smithay's XKB state in step even
+                            // while the lock owns the visible key.  Dropping a release here
+                            // would leave the pre-lock modifier pressed after unlock.
+                            client_input::apply_modifier_key(
+                                &mut test_control_ctx.modifiers,
+                                key_ev,
+                            );
+                            client_input::consume_keyboard_while_captured(&mut state, wev);
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
@@ -4434,6 +4513,14 @@ pub fn run() -> ! {
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
                 }
+                BackendEvent::InputStateReset => {
+                    // A device/VT/keymap boundary can omit releases. Retire
+                    // Smithay's actual pressed-key state, never just the
+                    // chrome's modifier snapshot, before accepting another
+                    // physical event.
+                    state.reset_client_keyboard_state();
+                    test_control_ctx.modifiers = Modifiers::default();
+                }
                 BackendEvent::OutputsChanged => {
                     // A display changed — everything derived from the output set re-derives
                     // at once: scene extent, per-display widths, fullscreen size, cadence, `wl_output` globals.
@@ -4503,6 +4590,9 @@ pub fn run() -> ! {
             }
             session_changed = true;
         }
+
+        state.expire_host_launch_activations();
+        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
         // client starts auto-repeat after a press and only stops once it sees the
@@ -4741,6 +4831,13 @@ pub fn run() -> ! {
         // Reset lock-screen input the instant the lock engages, so a fresh lock
         // starts with an empty field and no stale error from a previous episode.
         if session.is_locked() && !prev_locked {
+            // Locking itself does not make a physical release disappear: keep
+            // Smithay's pressed state so a modifier held across this boundary
+            // is still represented until its locked release arrives.  Only
+            // revoke delivery to the now-hidden client. VT/device/keymap loss
+            // separately emits `InputStateReset`, because those paths really
+            // can lose an up edge.
+            state.set_client_keyboard_focus(None);
             lock.reset();
         }
         if session.is_locked() != prev_locked {
@@ -4808,7 +4905,14 @@ pub fn run() -> ! {
         }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
-        client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        if session.is_locked() {
+            // `chrome_captures_input` deliberately does not know about the
+            // lock scene (it is rendered outside chrome), so do not let its
+            // ordinary active-tab reconciliation re-enter an app here.
+            state.set_client_keyboard_focus(None);
+        } else {
+            client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        }
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),

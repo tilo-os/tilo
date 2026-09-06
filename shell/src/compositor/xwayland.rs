@@ -182,6 +182,18 @@ impl Drop for SessionXwayland {
 }
 
 fn satellite_binary() -> Option<PathBuf> {
+    // The native binary never accepts an arbitrary satellite from its
+    // environment.  Hosted integration tests, however, need to validate a
+    // candidate upstream satellite against the same private compositor they
+    // start, without replacing the installed host binary.
+    #[cfg(feature = "hosted-test-control")]
+    if let Some(candidate) = std::env::var_os("QOS_TEST_XWAYLAND_SATELLITE") {
+        let candidate = PathBuf::from(candidate);
+        if candidate.is_absolute() && candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
     let fixed = PathBuf::from("/usr/bin/xwayland-satellite");
     if fixed.is_file() {
         return Some(fixed);

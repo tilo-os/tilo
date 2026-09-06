@@ -248,7 +248,22 @@ pub fn rename_tab_for_app_id(
     surface_id: u64,
     new_app_id: String,
 ) -> bool {
-    let new_title = tab_label_for_foreign(&new_app_id);
+    rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, None)
+}
+
+/// Rewrite a foreign tab's app-id after a late `set_app_id`, retaining an
+/// already-authoritative label when a compositor-issued host-launch token
+/// identified this exact surface.  The app-id remains current for later
+/// routing; only the untrusted late label is ignored.
+pub fn rename_tab_for_app_id_with_title(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    new_app_id: String,
+    authoritative_title: Option<&str>,
+) -> bool {
+    let new_title = authoritative_title
+        .map(str::to_string)
+        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
     for ws in &mut tree.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
@@ -263,6 +278,78 @@ pub fn rename_tab_for_app_id(
                         tab.title = new_title;
                         return true;
                     }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Re-home an already mapped foreign surface after its compositor-minted
+/// activation token identifies the user-selected launch. The original tab is
+/// process-local; remove it before creating the replacement so neither the
+/// durable tree nor a rendered mirror can retain a duplicate surface.
+pub fn relocate_foreign_toplevel(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    placement: Placement,
+    title: &str,
+) -> bool {
+    let Some(app_id) = app_id_for_surface(tree, surface_id).map(str::to_string) else {
+        return false;
+    };
+    // The ordinary first-adoption path may already have claimed this launch's
+    // pending `IntoTab` note before the activation request arrives.  That is
+    // the desired destination, so do not remove the target tab and try to
+    // bind it again: removing it would make `IntoTab` fall back to a new
+    // group.  Activation still gives us the canonical display label.
+    if let Placement::IntoTab(target) = placement
+        && tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| {
+                tab.id == target
+                    && matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+            })
+    {
+        return rename_tab_for_app_id(tree, surface_id, app_id)
+            && set_foreign_tab_title(tree, surface_id, title);
+    }
+    if !close_tab_for_destroyed_surface(tree, surface_id) {
+        return false;
+    }
+    let tab_id = adopt_toplevel_at(tree, surface_id, Some(app_id), placement);
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.title = title.to_string();
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn set_foreign_tab_title(tree: &mut WorkspaceTree, surface_id: u64, title: &str) -> bool {
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                if let Some(tab) = group.tabs.iter_mut().find(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+                }) {
+                    tab.title = title.to_string();
+                    return true;
                 }
             }
         }
@@ -586,6 +673,64 @@ mod tests {
             target,
             "the tab showing the window is the one in front of its group"
         );
+    }
+
+    /// A host launch can be adopted by the ordinary identity path just before
+    /// its activation request arrives.  Consuming the activation must retain
+    /// that existing `IntoTab` binding, then retire the launch note so a
+    /// second, unrelated window with the same class cannot inherit it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn activation_relocation_keeps_claimed_target_and_retires_host_launch_note() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let target = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let identity = "org.example.Host".to_string();
+        crate::shell::launcher::set_pending_placement_for_identities(
+            "org.example.Host.desktop",
+            std::slice::from_ref(&identity),
+            Placement::IntoTab(target),
+        );
+
+        assert_eq!(
+            adopt_toplevel(&mut tree, 0xfeed, Some(identity.clone())),
+            target,
+            "the initial identity adoption claimed the reserved tab"
+        );
+        crate::shell::launcher::clear_pending_placement("org.example.Host.desktop");
+        assert!(relocate_foreign_toplevel(
+            &mut tree,
+            0xfeed,
+            Placement::IntoTab(target),
+            "Host application",
+        ));
+        assert_eq!(
+            tab_of(&tree, 0xfeed).id,
+            target,
+            "relocation must not delete an already-claimed IntoTab target"
+        );
+        assert_eq!(tab_of(&tree, 0xfeed).title, "Host application");
+        assert_eq!(
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .filter(|tab| matches!(&tab.tile, TileContent::Foreign { surface_id, .. } if *surface_id == 0xfeed))
+                .count(),
+            1,
+            "the same toplevel remains represented by exactly one local tab"
+        );
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(&identity, 0xbeef).is_none(),
+            "the token's desktop-id note is gone before another matching window arrives"
+        );
+        let later = adopt_toplevel(&mut tree, 0xbeef, Some(identity));
+        assert_ne!(
+            later, target,
+            "a later matching window must not replace the token-bound surface"
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     /// The tab was closed by its owner while the local instance was starting; placement degrades to the ordinary launch rule.
@@ -1142,6 +1287,25 @@ mod tests {
         }
         // Humanised, not raw. A tab is a name badge; `late` is a fragment of an identifier and `Late` is a word.
         assert_eq!(tab.title, "Late", "title is the humanised app-id component");
+    }
+
+    #[test]
+    fn late_app_id_keeps_a_claimed_host_launch_label() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 99, None);
+
+        assert!(rename_tab_for_app_id_with_title(
+            &mut tree,
+            99,
+            "com.openai.ChatGPT".into(),
+            Some("ChatGPT"),
+        ));
+        let tab = tab_of(&tree, 99);
+        assert!(matches!(
+            &tab.tile,
+            TileContent::Foreign { app_id, surface_id: 99 } if app_id == "com.openai.ChatGPT"
+        ));
+        assert_eq!(tab.title, "ChatGPT");
     }
 
     // A tab carries the app's name, never a raw identifier like `app` or `word-processor`.
