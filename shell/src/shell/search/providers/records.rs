@@ -5,8 +5,9 @@
 //! Bringing is referencing, not copying: activating a row adds this
 //! room's reference to the record
 //! ([`crate::shell::room_records::RoomRecords::reference`]) — no bytes
-//! move, no id is minted, the record stays one document. Copying is a
-//! different, deliberate verb ([`ui::record::room::duplicate`]). A
+//! move, no id is minted, and hydration remains in this room's document
+//! scope. Copying is a different, deliberate verb
+//! ([`ui::record::room::duplicate`]). A
 //! record whose identity is a path is also opened, since bringing and
 //! opening are meant to be the same gesture.
 //!
@@ -15,11 +16,15 @@
 //! matches strings; it never touches the filesystem or a CRDT.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::room_records::{KnownRecord, RoomRecords};
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 use crate::shell::state::{RoomId, WorkspaceTree};
 
 /// Top of this provider's scale: the record is named exactly. Declared
@@ -34,6 +39,13 @@ const MAX_RESULTS: usize = 20;
 
 pub struct RecordsProvider {
     index: Rc<RefCell<RoomRecords>>,
+    lookup: RefCell<RecordLookup>,
+}
+
+#[derive(Default)]
+struct RecordLookup {
+    revision: String,
+    exact_title: HashMap<String, Vec<usize>>,
 }
 
 impl RecordsProvider {
@@ -46,7 +58,10 @@ impl RecordsProvider {
     /// A provider over a caller-supplied index — the shell shares one
     /// across every surface that references records.
     pub fn with_index(index: Rc<RefCell<RoomRecords>>) -> Self {
-        Self { index }
+        Self {
+            index,
+            lookup: RefCell::new(RecordLookup::default()),
+        }
     }
 
     pub fn index(&self) -> Rc<RefCell<RoomRecords>> {
@@ -124,6 +139,131 @@ impl SearchProvider for RecordsProvider {
                 )
             })
             .collect()
+    }
+
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        // `known()` is a retained, generation-keyed snapshot.  Its Rc is
+        // replaced exactly when room references or the background record
+        // scan changes, which makes it a cheap opaque cursor revision.
+        self.index.borrow().search_generation()
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        if !ctx.wanted.contains(&ResourceKind::Record)
+            || ctx.needle.trim().is_empty()
+            || budget.max_results == 0
+            || budget.max_work == 0
+        {
+            return SearchPage::exhausted("empty", Vec::new());
+        }
+        let (here, rooms) = {
+            let tree = ctx.chrome.tree();
+            (tree.active_workspace().map(|w| w.room), room_names(&tree))
+        };
+        let index = self.index.borrow();
+        let revision = index.search_generation();
+        let known = index.known();
+        let needle = ctx.needle.trim().to_lowercase();
+        let exact_positions = {
+            let mut lookup = self.lookup.borrow_mut();
+            if lookup.revision != revision {
+                let mut exact_title: HashMap<String, Vec<usize>> = HashMap::new();
+                for (position, record) in known.iter().enumerate() {
+                    exact_title
+                        .entry(record.title().to_lowercase())
+                        .or_default()
+                        .push(position);
+                }
+                lookup.revision.clone_from(&revision);
+                lookup.exact_title = exact_title;
+            }
+            lookup.exact_title.get(&needle).cloned()
+        };
+        let offset = match cursor {
+            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+            Some(cursor) => match cursor.token.split_once('\u{1f}') {
+                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
+                    Ok(offset)
+                        if offset <= exact_positions.as_ref().map_or(known.len(), Vec::len) =>
+                    {
+                        offset
+                    }
+                    _ => return SearchPage::stale(revision),
+                },
+                _ => return SearchPage::stale(revision),
+            },
+            None => 0,
+        };
+        let source_len = exact_positions.as_ref().map_or(known.len(), Vec::len);
+        let end = offset.saturating_add(budget.max_work).min(source_len);
+        let mut used = 0usize;
+        let mut results = Vec::new();
+        let mut next = end;
+        let mut stopped_for_budget = false;
+        for relative in offset..end {
+            let position = exact_positions
+                .as_ref()
+                .and_then(|positions| positions.get(relative).copied())
+                .unwrap_or(relative);
+            let Some(record) = known.get(position) else {
+                continue;
+            };
+            let source_position = relative;
+            let title = record.title();
+            let Some(score) = match_score(&needle, &title, record.id.as_str()) else {
+                continue;
+            };
+            if results.len() >= budget.max_results {
+                next = source_position;
+                stopped_for_budget = true;
+                break;
+            }
+            let subtitle = provenance(&record, here, &rooms);
+            let bytes = record
+                .id
+                .as_str()
+                .len()
+                .saturating_add(title.len())
+                .saturating_add(subtitle.len())
+                .saturating_add(96);
+            if used.saturating_add(bytes) > budget.max_bytes {
+                next = source_position;
+                stopped_for_budget = true;
+                break;
+            }
+            used = used.saturating_add(bytes);
+            let index = Rc::clone(&self.index);
+            let id = record.id.clone();
+            let kind = record.kind.clone();
+            results.push(SearchResult::nullary(
+                ResourceKind::Record,
+                "records",
+                record.id.as_str().to_string(),
+                title,
+                Some(subtitle),
+                score,
+                move |_doc, _root, chrome: &Chrome| {
+                    bring_into_this_room(&index, &id, &kind, chrome);
+                },
+            ));
+        }
+        let exhausted = !stopped_for_budget && end == source_len;
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: (!exhausted).then(|| SearchCursor {
+                revision,
+                token: format!("{needle}\u{1f}{next}"),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: stopped_for_budget || !exhausted,
+        }
     }
 }
 
@@ -299,6 +439,52 @@ mod tests {
     }
 
     #[test]
+    fn same_count_scan_replacement_stales_a_record_cursor() {
+        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+        let observed = |name: &str| ObservedRecord {
+            id: RecordId::for_file(format!("/scan/{name}.note")),
+            kind: RecordKind::new("note"),
+            home: Some(rooms[0]),
+            package_id: "dev.qos.notes".into(),
+        };
+        index
+            .borrow_mut()
+            .replace_scanned_records_for_test(vec![observed("a"), observed("b")]);
+        let provider = RecordsProvider::with_index(Rc::clone(&index));
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let context = || SearchContext {
+            needle: "note",
+            wanted: &[ResourceKind::Record],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let first = provider.query_page(
+            context(),
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 16,
+            },
+        );
+        let cursor = first
+            .next_cursor
+            .expect("a bounded first page has a cursor");
+
+        index
+            .borrow_mut()
+            .replace_scanned_records_for_test(vec![observed("c"), observed("d")]);
+        let stale = provider.query_page(context(), Some(&cursor), SearchBudget::PALETTE);
+        assert!(
+            stale.stale_cursor,
+            "same-count replacement must invalidate the cursor"
+        );
+    }
+
+    #[test]
     fn a_record_from_another_room_is_findable_and_says_where_it_lives() {
         let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
         let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -379,8 +565,8 @@ mod tests {
         clippy::similar_names,
         reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
     )]
-    fn an_edit_through_one_rooms_reference_is_visible_through_the_others() {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+    fn an_edit_through_one_rooms_reference_does_not_leak_through_the_other() {
+        use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
         let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
         let (here, there) = (rooms[0], rooms[1]);
@@ -400,16 +586,16 @@ mod tests {
         )
         .expect("bringing a record here takes no arguments");
 
-        let mut set = RecordSet::in_memory();
-        let mut state = ui::State::new();
+        let mut there_set = RecordSet::in_memory().with_home(there.to_string());
+        let mut there_state = ui::State::new();
         let from_there: RecordCheckout = index
             .borrow()
             .records_in(there)
             .into_iter()
             .find(|c| c.id == book)
             .expect("the room it came from still holds it");
-        set.checkout(&mut state, None, &from_there);
-        let _ = state.doc.put(&ROOT, "title", "Chapter 3");
+        there_set.checkout(&mut there_state, None, &from_there);
+        let _ = there_state.doc.put(&ROOT, "title", "Chapter 3");
 
         let from_here: RecordCheckout = index
             .borrow()
@@ -417,26 +603,12 @@ mod tests {
             .into_iter()
             .find(|c| c.id == book)
             .expect("this room holds it now");
-        // Leave and come back, so the park/restore path is exercised.
-        set.checkout(
-            &mut state,
-            None,
-            &RecordCheckout::new(RecordId::minted(), kind),
-        );
-        set.checkout(&mut state, None, &from_here);
-
-        let title = match state.doc.get(&ROOT, "title") {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        assert_eq!(
-            title.as_deref(),
-            Some("Chapter 3"),
-            "the record reached from this room is the record edited through \
-             the other — if activating had copied it, this would be empty"
+        let mut here_set = RecordSet::in_memory().with_home(here.to_string());
+        let mut here_state = ui::State::new();
+        here_set.checkout(&mut here_state, None, &from_here);
+        assert!(
+            matches!(here_state.doc.get(&ROOT, "title"), Ok(None)),
+            "the same id in another room must hydrate a separate document"
         );
     }
 

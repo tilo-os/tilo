@@ -30,6 +30,7 @@ use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
@@ -45,6 +46,10 @@ pub const RECORDS_DIR: &str = "records";
 /// Subdirectory holding one directory per **room** — the index of records
 /// that room holds. See [`DocStore::open_room`].
 pub const ROOMS_DIR: &str = "rooms";
+/// Durable claim files prevent a pre-room document from being silently
+/// imported into every room that happens to open after an upgrade.
+const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".qos-legacy-room-index-claim";
+const LEGACY_RECORD_ROOM_CLAIM: &str = ".qos-legacy-room-record-claim";
 
 /// Root-map key for the document's layout version. A document from before
 /// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
@@ -289,6 +294,110 @@ impl DocStore {
             .join(RECORDS_DIR)
             .join(record_key);
         Self::open_in(package_id, dir)
+    }
+
+    /// Open one record in one collaboration room.  A record id is only
+    /// unique *within* a room: a hostile or stale peer must not be able to
+    /// make `uuid:...` in room B resolve to room A's on-disk change graph.
+    ///
+    /// This deliberately does not remove the pre-room
+    /// `<package>/records/<record>` location.  Callers may merge that legacy
+    /// document on first open, then persist the merged result here; retaining
+    /// the source makes an interrupted migration recoverable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an identifier is invalid or the room-scoped
+    /// store cannot be created, locked, or loaded.
+    pub fn open_room_record(
+        package_id: &str,
+        room_key: &str,
+        record_key: &str,
+    ) -> Result<Self, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(room_key)?;
+        validate_record_key(record_key)?;
+        let dir = cli::standalone_state_dir(package_id)
+            .join(ROOMS_DIR)
+            .join(room_key)
+            .join(RECORDS_DIR)
+            .join(record_key);
+        Self::open_in(package_id, dir)
+    }
+
+    /// The old package-global record document path.  Migration code uses this
+    /// only as a read source; it is never deleted or renamed automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either identifier is invalid.
+    pub fn legacy_record_document_path(
+        package_id: &str,
+        record_key: &str,
+    ) -> Result<PathBuf, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(record_key)?;
+        Ok(cli::standalone_state_dir(package_id)
+            .join(RECORDS_DIR)
+            .join(record_key)
+            .join(DOCUMENT_FILE))
+    }
+
+    /// The old package-global document path, retained as a safe migration
+    /// source when a package document becomes a room index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `package_id` is invalid.
+    pub fn legacy_package_document_path(package_id: &str) -> Result<PathBuf, StoreError> {
+        validate_package_id(package_id)?;
+        Ok(cli::standalone_state_dir(package_id).join(DOCUMENT_FILE))
+    }
+
+    /// Claim the legacy package-global document for `room_key`.  The claim is
+    /// an atomic create-next-to-source operation: exactly one room can import
+    /// it, while that same room can resume after a crash before its first
+    /// scoped write. `false` means another room already owns the migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers, malformed durable claim
+    /// state, or an I/O failure while publishing the claim.
+    pub fn claim_legacy_package_migration(
+        package_id: &str,
+        room_key: &str,
+    ) -> Result<bool, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(room_key)?;
+        claim_legacy_room_migration(
+            &cli::standalone_state_dir(package_id).join(LEGACY_PACKAGE_ROOM_CLAIM),
+            room_key,
+        )
+    }
+
+    /// The record-level twin of [`Self::claim_legacy_package_migration`].
+    /// Keeping the marker beside the retained legacy record lets recovery
+    /// reason about one source document without any global registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identifiers, malformed durable claim
+    /// state, or an I/O failure while publishing the claim.
+    pub fn claim_legacy_record_migration(
+        package_id: &str,
+        room_key: &str,
+        record_key: &str,
+    ) -> Result<bool, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(room_key)?;
+        validate_record_key(record_key)?;
+        claim_legacy_room_migration(
+            &cli::standalone_state_dir(package_id)
+                .join(RECORDS_DIR)
+                .join(record_key)
+                .join(LEGACY_RECORD_ROOM_CLAIM),
+            room_key,
+        )
     }
 
     /// Open the index of **one room** — the list of which records that room
@@ -586,6 +695,107 @@ impl DocStore {
     }
 }
 
+/// Atomically assign a legacy source to one room.  A marker is deliberately
+/// retained forever: deleting it after a successful import would let a later
+/// room re-import the still-preserved source, while deleting it after a crash
+/// would make recovery non-deterministic.
+fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
+    match read_claim(marker)? {
+        ClaimState::Owner(owner) => return Ok(owner == room_key),
+        ClaimState::Malformed => {
+            // Never overwrite a malformed old marker: a separate recovery
+            // name lets one contender claim atomically without a stale reader
+            // deleting another contender's valid replacement.
+            let recovered = marker.with_extension("recovered");
+            return publish_claim(&recovered, room_key);
+        }
+        ClaimState::Absent => {}
+    }
+    publish_claim(marker, room_key)
+}
+
+enum ClaimState {
+    Absent,
+    Malformed,
+    Owner(String),
+}
+
+fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
+    let bytes = match fs::read(marker) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ClaimState::Absent),
+        Err(error) => return Err(io_err(format!("reading {}", marker.display()), error)),
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(ClaimState::Malformed);
+    };
+    let Some(owner) = text.strip_suffix('\n') else {
+        return Ok(ClaimState::Malformed);
+    };
+    if owner.is_empty() || owner.contains('\n') || owner.contains('\r') {
+        return Ok(ClaimState::Malformed);
+    }
+    if validate_record_key(owner).is_err() {
+        return Ok(ClaimState::Malformed);
+    }
+    Ok(ClaimState::Owner(owner.to_string()))
+}
+
+/// Publish a fully durable temp file with a no-replace hard link.  `link(2)`
+/// gives the needed compare-and-create property: even two recovery callers
+/// can never both become owner.
+fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
+    static CLAIM_NONCE: AtomicU64 = AtomicU64::new(0);
+    let parent = marker.parent().ok_or_else(|| StoreError::Io {
+        context: format!("finding parent of {}", marker.display()),
+        source: io::Error::new(io::ErrorKind::InvalidInput, "claim has no parent"),
+    })?;
+    let nonce = CLAIM_NONCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".qos-claim-{}-{}-{}",
+        std::process::id(),
+        nonce,
+        room_key
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|error| io_err(format!("creating {}", temp.display()), error))?;
+    file.write_all(format!("{room_key}\n").as_bytes())
+        .map_err(|error| io_err(format!("writing {}", temp.display()), error))?;
+    file.sync_all()
+        .map_err(|error| io_err(format!("syncing {}", temp.display()), error))?;
+    drop(file);
+    match fs::hard_link(&temp, marker) {
+        Ok(()) => {
+            let _ = fs::remove_file(&temp);
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| io_err(format!("syncing {}", parent.display()), error))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&temp);
+            match read_claim(marker)? {
+                ClaimState::Owner(owner) => Ok(owner == room_key),
+                // A new claim is never partial (it is linked only after its
+                // temp file is synced).  Do not guess at an invalid recovery
+                // marker: failing closed keeps two rooms from winning.
+                ClaimState::Malformed => Err(StoreError::Io {
+                    context: format!("reading complete claim {}", marker.display()),
+                    source: io::Error::new(io::ErrorKind::InvalidData, "malformed claim"),
+                }),
+                ClaimState::Absent => publish_claim(marker, room_key),
+            }
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            Err(io_err(format!("claiming {}", marker.display()), error))
+        }
+    }
+}
+
 /// Make `dir` an existing, writable directory, recovering from a state path
 /// a previous layout left as a *file*. `create_dir_all` fails EEXIST there,
 /// which the caller swallows into a disabled in-memory session — so without
@@ -767,6 +977,67 @@ mod tests {
         assert_eq!(store.package_id(), "dev.qos.monitor");
         assert_eq!(store.dir(), tmp.path().join("dev.qos.monitor"));
         unsafe { std::env::remove_var("QOS_PACKAGE_ID") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable() {
+        let tmp = scratch_home();
+        let package = "dev.qos.legacy-claim";
+        let legacy = DocStore::legacy_package_document_path(package).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, b"legacy source remains intact").unwrap();
+
+        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+        assert!(
+            !DocStore::claim_legacy_package_migration(package, "room-b").unwrap(),
+            "a second room cannot import the same retained source"
+        );
+        assert!(
+            DocStore::claim_legacy_package_migration(package, "room-a").unwrap(),
+            "the original claimant can resume after an interrupted migration"
+        );
+        assert!(legacy.is_file(), "claims never remove the recovery source");
+        drop(tmp);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn concurrent_legacy_migration_claims_have_one_winner() {
+        let _tmp = scratch_home();
+        let package = "dev.qos.concurrent-claim";
+        fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut threads = Vec::new();
+        for room in ["room-a", "room-b"] {
+            let barrier = std::sync::Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                DocStore::claim_legacy_package_migration(package, room).unwrap()
+            }));
+        }
+        let wins = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "atomic create gives one room the source");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn torn_legacy_claim_recovers_without_granting_two_rooms() {
+        let _tmp = scratch_home();
+        let package = "dev.qos.torn-claim";
+        let root = cli::standalone_state_dir(package);
+        fs::create_dir_all(&root).unwrap();
+        // Shape left by the old create-then-write implementation if it died
+        // between those syscalls.  It has no valid owner, so recovery uses a
+        // separate atomic claim rather than replacing this file in place.
+        fs::write(root.join(LEGACY_PACKAGE_ROOM_CLAIM), b"room-a").unwrap();
+        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+        assert!(!DocStore::claim_legacy_package_migration(package, "room-b").unwrap());
+        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
     }
 
     /// The containment boundary: an app that lies about its own package id must
