@@ -1263,7 +1263,11 @@ mod tests {
             doc: &doc,
             doc_root: &automerge::ROOT,
         });
-        assert_eq!(out.len(), Action::ALL.len());
+        assert!(
+            Action::ALL
+                .iter()
+                .all(|action| out.iter().any(|result| result.id == action.id))
+        );
         assert!(out.iter().all(|r| r.score == 0));
     }
 
