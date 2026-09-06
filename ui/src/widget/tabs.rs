@@ -15,6 +15,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// Unpainted now, but `needs_animation_frame` and a regression test still
 /// gate on it.
@@ -190,9 +191,18 @@ pub struct TabBar {
     /// An active tab exists in every group; only the focused group's active tab
     /// receives the accent keyline.
     group_focus: GroupFocus,
+    /// The tab list is one keyboard stop. Arrow/Home/End then select a tab
+    /// inside the list, matching the native tab-list convention without
+    /// flooding ordinary Tab traversal with every individual pill.
+    keyboard_focus: bool,
     rect: Rect,
     tab_rects: Vec<Rect>,
+    /// The 18px visual close chips. Kept separate from the larger pointer
+    /// targets so the row stays quiet while closing remains easy to hit.
     close_rects: Vec<Rect>,
+    /// At least a 32px square whenever a close chip is visible. The target is
+    /// deliberately inside the pill, never spilling into a neighbouring tab.
+    close_hit_rects: Vec<Rect>,
     /// Hover-only maximize-icon hit regions, aligned 1:1 with `tabs`.
     max_rects: Vec<Rect>,
     /// Hover-only "search in app" hit regions, aligned 1:1 with `tabs`.
@@ -280,9 +290,11 @@ impl TabBar {
             tabs,
             active_id,
             group_focus: GroupFocus::Focused,
+            keyboard_focus: false,
             rect: Rect::ZERO,
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
+            close_hit_rects: Vec::new(),
             max_rects: Vec::new(),
             search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
@@ -689,7 +701,7 @@ impl TabBar {
         if !(close_affordance_visible(look, is_pinned) && close_rect_target.area() > 0.0) {
             return;
         }
-        let alpha = chip_alpha_at(zone, CLOSE_INSET + CLOSE_W);
+        let alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
         let close_r = shift_rect(close_rect_target, vello::kurbo::Vec2::new(dx, dy));
         let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
@@ -772,7 +784,7 @@ impl TabBar {
 
         let max_rect_target = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if self.show_maximize && max_rect_target.area() > 0.0 {
-            let alpha = chip_alpha_at(zone, CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W);
+            let alpha = chip_alpha_at(zone, CLOSE_HIT_PX + ACTION_GAP + ACTION_W);
             let max_r = shift_rect(max_rect_target, vello::kurbo::Vec2::new(dx, dy));
             let max_hover = Some(i) == self.hover_max_idx;
             if max_hover {
@@ -1177,6 +1189,38 @@ impl TabBar {
             self.active_id = id;
         }
     }
+
+    /// Move the selected tab within a focused tab list. The list itself is one
+    /// Tab-stop; once it has focus, the standard tab-list keys choose among
+    /// its pills. Returns `true` only for a key this widget consumed.
+    fn handle_keyboard_navigation(&mut self, key: &Key) -> bool {
+        if !self.keyboard_focus || self.tabs.is_empty() {
+            return false;
+        }
+        let current = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == self.active_id)
+            .unwrap_or(0);
+        let last = self.tabs.len().saturating_sub(1);
+        let target = match key {
+            Key::Named(NamedKey::ArrowLeft) => current.checked_sub(1).unwrap_or(last),
+            Key::Named(NamedKey::ArrowRight) => {
+                if current == last {
+                    0
+                } else {
+                    current.saturating_add(1)
+                }
+            }
+            Key::Named(NamedKey::Home) => 0,
+            Key::Named(NamedKey::End) => last,
+            _ => return false,
+        };
+        if let Some(tab) = self.tabs.get(target) {
+            self.active_id = tab.id;
+        }
+        true
+    }
     pub fn is_pinned(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
     }
@@ -1394,9 +1438,27 @@ impl TabBar {
         self.tabs
             .iter()
             .position(|tab| tab.id == tab_id)
-            .and_then(|index| self.close_rects.get(index).copied())
+            .and_then(|index| self.close_hit_rect(index))
             .filter(|rect| rect.area() > 0.0)
     }
+
+    /// The pointer target for a close glyph. During a live layout this is the
+    /// 32px target at the pill's trailing edge; the visual glyph itself stays
+    /// compact. The fallback keeps focused geometry tests that seed only the
+    /// visual rects representative of the pre-layout state.
+    fn close_hit_rect(&self, index: usize) -> Option<Rect> {
+        self.close_hit_rects
+            .get(index)
+            .copied()
+            .filter(|rect| rect.area() > 0.0)
+            .or_else(|| {
+                self.close_rects
+                    .get(index)
+                    .copied()
+                    .filter(|rect| rect.area() > 0.0)
+            })
+    }
+
     pub fn take_context_menu(&mut self) -> Option<(u64, Point)> {
         self.pending_context_menu.take()
     }
@@ -1454,6 +1516,7 @@ impl TabBar {
             .tab_rects
             .iter_mut()
             .chain(self.close_rects.iter_mut())
+            .chain(self.close_hit_rects.iter_mut())
             .chain(self.max_rects.iter_mut())
             .chain(self.search_rects.iter_mut())
         {
@@ -1644,8 +1707,8 @@ impl TabBar {
     }
 }
 
-pub const TAB_BAR_HEIGHT: f64 = 40.0;
-/// 40 – 2×6 = 28 px pill height.
+pub const TAB_BAR_HEIGHT: f64 = 44.0;
+/// 44 – 2×6 = 32 px pill height and pointer-sized + affordance.
 pub const TAB_PILL_INSET_Y: f64 = 6.0;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
@@ -1653,6 +1716,8 @@ pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 const PILL_GAP: f64 = 6.0;
 const PILL_PAD_X: f64 = 12.0;
 const CLOSE_W: f64 = 18.0;
+/// The glyph remains compact; its pointer target does not.
+const CLOSE_HIT_PX: f64 = 32.0;
 const CLOSE_INSET: f64 = 3.0;
 /// Narrower than the close chip: close must stay a comfortable pointer
 /// target; maximize/search are secondary and also reachable from the
@@ -1669,7 +1734,7 @@ const ACCENT_DOT_R: f64 = 4.0;
 /// smaller than the accent dot so the two never read as the same mark.
 const MODIFIED_DOT_R: f64 = 3.5;
 /// Fits an app glyph, a couple of characters, and the close chip.
-const PILL_MIN_PX: f64 = 76.0;
+const PILL_MIN_PX: f64 = 84.0;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -1680,7 +1745,7 @@ const MIN_TITLE_PX: f64 = 40.0;
 
 /// Right edge to the left edge of the leftmost revealed chip: close, then
 /// maximize, then search.
-const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+const CHIP_CLUSTER_W: f64 = CLOSE_HIT_PX + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
 
 /// Gap between title and trailing chip; must be at least [`CHIP_FADE_PX`] for
 /// a settled pill to paint its cluster at full opacity.
@@ -1710,7 +1775,7 @@ impl Reveal {
     pub(crate) const fn reserve(self) -> f64 {
         match self {
             Reveal::None => PILL_PAD_X,
-            Reveal::Close => CLOSE_INSET + CLOSE_W + TITLE_CHIP_GAP,
+            Reveal::Close => CLOSE_HIT_PX + TITLE_CHIP_GAP,
             Reveal::Full => CHIP_CLUSTER_W + TITLE_CHIP_GAP,
         }
     }
@@ -1806,15 +1871,26 @@ fn chip_rects(
     }
     let chip_y0 = r.y0 + 4.0;
     let chip_y1 = r.y1 - 4.0;
+    let close_target_x0 = r.x1 - CLOSE_HIT_PX;
     let close_x0 = r.x1 - close_w - close_inset;
-    let max_x0 = close_x0 - max_w - ACTION_GAP;
+    // Secondary actions sit outside the close target. This keeps the 32px
+    // close target from swallowing a visible maximize/search button.
+    let max_x0 = close_target_x0 - max_w - ACTION_GAP;
     let search_x0 = max_x0 - search_w - ACTION_GAP;
-    let close = if effective >= CLOSE_INSET + CLOSE_W {
-        Rect::new(close_x0, chip_y0, close_x0 + close_w, chip_y1)
+    let close = if effective >= CLOSE_HIT_PX {
+        // The close glyph remains an 18px visual, centred in the larger pill.
+        // Its 32px pointer target is derived separately in `apply_layout`.
+        let close_glyph_y0 = r.center().y - close_w / 2.0;
+        Rect::new(
+            close_x0,
+            close_glyph_y0,
+            close_x0 + close_w,
+            close_glyph_y0 + close_w,
+        )
     } else {
         Rect::ZERO
     };
-    let max_rect = if effective >= CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W {
+    let max_rect = if effective >= CLOSE_HIT_PX + ACTION_GAP + ACTION_W {
         Rect::new(max_x0, chip_y0, max_x0 + max_w, chip_y1)
     } else {
         Rect::ZERO
@@ -1836,7 +1912,7 @@ impl Widget for TabBar {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
-        // `TAB_BAR_HEIGHT` is a fixed 40px layout constant, well inside `f32`'s
+        // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
         #[allow(
             clippy::cast_possible_truncation,
@@ -1865,12 +1941,14 @@ impl Widget for TabBar {
         );
         self.tab_rects.clear();
         self.close_rects.clear();
+        self.close_hit_rects.clear();
         self.max_rects.clear();
         self.search_rects.clear();
         // Pre-size so the visual-order pass can write `tab_rects[data_idx]`
         // directly — data index stays the canonical key for every cache.
         self.tab_rects.resize(self.tabs.len(), Rect::ZERO);
         self.close_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.close_hit_rects.resize(self.tabs.len(), Rect::ZERO);
         self.max_rects.resize(self.tabs.len(), Rect::ZERO);
         self.search_rects.resize(self.tabs.len(), Rect::ZERO);
         self.reveal_px.clear();
@@ -1923,6 +2001,12 @@ impl Widget for TabBar {
                 max_w,
                 search_w,
             );
+            let close_hit = if close.area() > 0.0 {
+                let hit_w = CLOSE_HIT_PX.min(r.width());
+                Rect::new(r.x1 - hit_w, r.y0, r.x1, r.y1)
+            } else {
+                Rect::ZERO
+            };
             if let Some(slot) = self.reveal_px.get_mut(i) {
                 *slot = effective;
             }
@@ -1931,6 +2015,9 @@ impl Widget for TabBar {
             }
             if let Some(slot) = self.close_rects.get_mut(i) {
                 *slot = close;
+            }
+            if let Some(slot) = self.close_hit_rects.get_mut(i) {
+                *slot = close_hit;
             }
             if let Some(slot) = self.max_rects.get_mut(i) {
                 *slot = max_rect;
@@ -1986,6 +2073,7 @@ impl Widget for TabBar {
             .retain(|_, started| started.elapsed() < fade_window);
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
+        self.draw_keyboard_focus(scene, transform, theme);
         self.draw_new_tab_chip(scene, transform, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform);
@@ -2000,10 +2088,17 @@ impl Widget for TabBar {
         _s: &mut AutoCommit,
         _p: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && self.handle_keyboard_navigation(&event.logical_key)
+        {
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.on_cursor_moved(*position, scale_factor, handled);
@@ -2032,6 +2127,9 @@ impl Widget for TabBar {
                 ..
             } => {
                 self.on_left_press(handled);
+                if *handled {
+                    *focus_target = Some(node_id);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -2139,6 +2237,15 @@ impl Widget for TabBar {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        !self.tabs.is_empty()
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.keyboard_focus = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.keyboard_focus
     }
     fn wants_pointer_capture(&self) -> bool {
         self.press_origin.is_some() || self.pending_drag.is_some()
@@ -2346,6 +2453,42 @@ impl TabBar {
                 scene.pop_layer();
             }
         }
+    }
+
+    /// A focus ring belongs on the active pill, not the whole row: selection
+    /// remains the active pill's glass/keyline treatment, while this outline
+    /// says that the *tab list* now owns keyboard input. The semantic focus
+    /// and the painted target therefore stay in lockstep under high contrast
+    /// and large text alike.
+    fn draw_keyboard_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if !self.keyboard_focus {
+            return;
+        }
+        let Some((idx, _)) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.id == self.active_id)
+        else {
+            return;
+        };
+        let Some(rect) = self
+            .tab_rects
+            .get(idx)
+            .copied()
+            .filter(|rect| rect.area() > 0.0)
+        else {
+            return;
+        };
+        let ring_rect = rect.inset(1.0);
+        let ring = RoundedRect::from_rect(ring_rect, (ring_rect.height() / 2.0).max(0.0));
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &ring,
+        );
     }
 
     /// The idle/hover "+" new-tab chip, painted after the pills so a springing
@@ -2589,10 +2732,8 @@ impl TabBar {
                 .get(i)
                 .is_some_and(|t| self.pinned_ids.contains(&t.id))
         };
-        self.hover_close_idx = self
-            .close_rects
-            .iter()
-            .position(|r| r.contains(p))
+        self.hover_close_idx = (0..self.tabs.len())
+            .find(|&i| self.close_hit_rect(i).is_some_and(|r| r.contains(p)))
             .filter(|&i| !is_pinned_at(i));
         self.hover_max_idx = self
             .max_rects
@@ -2657,10 +2798,11 @@ impl TabBar {
                 .get(i)
                 .is_some_and(|t| self.pinned_ids.contains(&t.id))
         };
-        let close_idx = self
-            .close_rects
-            .iter()
-            .position(|r| r.contains(cursor_pos))
+        let close_idx = (0..self.tabs.len())
+            .find(|&i| {
+                self.close_hit_rect(i)
+                    .is_some_and(|r| r.contains(cursor_pos))
+            })
             .filter(|&i| !is_pinned_at(i));
         let max_idx = self
             .max_rects
@@ -4869,6 +5011,35 @@ mod tests {
     }
 
     #[test]
+    fn focused_tab_list_uses_standard_arrow_home_and_end_navigation() {
+        let mut b = bar();
+        assert!(
+            Widget::is_focusable(&b),
+            "a non-empty tab strip is one Tab stop"
+        );
+        assert!(
+            !b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowRight)),
+            "unfocused tab strips must not steal the application's arrow keys"
+        );
+
+        Widget::set_focus(&mut b, true);
+        assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowRight)));
+        assert_eq!(b.active_id(), 2);
+        assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::End)));
+        assert_eq!(b.active_id(), 3);
+        assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowRight)));
+        assert_eq!(b.active_id(), 1, "right wraps within the tab list");
+        assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::Home)));
+        assert_eq!(b.active_id(), 1);
+        assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowLeft)));
+        assert_eq!(b.active_id(), 3, "left wraps within the tab list");
+
+        let node = Widget::accessibility(&b).expect("tab bar semantics");
+        assert!(node.state.focusable);
+        assert!(node.state.focused, "AT sees the same focus the ring paints");
+    }
+
+    #[test]
     fn synthetic_tab_activation_selects_by_stable_tab_id() {
         let mut b = bar();
         assert!(Widget::perform_semantic_action(
@@ -5002,6 +5173,34 @@ mod tests {
                 bar_rect.x1,
             );
         }
+    }
+
+    #[test]
+    fn close_control_has_a_32px_target_without_enlarging_its_glyph() {
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+            ],
+            1,
+        );
+        lay_out_at_width(&mut b, 640.0);
+
+        let visual = b.close_rects[0];
+        let hit = b.close_hit_rect(0).expect("active tab has a close target");
+        assert_eq!(visual.width(), CLOSE_W, "the × visual stays compact");
+        assert_eq!(visual.height(), CLOSE_W, "the × visual stays compact");
+        assert!(
+            hit.width() >= CLOSE_HIT_PX && hit.height() >= CLOSE_HIT_PX,
+            "close requires a 32px pointer target, got {hit:?}",
+        );
+        assert!(
+            hit.contains(visual.center()),
+            "the pointer target must own the visible ×"
+        );
+        assert_eq!(TAB_BAR_HEIGHT, 44.0);
+        assert_eq!(NEW_TAB_CHIP_PX, 32.0);
     }
 
     /// `visible_title` is the function `draw` renders through, so this asserts
