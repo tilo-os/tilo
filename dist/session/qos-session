@@ -13,6 +13,7 @@ set -eu
 QOS_SHELL=/usr/bin/qos-shell
 SYSTEMCTL=/usr/bin/systemctl
 SYSTEMD_CAT=/usr/bin/systemd-cat
+DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 SESSION_TARGET=qos-graphical-session.target
 target_started=0
 environment_imported=0
@@ -40,15 +41,22 @@ if [ ! -x "$SYSTEMD_CAT" ]; then
     exit 1
 fi
 
+if [ ! -x "$DBUS_UPDATE" ]; then
+    echo "qos-session: $DBUS_UPDATE is missing or not executable" >&2
+    exit 1
+fi
+
 stop_target() {
     if [ "$target_started" = 1 ]; then
         "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
         target_started=0
     fi
     if [ "$environment_imported" = 1 ]; then
-        # The user manager survives desktop switches.  Leave no qOS identity
-        # or display selector behind even when starting the session target
-        # failed part-way through.
+        # D-Bus has no unset operation, so empty its qOS identity before
+        # removing every imported selector from the user manager. Do this
+        # even when starting the session target failed part-way through.
+        "$DBUS_UPDATE" --systemd \
+            XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
         "$SYSTEMCTL" --user unset-environment \
             DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
             XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
@@ -73,17 +81,24 @@ trap 'forward_signal HUP 129' HUP
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
 
-# A systemd user manager survives desktop switches. Remove display values from
-# the session that just ended, import qOS's identity, then own the standard
+# A systemd user manager and the D-Bus activation environment survive desktop
+# switches. Remove display values from the manager that just ended, then put
+# qOS's desktop identity in both activation paths before owning the standard
 # graphical-session targets for exactly as long as this compositor lives.
 # xdg-desktop-portal refuses activation unless graphical-session.target is
 # active and otherwise may retain the previous desktop's backend selection.
+#
+# The D-Bus update is also relevant to non-systemd services such as GCR's
+# SystemPrompter. It deliberately does not publish DISPLAY/WAYLAND_DISPLAY:
+# the compositor creates its socket after this wrapper starts, and the
+# activation API cannot safely guess or remove the previous socket value.
 "$SYSTEMCTL" --user unset-environment \
     DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
     XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
+"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null
+environment_imported=1
 "$SYSTEMCTL" --user import-environment \
     XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-environment_imported=1
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1
 

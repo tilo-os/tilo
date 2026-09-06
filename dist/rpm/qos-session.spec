@@ -55,6 +55,10 @@ Requires:       bubblewrap
 # compositor starts, but ordinary app workflows are incomplete.
 Requires:       xdg-desktop-portal
 Requires:       xdg-dbus-proxy
+# The session wrapper synchronizes desktop identity with both systemd's user
+# manager and classic D-Bus activation, so host services such as GCR's prompt
+# helper cannot retain the previous desktop's routing state.
+Requires:       dbus-tools
 # The wrapper owns graphical-session.target while qOS is logged in. This makes
 # standard session services available and stops them before another desktop
 # starts.
