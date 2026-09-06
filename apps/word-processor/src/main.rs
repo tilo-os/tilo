@@ -304,12 +304,11 @@ fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // The set is in-memory: this app's durable form is the file on disk,
         // not a per-record automerge store. What the set gives it is
         // identity, routing, and the room's index of which documents it holds.
-        let (room, room_autosave) = ui::persist::open("dev.qos.word-processor");
-        let records = ui::RecordSet::in_memory().with_home(
-            std::env::var("QOS_WORKSPACE_ID")
-                .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
-                .unwrap_or_default(),
-        );
+        let room_id = std::env::var("QOS_WORKSPACE_ID")
+            .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
+            .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
+        let (room, room_autosave) = ui::persist::open_room("dev.qos.word-processor", &room_id);
+        let records = ui::RecordSet::in_memory().with_home(room_id);
         let mut app = App::new(state, widget)
             .with_autosave(room_autosave)
             .with_records(records, room.doc);
