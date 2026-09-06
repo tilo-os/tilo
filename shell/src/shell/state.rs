@@ -3746,6 +3746,7 @@ impl WorkspaceTree {
             return false;
         };
         let mut changed = false;
+        let prior_strip_order: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
         let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
             replicated.into_iter().map(|s| (s.id, s)).collect();
 
@@ -3791,6 +3792,13 @@ impl WorkspaceTree {
             changed = true;
         }
         out.sort_by_key(|(order, id, _)| (*order, *id));
+        if !prior_strip_order
+            .iter()
+            .copied()
+            .eq(out.iter().map(|(_, _, strip)| strip.id))
+        {
+            changed = true;
+        }
         ws.strips = out.into_iter().map(|(_, _, s)| s).collect();
 
         let ws_id = ws.id;
@@ -3829,6 +3837,8 @@ impl WorkspaceTree {
         }
         let mut by_group: std::collections::BTreeMap<u64, ReplicatedGroup> =
             rep.groups.into_iter().map(|g| (g.id, g)).collect();
+        let prior_group_order: Vec<u64> =
+            local.window_groups.iter().map(|group| group.id).collect();
 
         let mut out: Vec<(u64, u64, WindowGroup)> = Vec::new();
         for (i, group) in std::mem::take(&mut local.window_groups)
@@ -3850,6 +3860,13 @@ impl WorkspaceTree {
             *changed = true;
         }
         out.sort_by_key(|(order, id, _)| (*order, *id));
+        if !prior_group_order
+            .iter()
+            .copied()
+            .eq(out.iter().map(|(_, id, _)| *id))
+        {
+            *changed = true;
+        }
         local.window_groups = out.into_iter().map(|(_, _, g)| g).collect();
         local
     }
@@ -3867,6 +3884,7 @@ impl WorkspaceTree {
 
         let mut by_tab: std::collections::BTreeMap<u64, ReplicatedTab> =
             rep.tabs.into_iter().map(|t| (t.id, t)).collect();
+        let prior_tab_order: Vec<u64> = local.tabs.iter().map(|tab| tab.id).collect();
         let mut out: Vec<(u64, u64, Tab)> = Vec::new();
         for (i, tab) in std::mem::take(&mut local.tabs).into_iter().enumerate() {
             let tid = tab.id;
@@ -3899,6 +3917,13 @@ impl WorkspaceTree {
             *changed = true;
         }
         out.sort_by_key(|(order, id, _)| (*order, *id));
+        if !prior_tab_order
+            .iter()
+            .copied()
+            .eq(out.iter().map(|(_, id, _)| *id))
+        {
+            *changed = true;
+        }
         local.tabs = out.into_iter().map(|(_, _, t)| t).collect();
 
         // `active_tab` is not taken from `rep` — the document doesn't

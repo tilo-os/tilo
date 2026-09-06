@@ -563,6 +563,25 @@ impl WindowGroup {
         self.hosts.insert(clamped, (id, host));
     }
 
+    /// Move an existing tab to a persisted order without producing a
+    /// user-gesture one-shot.  The tab bar and content hosts are parallel
+    /// vectors, so a document-driven reorder has to move both or the pill
+    /// and visible application diverge.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.hosts.len() || to >= self.hosts.len() || from == to {
+            return false;
+        }
+        debug_assert_eq!(
+            self.bar.tabs().len(),
+            self.hosts.len(),
+            "WindowGroup parallel-vec invariant violated before a programmatic reorder"
+        );
+        self.bar.reorder(from, to);
+        let host = self.hosts.remove(from);
+        self.hosts.insert(to, host);
+        true
+    }
+
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
@@ -1001,20 +1020,9 @@ impl WindowGroup {
         // `bar.tabs` and `hosts` are a strictly-aligned 1:1 mapping; a
         // refactor that permutes only one would desync pill `i` from
         // content `i` — the debug_assert documents that invariant.
-        if let Some((from, to)) = self.bar.take_reorder() {
-            debug_assert_eq!(
-                self.bar.tabs().len(),
-                self.hosts.len(),
-                "WindowGroup parallel-vec invariant violated: bar.tabs.len() \
-                 ({}) != hosts.len() ({}). The bar's pill list and the host \
-                 content list must stay 1:1 — every mutation of one must be \
-                 mirrored on the other.",
-                self.bar.tabs().len(),
-                self.hosts.len(),
-            );
-            self.bar.reorder(from, to);
-            let item = self.hosts.remove(from);
-            self.hosts.insert(to, item);
+        if let Some((from, to)) = self.bar.take_reorder()
+            && self.reorder_tab(from, to)
+        {
             self.pending_tab_reorder = Some((from, to));
             handled = true;
         }
