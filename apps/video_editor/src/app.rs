@@ -34,9 +34,9 @@ use ui::widget::{
 };
 
 use crate::actions::{
-    VIDEO_EDITOR_ACTION_TYPE, VideoResourceCtx, delete_clip_action, remove_media_action,
-    ripple_delete_action, set_project_meta_action, split_clip_action, upsert_clip_action,
-    upsert_media_action, upsert_track_action,
+    VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx, clip_field_patch_action,
+    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
+    split_clip_action, upsert_clip_action, upsert_media_action, upsert_track_action,
 };
 use crate::doc::VideoDoc;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
@@ -828,8 +828,8 @@ impl NumField {
 }
 
 /// Which marker an inspector row addresses. A clip marker and a project
-/// marker are edited through different actions (a whole-clip write versus a
-/// project-meta write), so the row has to carry which it is.
+/// marker are edited through different actions (an optimistic clip-field
+/// patch versus a project-meta write), so the row has to carry which it is.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct MarkerRef {
     id: Uuid,
@@ -881,6 +881,12 @@ enum Drag {
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount {
         idx: usize,
+        /// The durable effect target prevents an old drag from applying to the
+        /// instance that later happened to occupy this row.
+        effect: Uuid,
+        /// The amount the gesture started from, used as the action's optimistic
+        /// precondition when it is committed.
+        expected_amount_bits: u64,
     },
     /// Dragging control point `idx` of `channel`'s tone curve. Released
     /// outside the editor's box, an interior point is removed — the standard
@@ -1252,6 +1258,12 @@ impl ShotScenario {
 
 pub struct VideoEditorApp {
     project: Project,
+    /// The local state each existing clip had immediately before the current
+    /// UI edit began. Optimistic actions diff this baseline against the local
+    /// result, then check only those old values against the live CRDT. They
+    /// must never diff a stale local result against a newer remote projection:
+    /// doing so would turn unrelated remote edits into reverse patches.
+    clip_edit_bases: HashMap<ClipId, Clip>,
     /// Deterministic capture scenario applied once during the first `sync`.
     shot_scenario: ShotScenario,
     /// Guards the one-time scenario setup so it doesn't re-run every sync.
@@ -1684,6 +1696,7 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             project: Project::new("Untitled"),
+            clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
             shot_applied: false,
             shot_interaction_applied: false,
@@ -2975,23 +2988,88 @@ impl VideoEditorApp {
     // remembers it for the covenant test. There is no per-edit `needs_commit`
     // flag any more — the host records exactly one undo boundary per event.
 
-    /// Dispatch a whole-clip write for `id` — the single path add / move / trim
-    /// / grade all funnel through. Carries the clip's final shape, so it replays
-    /// deterministically with no per-frame churn.
+    /// Dispatch an optimistic field patch for an existing durable clip. New
+    /// clips still need their complete first write; subsequent UI edits never
+    /// carry an old snapshot of unrelated fields.
     fn dispatch_clip(&mut self, doc: &mut AutoCommit, id: ClipId) {
         if let Some(c) = self.project.clip(id).cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+            if VideoDoc::load_project(doc).clip(id).is_some() {
+                self.dispatch_existing_clips(doc, &[id]);
+            } else {
+                self.actions
+                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+            }
         }
     }
 
-    /// Write `id` and every clip linked to it. What an edit that follows the
-    /// link commits: the two halves are written inside one event, so they land
-    /// on one undo boundary and a peer never sees one without the other.
-    fn dispatch_clip_linked(&mut self, doc: &mut AutoCommit, id: ClipId) {
-        for gid in self.project.link_group(id) {
-            self.dispatch_clip(doc, gid);
+    /// Commit several already-persisted clips as one all-or-nothing optimistic
+    /// patch. This is the membership path for link/unlink as well as the
+    /// ordinary linked geometry edits: every precondition is evaluated against
+    /// the same document projection before the action writes its first key.
+    fn dispatch_existing_clips(&mut self, doc: &mut AutoCommit, ids: &[ClipId]) {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        let current = VideoDoc::load_project(doc);
+        let mut patches = Vec::new();
+        for id in &ids {
+            let (Some(before), Some(after)) =
+                (self.clip_edit_bases.get(id), self.project.clip(*id))
+            else {
+                // Existing edits must have captured their local starting
+                // point. Without it, comparing the edited local model to the
+                // current CRDT could recreate a collaborator's unrelated
+                // change as a reverse patch.
+                return;
+            };
+            if current.clip(*id).is_none() {
+                return;
+            }
+            let VideoEditorAction::PatchClipFields { clip, changes } =
+                clip_field_patch_action(before, after)
+            else {
+                return;
+            };
+            if !changes.is_empty() {
+                patches.push(crate::actions::ClipPatchData { clip, changes });
+            }
         }
+        if !patches.is_empty() {
+            self.actions.dispatch(
+                doc,
+                VIDEO_EDITOR_ACTION_TYPE,
+                &VideoEditorAction::PatchClipsFields { patches },
+            );
+        }
+        // Whether the edit changed a field or was a harmless no-op, this
+        // authoring attempt is over. A later UI gesture gets a fresh baseline.
+        for id in ids {
+            self.clip_edit_bases.remove(&id);
+        }
+    }
+
+    /// Record a clip only once per local interaction. Drag frames all use the
+    /// same baseline, so release emits one patch from press to final position.
+    fn remember_clip_before(&mut self, id: ClipId) {
+        if !self.clip_edit_bases.contains_key(&id)
+            && let Some(clip) = self.project.clip(id).cloned()
+        {
+            self.clip_edit_bases.insert(id, clip);
+        }
+    }
+
+    /// Write the locally changed members of `id`'s link group together. The
+    /// baseline map is the authoritative changed-member set: a locked follower
+    /// is intentionally not edited, so it must not abandon editable members
+    /// merely because it has no local before snapshot.
+    fn dispatch_clip_linked(&mut self, doc: &mut AutoCommit, id: ClipId) {
+        let group: Vec<_> = self
+            .project
+            .link_group(id)
+            .into_iter()
+            .filter(|member| self.clip_edit_bases.contains_key(member))
+            .collect();
+        self.dispatch_existing_clips(doc, &group);
     }
 
     // ---- selection ------------------------------------------------------
@@ -3371,11 +3449,12 @@ impl VideoEditorApp {
             .project
             .placement_track(TrackKind::Audio, None)
             .unwrap_or_else(|| self.ensure_track_of_kind(doc, TrackKind::Audio));
+        self.remember_clip_before(video_clip);
         let audio = self.project.add_linked_audio(video_clip, audio_track)?;
-        // The picture clip is written too: it is the half that just gained the
-        // link id, and a peer that only saw the audio clip would have an
-        // orphan.
-        self.dispatch_clip(doc, video_clip);
+        // The picture is already durable, so only its newly assigned group
+        // membership is patched. The audio half is genuinely new and gets its
+        // one allowed complete first write below.
+        self.dispatch_existing_clips(doc, &[video_clip]);
         self.dispatch_clip(doc, audio);
         Some(audio)
     }
@@ -3384,10 +3463,11 @@ impl VideoEditorApp {
     /// ordinary independent clips. Writes exactly the clips that changed.
     fn unlink_selected(&mut self, doc: &mut AutoCommit) {
         let ids = self.edit_targets();
-        let changed = self.project.unlink_clips(&ids);
-        for id in changed {
-            self.dispatch_clip(doc, id);
+        for id in &ids {
+            self.remember_clip_before(*id);
         }
+        let changed = self.project.unlink_clips(&ids);
+        self.dispatch_existing_clips(doc, &changed);
     }
 
     /// Put every editable selected clip into one fresh link group — the way
@@ -3405,12 +3485,13 @@ impl VideoEditorApp {
         {
             ids.push(sound);
         }
+        for id in &ids {
+            self.remember_clip_before(*id);
+        }
         if self.project.link_clips(&ids).is_none() {
             return;
         }
-        for id in ids {
-            self.dispatch_clip(doc, id);
-        }
+        self.dispatch_existing_clips(doc, &ids);
     }
 
     /// Re-time the selected clip and everything linked to it, and write them
@@ -3423,6 +3504,9 @@ impl VideoEditorApp {
             return;
         }
         let ids = self.linked_editable(id);
+        for id in &ids {
+            self.remember_clip_before(*id);
+        }
         self.project.set_speed_group(&ids, rate, reverse);
         self.dispatch_clip_linked(doc, id);
     }
@@ -3492,6 +3576,10 @@ impl VideoEditorApp {
             return;
         }
         let also = self.linked_followers(id);
+        self.remember_clip_before(id);
+        for linked in &also {
+            self.remember_clip_before(*linked);
+        }
         self.project.trim_in_with(id, delta, &also);
         self.dispatch_clip_linked(doc, id);
     }
@@ -3512,6 +3600,10 @@ impl VideoEditorApp {
             return;
         }
         let also = self.linked_followers(id);
+        self.remember_clip_before(id);
+        for linked in &also {
+            self.remember_clip_before(*linked);
+        }
         self.project.trim_out_with(id, delta, &also);
         self.dispatch_clip_linked(doc, id);
     }
@@ -3520,19 +3612,21 @@ impl VideoEditorApp {
     /// Snaps each result to the frame grid. One event → one undo boundary,
     /// so a multi-clip nudge is a single Ctrl+Z.
     fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
-        for id in self.edit_targets() {
+        let ids = self.edit_targets();
+        for id in &ids {
+            self.remember_clip_before(*id);
             let new_start = self
                 .project
-                .clip(id)
+                .clip(*id)
                 .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
                 .unwrap_or(0.0);
-            self.project.move_clip(id, new_start);
-            self.dispatch_clip(doc, id);
+            self.project.move_clip(*id, new_start);
         }
+        self.dispatch_existing_clips(doc, &ids);
     }
 
-    /// Apply `edit` to the selected clip and dispatch a whole-clip write. The
-    /// single write-through path for a *discrete* per-clip field edit (a
+    /// Apply `edit` to the selected clip and dispatch an optimistic narrow
+    /// patch. The single write-through path for a *discrete* per-clip field edit (a
     /// transition / palette click, or a keyboard-driven grade) — each is one
     /// undo step. Continuous slider drags use [`Self::preview_edit`] +
     /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
@@ -3541,6 +3635,7 @@ impl VideoEditorApp {
         if !self.project.clip_editable(id) {
             return;
         }
+        self.remember_clip_before(id);
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
@@ -3555,6 +3650,7 @@ impl VideoEditorApp {
         if !self.project.clip_editable(id) {
             return;
         }
+        self.remember_clip_before(id);
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
@@ -3795,6 +3891,9 @@ impl VideoEditorApp {
                     .map(|c| c.speed.reverse)
                     .unwrap_or(false);
                 let ids = self.linked_editable(id);
+                for linked in &ids {
+                    self.remember_clip_before(*linked);
+                }
                 self.project.set_speed_group(&ids, v, rev);
             }
             NumField::TitleSize => self.preview_media_edit(move |m| {
@@ -4213,7 +4312,7 @@ impl VideoEditorApp {
     }
 
     /// Commit a marker rename through whichever action owns that marker: a
-    /// project-meta write for a timeline marker, a whole-clip write for one
+    /// project-meta write for a timeline marker, a clip-field patch for one
     /// pinned to a clip.
     /// Returns whether the write was accepted — an empty name is refused,
     /// and the caller has to say so rather than silently restoring the old
@@ -4224,7 +4323,7 @@ impl VideoEditorApp {
     }
 
     /// Write one of a marker's texts through whichever action owns that
-    /// marker: a project-meta write for a timeline marker, a whole-clip write
+    /// marker: a project-meta write for a timeline marker, a clip-field patch
     /// for one pinned to a clip.
     ///
     /// An empty **name** is refused — a marker with no name is a dot nobody
@@ -4273,6 +4372,7 @@ impl VideoEditorApp {
                 true
             }
             Some(cid) => {
+                self.remember_clip_before(cid);
                 let changed = self
                     .project
                     .clip_mut(cid)
@@ -4324,6 +4424,7 @@ impl VideoEditorApp {
                 );
             }
             Some(cid) => {
+                self.remember_clip_before(cid);
                 let gone = self
                     .project
                     .clip_mut(cid)
@@ -4446,19 +4547,80 @@ impl VideoEditorApp {
         self.edit_selected(doc, move |c| c.transition = t);
     }
     fn add_effect_to_selected(&mut self, doc: &mut AutoCommit, kind: EffectKind) {
-        self.edit_selected(doc, move |c| c.add_effect(kind));
+        let Some(id) = self.selected() else { return };
+        let Some(clip) = self.project.clip(id) else {
+            return;
+        };
+        let expected_stack = clip.effects.iter().map(|effect| effect.id).collect();
+        let effect = crate::model::ClipEffect::new(kind);
+        if let Some(clip) = self.project.clip_mut(id) {
+            clip.effects.push(effect);
+        }
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &VideoEditorAction::AddEffect {
+                clip: id.to_string(),
+                expected_stack,
+                effect,
+            },
+        );
     }
     fn remove_effect_from_selected(&mut self, doc: &mut AutoCommit, idx: usize) {
-        self.edit_selected(doc, move |c| c.remove_effect(idx));
+        let Some(id) = self.selected() else { return };
+        let Some(effect) = self
+            .project
+            .clip(id)
+            .and_then(|clip| clip.effects.get(idx))
+            .copied()
+        else {
+            return;
+        };
+        if let Some(clip) = self.project.clip_mut(id) {
+            clip.effects.remove(idx);
+        }
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &VideoEditorAction::RemoveEffect {
+                clip: id.to_string(),
+                effect: effect.id.to_string(),
+                expected_kind: effect.kind,
+                expected_amount_bits: effect.amount.to_bits(),
+            },
+        );
     }
     fn move_effect_selected(&mut self, doc: &mut AutoCommit, idx: usize, up: bool) {
-        self.edit_selected(doc, move |c| {
-            if up {
-                c.move_effect_up(idx);
-            } else {
-                c.move_effect_down(idx);
-            }
-        });
+        let Some(id) = self.selected() else { return };
+        let Some(clip) = self.project.clip(id) else {
+            return;
+        };
+        let Some(target) = (if up {
+            idx.checked_sub(1)
+        } else {
+            (idx + 1 < clip.effects.len()).then_some(idx + 1)
+        }) else {
+            return;
+        };
+        let Some(effect) = clip.effects.get(idx) else {
+            return;
+        };
+        let neighbour = clip.effects[target].id;
+        let effect_id = effect.id;
+        if let Some(clip) = self.project.clip_mut(id) {
+            clip.effects.swap(idx, target);
+        }
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &VideoEditorAction::MoveEffect {
+                clip: id.to_string(),
+                effect: effect_id.to_string(),
+                expected_index: idx,
+                neighbour: neighbour.to_string(),
+                up,
+            },
+        );
     }
     /// Open the "Add effect" picker (the shared context menu) at `at`.
     fn open_effect_menu(&mut self, at: Point) {
@@ -5034,6 +5196,25 @@ impl VideoEditorApp {
                     .cloned()
                     .ok_or_else(|| format!("clip is no longer available: {id}"))?;
                 self.selection.select_only(id);
+                self.selected_media = Some(clip.media);
+                self.seek_to(clip.start);
+                self.reveal_inspector();
+            }
+            VideoEditorOperation::RevealEffect { clip, effect } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid clip id: {clip}"))?;
+                let effect_id = effect
+                    .parse::<Uuid>()
+                    .map_err(|_| format!("invalid effect id: {effect}"))?;
+                let clip = self
+                    .project
+                    .clip(clip_id)
+                    .ok_or_else(|| format!("effect's clip is no longer available: {clip_id}"))?;
+                if clip.effect_index(effect_id).is_none() {
+                    return Err(format!("effect is no longer available: {effect_id}"));
+                }
+                self.selection.select_only(clip_id);
                 self.selected_media = Some(clip.media);
                 self.seek_to(clip.start);
                 self.reveal_inspector();
@@ -7665,6 +7846,7 @@ impl Widget for VideoEditorApp {
         // go, so an edit that arrived meanwhile is not lost.
         if self.project_reload_pending && !self.drag_is_editing() {
             self.project = VideoDoc::load_project(state);
+            self.clip_edit_bases.clear();
             self.project_reload_pending = false;
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
@@ -12176,7 +12358,19 @@ impl VideoEditorApp {
                 return;
             }
             if hit_slider(slider, p) {
-                self.drag = Some(Drag::EffectAmount { idx: i });
+                let Some(effect) = self
+                    .selected()
+                    .and_then(|id| self.project.clip(id))
+                    .and_then(|clip| clip.effects.get(i))
+                    .copied()
+                else {
+                    return;
+                };
+                self.drag = Some(Drag::EffectAmount {
+                    idx: i,
+                    effect: effect.id,
+                    expected_amount_bits: effect.amount.to_bits(),
+                });
                 let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
                 self.preview_edit(move |c| {
                     if let Some(e) = c.effects.get_mut(i) {
@@ -12673,6 +12867,7 @@ impl VideoEditorApp {
             &crate::actions::load_project_action(&project),
         );
         self.project = VideoDoc::load_project(doc);
+        self.clip_edit_bases.clear();
         self.doc_heads = doc.get_heads();
         self.saved_heads = Some(self.doc_heads.clone());
         self.project_path = Some(path.clone());
@@ -13046,12 +13241,14 @@ impl VideoEditorApp {
                 // by the same time delta so a multi-clip drag stays rigid.
                 // Only the grabbed clip changes lane; the others would need a
                 // parallel lane each, which the timeline cannot promise.
+                self.remember_clip_before(id);
                 self.project.move_clip_to(id, target, new_start);
                 if dt != 0.0 {
                     for other in self.edit_targets() {
                         if other == id {
                             continue;
                         }
+                        self.remember_clip_before(other);
                         let s = self.project.clip(other).map(|c| c.start).unwrap_or(0.0);
                         self.project.move_clip(other, (s + dt).max(0.0));
                     }
@@ -13071,6 +13268,10 @@ impl VideoEditorApp {
                 // The linked half takes the amount this clip could actually
                 // take, so a trim that clamps on one of them clamps on both.
                 let also = self.linked_followers(id);
+                self.remember_clip_before(id);
+                for linked in &also {
+                    self.remember_clip_before(*linked);
+                }
                 self.project.trim_in_with(id, delta, &also);
             }
             Drag::TrimOut { id } => {
@@ -13078,6 +13279,10 @@ impl VideoEditorApp {
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
                 let also = self.linked_followers(id);
+                self.remember_clip_before(id);
+                for linked in &also {
+                    self.remember_clip_before(*linked);
+                }
                 self.project.trim_out_with(id, delta, &also);
             }
             Drag::Opacity | Drag::Volume | Drag::Brightness | Drag::Contrast | Drag::Saturation => {
@@ -13123,7 +13328,7 @@ impl VideoEditorApp {
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
-            Drag::EffectAmount { idx } => {
+            Drag::EffectAmount { idx, .. } => {
                 if let Some(slider) = self
                     .inspector_layout(r)
                     .effect_rows
@@ -13158,16 +13363,42 @@ impl VideoEditorApp {
             Drag::ClipMove { id, .. } => {
                 // The whole moved selection lands in one event, so the move —
                 // including the lane change and every clip carried along —
-                // is a single undo boundary.
-                self.dispatch_clip(doc, id);
-                for other in self.edit_targets() {
-                    if other != id {
-                        self.dispatch_clip(doc, other);
-                    }
+                // is a single all-or-nothing field patch rather than a row of
+                // stale whole-clip snapshots.
+                let mut ids = self.edit_targets();
+                if !ids.contains(&id) {
+                    ids.push(id);
                 }
+                self.dispatch_existing_clips(doc, &ids);
             }
             Drag::TrimIn { id } | Drag::TrimOut { id } => {
                 self.dispatch_clip_linked(doc, id);
+            }
+            Drag::EffectAmount {
+                idx,
+                effect,
+                expected_amount_bits,
+            } => {
+                let Some(id) = self.selected() else { return };
+                let Some(amount) = self
+                    .project
+                    .clip(id)
+                    .and_then(|clip| clip.effects.get(idx))
+                    .filter(|current| current.id == effect)
+                    .map(|current| current.amount)
+                else {
+                    return;
+                };
+                self.actions.dispatch(
+                    doc,
+                    VIDEO_EDITOR_ACTION_TYPE,
+                    &VideoEditorAction::SetEffectAmount {
+                        clip: id.to_string(),
+                        effect: effect.to_string(),
+                        expected_amount_bits,
+                        amount,
+                    },
+                );
             }
             Drag::Opacity
             | Drag::Volume
@@ -13176,8 +13407,7 @@ impl VideoEditorApp {
             | Drag::Saturation
             | Drag::FadeIn
             | Drag::FadeOut
-            | Drag::TransitionLen
-            | Drag::EffectAmount { .. } => {
+            | Drag::TransitionLen => {
                 if let Some(id) = self.selected() {
                     self.dispatch_clip(doc, id);
                 }
@@ -15902,7 +16132,7 @@ impl VideoEditorApp {
                     slider,
                     e.amount,
                     hit_slider(slider, self.last_mouse),
-                    self.drag == Some(Drag::EffectAmount { idx: i }),
+                    matches!(self.drag, Some(Drag::EffectAmount { idx, .. }) if idx == i),
                 );
                 // Remove.
                 if remove.contains(self.last_mouse) {
@@ -24599,6 +24829,7 @@ mod tests {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         let start = app.project.clip(id).unwrap().start;
         app.selection.select_only(id);
+        app.remember_clip_before(id);
         app.project
             .clip_mut(id)
             .unwrap()
@@ -25245,6 +25476,17 @@ mod tests {
             "an effect was added through the inspector"
         );
         assert_eq!(after.last().unwrap().kind, EffectKind::Grayscale);
+        let added: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("the add dispatched an action")
+                .payload,
+        )
+        .expect("the add action decodes");
+        assert!(
+            matches!(added, crate::actions::VideoEditorAction::AddEffect { .. }),
+            "the picker must not publish a whole-clip snapshot",
+        );
     }
 
     #[test]
@@ -25280,6 +25522,17 @@ mod tests {
             .collect();
         assert_eq!(kinds1[0], kinds0[1], "the second effect moved to the front");
         assert_eq!(kinds1[1], kinds0[0]);
+        let moved: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("the reorder dispatched an action")
+                .payload,
+        )
+        .expect("the reorder action decodes");
+        assert!(
+            matches!(moved, crate::actions::VideoEditorAction::MoveEffect { .. }),
+            "an inspector reorder must not publish a whole-clip snapshot",
+        );
         // Remove the head via its ✕.
         let l = app.inspector_layout(&r);
         let (_k, _u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
@@ -25289,6 +25542,53 @@ mod tests {
             after,
             kinds0.len() - 1,
             "the ✕ removed one effect from the CRDT"
+        );
+        let removed: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("the remove dispatched an action")
+                .payload,
+        )
+        .expect("the remove action decodes");
+        assert!(
+            matches!(
+                removed,
+                crate::actions::VideoEditorAction::RemoveEffect { .. }
+            ),
+            "an inspector remove must not publish a whole-clip snapshot",
+        );
+    }
+
+    #[test]
+    fn dragging_effect_amount_dispatches_a_named_effect_action() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(6.0).expect("drone clip").id;
+        app.selection.select_only(id);
+        let r = app.regions();
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let row = *app
+            .inspector_layout(&r)
+            .effect_rows
+            .first()
+            .expect("the fixture has an effect row");
+        let (_key, _up, _down, slider, _remove) = VideoEditorApp::effect_row_parts(row);
+        let want = slider.x0 + slider.width() * 0.25;
+        click(&mut app, &mut doc, want, slider.center().y);
+        release(&mut app, &mut doc);
+
+        let action: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("the intensity drag dispatched an action")
+                .payload,
+        )
+        .expect("the intensity action decodes");
+        assert!(
+            matches!(
+                action,
+                crate::actions::VideoEditorAction::SetEffectAmount { .. }
+            ),
+            "the effect slider must not publish a whole-clip snapshot",
         );
     }
 
@@ -27800,12 +28100,84 @@ mod tests {
         assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
         assert!(!app.project.is_linked(vid), "the pair came apart");
         assert!(!VideoDoc::load_project(&doc).is_linked(aid));
+        let unlinked: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("unlink dispatched an action")
+                .payload,
+        )
+        .expect("unlink action decodes");
+        assert!(
+            matches!(
+                unlinked,
+                crate::actions::VideoEditorAction::PatchClipsFields { .. }
+            ),
+            "unlink patches every existing member atomically"
+        );
 
         // …and the same control ties them back together.
         app.selection.set(vec![vid, aid]);
         assert_eq!(app.link_affordance(), Some(LinkAffordance::Link));
         assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
         assert!(app.project.is_linked(vid));
+        let linked: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("link dispatched an action")
+                .payload,
+        )
+        .expect("link action decodes");
+        assert!(
+            matches!(
+                linked,
+                crate::actions::VideoEditorAction::PatchClipsFields { .. }
+            ),
+            "link patches every existing member atomically"
+        );
+    }
+
+    #[test]
+    fn a_local_move_does_not_reverse_an_unrelated_remote_clip_edit() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.selected().expect("fixture selection");
+        let old_start = app.project.clip(id).expect("clip").start;
+
+        // Press/drag captured the local start. Before release a collaborator
+        // changes brightness in the CRDT; the local model has not reloaded
+        // because it is still rendering the drag preview.
+        app.remember_clip_before(id);
+        app.project.move_clip(id, old_start + 2.0);
+        let mut remote = VideoDoc::load_project(&doc);
+        remote.clip_mut(id).expect("clip").filters.brightness = 0.91;
+        VideoDoc::upsert_clip(&mut doc, remote.clip(id).expect("remote clip"));
+
+        app.dispatch_existing_clips(&mut doc, &[id]);
+        let action: crate::actions::VideoEditorAction = serde_json::from_slice(
+            &app.actions
+                .last_dispatched()
+                .expect("move dispatched a patch")
+                .payload,
+        )
+        .expect("move action decodes");
+        let crate::actions::VideoEditorAction::PatchClipsFields { patches } = action else {
+            panic!("existing move is a grouped field patch");
+        };
+        assert_eq!(patches.len(), 1);
+        assert!(patches[0].changes.iter().all(|patch| matches!(
+            patch,
+            crate::actions::ClipFieldPatch::Number {
+                field: crate::actions::ClipNumberField::Start,
+                ..
+            }
+        )));
+
+        let shared = VideoDoc::load_project(&doc);
+        let clip = shared.clip(id).expect("clip remains");
+        assert!((clip.start - (old_start + 2.0)).abs() < 1e-9);
+        assert!(
+            (clip.filters.brightness - 0.91).abs() < 1e-9,
+            "the local move must not reverse the remote brightness"
+        );
     }
 
     /// A project made before linked audio existed has to be able to get one,
@@ -28434,6 +28806,49 @@ mod tests {
         .expect("view marker");
         assert_eq!(app.selected(), Some(cid));
         assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effect_view_action_targets_its_instance_and_refuses_a_stale_id() {
+        let (mut app, doc) = app_and_doc();
+        let clip_id = app.project.clips[0].id;
+        let clip = app.project.clip_mut(clip_id).expect("fixture clip");
+        clip.add_effect(crate::model::EffectKind::Sepia);
+        clip.add_effect(crate::model::EffectKind::Sepia);
+        let effect_id = clip.effects[1].id;
+        let payload = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealEffect {
+            clip: clip_id.to_string(),
+            effect: effect_id.to_string(),
+        })
+        .expect("operation serializes");
+
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("live effect resolves"),
+        );
+        assert_eq!(app.selected(), Some(clip_id));
+
+        app.project
+            .clip_mut(clip_id)
+            .expect("fixture clip")
+            .remove_effect_id(effect_id);
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "a stale effect operation cannot resolve a duplicate by position",
+        );
     }
 
     /// The raw bytes of a rectangle of the frame.

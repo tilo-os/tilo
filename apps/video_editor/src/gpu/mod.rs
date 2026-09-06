@@ -1087,6 +1087,7 @@ mod tests {
         let mut c = compositor();
         let plain = c.frame(&p, 1.0, 64, 64, &mut NoSources);
         p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
+            id: uuid::Uuid::new_v4(),
             kind: EffectKind::Vignette,
             amount: 1.0,
         }];
@@ -1341,10 +1342,12 @@ mod tests {
         p.clip_mut(cid).unwrap().out_point = 10.0;
         p.clip_mut(cid).unwrap().effects = vec![
             ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Sepia,
                 amount: 0.7,
             },
             ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Vignette,
                 amount: 0.5,
             },
@@ -1368,10 +1371,12 @@ mod tests {
         // back to grey by the grayscale that follows it.
         p.clip_mut(cid).unwrap().effects = vec![
             ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Grayscale,
                 amount: 1.0,
             },
             ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Sepia,
                 amount: 1.0,
             },
@@ -1927,6 +1932,7 @@ mod tests {
             c.out_point = 50.0;
             c.opacity = 0.5;
             c.effects = vec![ClipEffect {
+                id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Invert,
                 amount: 1.0,
             }];
