@@ -30,17 +30,37 @@ pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
 /// Stable resource identity for a local place. Hex keeps the resource/action
 /// wire separator out of ids even when a Unix path contains control bytes.
 pub fn place_resource_id(path: &std::path::Path) -> String {
+    format!("files.place:{}", path_identity_suffix(path))
+}
+
+/// A path is an opaque filesystem name, not display text.  Resource ids cross
+/// the action door, where delimiters and control characters in a Unix filename
+/// must never alter the address.  Keep the encoding shared by folders and
+/// entries as well as Places so every Files resource remains round-trippable.
+fn path_identity_suffix(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
-    let encoded = path
-        .as_os_str()
+    path.as_os_str()
         .as_bytes()
         .iter()
         .fold(String::new(), |mut output, byte| {
             use std::fmt::Write as _;
             let _ = write!(output, "{byte:02x}");
             output
-        });
-    format!("files.place:{encoded}")
+        })
+}
+
+/// Stable, wire-safe identity for a currently presented directory.  The path
+/// is deliberately the identity here: ordinary host folders do not have a
+/// qOS record UUID, while collaborative records use [`record_resource_id`].
+pub fn folder_resource_id(path: &std::path::Path) -> String {
+    format!("files.folder:{}", path_identity_suffix(path))
+}
+
+/// Stable, wire-safe identity for an entry in the currently presented folder.
+/// Collaborative resources additionally publish their record UUID identity,
+/// which survives rename and move; this address is the local filesystem view.
+pub fn entry_resource_id(path: &std::path::Path) -> String {
+    format!("files.entry:{}", path_identity_suffix(path))
 }
 
 pub fn place_open_address(path: &std::path::Path) -> ActionAddress {
@@ -350,6 +370,16 @@ mod tests {
     fn place_resource_ids_are_wire_safe() {
         let address = place_open_address(PathBuf::from("/tmp/a\u{1f}b").as_path());
         assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
+    }
+
+    #[test]
+    fn folder_and_entry_resource_ids_are_wire_safe_and_kind_scoped() {
+        let path = PathBuf::from("/tmp/a\u{1f}b");
+        let folder = ActionAddress::new(folder_resource_id(&path), "refresh");
+        let entry = ActionAddress::new(entry_resource_id(&path), "open");
+        assert_eq!(ActionAddress::parse(&folder.encode()), Some(folder));
+        assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
+        assert_ne!(folder_resource_id(&path), entry_resource_id(&path));
     }
 
     #[test]
