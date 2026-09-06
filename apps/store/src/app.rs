@@ -99,6 +99,10 @@ const REPORT_NOTE_KEY: &str = "store.report_note";
 const PAGE_PREVIOUS_KEY: &str = "store.page_previous";
 const PAGE_NEXT_KEY: &str = "store.page_next";
 const PAGE_SIZE: usize = 48;
+/// The contextual action snapshot deliberately stays small. The retained
+/// global catalogue and `Widget::resource` resolve every omitted stable app
+/// on demand, so this never hides a catalogue entry from agents or Ctrl+K.
+const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReportRecord {
@@ -350,6 +354,135 @@ fn validate_remote_url(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
+    let action = item.action_kind(flatpak_available);
+    let code = action_code(action);
+    let payload = vec![item.id.clone(), code.to_string()];
+    let mut resource = Resource::new(format!("app:{}", item.id), "store.app", item.name.clone());
+    if let Ok(show) = ActionSpec::operation(
+        "show-details",
+        "Show app details",
+        OperationKind::View,
+        "store.view",
+        &item.id,
+    ) {
+        resource.actions.push(show);
+    }
+    add_store_item_action(
+        &mut resource,
+        code,
+        action.label(),
+        action,
+        payload,
+        flatpak_available,
+    );
+    if let Some(pin) = item.pin_action() {
+        add_store_item_action(
+            &mut resource,
+            action_code(pin),
+            pin.label(),
+            pin,
+            vec![item.id.clone(), action_code(pin).to_string()],
+            flatpak_available,
+        );
+    }
+    if let Some(remove) = item.remove_action() {
+        add_store_item_action(
+            &mut resource,
+            "remove",
+            "Remove",
+            remove,
+            vec![item.id.clone(), action_code(remove).to_string()],
+            flatpak_available,
+        );
+    }
+    for version in item.versions.iter().take(32) {
+        let label = if version.version.is_empty() {
+            "Version metadata unavailable".into()
+        } else {
+            format!("Version {}", version.version)
+        };
+        resource.children.push(Resource::new(
+            format!("app:{}:version:{}", item.id, version.version),
+            "store.version",
+            label,
+        ));
+    }
+    let review_label = match item.trust {
+        crate::StoreTrust::PublisherSigned => "Signature verified · no independent review",
+        crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+    };
+    resource.children.push(Resource::new(
+        format!("app:{}:review", item.id),
+        "store.review",
+        review_label,
+    ));
+    let report_action = crate::doc_actions::StoreDocumentAction::CreateReportDraft {
+        app_id: item.id.clone(),
+    };
+    if let Ok(report) = ActionSpec::immediate(
+        "draft-report",
+        "Create report draft",
+        crate::doc_actions::STORE_DOCUMENT_ACTION_TYPE,
+        &report_action,
+    ) {
+        resource.actions.push(report.with_contract(ActionContract {
+            risk: RiskLevel::Low,
+            confirmation: ConfirmationPolicy::None,
+            retry: RetryPolicy::Idempotent,
+            result: ResultSpec::None,
+            ..ActionContract::default()
+        }));
+    }
+    resource
+}
+
+fn add_store_item_action(
+    resource: &mut Resource,
+    id: &str,
+    label: &str,
+    action: ActionKind,
+    payload: Vec<String>,
+    flatpak_available: bool,
+) {
+    let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "store.app", &payload)
+    else {
+        return;
+    };
+    let destructive = matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove);
+    resource.actions.push(spec.with_contract(ActionContract {
+        availability: if action.requires_flatpak_host() && !flatpak_available {
+            Availability::Unavailable {
+                code: "flatpak_host_unavailable".into(),
+                reason: "Flatpak is not installed on this host; install it before using Flatpak catalog actions".into(),
+            }
+        } else {
+            Availability::Available
+        },
+        risk: if destructive {
+            RiskLevel::Destructive
+        } else {
+            RiskLevel::Low
+        },
+        confirmation: if destructive {
+            ConfirmationPolicy::Confirm
+        } else {
+            ConfirmationPolicy::None
+        },
+        retry: if matches!(
+            action,
+            ActionKind::Open | ActionKind::FlatpakOpen | ActionKind::NeedsFlatpakHost
+        ) {
+            RetryPolicy::AtMostOnce
+        } else {
+            RetryPolicy::Idempotent
+        },
+        execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    }));
+}
+
 fn item_action_binding(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>> {
     let code = action_code(action);
     let payload = vec![item.id.clone(), code.to_string()];
@@ -422,6 +555,9 @@ fn detail_binding(item: &StoreItem) -> Option<ActionBinding<()>> {
 pub struct StoreApp {
     /// Merged item feed.
     items: Vec<StoreItem>,
+    /// Retained global-search projection. It is rebuilt only after a changed
+    /// worker snapshot and resolves palette addresses against live rows.
+    search_index: crate::search_provider::StoreSearchIndex,
     /// Active source-side filter (`All | qOS | Flatpak | Installed`).
     active_filter: SourceFilter,
     /// Active category or `None` for "all categories".
@@ -522,6 +658,7 @@ impl StoreApp {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
+            search_index: crate::search_provider::StoreSearchIndex::default(),
             active_filter: SourceFilter::All,
             active_category: None,
             query: String::new(),
@@ -679,6 +816,16 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
+    /// Open a stable catalogue identity supplied by the shell's `qos-store:`
+    /// URI route. This is deliberately presentation-only: the user still
+    /// sees provenance and chooses the current, revalidated install action.
+    pub fn open_catalogue_item(&mut self, id: String) {
+        self.focused_detail = Some(id.clone());
+        self.pending_detail = Some(id);
+        self.status_line = "Opening app details…".into();
+        self.structure_dirty = true;
+    }
+
     pub fn show_safety_for_shot(&mut self) {
         self.safety_open = true;
         self.reports.push(ReportRecord {
@@ -734,6 +881,7 @@ impl StoreApp {
             self.items.push(detail.clone());
         }
         self.focused_detail = Some(detail.id);
+        self.search_index.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -741,6 +889,7 @@ impl StoreApp {
     /// category chip row from `items` on the next `build_layout`.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
+        self.search_index.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -940,6 +1089,10 @@ impl StoreApp {
         };
         let mut column = Column::new()
             .with_intrinsic_height()
+            // Detail content mixes an intrinsic artwork row, paragraph and
+            // actions. A real gap prevents the paragraph's baseline from
+            // colliding with the first action at larger text metrics.
+            .with_gap(8.0)
             .push(Box::new(
                 ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
                     .ghost()
@@ -2003,146 +2156,10 @@ impl Widget for StoreApp {
             }));
         }
         let mut publishers: HashMap<String, Resource> = HashMap::new();
-        for item in &self.items {
-            let action = item.action_kind(self.flatpak_available);
-            let code = action_code(action);
-            let payload = vec![item.id.clone(), code.to_string()];
-            let mut resource =
-                Resource::new(format!("app:{}", item.id), "store.app", item.name.clone());
-            if let Ok(show) = ActionSpec::operation(
-                "show-details",
-                "Show app details",
-                OperationKind::View,
-                "store.view",
-                &item.id,
-            ) {
-                resource.actions.push(show);
-            }
-            if let Ok(spec) = ActionSpec::operation(
-                code,
-                action.label(),
-                OperationKind::Effect,
-                "store.app",
-                &payload,
-            ) {
-                let destructive = matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove);
-                resource.actions.push(spec.with_contract(ActionContract {
-                    availability: if action.requires_flatpak_host() && !self.flatpak_available {
-                        Availability::Unavailable {
-                            code: "flatpak_host_unavailable".into(),
-                            reason: "Flatpak is not installed on this host; install it before using Flatpak catalog actions".into(),
-                        }
-                    } else {
-                        Availability::Available
-                    },
-                    risk: if destructive {
-                        RiskLevel::Destructive
-                    } else {
-                        RiskLevel::Low
-                    },
-                    confirmation: if destructive {
-                        ConfirmationPolicy::Confirm
-                    } else {
-                        ConfirmationPolicy::None
-                    },
-                    retry: if matches!(
-                        action,
-                        ActionKind::Open | ActionKind::FlatpakOpen | ActionKind::NeedsFlatpakHost
-                    ) {
-                        RetryPolicy::AtMostOnce
-                    } else {
-                        RetryPolicy::Idempotent
-                    },
-                    execution: ExecutionMode::Background { cancellable: false },
-                    result: ResultSpec::Job,
-                    ..ActionContract::default()
-                }));
-            }
-            if let Some(pin) = item.pin_action() {
-                let pin_code = action_code(pin);
-                let payload = vec![item.id.clone(), pin_code.to_string()];
-                if let Ok(spec) = ActionSpec::operation(
-                    pin_code,
-                    pin.label(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                ) {
-                    resource.actions.push(spec.with_contract(ActionContract {
-                        risk: RiskLevel::Low,
-                        confirmation: ConfirmationPolicy::None,
-                        retry: RetryPolicy::Idempotent,
-                        execution: ExecutionMode::Background { cancellable: false },
-                        result: ResultSpec::Job,
-                        ..ActionContract::default()
-                    }));
-                }
-            }
-            if let Some(remove) = item.remove_action() {
-                let payload = vec![item.id.clone(), action_code(remove).to_string()];
-                if let Ok(spec) = ActionSpec::operation(
-                    "remove",
-                    "Remove",
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                ) {
-                    resource.actions.push(spec.with_contract(ActionContract {
-                        availability: if remove.requires_flatpak_host() && !self.flatpak_available {
-                            Availability::Unavailable {
-                                code: "flatpak_host_unavailable".into(),
-                                reason: "Flatpak is not installed on this host; install it before using Flatpak catalog actions".into(),
-                            }
-                        } else {
-                            Availability::Available
-                        },
-                        risk: RiskLevel::Destructive,
-                        confirmation: ConfirmationPolicy::Confirm,
-                        retry: RetryPolicy::Idempotent,
-                        execution: ExecutionMode::Background { cancellable: false },
-                        result: ResultSpec::Job,
-                        ..ActionContract::default()
-                    }));
-                }
-            }
-            for version in &item.versions {
-                let label = if version.version.is_empty() {
-                    "Version metadata unavailable".into()
-                } else {
-                    format!("Version {}", version.version)
-                };
-                resource.children.push(Resource::new(
-                    format!("app:{}:version:{}", item.id, version.version),
-                    "store.version",
-                    label,
-                ));
-            }
-            let review_label = match item.trust {
-                crate::StoreTrust::PublisherSigned => "Signature verified · no independent review",
-                crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
-            };
-            resource.children.push(Resource::new(
-                format!("app:{}:review", item.id),
-                "store.review",
-                review_label,
-            ));
-            let report_action = crate::doc_actions::StoreDocumentAction::CreateReportDraft {
-                app_id: item.id.clone(),
-            };
-            if let Ok(report) = ActionSpec::immediate(
-                "draft-report",
-                "Create report draft",
-                crate::doc_actions::STORE_DOCUMENT_ACTION_TYPE,
-                &report_action,
-            ) {
-                resource.actions.push(report.with_contract(ActionContract {
-                    risk: RiskLevel::Low,
-                    confirmation: ConfirmationPolicy::None,
-                    retry: RetryPolicy::Idempotent,
-                    result: ResultSpec::None,
-                    ..ActionContract::default()
-                }));
-            }
+        let mut snapshot_items = self.items.iter().collect::<Vec<_>>();
+        snapshot_items.sort_by(|left, right| left.id.cmp(&right.id));
+        for item in snapshot_items.into_iter().take(RESOURCE_SNAPSHOT_LIMIT) {
+            let resource = store_app_resource(item, self.flatpak_available);
             let publisher_id = item
                 .publisher_pubkey_hex
                 .clone()
@@ -2167,6 +2184,16 @@ impl Widget for StoreApp {
         let mut publisher_resources = publishers.into_values().collect::<Vec<_>>();
         publisher_resources.sort_by(|a, b| a.label.cmp(&b.label));
         root.children.extend(publisher_resources);
+        if self.items.len() > RESOURCE_SNAPSHOT_LIMIT {
+            root.children.push(Resource::new(
+                "store:catalogue-snapshot",
+                "store.catalogue-snapshot",
+                format!(
+                    "{} additional apps are available through App Store search",
+                    self.items.len().saturating_sub(RESOURCE_SNAPSHOT_LIMIT)
+                ),
+            ));
+        }
 
         let mut remotes = Resource::new("store:remotes", "store.remote-list", "Flatpak remotes");
         if let Ok(refresh) = ActionSpec::operation(
@@ -2307,6 +2334,65 @@ impl Widget for StoreApp {
             ));
         }
         vec![root]
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(rest) = id.strip_prefix("app:") {
+            if let Some((app_id, version)) = rest.split_once(":version:") {
+                let item = self.items.iter().find(|item| item.id == app_id)?;
+                let version = item
+                    .versions
+                    .iter()
+                    .find(|entry| entry.version == version)?;
+                let label = if version.version.is_empty() {
+                    "Version metadata unavailable".into()
+                } else {
+                    format!("Version {}", version.version)
+                };
+                return Some(Resource::new(id, "store.version", label));
+            }
+            if let Some(app_id) = rest.strip_suffix(":review") {
+                let item = self.items.iter().find(|item| item.id == app_id)?;
+                let label = match item.trust {
+                    crate::StoreTrust::PublisherSigned => {
+                        "Signature verified · no independent review"
+                    }
+                    crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+                };
+                return Some(Resource::new(id, "store.review", label));
+            }
+            return self
+                .items
+                .iter()
+                .find(|item| item.id == rest)
+                .map(|item| store_app_resource(item, self.flatpak_available));
+        }
+        if let Some(publisher_id) = id.strip_prefix("publisher:") {
+            let item = self.items.iter().find(|item| {
+                item.publisher_pubkey_hex.as_deref().unwrap_or("flathub") == publisher_id
+            })?;
+            let label = if publisher_id == "flathub" {
+                "Flathub distribution".into()
+            } else {
+                format!("Publisher {}", short_publisher(item))
+            };
+            return Some(Resource::new(id, "store.publisher", label));
+        }
+        if id == "store:catalogue-snapshot" && self.items.len() > RESOURCE_SNAPSHOT_LIMIT {
+            return Some(Resource::new(
+                id,
+                "store.catalogue-snapshot",
+                format!(
+                    "{} apps omitted from the contextual snapshot",
+                    self.items.len() - RESOURCE_SNAPSHOT_LIMIT
+                ),
+            ));
+        }
+        None
     }
 
     fn invoke_resource_operation(
@@ -2815,6 +2901,44 @@ mod tests {
     fn visible_items_show_everything_when_filter_is_all() {
         let app = seeded_app();
         assert_eq!(app.visible_items().len(), 3);
+    }
+
+    #[test]
+    fn contextual_resource_snapshot_is_bounded_and_omitted_apps_resolve_lazily() {
+        let mut app = StoreApp::new();
+        let mut items = Vec::new();
+        for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
+            let mut entry = item(
+                "Utility",
+                StoreSource::Qos {
+                    registry_name: "qOS".into(),
+                },
+                "Utilities",
+                InstalledState::Not,
+            );
+            entry.id = format!("dev.example.utility{index:04}");
+            entry.name = format!("Utility {index:04}");
+            items.push(entry);
+        }
+        app.set_items(items);
+        let doc = AutoCommit::new();
+        let root = Widget::resources(&app, &doc).pop().unwrap();
+        let snapshot_count = root
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "store.publisher")
+            .flat_map(|publisher| publisher.children.iter())
+            .count();
+        assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
+        let omitted = "app:dev.example.utility0216";
+        let resolved = Widget::resource(&app, &doc, omitted).unwrap();
+        assert_eq!(resolved.id.0, omitted);
+        assert!(
+            resolved
+                .actions
+                .iter()
+                .any(|action| action.id == "show-details")
+        );
     }
 
     #[test]
