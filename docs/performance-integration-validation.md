@@ -3,8 +3,9 @@
 This records correctness checks, **not new performance measurements**. The
 integration combines performance snapshot `136613c6a6a47746d9ef91db91d4580c71dfab23`
 with main `6b94031a1dcc6d23820802a7858171fc5203745b` and the merge corrections
-in this branch. The [preserved timing matrix](benchmarks/2026-09-06-current-main/RESULTS.md)
-uses an earlier main revision; its numbers must not be relabelled as this merge.
+in this branch. The historical timing matrix remains in Git history at
+`f780ae5c0`, in `docs/benchmarks/2026-09-06-current-main/RESULTS.md`. It uses an
+earlier main revision; its numbers must not be relabelled as this merge.
 
 ## Build and focused checks
 
@@ -48,7 +49,8 @@ not a physical multi-monitor end-to-end test.
 Formatting and non-archive whitespace checks passed. All local links in the
 [performance flag reference](performance-flags.md) resolve. A source inventory
 checked renderer, benchmark, startup, DMA-BUF, and loop diagnostic controls.
-Raw benchmark logs were preserved rather than reformatted.
+Raw benchmark logs were not reformatted; they remain recoverable from Git
+history after the archive directory's removal from this branch.
 
 ## Limits and outstanding gates
 

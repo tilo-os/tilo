@@ -1,2 +1,0 @@
-/home/xaver/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 17439392 bytes
-/home/xaver/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906 33540032 bytes
