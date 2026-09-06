@@ -5212,12 +5212,33 @@ impl ShellOverlayHost {
             &chrome,
             &crate::shell::search::action_api::ActionArgs::none(),
         ) {
-            chrome
-                .borrow_mut()
-                .push_warning_notification(format!("Can't open {display_name}"), error.to_string());
+            // Application actions own their user-facing launch notice (the
+            // callback has already translated any typed LaunchError into a
+            // bounded, actionable card). Keep this outer launchpad adapter
+            // from adding a second raw ActionError card, which used to put
+            // paths/backend details into the fixed top-right toast and leave
+            // the user with two conflicting errors.
+            Self::report_launchpad_action_failure(display_name, &error);
         } else {
             self.palette_visible = false;
         }
+    }
+
+    /// The application action callback owns the user-facing notice for a
+    /// launch refusal. The launchpad adapter only records the detailed cause
+    /// for diagnostics; adding another notification here would duplicate the
+    /// callback's bounded card and expose raw backend details in top-right
+    /// chrome.
+    fn report_launchpad_action_failure(
+        display_name: &str,
+        error: &crate::shell::search::action_api::ActionError,
+    ) {
+        tracing::error!(
+            target: "qos::app_launch",
+            display_name,
+            detail = %error,
+            "launchpad application action was refused"
+        );
     }
 
     /// Refreshes the palette's rows by fanning the query out to every
@@ -7169,9 +7190,31 @@ impl ShellOverlayHost {
             }
         };
         if let Err(error) = result {
-            chrome
-                .borrow_mut()
-                .push_notification(format!("Couldn't open {}", target.label), error.to_string());
+            // A previous document/app launch can have staged a one-shot
+            // placement for this package. This history action did not claim
+            // a toplevel, so a preflight refusal must retire any note before
+            // a later unrelated window gets adopted into the old target.
+            crate::shell::launcher::clear_pending_placement(app_id);
+            // LaunchError's full Display includes package ids, paths, and
+            // backend diagnostics. Keep those in the structured log; the
+            // fixed-height top-right card gets the same short recovery copy
+            // used by palette launches.
+            tracing::error!(
+                target: "qos::app_launch",
+                app_id,
+                label = %target.label,
+                detail = %error,
+                "room activity application launch was refused"
+            );
+            chrome.borrow_mut().push_notification_full(
+                crate::shell::notification::Notification::new(
+                    crate::shell::launcher::launch_failure_title(&target.label),
+                    error.notification_message(),
+                )
+                .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                .with_app_name("Applications")
+                .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+            );
         }
     }
 
@@ -16124,6 +16167,39 @@ mod palette_dispatch_tests {
         );
     }
 
+    /// The application callback has already put the short recovery card on
+    /// screen when the launchpad adapter receives its refusal. The adapter's
+    /// detailed log path must not append a second card with raw ActionError
+    /// text (which can contain backend paths and embedded newlines).
+    #[test]
+    fn launchpad_refusal_reporting_does_not_duplicate_callback_notice() {
+        let (_host, chrome) = host_with_chrome();
+        let notice = chrome.borrow_mut().push_error_notification(
+            "Couldn't open Notes",
+            "The app launcher is unavailable. Open Applications and try again.",
+        );
+        let raw_error = crate::shell::search::action_api::ActionError::Refused(
+            "spawn failed: /run/user/1000/qos\nbackend detail".to_string(),
+        );
+
+        ShellOverlayHost::report_launchpad_action_failure("Notes", &raw_error);
+
+        let state = chrome.borrow();
+        assert_eq!(state.notifications().len(), 1);
+        assert_eq!(state.notifications()[0].id, notice);
+        assert_eq!(
+            state.notifications()[0].body,
+            "The app launcher is unavailable. Open Applications and try again."
+        );
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .all(|notification| !notification.body.contains("/run/user")),
+            "raw adapter diagnostics must stay out of notification chrome"
+        );
+    }
+
     #[test]
     fn escape_dismisses_the_latest_launch_error_without_touching_layout() {
         let (mut host, chrome) = host_with_chrome();
@@ -20060,6 +20136,55 @@ mod tests {
              alpha reintroduces the 2026-07-09 legibility complaint \
              (got {MODAL_SURFACE_ALPHA})"
         );
+    }
+
+    /// A History Open action can fail before a process exists (for example,
+    /// after its app was uninstalled). That refusal must consume any staged
+    /// placement and leave one finite, bounded recovery notice for retry.
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn room_activity_preflight_failure_clears_placement_and_emits_one_notice() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let app_id = "org.qos.missing-history-fixture-9f1e";
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_pending_placement(
+            app_id,
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+        let target = ui::HistoryResourceTarget {
+            app_id: Some(app_id.to_string()),
+            app_label: Some("Missing Notes".to_string()),
+            id: "notes.page:missing".to_string(),
+            kind: "page".to_string(),
+            label: "Missing Notes".to_string(),
+        };
+
+        ShellOverlayHost::open_room_activity_target(&chrome, &target);
+
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
+            "a preflight refusal must not place a later unrelated toplevel"
+        );
+        let state = chrome.borrow();
+        assert_eq!(state.notifications().len(), 1);
+        let notice = &state.notifications()[0];
+        assert_eq!(notice.title, "Couldn't open Missing Notes");
+        assert_eq!(
+            notice.body,
+            "This app is no longer installed. Refresh the app list and try again."
+        );
+        assert_eq!(
+            notice.severity,
+            crate::shell::notification::NotificationSeverity::Error
+        );
+        assert_eq!(
+            notice.dismiss_after,
+            crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME
+        );
+        assert!(notice.body.len() <= 120);
+        assert!(!notice.body.contains('\n'));
+        drop(state);
+        crate::shell::launcher::clear_pending_placements();
     }
 }
 

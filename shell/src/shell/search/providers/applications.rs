@@ -241,7 +241,14 @@ impl ApplicationsProvider {
                                 state.push_notification_full(
                                     Notification::new(
                                         format!("Couldn't open {name}"),
-                                        format!("{error:?}"),
+                                        // The URI resolver's Debug output may
+                                        // contain package ids, paths, or
+                                        // multiline backend details. Keep the
+                                        // full value in the refusal returned
+                                        // to the caller/log and give the
+                                        // fixed-height toast a bounded recovery
+                                        // instruction instead.
+                                        "The shortcut could not be opened. Check its target and try again.",
                                     )
                                     .with_severity(NotificationSeverity::Error)
                                     .with_app_name("Applications"),
