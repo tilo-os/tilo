@@ -49,6 +49,7 @@ pub mod app;
 pub mod doc;
 pub mod model;
 pub mod render;
+pub mod search_provider;
 pub mod text_layer;
 
 pub use app::PdfApp;
