@@ -3,6 +3,7 @@
 //! from many providers on an even footing.
 
 use crate::icons::Icon;
+use std::collections::HashSet;
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
 /// [`SearchProvider::search`] entry point. Interactive callers use
@@ -14,8 +15,121 @@ pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 256;
 /// snapshot. Providers with a real indexed backend may use a different,
 /// explicitly reviewed bound.
 pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
+/// Default maximum number of full records an indexed provider should verify
+/// for one interactive query. The index may contain the complete corpus; this
+/// is a query-time latency budget, not a data-loss limit.
+pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 use qos_actions::ActionAddress;
 use std::borrow::Borrow;
+
+/// A compact, reusable exact substring index for app search providers.
+///
+/// The complete supplied corpus is retained. Normalisation and 1/2/3-scalar
+/// suffixes are built once, so an interactive query finds the exact matching
+/// suffix range without scanning or speculatively verifying full records.
+/// Providers keep
+/// ownership of their domain records and use the returned stable snapshot
+/// offsets to materialise typed [`SearchResult`]s.
+///
+/// Each suffix is represented by a record id and UTF-8 boundary, so storage is
+/// linear in the amount of normalised searchable text. Embedded NULs and all
+/// Unicode scalar values retain their ordinary string semantics.
+#[derive(Clone, Debug, Default)]
+pub struct SearchTextIndex {
+    texts: Vec<String>,
+    suffixes: Vec<(usize, usize)>,
+}
+
+impl SearchTextIndex {
+    /// Build an index over every supplied searchable record.
+    pub fn new<S>(texts: impl IntoIterator<Item = S>) -> Self
+    where
+        S: AsRef<str>,
+    {
+        let texts: Vec<String> = texts
+            .into_iter()
+            .map(|text| normalize_search_text(text.as_ref()))
+            .collect();
+        let mut suffixes: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .flat_map(|(record_id, text)| {
+                text.char_indices()
+                    .map(move |(byte_offset, _)| (record_id, byte_offset))
+            })
+            .collect();
+        suffixes.sort_unstable_by(|&(left_id, left_offset), &(right_id, right_offset)| {
+            indexed_suffix(&texts, left_id, left_offset).cmp(indexed_suffix(
+                &texts,
+                right_id,
+                right_offset,
+            ))
+        });
+
+        Self { texts, suffixes }
+    }
+
+    /// Number of complete records represented by this snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.texts.len()
+    }
+
+    /// Whether the snapshot contains no records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.texts.is_empty()
+    }
+
+    /// Return matching snapshot offsets while inspecting at most `budget`
+    /// complete texts. For broad queries the earliest matching records in the
+    /// provider's deliberate snapshot order form the bounded result window.
+    #[must_use]
+    pub fn matching_ids(&self, query: &str, budget: usize) -> Vec<usize> {
+        if budget == 0 {
+            return Vec::new();
+        }
+        let query = normalize_search_text(query);
+        if query.is_empty() {
+            return (0..self.texts.len()).take(budget).collect();
+        }
+
+        let first = self.suffixes.partition_point(|&(record_id, byte_offset)| {
+            indexed_suffix(&self.texts, record_id, byte_offset) < query.as_str()
+        });
+        let mut seen = HashSet::new();
+        self.suffixes
+            .get(first..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|&&(record_id, byte_offset)| {
+                indexed_suffix(&self.texts, record_id, byte_offset).starts_with(&query)
+            })
+            .filter_map(|&(record_id, _)| seen.insert(record_id).then_some(record_id))
+            .take(budget)
+            .collect()
+    }
+
+    /// The normalised text stored for a snapshot offset, for provider-specific
+    /// ranking without repeating normalisation on every keystroke.
+    #[must_use]
+    pub fn normalized_text(&self, record_id: usize) -> Option<&str> {
+        self.texts.get(record_id).map(String::as_str)
+    }
+}
+
+fn indexed_suffix(texts: &[String], record_id: usize, byte_offset: usize) -> &str {
+    texts
+        .get(record_id)
+        .and_then(|text| text.get(byte_offset..))
+        .unwrap_or_default()
+}
+
+/// Apply the shared case-folding convention used by [`SearchTextIndex`].
+#[must_use]
+pub fn normalize_search_text(text: &str) -> String {
+    text.chars().flat_map(char::to_lowercase).collect()
+}
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
 /// keeps arbitrary legacy ids from becoming actions merely because they happen
@@ -323,5 +437,58 @@ mod tests {
         assert_eq!(r.subtitle.as_deref(), Some("alice@example.com"));
         assert_eq!(r.icon, Some(Icon::Mail));
         assert_eq!(r.score, 5);
+    }
+
+    #[test]
+    fn shared_text_index_keeps_the_complete_corpus() {
+        let texts =
+            (0..(DEFAULT_SEARCH_INDEX_LIMIT + 500)).map(|index| format!("Document {index}"));
+        let index = SearchTextIndex::new(texts);
+
+        assert_eq!(index.len(), DEFAULT_SEARCH_INDEX_LIMIT + 500);
+        assert_eq!(
+            index.matching_ids("Document 4595", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            vec![4595]
+        );
+    }
+
+    #[test]
+    fn shared_text_index_is_unicode_aware_and_case_insensitive() {
+        let index = SearchTextIndex::new(["Résumé — Αθήνα", "東京 notes"]);
+
+        assert_eq!(index.matching_ids("ΑΘΉ", 8), vec![0]);
+        assert_eq!(index.matching_ids("東京", 8), vec![1]);
+        assert!(index.matching_ids("resume", 8).is_empty());
+    }
+
+    #[test]
+    fn shared_text_index_honours_the_query_budget() {
+        let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
+        assert_eq!(index.matching_ids("common", 7).len(), 7);
+        assert!(index.matching_ids("common", 0).is_empty());
+    }
+
+    #[test]
+    fn embedded_nul_substrings_remain_distinct() {
+        let index = SearchTextIndex::new(["a", "a\0", "a\0\0"]);
+        assert_eq!(index.matching_ids("a\0\0", 8), vec![2]);
+    }
+
+    #[test]
+    fn repeated_occurrences_do_not_consume_the_result_budget_twice() {
+        let index = SearchTextIndex::new(["aaaaaa", "aaab"]);
+        assert_eq!(index.matching_ids("aaa", 2), vec![0, 1]);
+    }
+
+    #[test]
+    fn exact_suffix_range_does_not_lose_late_matches_to_false_candidates() {
+        let mut texts = vec!["abcXbcd"; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
+        texts.push("the exact abcd resource");
+        let index = SearchTextIndex::new(texts);
+
+        assert_eq!(
+            index.matching_ids("abcd", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
+        );
     }
 }
