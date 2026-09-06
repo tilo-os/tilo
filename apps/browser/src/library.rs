@@ -10,14 +10,30 @@ pub struct Bookmark {
     pub title: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Bookmarks {
     entries: Vec<Bookmark>,
+    /// Changes only on corpus mutations; used to avoid rebuilding search on
+    /// every frame.
+    revision: u64,
 }
+
+// The revision is a cache-invalidation implementation detail, never part of
+// the bookmark model's durable value equality.
+impl PartialEq for Bookmarks {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for Bookmarks {}
 
 impl Bookmarks {
     pub(crate) fn from_entries(entries: Vec<Bookmark>) -> Self {
-        Self { entries }
+        Self {
+            entries,
+            revision: 0,
+        }
     }
 
     pub(crate) fn to_json(&self) -> String {
@@ -37,6 +53,11 @@ impl Bookmarks {
         self.entries.iter().any(|entry| entry.url == url)
     }
 
+    /// Monotonic-in-practice change token for cached projections.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn add(&mut self, url: &str, title: &str) -> bool {
         let url = url.trim();
         if url.is_empty() || self.contains(url) {
@@ -50,13 +71,18 @@ impl Bookmarks {
                 title.trim().to_string()
             },
         });
+        self.revision = self.revision.wrapping_add(1);
         true
     }
 
     pub fn remove(&mut self, url: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|entry| entry.url != url);
-        before != self.entries.len()
+        let changed = before != self.entries.len();
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 
     pub fn load() -> Self {
@@ -119,7 +145,10 @@ impl Bookmarks {
             })
             .take(10_000)
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            revision: 0,
+        }
     }
 }
 
