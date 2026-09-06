@@ -1,7 +1,7 @@
 //! Typed client for the launcher-issued `app-host` capability.
 //!
 //! The Store worker is synchronous, so this wrapper owns a current-thread
-//! runtime and LocalSet while keeping one Cap'n Proto connection alive for
+//! runtime and `LocalSet` while keeping one Cap'n Proto connection alive for
 //! its whole lifetime. It never reaches for a host path or executable.
 
 use crate::app_host_capnp::{
@@ -34,6 +34,10 @@ pub struct BlockingClient {
 
 impl BlockingClient {
     /// Claim the pre-connected descriptor the launcher granted to this app.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime or launcher-issued service cannot be opened.
     pub fn from_service() -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -60,6 +64,11 @@ impl BlockingClient {
             .map_err(|e| e.to_string())
     }
 
+    /// Install a verified package through the privileged host service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the service rejects the package or the response is malformed.
     pub fn install(
         &self,
         bytes: &[u8],
@@ -85,12 +94,17 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
+    /// List packages installed by the privileged host service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the service request or an installed manifest cannot be read.
     pub fn list(&self) -> Result<Vec<InstalledPackage>, String> {
         let response = self.wait(self.client.list_request().send().promise)?;
         let result = response.get().map_err(|e| e.to_string())?;
         let entries = result.get_entries().map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(entries.len() as usize);
-        for entry in entries.iter() {
+        for entry in entries {
             let manifest_text = entry
                 .get_manifest_text()
                 .map_err(|e| e.to_string())?
@@ -108,6 +122,11 @@ impl BlockingClient {
         Ok(out)
     }
 
+    /// Launch an installed package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot launch the package.
     pub fn launch(&self, id: PackageId) -> Result<String, String> {
         let mut request = self.client.launch_request();
         request.get().set_id(id.as_bytes());
@@ -119,6 +138,11 @@ impl BlockingClient {
         )
     }
 
+    /// Update the retention pin for an installed package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot update the package pin.
     pub fn pin(&self, id: PackageId, pinned: bool) -> Result<(), String> {
         if pinned {
             let mut request = self.client.pin_request();
@@ -132,6 +156,11 @@ impl BlockingClient {
         Ok(())
     }
 
+    /// Remove an installed package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot remove the package.
     pub fn remove(&self, id: PackageId) -> Result<(), String> {
         let mut request = self.client.remove_request();
         request.get().set_id(id.as_bytes());
@@ -139,6 +168,11 @@ impl BlockingClient {
         Ok(())
     }
 
+    /// Launch an installed desktop application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot launch the desktop application.
     pub fn launch_desktop(&self, desktop_id: &str) -> Result<String, String> {
         let mut request = self.client.launch_desktop_request();
         request.get().set_desktop_id(desktop_id);
@@ -150,6 +184,11 @@ impl BlockingClient {
         )
     }
 
+    /// Run a Flatpak lifecycle operation through the host service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service rejects or cannot run the operation.
     pub fn flatpak(
         &self,
         action: FlatpakAction,
@@ -175,6 +214,11 @@ impl BlockingClient {
         )
     }
 
+    /// Add or remove a user Flatpak remote through the host service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service rejects or cannot run the operation.
     pub fn remote(&self, add: bool, name: &str, url: Option<&str>) -> Result<String, String> {
         let mut request = self.client.remote_request();
         {
