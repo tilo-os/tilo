@@ -13,7 +13,7 @@ A vertical workspace container with persistent chrome. Z-order, back to front:
    horizontal strips of window groups) or **overview view** (vertical list of
    workspace cards). The two views swap via an animated scale/opacity crossfade
    (0.2 s).
-2. 40 px fixed **top bar** — left: overview + up/down + workspace name; center:
+2. 48 px fixed **top bar** — left: overview + up/down + workspace name; center:
    rotating widget carousel (clock / system monitor / calendar); right:
    collaborator avatar stack + quick-settings tray.
 3. Overlay layers — workspace-settings modal, global search (command palette),
@@ -22,8 +22,10 @@ A vertical workspace container with persistent chrome. Z-order, back to front:
 
 ## 2. Top bar
 
-Fixed 40 px bar with black/80 %-opacity backdrop-blur background, 1 px
-white/10 % bottom border. Three clusters:
+Fixed 48 px bar with an opaque dark surface, 1 px white/10 % bottom border and
+three aligned 32 px control clusters. The original 40 px translucent concept
+was revised because this renderer has no backdrop filter and its 18--22 px
+targets were too small to identify or acquire reliably.
 
 - **Left** — overview button (grid icon; toggles overview, indigo when active),
   1 px divider, up/down chevrons (disabled at boundaries), workspace-name
