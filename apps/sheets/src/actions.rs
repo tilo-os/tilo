@@ -1516,17 +1516,58 @@ impl ResourceProvider for crate::app::SheetsApp {
         provide_resources(&self.sheets_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        self.sheets_resource_ctx()
-            .searchable_sheets
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let ctx = self.sheets_resource_ctx();
+        let eager = provide_resources(&ctx, doc);
+        let workbook = eager.first()?;
+        if id == workbook.id.0 {
+            return Some(workbook.clone());
+        }
+        if let Some(sheet) = workbook.children.iter().find(|sheet| sheet.id.0 == id) {
+            let stable = id.strip_prefix("sheets.sheet:")?;
+            return SheetsDoc::sheet_index_by_resource_id(doc, stable).map(|_| sheet.clone());
+        }
+        if let Some(range) = workbook
+            .children
             .iter()
-            .find_map(|sheet| {
-                sheet
-                    .cells
-                    .iter()
-                    .find(|cell| cell_resource_id(&sheet.id, cell.col, cell.row) == id)
-                    .map(|cell| searchable_cell_resource(&sheet.id, cell))
-            })
+            .flat_map(|sheet| sheet.children.iter())
+            .find(|range| range.id.0 == id)
+        {
+            let tail = id.strip_prefix("sheets.range:")?;
+            let (sheet_id, _) = tail.split_once(':')?;
+            return SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).map(|_| range.clone());
+        }
+
+        // Cells are intentionally not children of a sheet: a 100k-row file
+        // must not turn opening Ctrl+K into a resource-tree materialisation.
+        // Exact cell addresses remain first-class, however. Resolve one on
+        // demand against the current document so a deleted/moved sheet or an
+        // invalid coordinate is refused instead of acquiring stale authority.
+        let tail = id.strip_prefix("sheets.cell:")?;
+        let mut parts = tail.split(':');
+        let (Some(sheet_id), Some(col), Some(row), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        let (Ok(col), Ok(row)) = (col.parse::<u32>(), row.parse::<u32>()) else {
+            return None;
+        };
+        if col > MAX_COLUMN
+            || row > MAX_ROW
+            || SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).is_none()
+        {
+            return None;
+        }
+        Some(searchable_cell_resource(
+            sheet_id,
+            &SearchableCell {
+                col,
+                row,
+                raw: String::new(),
+                display: String::new(),
+            },
+        ))
     }
 }
 
@@ -1679,6 +1720,35 @@ mod tests {
                 .id
                 .0,
             "sheets.cell:scale-id:0:9999"
+        );
+    }
+
+    #[test]
+    fn omitted_cells_resolve_lazily_but_stale_or_out_of_range_addresses_refuse() {
+        use automerge::ROOT;
+        use ui::widget::Widget;
+
+        let mut app = crate::app::SheetsApp::new();
+        app.shots_mode();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
+        let id = cell_resource_id(&sheet_id, 10, 100_000);
+        let lazy = Widget::resource(&app, &doc, &id).expect("valid omitted cell resolves");
+        assert_eq!(lazy.id.0, id);
+        assert!(
+            qos_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
+                .is_some()
+        );
+        assert!(
+            Widget::resource(&app, &doc, &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0)).is_none()
+        );
+
+        dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            Widget::resource(&app, &doc, &id).is_none(),
+            "a stale sheet id has no authority"
         );
     }
 
