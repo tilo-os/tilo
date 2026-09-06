@@ -41,12 +41,13 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use automerge::ReadDoc;
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, TabBar, TabDescriptor, Widget};
@@ -135,6 +136,25 @@ fn language_from_label(label: &str) -> Option<Language> {
     ]
     .into_iter()
     .find(|language| language.label().eq_ignore_ascii_case(label))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchProjectionRevision {
+    /// Collaborative text and durable file metadata are authoritative in the
+    /// CRDT, so its heads cheaply cover every remote/local document edit.
+    document_heads: Vec<ChangeHash>,
+    /// Filesystem/project and streamed-result changes are local projections,
+    /// not necessarily CRDT mutations.
+    local_generation: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SearchRefreshStats {
+    rebuilds: usize,
+    skipped: usize,
+    buffer_reads: usize,
+    indexed_records: usize,
 }
 
 #[allow(
@@ -281,6 +301,20 @@ pub struct CodeApp {
     /// presentation-only derived data; edits themselves remain native CRDT
     /// text splices.
     search_symbols: Vec<actions::SymbolRef>,
+    /// Complete retained search namespace. It is updated from current
+    /// collaborative state during `sync`; Ctrl+K receives only a cheap handle
+    /// and never rebuilds files, symbols, result previews, or an LSP index.
+    search_catalog: SearchCatalog,
+    /// Canonical ids currently indexed in `search_catalog`, used to remove
+    /// deleted/obsolete rows without rebuilding the catalogue (and without
+    /// invalidating paging cursors unless the namespace actually changed).
+    search_catalog_ids: HashSet<String>,
+    /// Revision gate for the expensive complete projection above. An idle
+    /// `sync` compares this tiny value and does no project/body traversal.
+    search_projection_revision: Option<SearchProjectionRevision>,
+    search_projection_local_generation: u64,
+    #[cfg(test)]
+    search_refresh_stats: SearchRefreshStats,
 
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
@@ -592,6 +626,12 @@ impl CodeApp {
             search_truncated: false,
             last_search_needle: String::new(),
             search_symbols: Vec::new(),
+            search_catalog: SearchCatalog::new("Code"),
+            search_catalog_ids: HashSet::new(),
+            search_projection_revision: None,
+            search_projection_local_generation: 0,
+            #[cfg(test)]
+            search_refresh_stats: SearchRefreshStats::default(),
             portal: None,
             portal_intent: None,
             resource_invocation: None,
@@ -834,6 +874,7 @@ impl CodeApp {
         for (node, message) in failed {
             if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
                 self.session.close_tab(idx);
+                self.invalidate_search_projection();
             }
             self.note(message, true);
             self.bound_node = None;
@@ -1387,8 +1428,15 @@ impl CodeApp {
     }
 
     fn refresh_search_symbols(&mut self, doc: &AutoCommit) {
-        self.search_symbols = self
-            .search_file_entries()
+        let files = self.search_file_entries();
+        #[cfg(test)]
+        {
+            self.search_refresh_stats.buffer_reads = self
+                .search_refresh_stats
+                .buffer_reads
+                .saturating_add(files.len());
+        }
+        self.search_symbols = files
             .into_iter()
             .flat_map(|file| {
                 EditorDoc::read_buffer_key(doc, &self.buffer_key(file.node))
@@ -1397,6 +1445,65 @@ impl CodeApp {
                     })
             })
             .collect();
+    }
+
+    fn invalidate_search_projection(&mut self) {
+        self.search_projection_local_generation =
+            self.search_projection_local_generation.wrapping_add(1);
+    }
+
+    /// Refresh the durable search projection only when the authoritative CRDT
+    /// document or a local project/result generation changed. This is
+    /// intentionally separate from `search_providers`: opening the palette,
+    /// typing, and unchanged frames do no filesystem, document, or LSP work.
+    fn refresh_search_catalog(&mut self, doc: &mut AutoCommit) {
+        let revision = SearchProjectionRevision {
+            document_heads: doc.get_heads(),
+            local_generation: self.search_projection_local_generation,
+        };
+        if self.search_projection_revision.as_ref() == Some(&revision) {
+            #[cfg(test)]
+            {
+                self.search_refresh_stats.skipped =
+                    self.search_refresh_stats.skipped.saturating_add(1);
+            }
+            return;
+        }
+        self.refresh_search_symbols(doc);
+        let files = self.search_file_entries();
+        let symbols = self.search_symbols.clone();
+        let results = self.search_result_refs();
+        let ids = files
+            .iter()
+            .map(|file| actions::open_file_address(&file.resource_id).resource)
+            .chain(symbols.iter().map(actions::symbol_resource_id))
+            .chain(results.iter().map(actions::result_resource_id))
+            .collect::<HashSet<_>>();
+        for removed in self.search_catalog_ids.difference(&ids) {
+            let _ = self.search_catalog.remove(removed);
+        }
+        crate::search_provider::FileSearchProvider::index_into(
+            &self.search_catalog,
+            files,
+            symbols,
+            results,
+        );
+        self.search_catalog_ids = ids;
+        self.search_projection_revision = Some(revision);
+        #[cfg(test)]
+        {
+            self.search_refresh_stats.rebuilds =
+                self.search_refresh_stats.rebuilds.saturating_add(1);
+            self.search_refresh_stats.indexed_records = self
+                .search_refresh_stats
+                .indexed_records
+                .saturating_add(self.search_catalog_ids.len());
+        }
+    }
+
+    #[cfg(test)]
+    fn search_refresh_stats(&self) -> SearchRefreshStats {
+        self.search_refresh_stats
     }
 
     // ---- saving -----------------------------------------------------------
@@ -1794,6 +1901,7 @@ impl CodeApp {
                     buf.stamp = None;
                 }
                 self.sidebar.set_project(&self.session.project);
+                self.invalidate_search_projection();
                 let snapshot = doc.clone();
                 if self.save_buffer(&snapshot, node, true) {
                     Ok(())
@@ -1833,6 +1941,7 @@ impl CodeApp {
             Ok(project) => {
                 let name = project.name.clone();
                 self.session = Session::new(project);
+                self.invalidate_search_projection();
                 self.sidebar.set_project(&self.session.project);
                 self.sidebar.set_active(None);
                 self.bound_node = None;
@@ -1864,6 +1973,7 @@ impl CodeApp {
         match Project::open_single_file(&path) {
             Ok((project, node)) => {
                 self.session = Session::new(project);
+                self.invalidate_search_projection();
                 self.sidebar.set_project(&self.session.project);
                 self.bound_node = None;
                 self.reset_language_server();
@@ -1894,6 +2004,7 @@ impl CodeApp {
     /// Open a file node into a tab and bind the editor.
     fn open_node(&mut self, node: TreeId) {
         self.session.open_file(node);
+        self.invalidate_search_projection();
         self.sidebar.set_active(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
         self.reconcile_tabs();
@@ -1938,6 +2049,7 @@ impl CodeApp {
                     self.note(format!("Could not read {name}: {e}"), true);
                 }
                 self.session.project.toggle_folder(id);
+                self.invalidate_search_projection();
                 self.sidebar.set_project(&self.session.project);
                 self.sidebar
                     .set_active(self.session.active_buffer().map(|b| b.node));
@@ -1974,6 +2086,7 @@ impl CodeApp {
     fn close_node_tab(&mut self, node: TreeId) {
         if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
             self.session.close_tab(idx);
+            self.invalidate_search_projection();
             self.bound_node = None;
             let id = node as u64;
             if !self.tabs.is_closing(id) {
@@ -2470,7 +2583,11 @@ impl CodeApp {
         if let Some(job) = self.search_job.take() {
             job.cancel();
         }
+        let had_results = !self.search_hits.is_empty();
         self.search_hits.clear();
+        if had_results {
+            self.invalidate_search_projection();
+        }
         self.search_truncated = false;
         let Some(root) = self.session.project.root_path() else {
             self.note("Open a project folder to search it", true);
@@ -2496,11 +2613,18 @@ impl CodeApp {
         if msgs.is_empty() && !job.is_finished() {
             return;
         }
+        let mut results_changed = false;
         for msg in msgs {
             match msg {
-                search::Msg::Hits(hits) => self.search_hits.extend(hits),
+                search::Msg::Hits(hits) => {
+                    results_changed |= !hits.is_empty();
+                    self.search_hits.extend(hits);
+                }
                 search::Msg::Done { truncated, .. } => self.search_truncated = truncated,
             }
+        }
+        if results_changed {
+            self.invalidate_search_projection();
         }
         if self
             .search_job
@@ -2540,7 +2664,11 @@ impl CodeApp {
         if let Some(job) = self.search_job.take() {
             job.cancel();
         }
+        let had_results = !self.search_hits.is_empty();
         self.search_hits.clear();
+        if had_results {
+            self.invalidate_search_projection();
+        }
         self.search_truncated = false;
         self.last_search_needle.clear();
         self.push_search_state();
@@ -3678,6 +3806,7 @@ impl Widget for CodeApp {
                             buffer.name = name;
                             buffer.stamp = None;
                         }
+                        self.invalidate_search_projection();
                     }
                     if self.save_buffer(state, node, true) {
                         Ok(())
@@ -3711,7 +3840,7 @@ impl Widget for CodeApp {
         self.poll_portal(state);
         self.poll_search();
         self.ensure_buffers(state);
-        self.refresh_search_symbols(state);
+        self.refresh_search_catalog(state);
         self.editor.sync(state, path);
         self.dispatch_editor_text_edits(state);
         self.find.sync(state, path);
@@ -4246,12 +4375,20 @@ impl Widget for CodeApp {
         out
     }
 
-    /// Publish the open project + its buffers so the shell's one Ctrl+K palette
-    /// scopes to them. Delegates to the
+    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
+    /// palette. Any omitted file/symbol/result resolves lazily below through
+    /// its canonical address. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Resolve a searched file, symbol, or result through the current widget
+    /// state. This is deliberately lazy: a palette row carries only an inert
+    /// canonical address until activation.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -4469,11 +4606,9 @@ impl Widget for CodeApp {
     /// row points at an exported resource action, so there is no callback-only
     /// path with weaker semantics than the palette/agent door.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FileSearchProvider::new(
-            self.search_file_entries(),
-            self.search_symbols.clone(),
-            self.search_result_refs(),
-        ))]
+        vec![Box::new(
+            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
+        )]
     }
 
     fn get_rect(&self) -> Rect {
@@ -4647,9 +4782,10 @@ mod tests {
             .find(|hit| hit.kind == kind)
             .expect("search hit");
         let address = hit.action_address().expect("canonical address");
-        let resources = app.resources(doc);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
-            .expect("address resolves in the live resource tree");
+        let resource = Widget::resource(app, doc, &address.resource)
+            .expect("address resolves through current widget authority");
+        let encoded = qos_actions::door::encode(&[resource], &address, None)
+            .expect("lazy resource exports the searched action");
         assert!(
             Widget::invoke_resource_operation(
                 app,
@@ -4682,6 +4818,162 @@ mod tests {
             crate::search_provider::PROJECT_KIND,
         );
         assert_eq!(app.active_file_node(), Some(prime));
+    }
+
+    #[test]
+    fn stale_search_address_is_refused_by_current_widget_authority() {
+        let (mut app, mut doc) = synced_sample();
+        let file = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| node.name == "prime.rs")
+            .expect("sample file")
+            .clone();
+        let address = crate::actions::open_file_address(&file.resource_id);
+        assert!(Widget::resource(&app, &doc, &address.resource).is_some());
+
+        app.session
+            .project
+            .remove_collaborative_file(&file.resource_id);
+        app.invalidate_search_projection();
+        app.refresh_search_catalog(&mut doc);
+        assert!(Widget::resource(&app, &doc, &address.resource).is_none());
+        assert!(
+            app.search_providers()[0]
+                .search("prime.rs")
+                .into_iter()
+                .all(|hit| hit.action_address() != Some(address.clone()))
+        );
+    }
+
+    #[test]
+    fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
+        let (mut app, mut doc) = synced_sample();
+        let initial = app.search_refresh_stats();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&mut doc, &automerge::ROOT);
+        let idle = app.search_refresh_stats();
+        assert_eq!(idle.rebuilds, initial.rebuilds);
+        assert_eq!(idle.buffer_reads, initial.buffer_reads);
+        assert_eq!(idle.indexed_records, initial.indexed_records);
+        assert!(idle.skipped >= initial.skipped.saturating_add(2));
+
+        let node = app.active_file_node().expect("sample buffer");
+        let key = app.buffer_key(node);
+        let text = EditorDoc::buffer_text_key(&doc, &key).expect("buffer text");
+        EditorDoc::splice(&mut doc, &text, 0, 0, "fn revision_gate_needle() {}\n");
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_document = app.search_refresh_stats();
+        assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
+        assert!(
+            app.search_providers()[0]
+                .search("revision_gate_needle")
+                .iter()
+                .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
+        );
+
+        let root = app.session.project.root;
+        let late = app
+            .session
+            .project
+            .add_file(root, "project-revision-needle.rs", "");
+        app.invalidate_search_projection();
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_project = app.search_refresh_stats();
+        assert_eq!(
+            after_project.rebuilds,
+            after_document.rebuilds.saturating_add(1)
+        );
+        assert!(
+            app.search_providers()[0]
+                .search("project-revision-needle")
+                .iter()
+                .any(|hit| {
+                    hit.action_address()
+                        == Some(crate::actions::open_file_address(
+                            &app.session
+                                .project
+                                .get(late)
+                                .expect("late file")
+                                .resource_id,
+                        ))
+                })
+        );
+
+        app.search_hits.push(search::Hit {
+            path: "/virtual/project-revision-needle.rs".into(),
+            rel: "project-revision-needle.rs".into(),
+            line: 1,
+            col: 0,
+            len: 6,
+            preview: "result_revision_needle".into(),
+            preview_offset: 0,
+        });
+        app.invalidate_search_projection();
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_results = app.search_refresh_stats();
+        assert_eq!(
+            after_results.rebuilds,
+            after_project.rebuilds.saturating_add(1)
+        );
+        assert!(
+            app.search_providers()[0]
+                .search("result_revision_needle")
+                .iter()
+                .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
+        );
+    }
+
+    #[test]
+    fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
+        let mut app = CodeApp::new();
+        let root = app.session.project.root;
+        let mut late_id = String::new();
+        for index in 0..=crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
+            let node = app
+                .session
+                .project
+                .add_file(root, &format!("file-{index}.rs"), "");
+            if index == crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
+                late_id = app
+                    .session
+                    .project
+                    .get(node)
+                    .expect("added file")
+                    .resource_id
+                    .clone();
+            }
+        }
+        let mut doc = AutoCommit::new();
+        app.refresh_search_catalog(&mut doc);
+        let snapshot = Widget::resources(&app, &doc);
+        assert!(
+            snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
+            "the eager tree must remain bounded by its resource cap"
+        );
+
+        let address = crate::actions::open_file_address(&late_id);
+        assert!(
+            qos_actions::door::resolve(&snapshot, &address).is_none(),
+            "the late file must not be eagerly materialized"
+        );
+        let resource = Widget::resource(&app, &doc, &address.resource)
+            .expect("late file is still current widget authority");
+        let encoded = qos_actions::door::encode(&[resource], &address, None)
+            .expect("the lazy resource retains its open action");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("operation routes through the widget")
+        );
     }
 
     #[test]
@@ -4725,6 +5017,8 @@ mod tests {
         }];
         app.last_search_needle = "canonical_result_needle".into();
         app.push_search_state();
+        app.invalidate_search_projection();
+        app.refresh_search_catalog(&mut doc);
 
         invoke_search_hit(
             &mut app,
@@ -5383,7 +5677,7 @@ mod tests {
         let mut app = CodeApp::with_sample();
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
-        app.refresh_search_symbols(&doc);
+        app.refresh_search_catalog(&mut doc);
         app.editor.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }
