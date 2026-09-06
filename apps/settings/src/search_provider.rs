@@ -13,17 +13,87 @@
 //! [`ResourceProvider`](qos_actions::ResourceProvider); giving pane results a
 //! distinct `Settings` kind keeps the two groups apart in the palette.
 
-use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+use qos_actions::{ActionAddress, Resource};
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchPage,
+    SearchProvider, SearchResult,
+};
 
 use crate::categories::Category;
 
 /// The kind label (and result-group header) Settings produces.
 pub const SETTINGS_KIND: &str = "Personal Settings";
 
-/// A [`SearchProvider`] over the settings panes. Stateless — the pane set is
-/// static — so it holds nothing.
-pub struct SettingsSearchProvider;
+/// A [`SearchProvider`] over the complete Settings destination corpus.
+///
+/// The category list is small today, but it is still a durable namespace: an
+/// old continuation must not silently skip a category when a future build
+/// adds one.  Keep it in the toolkit's incremental catalogue rather than
+/// rebuilding/filtering a `Vec` on each keystroke.  That gives the palette a
+/// bounded cursor protocol now and keeps the implementation correct when the
+/// category corpus grows or gains dynamically discovered aliases.
+#[derive(Clone, Debug)]
+pub struct SettingsSearchProvider {
+    catalog: SearchCatalog,
+}
+
+impl Default for SettingsSearchProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SettingsSearchProvider {
+    #[must_use]
+    pub fn new() -> Self {
+        let catalog = SearchCatalog::new(SETTINGS_KIND);
+        for category in Category::ALL.iter().copied() {
+            // The index contains every phrase people can use to find the
+            // destination.  The materialised hit stays intentionally lean;
+            // it resolves through the canonical `open` action below.
+            let searchable = std::iter::once(category.label())
+                .chain(std::iter::once(category.subtitle()))
+                .chain(category.keywords().iter().copied())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let result = SearchResult::for_action(
+                SETTINGS_KIND,
+                category.label(),
+                crate::actions::open_pane_address(category),
+            )
+            .with_subtitle(category.subtitle())
+            .with_icon(category.icon());
+            // Every input above is static, and the result uses precisely the
+            // same stable resource id, so this can only fail if a future
+            // edit violates the catalogue's canonical-address contract.
+            debug_assert!(
+                catalog
+                    .upsert(
+                        crate::actions::pane_resource_id(category),
+                        searchable,
+                        result
+                    )
+                    .is_ok(),
+                "settings search records must use their own canonical resource id"
+            );
+        }
+        Self { catalog }
+    }
+
+    /// Resolve a static Settings navigation resource without building the
+    /// full, current resource tree.  Dynamic setting values remain in the
+    /// ordinary tree, while a search hit only needs its canonical navigation
+    /// door.  Unknown categories/actions are deliberately refused rather than
+    /// falling back to a legacy navigation token.
+    fn resolve_navigation(address: &ActionAddress) -> Option<Resource> {
+        let category = Category::ALL
+            .iter()
+            .copied()
+            .find(|category| crate::actions::pane_resource_id(*category) == address.resource)?;
+        (address.action == crate::actions::OPEN_PANE_ACTION)
+            .then(|| crate::actions::pane_navigation_resource(category))
+    }
+}
 
 impl SearchProvider for SettingsSearchProvider {
     fn name(&self) -> &str {
@@ -35,24 +105,29 @@ impl SearchProvider for SettingsSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        // `Category::matches` tests label + subtitle + the pane's keyword
-        // synonyms, and returns true for every pane on an empty query — so a
-        // blank query browses all of Settings.
-        Category::ALL
-            .iter()
-            .copied()
-            .filter(|c| c.matches(query))
-            .map(|c| {
-                SearchResult::for_action(
-                    SETTINGS_KIND,
-                    c.label(),
-                    crate::actions::open_pane_address(c),
-                )
-                .with_subtitle(c.subtitle())
-                .with_icon(Icon::Settings)
-            })
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-            .collect()
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&ui::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        Self::resolve_navigation(address)
     }
 }
 
@@ -63,7 +138,7 @@ mod tests {
 
     #[test]
     fn provider_finds_a_pane_by_keyword() {
-        let provider = SettingsSearchProvider;
+        let provider = SettingsSearchProvider::new();
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
         assert!(
@@ -77,14 +152,14 @@ mod tests {
 
     #[test]
     fn empty_query_browses_every_pane() {
-        let provider = SettingsSearchProvider;
+        let provider = SettingsSearchProvider::new();
         assert_eq!(provider.search("").len(), Category::ALL.len());
     }
 
     #[test]
     fn result_addresses_the_exported_open_action() {
         let mut registry = SearchRegistry::new();
-        registry.register(Box::new(SettingsSearchProvider));
+        registry.register(Box::new(SettingsSearchProvider::new()));
         let hit = registry
             .query("appearance")
             .into_iter()
@@ -140,5 +215,60 @@ mod tests {
                 "the broker selected the pane named by the result"
             );
         }
+    }
+
+    #[test]
+    fn paging_reaches_the_complete_corpus_with_a_hard_per_page_budget() {
+        let provider = SettingsSearchProvider::new();
+        let mut cursor = None;
+        let mut titles = Vec::new();
+        loop {
+            let page = provider.search_page("", cursor.as_ref(), 1, 1);
+            assert!(page.inspected <= 1, "a page must respect its work budget");
+            assert!(
+                page.results.len() <= 1,
+                "a page must respect its result limit"
+            );
+            titles.extend(page.results.into_iter().map(|result| result.title));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            titles,
+            Category::ALL
+                .iter()
+                .map(|category| category.label().to_string())
+                .collect::<Vec<_>>(),
+            "a continuation reaches late categories instead of truncating browse discovery"
+        );
+    }
+
+    #[test]
+    fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
+        use automerge::AutoCommit;
+        use ui::widget::Widget;
+
+        let app = crate::settings_app::SettingsApp::new();
+        let doc = AutoCommit::new();
+        let address = crate::actions::open_pane_address(Category::Accessibility);
+        let resource = Widget::resource(&app, &doc, &address.resource)
+            .expect("the widget resolves a current canonical resource at activation time");
+        assert_eq!(resource.id.as_str(), address.resource);
+        let resources = [resource];
+        let resolved = qos_actions::door::resolve(&resources, &address)
+            .expect("resolved resource exports the exact open action");
+        assert_eq!(resolved.kind, qos_actions::OperationKind::View);
+
+        let stale_resource = ActionAddress::new("settings.section:removed-pane", "open");
+        let stale_action = ActionAddress::new(
+            crate::actions::pane_resource_id(Category::Accessibility),
+            "removed-action",
+        );
+        assert!(Widget::resource(&app, &doc, &stale_resource.resource).is_none());
+        let current_resource = Widget::resource(&app, &doc, &stale_action.resource)
+            .expect("the current resource remains resolvable");
+        assert!(qos_actions::door::resolve(&[current_resource], &stale_action).is_none());
     }
 }
