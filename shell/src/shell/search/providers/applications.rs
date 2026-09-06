@@ -319,8 +319,15 @@ impl ApplicationsProvider {
                 score: presentation_score(needle, &app.package_id, score)
                     .saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                    // Captured now, not re-read after the Store is launched:
-                    // the palette selection names this exact stable package.
+                    // A palette can be opened and activated repeatedly while
+                    // catalogue installation is still running. Keep one
+                    // in-flight operation and one acknowledgement; replacing
+                    // the pending id would strand the first card forever.
+                    if catalogue::pending_notice(&package_id).is_some() {
+                        return Ok(());
+                    }
+                    // Captured now, not re-read at launch: the window may be
+                    // a minute away and the user's selection can change.
                     let context = {
                         let st = chrome.borrow();
                         let tree = st.tree();
@@ -514,6 +521,11 @@ pub(crate) fn launch_installed_app(
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
         return Ok(());
     }
+    // The app is already being installed/launched. Repeated activation should
+    // be idempotent: one worker, one pending notice, one eventual window.
+    if catalogue::pending_notice(package_id).is_some() {
+        return Ok(());
+    }
     // Say the app is opening before the work starts, so the
     // acknowledgement lands on the same frame as the keystroke. Retired by
     // the window appearing (`retire_notices_for_opened_windows`), not a timer.
@@ -550,6 +562,9 @@ pub(crate) fn launch_installed_app(
     // rest arrive as launch events drained each frame.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     if let Err(err) = outcome {
+        // The preflight failed before a toplevel could claim the placement
+        // note. Do not let a later app inherit this dead launch's target.
+        launcher::clear_pending_placement(package_id);
         let message = err.user_message();
         tracing::error!(
             target: "qos::app_launch",
@@ -743,6 +758,25 @@ mod tests {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
         }
+    }
+
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn repeated_activation_while_opening_is_idempotent() {
+        let chrome = chrome_rc();
+        let package_id = "dev.qos.repeated-open-fixture";
+        let notice = chrome
+            .borrow_mut()
+            .push_notification("Opening Fixture", "Loading…");
+        catalogue::note_pending_notice(package_id, notice);
+
+        assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
+        assert_eq!(
+            chrome.borrow().notifications().len(),
+            1,
+            "a second activation must not create another worker or opening card"
+        );
+        assert_eq!(catalogue::take_pending_notice(package_id), Some(notice));
     }
 
     #[test]

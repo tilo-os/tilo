@@ -121,6 +121,10 @@ struct Harness {
 
 impl Harness {
     fn new(tree: &WorkspaceTree) -> Self {
+        Self::new_at(tree, W, H)
+    }
+
+    fn new_at(tree: &WorkspaceTree, width: f32, height: f32) -> Self {
         // Pin the top-bar clock before the first sync — frames here are compared
         // pixel-for-pixel and a live clock would fail once a minute.
         // SAFETY: single-threaded test setup, under `TEST_LOCK`.
@@ -148,8 +152,8 @@ impl Harness {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
+                        width: Dimension::length(width),
+                        height: Dimension::length(height),
                     },
                     ..Default::default()
                 },
@@ -164,8 +168,8 @@ impl Harness {
             .compute_layout_with_measure(
                 root_node,
                 Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::Definite(height),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -404,6 +408,63 @@ fn e2e_open_close_overview() {
             "offscreen: no wgpu adapter — e2e_open_close_overview asserted state transitions only"
         );
     }
+}
+
+/// Production notification-stack review seed for failed application opens.
+/// This deliberately goes through `Harness` (the same overlay host, layout,
+/// and desktop layer used by the other e2e shots), rather than drawing a
+/// notification card in isolation. Keep the PNGs out of goldens: the purpose
+/// is a human 1:1 review at both normal and accessibility contrast.
+#[test]
+#[ignore = "visual review: writes production overlay PNGs and needs an offscreen adapter"]
+fn e2e_launch_failure_notifications_visual_review() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tree = WorkspaceTree::bootstrap_demo();
+    let out_dir = screenshots_dir().join("launch-failure-review");
+    std::fs::create_dir_all(&out_dir).expect("create launch notification review directory");
+    for (width, height, layout_width, layout_height) in [
+        (1280_u32, 720_u32, 1280.0_f32, 720.0_f32),
+        (1600, 900, 1600.0, 900.0),
+    ] {
+        let mut renderer = match try_new_renderer(width, height) {
+            Some(renderer) => renderer,
+            None => {
+                eprintln!("offscreen: no wgpu adapter — launch notification review skipped");
+                return;
+            }
+        };
+        let mut h = Harness::new_at(&tree, layout_width, layout_height);
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.push_notification_full(
+                shell::shell::notification::Notification::new(
+                    "Couldn't open LibreOffice Calc — profile initialization failed after a very long diagnostic suffix",
+                    "The app stopped before opening. Open Applications and try again.",
+                )
+                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_app_name("Applications"),
+            );
+            chrome.push_notification_full(
+                shell::shell::notification::Notification::new(
+                    "Couldn't open Notes",
+                    "The app launcher is unavailable. Open Applications and try again.",
+                )
+                .with_severity(shell::shell::notification::NotificationSeverity::Error)
+                .with_app_name("Applications"),
+            );
+        }
+        let dark = out_dir.join(format!("{width}x{height}-dark.png"));
+        let high_contrast = out_dir.join(format!("{width}x{height}-high-contrast.png"));
+        h.draw_to(Some(&mut renderer), &dark);
+        h.theme = Theme::high_contrast();
+        h.draw_to(Some(&mut renderer), &high_contrast);
+        for path in [&dark, &high_contrast] {
+            assert_png_nonempty(path);
+        }
+    }
+    println!("launch-failure review PNGs: {}", out_dir.display());
 }
 
 /// Centre of the topbar's overview-toggle icon, from a sibling
