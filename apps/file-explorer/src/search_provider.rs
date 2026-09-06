@@ -16,7 +16,8 @@ use std::path::PathBuf;
 
 use ui::qos_actions::ActionAddress;
 use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    SearchTextIndex,
 };
 
 use crate::favorites::Favorite;
@@ -82,24 +83,40 @@ pub fn remote_account_open_address(account: &RemoteAccount) -> ActionAddress {
     )
 }
 
-/// A directory projection is untrusted input. Keep the palette snapshot small
-/// even when a mount exposes an unusually large directory.
-pub const MAX_COLLABORATIVE_SEARCH_RECORDS: usize = 256;
+/// Join independently searchable fields without allowing a query to match
+/// across a label/path boundary.  `SearchTextIndex` supplies the shared packed
+/// exact Unicode suffix index and hard result budget.
+fn searchable_fields(fields: impl IntoIterator<Item = String>) -> String {
+    fields.into_iter().collect::<Vec<_>>().join("\u{1f}")
+}
 
 /// A [`SearchProvider`] over a snapshot of the Favourites / Places list.
 pub struct PlacesSearchProvider {
-    favorites: Vec<Favorite>,
+    favorites: Vec<IndexedFavorite>,
+    index: SearchTextIndex,
     kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedFavorite {
+    favorite: Favorite,
 }
 
 impl PlacesSearchProvider {
     /// Snapshot the current favourites into a provider.
     pub fn new(favorites: Vec<Favorite>) -> Self {
+        let favorites: Vec<_> = favorites
+            .into_iter()
+            .map(|favorite| IndexedFavorite { favorite })
+            .collect();
         Self {
-            favorites: favorites
-                .into_iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .collect(),
+            index: SearchTextIndex::new(favorites.iter().map(|entry| {
+                searchable_fields([
+                    entry.favorite.label.clone(),
+                    entry.favorite.path.to_string_lossy().into_owned(),
+                ])
+            })),
+            favorites,
             kind: crate::i18n::t("files-a11y-places"),
         }
     }
@@ -115,28 +132,31 @@ impl SearchProvider for PlacesSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let q = query.to_lowercase();
-        self.favorites
-            .iter()
-            .filter(|f| {
-                f.label.to_lowercase().contains(&q)
-                    || f.path.to_string_lossy().to_lowercase().contains(&q)
-            })
-            .map(|f| {
-                SearchResult::for_action(&self.kind, f.label.clone(), place_open_address(&f.path))
-                    .with_subtitle(f.path.display().to_string())
-                    .with_icon(f.icon())
+        self.index
+            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .into_iter()
+            .filter_map(|entry_id| self.favorites.get(entry_id))
+            .map(|entry| {
+                let favorite = &entry.favorite;
+                SearchResult::for_action(
+                    &self.kind,
+                    favorite.label.clone(),
+                    place_open_address(&favorite.path),
+                )
+                .with_subtitle(favorite.path.display().to_string())
+                .with_icon(favorite.icon())
             })
             .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
             .collect()
     }
 }
 
-/// Bounded search over the mount's ACL-filtered room record catalog. Record
+/// Complete search over the mount's ACL-filtered room record catalog. Record
 /// UUIDs, rather than paths, are action identity: paths are mutable provenance
 /// used only for matching and presentation.
 pub struct CollaborativeRecordSearchProvider {
     records: Vec<CollaborativeSearchRecord>,
+    index: SearchTextIndex,
     kind: String,
 }
 
@@ -151,7 +171,7 @@ struct CollaborativeSearchRecord {
 impl CollaborativeRecordSearchProvider {
     pub fn new(entries: &[WorkspaceRecord]) -> Self {
         let mut seen = BTreeSet::new();
-        let records = entries
+        let records: Vec<_> = entries
             .iter()
             .filter_map(|entry| {
                 let record_id = entry.record_id;
@@ -162,10 +182,16 @@ impl CollaborativeRecordSearchProvider {
                     is_dir: entry.is_dir,
                 })
             })
-            .take(MAX_COLLABORATIVE_SEARCH_RECORDS)
             .collect();
+        let index = SearchTextIndex::new(records.iter().map(|record| {
+            searchable_fields([
+                record.name.clone(),
+                record.provenance.to_string_lossy().into_owned(),
+            ])
+        }));
         Self {
             records,
+            index,
             kind: crate::i18n::t("files-search-collaborative-records"),
         }
     }
@@ -181,17 +207,10 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let query = query.to_lowercase();
-        self.records
-            .iter()
-            .filter(|record| {
-                record.name.to_lowercase().contains(&query)
-                    || record
-                        .provenance
-                        .to_string_lossy()
-                        .to_lowercase()
-                        .contains(&query)
-            })
+        self.index
+            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .into_iter()
+            .filter_map(|entry_id| self.records.get(entry_id))
             .map(|record| {
                 SearchResult::for_action(
                     &self.kind,
@@ -217,17 +236,31 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
 /// crawler: the mount daemon owns remote I/O and Files must remain responsive
 /// and offline-safe while the palette is open.
 pub struct RemoteAccountSearchProvider {
-    accounts: Vec<RemoteAccount>,
+    accounts: Vec<IndexedRemoteAccount>,
+    index: SearchTextIndex,
     kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedRemoteAccount {
+    account: RemoteAccount,
 }
 
 impl RemoteAccountSearchProvider {
     pub fn new(accounts: Vec<RemoteAccount>) -> Self {
+        let accounts: Vec<_> = accounts
+            .into_iter()
+            .map(|account| IndexedRemoteAccount { account })
+            .collect();
         Self {
-            accounts: accounts
-                .into_iter()
-                .take(MAX_COLLABORATIVE_SEARCH_RECORDS)
-                .collect(),
+            index: SearchTextIndex::new(accounts.iter().map(|entry| {
+                searchable_fields([
+                    entry.account.label.clone(),
+                    entry.account.host.clone(),
+                    entry.account.kind.label().to_owned(),
+                ])
+            })),
+            accounts,
             kind: "Remote file accounts".into(),
         }
     }
@@ -243,15 +276,12 @@ impl SearchProvider for RemoteAccountSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let query = query.to_lowercase();
-        self.accounts
-            .iter()
-            .filter(|account| {
-                account.label.to_lowercase().contains(&query)
-                    || account.host.contains(&query)
-                    || account.kind.label().to_lowercase().contains(&query)
-            })
-            .map(|account| {
+        self.index
+            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .into_iter()
+            .filter_map(|entry_id| self.accounts.get(entry_id))
+            .map(|entry| {
+                let account = &entry.account;
                 SearchResult::for_action(
                     &self.kind,
                     account.label.clone(),
@@ -395,8 +425,9 @@ mod tests {
     }
 
     #[test]
-    fn collaborative_projection_is_deduplicated_and_bounded() {
-        let entries: Vec<_> = (0..MAX_COLLABORATIVE_SEARCH_RECORDS + 20)
+    fn collaborative_projection_is_deduplicated_and_complete_beyond_the_old_cap() {
+        const RECORD_COUNT: usize = 276;
+        let entries: Vec<_> = (0..RECORD_COUNT)
             .flat_map(|index| {
                 let id = uuid::Uuid::from_u128(index as u128 + 1);
                 let mut first = collaborative_entry(&format!("file-{index}"));
@@ -406,7 +437,42 @@ mod tests {
             })
             .collect();
         let provider = CollaborativeRecordSearchProvider::new(&entries);
-        assert_eq!(provider.search("").len(), MAX_COLLABORATIVE_SEARCH_RECORDS);
+        // Result presentation is intentionally capped, but the index itself
+        // is complete: a match beyond the former 256-record snapshot limit is
+        // still discoverable.
+        assert_eq!(provider.search("file-275").len(), 1);
+    }
+
+    #[test]
+    fn suffix_index_finds_mid_token_tail_hits_with_a_fixed_result_budget() {
+        let texts: Vec<_> = (0..(DEFAULT_SEARCH_CANDIDATE_LIMIT + 80))
+            .map(|index| format!("common-{index}"))
+            .chain(std::iter::once("archive-composite-tail".into()))
+            .collect();
+        let index = SearchTextIndex::new(texts.iter());
+
+        // `site` is neither a prefix nor a complete token. The unique tail
+        // posting proves late corpus members remain searchable.
+        assert_eq!(
+            index.matching_ids("site", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            vec![texts.len() - 1]
+        );
+        // A deliberately common one-character query still never inspects more
+        // than the hard candidate budget.
+        assert_eq!(
+            index
+                .matching_ids("m", DEFAULT_SEARCH_CANDIDATE_LIMIT)
+                .len(),
+            DEFAULT_SEARCH_CANDIDATE_LIMIT
+        );
+        // Exact and partial matches follow the same postings path: `common-1`
+        // must not hide the longer `common-10`/`common-100` entries.
+        assert!(
+            index
+                .matching_ids("common-1", DEFAULT_SEARCH_CANDIDATE_LIMIT)
+                .len()
+                > 1
+        );
     }
 
     #[test]

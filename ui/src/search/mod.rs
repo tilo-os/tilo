@@ -29,7 +29,7 @@ mod provider;
 mod registry;
 
 pub use provider::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-    fuzzy_score,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
+    SearchProvider, SearchResult, SearchTextIndex, fuzzy_score, normalize_search_text,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
