@@ -29,12 +29,149 @@
 
 use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-};
+use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
 
 use crate::backend::{MusicBackend, SearchTop};
-use crate::model::Library;
+use crate::model::{Album, Artist, Library, Playlist, Track};
+
+/// A query never evaluates more than this many indexed library entities. The
+/// palette has a much smaller visible result limit; the extra headroom keeps
+/// common short-prefix searches useful without turning a no-match query into a
+/// linear scan of the local catalogue.
+const SEARCH_CANDIDATE_LIMIT: usize = 512;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IndexedEntity {
+    Track(String),
+    Album(String),
+    Artist(String),
+    Playlist(String),
+}
+
+/// Small in-memory inverted index used only by the synchronous Ctrl+K
+/// provider. It indexes the complete local snapshot, never network results or
+/// audio metadata. Query-time intersection finds complete matches first; only
+/// the final entity evaluation is budgeted.
+#[derive(Default)]
+struct LibrarySearchIndex {
+    exact: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
+    prefixes: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
+    trigrams: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
+}
+
+struct CandidateSelection<'a> {
+    entities: Vec<&'a IndexedEntity>,
+    inspected: usize,
+}
+
+impl LibrarySearchIndex {
+    fn insert(&mut self, entity: &IndexedEntity, fields: &[&str]) {
+        let mut keys = std::collections::BTreeSet::new();
+        for field in fields {
+            let normalized = normalize_search_text(field);
+            if !normalized.is_empty() {
+                let exact = self.exact.entry(normalized.clone()).or_default();
+                exact.insert(entity.clone());
+            }
+            for term in normalized.split_whitespace() {
+                let mut prefix = String::new();
+                for ch in term.chars().take(12) {
+                    prefix.push(ch);
+                    keys.insert((true, prefix.clone()));
+                }
+            }
+            let chars: Vec<char> = normalized.chars().collect();
+            for window in chars.windows(3) {
+                keys.insert((false, window.iter().collect::<String>()));
+            }
+        }
+        for (is_prefix, key) in keys {
+            let postings = if is_prefix {
+                self.prefixes.entry(key).or_default()
+            } else {
+                self.trigrams.entry(key).or_default()
+            };
+            postings.insert(entity.clone());
+        }
+    }
+
+    fn candidates(&self, query: &str) -> CandidateSelection<'_> {
+        let normalized = normalize_search_text(query);
+        if let Some(exact) = self.exact.get(&normalized) {
+            let entities: Vec<_> = exact.iter().take(SEARCH_CANDIDATE_LIMIT).collect();
+            return CandidateSelection {
+                inspected: entities.len(),
+                entities,
+            };
+        }
+
+        let mut postings = Vec::new();
+        for term in normalized.split_whitespace() {
+            let chars: Vec<char> = term.chars().collect();
+            if chars.len() >= 3 {
+                for window in chars.windows(3) {
+                    let key: String = window.iter().collect();
+                    let Some(posting) = self.trigrams.get(&key) else {
+                        return CandidateSelection {
+                            entities: Vec::new(),
+                            inspected: 0,
+                        };
+                    };
+                    postings.push(posting);
+                }
+            } else if let Some(posting) = self.prefixes.get(term) {
+                postings.push(posting);
+            } else {
+                return CandidateSelection {
+                    entities: Vec::new(),
+                    inspected: 0,
+                };
+            }
+        }
+        let Some((rarest_index, _)) = postings.iter().enumerate().min_by_key(|(_, p)| p.len())
+        else {
+            return CandidateSelection {
+                entities: Vec::new(),
+                inspected: 0,
+            };
+        };
+        let Some(rarest) = postings.get(rarest_index).copied() else {
+            return CandidateSelection {
+                entities: Vec::new(),
+                inspected: 0,
+            };
+        };
+        let mut inspected = 0;
+        let entities = rarest
+            .iter()
+            .take(SEARCH_CANDIDATE_LIMIT)
+            .filter(|entity| {
+                inspected += 1;
+                postings
+                    .iter()
+                    .enumerate()
+                    .all(|(index, posting)| index == rarest_index || posting.contains(entity))
+            })
+            .collect();
+        CandidateSelection {
+            entities,
+            inspected,
+        }
+    }
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
 
 /// Stable ids for Music's four searchable result types. The framework uses them
 /// to deduplicate providers and persist per-type preferences.
@@ -554,28 +691,23 @@ impl SearchHit {
 /// library contributes zero rows — nothing is fabricated.
 pub struct LibrarySearchProvider {
     lib: Library,
+    index: LibrarySearchIndex,
 }
 
 impl LibrarySearchProvider {
     /// Snapshot the current library into a provider.
     pub fn new(lib: &Library) -> Self {
-        let mut bounded = Library::default();
-        for (id, track) in lib.tracks.iter().take(DEFAULT_SEARCH_INDEX_LIMIT) {
-            bounded.tracks.insert(id.clone(), track.clone());
+        let snapshot = lib.clone();
+        let index = library_search_index(&snapshot);
+        Self {
+            lib: snapshot,
+            index,
         }
-        for (id, album) in lib.albums.iter().take(DEFAULT_SEARCH_INDEX_LIMIT) {
-            bounded.albums.insert(id.clone(), album.clone());
-        }
-        for (id, artist) in lib.artists.iter().take(DEFAULT_SEARCH_INDEX_LIMIT) {
-            bounded.artists.insert(id.clone(), artist.clone());
-        }
-        bounded.playlists.extend(
-            lib.playlists
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned(),
-        );
-        Self { lib: bounded }
+    }
+
+    #[cfg(test)]
+    fn candidate_count_for_query(&self, query: &str) -> usize {
+        self.index.candidates(query).inspected
     }
 }
 
@@ -591,10 +723,216 @@ impl SearchProvider for LibrarySearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        library_hits_limited(&self.lib, query, limit)
+        indexed_library_hits(&self.lib, &self.index, query, limit)
             .into_iter()
             .filter_map(SearchHit::into_search_result)
             .collect()
+    }
+}
+
+fn library_search_index(lib: &Library) -> LibrarySearchIndex {
+    let mut index = LibrarySearchIndex::default();
+    for track in lib.tracks.values() {
+        index.insert(
+            &IndexedEntity::Track(track.id.clone()),
+            &[
+                track.title.as_str(),
+                lib.artist_name(&track.artist_id),
+                lib.artist(&track.artist_id)
+                    .map_or("", |artist| artist.genre.as_str()),
+            ],
+        );
+    }
+    for album in lib.albums.values() {
+        index.insert(
+            &IndexedEntity::Album(album.id.clone()),
+            &[
+                album.title.as_str(),
+                lib.artist_name(&album.artist_id),
+                lib.artist(&album.artist_id)
+                    .map_or("", |artist| artist.genre.as_str()),
+            ],
+        );
+    }
+    for artist in lib.artists.values() {
+        index.insert(
+            &IndexedEntity::Artist(artist.id.clone()),
+            &[artist.name.as_str(), artist.genre.as_str()],
+        );
+    }
+    for playlist in &lib.playlists {
+        index.insert(
+            &IndexedEntity::Playlist(playlist.id.clone()),
+            &[playlist.name.as_str()],
+        );
+    }
+    index
+}
+
+fn track_matches(lib: &Library, track: &Track, needle: &str) -> bool {
+    track.title.to_lowercase().contains(needle)
+        || lib
+            .artist_name(&track.artist_id)
+            .to_lowercase()
+            .contains(needle)
+        || lib
+            .artist(&track.artist_id)
+            .is_some_and(|artist| artist.genre.to_lowercase().contains(needle))
+}
+
+fn album_matches(lib: &Library, album: &Album, needle: &str) -> bool {
+    album.title.to_lowercase().contains(needle)
+        || lib
+            .artist(&album.artist_id)
+            .is_some_and(|artist| artist.genre.to_lowercase().contains(needle))
+}
+
+fn artist_matches(artist: &Artist, needle: &str) -> bool {
+    artist.name.to_lowercase().contains(needle) || artist.genre.to_lowercase().contains(needle)
+}
+
+fn playlist_matches(playlist: &Playlist, needle: &str) -> bool {
+    playlist.name.to_lowercase().contains(needle)
+}
+
+fn indexed_library_hits(
+    lib: &Library,
+    index: &LibrarySearchIndex,
+    query: &str,
+    limit: usize,
+) -> Vec<SearchHit> {
+    let q = query.trim();
+    let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+    if q.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let needle = q.to_lowercase();
+    let mut tracks = Vec::new();
+    let mut albums = Vec::new();
+    let mut artists = Vec::new();
+    let mut playlists = Vec::new();
+    let candidates = index.candidates(q);
+    debug_assert!(candidates.inspected <= SEARCH_CANDIDATE_LIMIT);
+    for candidate in candidates.entities {
+        match candidate {
+            IndexedEntity::Track(id) => {
+                if let Some(track) = lib
+                    .track(id)
+                    .filter(|track| track_matches(lib, track, &needle))
+                {
+                    tracks.push(track);
+                }
+            }
+            IndexedEntity::Album(id) => {
+                if let Some(album) = lib
+                    .album(id)
+                    .filter(|album| album_matches(lib, album, &needle))
+                {
+                    albums.push(album);
+                }
+            }
+            IndexedEntity::Artist(id) => {
+                if let Some(artist) = lib
+                    .artist(id)
+                    .filter(|artist| artist_matches(artist, &needle))
+                {
+                    artists.push(artist);
+                }
+            }
+            IndexedEntity::Playlist(id) => {
+                if let Some(playlist) = lib
+                    .playlist(id)
+                    .filter(|playlist| playlist_matches(playlist, &needle))
+                {
+                    playlists.push(playlist);
+                }
+            }
+        }
+    }
+    tracks.sort_by(|a, b| b.plays.cmp(&a.plays).then_with(|| a.id.cmp(&b.id)));
+    let mut hits = Vec::with_capacity(limit.min(32));
+    append_indexed_tracks(lib, &tracks, limit, &mut hits);
+    append_indexed_albums(lib, &albums, limit, &mut hits);
+    append_indexed_artists(&artists, limit, &mut hits);
+    append_indexed_playlists(&playlists, limit, &mut hits);
+    hits
+}
+
+fn append_indexed_tracks(
+    lib: &Library,
+    tracks: &[&Track],
+    limit: usize,
+    hits: &mut Vec<SearchHit>,
+) {
+    for track in tracks {
+        if hits.len() == limit {
+            return;
+        }
+        hits.push(SearchHit {
+            type_id: SONG_TYPE_ID,
+            title: track.title.clone(),
+            subtitle: song_subtitle(lib.artist_name(&track.artist_id), track.duration_s),
+            cover_url: String::new(),
+            thumbnail_seed: track.album_id.clone(),
+            deep_link: SearchHit::track_link(&track.id),
+        });
+    }
+}
+
+fn append_indexed_albums(
+    lib: &Library,
+    albums: &[&Album],
+    limit: usize,
+    hits: &mut Vec<SearchHit>,
+) {
+    for album in albums {
+        if hits.len() == limit {
+            return;
+        }
+        hits.push(SearchHit {
+            type_id: ALBUM_TYPE_ID,
+            title: album.title.clone(),
+            subtitle: album_subtitle(lib.artist_name(&album.artist_id), "Album", album.year),
+            cover_url: String::new(),
+            thumbnail_seed: album.id.clone(),
+            deep_link: SearchHit::album_link(&album.id),
+        });
+    }
+}
+
+fn append_indexed_artists(artists: &[&Artist], limit: usize, hits: &mut Vec<SearchHit>) {
+    for artist in artists {
+        if hits.len() == limit {
+            return;
+        }
+        hits.push(SearchHit {
+            type_id: ARTIST_TYPE_ID,
+            title: artist.name.clone(),
+            subtitle: if artist.genre.is_empty() {
+                "Artist".into()
+            } else {
+                artist.genre.clone()
+            },
+            cover_url: String::new(),
+            thumbnail_seed: artist.id.clone(),
+            deep_link: SearchHit::artist_link(&artist.id),
+        });
+    }
+}
+
+fn append_indexed_playlists(playlists: &[&Playlist], limit: usize, hits: &mut Vec<SearchHit>) {
+    for playlist in playlists {
+        if hits.len() == limit {
+            return;
+        }
+        hits.push(SearchHit {
+            type_id: PLAYLIST_TYPE_ID,
+            title: playlist.name.clone(),
+            subtitle: playlist_subtitle("Your library", playlist.track_ids.len() as u64),
+            cover_url: playlist.cover.clone(),
+            thumbnail_seed: playlist.id.clone(),
+            deep_link: SearchHit::playlist_link(&playlist.id),
+        });
     }
 }
 
@@ -780,5 +1118,169 @@ mod tests {
         // dump into the palette).
         let seeded = LibrarySearchProvider::new(&seed::sample_library());
         assert!(seeded.search("   ").is_empty());
+    }
+
+    #[test]
+    fn indexed_provider_bounds_candidate_work_before_materialising_results() {
+        let mut lib = Library::default();
+        lib.artists.insert(
+            "artist".into(),
+            crate::model::Artist {
+                id: "artist".into(),
+                name: "Bounded Artist".into(),
+                genre: "Test".into(),
+                monthly_listeners: 0,
+            },
+        );
+        lib.albums.insert(
+            "album".into(),
+            crate::model::Album {
+                id: "album".into(),
+                title: "Bounded Album".into(),
+                artist_id: "artist".into(),
+                year: 2026,
+            },
+        );
+        for n in 0..(SEARCH_CANDIDATE_LIMIT + 200) {
+            let id = format!("track-{n}");
+            lib.tracks.insert(
+                id.clone(),
+                crate::model::Track {
+                    id,
+                    title: format!("Song candidate {n}"),
+                    album_id: "album".into(),
+                    artist_id: "artist".into(),
+                    track_no: 1,
+                    duration_s: 1,
+                    yt_id: format!("video-{n}"),
+                    plays: n as u64,
+                },
+            );
+        }
+
+        let provider = LibrarySearchProvider::new(&lib);
+        assert!(
+            provider.candidate_count_for_query("absent-token") <= SEARCH_CANDIDATE_LIMIT,
+            "a no-match query consults an index posting, never every library entity"
+        );
+        assert_eq!(provider.candidate_count_for_query("absent-token"), 0);
+        assert_eq!(
+            provider.candidate_count_for_query("song"),
+            SEARCH_CANDIDATE_LIMIT,
+            "even a broad query evaluates the fixed candidate budget"
+        );
+        assert!(provider.search_limited("song", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+    }
+
+    #[test]
+    fn exact_library_lookup_reaches_entities_beyond_the_old_snapshot_cutoff() {
+        let mut lib = Library::default();
+        lib.artists.insert(
+            "artist".into(),
+            crate::model::Artist {
+                id: "artist".into(),
+                name: "All Library Artist".into(),
+                genre: String::new(),
+                monthly_listeners: 0,
+            },
+        );
+        lib.albums.insert(
+            "album".into(),
+            crate::model::Album {
+                id: "album".into(),
+                title: "All Library Album".into(),
+                artist_id: "artist".into(),
+                year: 2026,
+            },
+        );
+        for n in 0..4_097 {
+            let id = format!("track-{n:04}");
+            lib.tracks.insert(
+                id.clone(),
+                crate::model::Track {
+                    id,
+                    title: if n == 4_096 {
+                        "Needle Beyond Former Cutoff".into()
+                    } else {
+                        format!("Library track {n}")
+                    },
+                    album_id: "album".into(),
+                    artist_id: "artist".into(),
+                    track_no: 1,
+                    duration_s: 1,
+                    yt_id: format!("video-{n}"),
+                    plays: 0,
+                },
+            );
+        }
+
+        let provider = LibrarySearchProvider::new(&lib);
+        let results = provider.search("Needle Beyond Former Cutoff");
+        assert!(
+            results
+                .iter()
+                .any(|result| result.title == "Needle Beyond Former Cutoff"),
+            "an exact title remains searchable even when it falls after the former 4,096-item cap"
+        );
+        assert_eq!(
+            provider.candidate_count_for_query("Needle Beyond Former Cutoff"),
+            1
+        );
+    }
+
+    #[test]
+    fn distinctive_partial_phrase_finds_a_late_item_after_common_trigrams() {
+        let mut lib = Library::default();
+        lib.artists.insert(
+            "artist".into(),
+            crate::model::Artist {
+                id: "artist".into(),
+                name: "Common Artist".into(),
+                genre: String::new(),
+                monthly_listeners: 0,
+            },
+        );
+        lib.albums.insert(
+            "album".into(),
+            crate::model::Album {
+                id: "album".into(),
+                title: "Common Album".into(),
+                artist_id: "artist".into(),
+                year: 2026,
+            },
+        );
+        for n in 0..4_097 {
+            let id = format!("track-{n:04}");
+            lib.tracks.insert(
+                id.clone(),
+                crate::model::Track {
+                    id,
+                    title: if n == 4_096 {
+                        "Common opening distinctive moonlit signal".into()
+                    } else {
+                        format!("Common opening catalogue entry {n}")
+                    },
+                    album_id: "album".into(),
+                    artist_id: "artist".into(),
+                    track_no: 1,
+                    duration_s: 1,
+                    yt_id: format!("video-{n}"),
+                    plays: 0,
+                },
+            );
+        }
+
+        let provider = LibrarySearchProvider::new(&lib);
+        let results = provider.search("opening distinctive moonlit");
+        assert!(
+            results
+                .iter()
+                .any(|result| result.title == "Common opening distinctive moonlit signal"),
+            "the rarest query trigrams intersect complete postings, so a late item survives a common opening"
+        );
+        assert_eq!(
+            provider.candidate_count_for_query("opening distinctive moonlit"),
+            1
+        );
     }
 }
