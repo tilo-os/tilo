@@ -3,7 +3,7 @@
 //!
 //! ## What's wired
 //!
-//! - **Add** and **Edit** use one device-local form for email, CalDAV, WebDAV,
+//! - **Add** and **Edit** use one device-local form for email, `CalDAV`, `WebDAV`,
 //!   and Nextcloud metadata; email setup auto-configures IMAP/SMTP.
 //! - **Sign in again** replaces only the sealed vault credential.
 //! - **Remove** is explicitly confirmed, then transactionally clears the
@@ -62,6 +62,11 @@ fn edit_key(id: &str) -> String {
     format!("settings.accounts.edit.{id}")
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value,
+    reason = "the resource action binding mirrors the framework's distinct address, label, operation, and destructive fields"
+)]
 fn account_action_button(
     control_id: &str,
     label: &str,
@@ -139,6 +144,10 @@ impl ProbeJob {
 }
 
 /// External accounts pane.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags are independent form and asynchronous-operation latches, not a single state machine"
+)]
 pub struct AccountsPane {
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
@@ -560,6 +569,10 @@ impl AccountsPane {
     ///
     /// Sample rows report an honest "Example" status rather than fabricating
     /// a live "Connected" — nothing is actually connected in the illustration.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the full account-row action hierarchy is kept together for auditability"
+    )]
     fn account_row(&self, view: &AccountView, theme: &Theme) -> El {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
@@ -702,6 +715,10 @@ impl AccountsPane {
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the form declares every credential field and accessibility label in one reviewable surface"
+    )]
     fn account_form(&self, kind: AccountKind) -> El {
         let name = TextInput::from_state(&self.form_name)
             .with_kind(TextInputKind::Name)
@@ -799,10 +816,10 @@ impl AccountsPane {
                         Box::new(identity),
                     ),
                 ];
-                if kind != AccountKind::Mail {
-                    fields.push(setting_row("Server", Box::new(server)));
-                } else {
+                if kind == AccountKind::Mail {
                     fields.push(setting_row("Login name", Box::new(user)));
+                } else {
+                    fields.push(setting_row("Server", Box::new(server)));
                 }
                 fields.push(setting_row("Password or app password", Box::new(password)));
                 if let Some(error) = &self.form_error {
@@ -884,6 +901,10 @@ impl AccountsPane {
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one canonical conversion validates the complete set of account kinds and credential fields"
+    )]
     fn prepare_account(
         kind: AccountKind,
         existing_id: Option<&str>,
@@ -1115,11 +1136,9 @@ impl AccountsPane {
         // visible if vault persistence fails. Every later failure restores all
         // earlier writes; compensation failures are appended to the result.
         let credential_changed = vault.remove(&account_id);
-        if credential_changed {
-            if let Err(error) = vault.try_save() {
-                let _ = crate::accounts::finish_account_mutation();
-                return Err(format!("could not remove saved credential: {error}"));
-            }
+        if credential_changed && let Err(error) = vault.try_save() {
+            let _ = crate::accounts::finish_account_mutation();
+            return Err(format!("could not remove saved credential: {error}"));
         }
 
         let mut updated_store = original_store.clone();
@@ -1141,7 +1160,7 @@ impl AccountsPane {
             return Err(result);
         }
 
-        let mut updated_statuses = original_statuses.clone();
+        let mut updated_statuses = original_statuses;
         updated_statuses.remove(&account_id);
         if let Err(error) = updated_statuses.save() {
             let metadata_rollback = original_store.save().map_err(|e| e.to_string());
@@ -1302,36 +1321,33 @@ impl AccountsPane {
             return;
         };
         self.form_probe = None;
-        match result {
-            Err(error) => {
-                self.form_candidate = None;
-                self.form_error = Some(error);
-            }
-            Ok(_) => {
-                let Some(candidate) = self.form_candidate.take() else {
-                    self.form_error = Some("account check result had no pending draft".into());
-                    self.structure_dirty = true;
-                    return;
-                };
-                match Self::save_account_with_id(
-                    candidate.kind,
-                    candidate.existing_id.as_deref(),
-                    Some(&candidate.assigned_id),
-                    &candidate.name,
-                    &candidate.identity,
-                    &candidate.username,
-                    &candidate.server,
-                    &candidate.password,
-                ) {
-                    Ok(()) => {
-                        self.form_kind = None;
-                        self.form_error = None;
-                        self.form_account_id = None;
-                        self.clear_form_fields();
-                        self.reload();
-                    }
-                    Err(error) => self.form_error = Some(error),
+        if let Err(error) = result {
+            self.form_candidate = None;
+            self.form_error = Some(error);
+        } else {
+            let Some(candidate) = self.form_candidate.take() else {
+                self.form_error = Some("account check result had no pending draft".into());
+                self.structure_dirty = true;
+                return;
+            };
+            match Self::save_account_with_id(
+                candidate.kind,
+                candidate.existing_id.as_deref(),
+                Some(&candidate.assigned_id),
+                &candidate.name,
+                &candidate.identity,
+                &candidate.username,
+                &candidate.server,
+                &candidate.password,
+            ) {
+                Ok(()) => {
+                    self.form_kind = None;
+                    self.form_error = None;
+                    self.form_account_id = None;
+                    self.clear_form_fields();
+                    self.reload();
                 }
+                Err(error) => self.form_error = Some(error),
             }
         }
         self.structure_dirty = true;
@@ -1439,27 +1455,24 @@ impl AccountsPane {
             return;
         };
         self.reauth_probe = None;
-        match result {
-            Err(error) => {
-                self.reauth_candidate = None;
-                self.reauth_error = Some(error);
-            }
-            Ok(_) => {
-                let Some((account_id, secret)) = self.reauth_candidate.take() else {
-                    self.reauth_error = Some("credential check result had no pending draft".into());
-                    self.structure_dirty = true;
-                    return;
-                };
-                let mut vault = accounts::SecretVault::open();
-                vault.put(&account_id, &secret);
-                match vault.try_save() {
-                    Ok(()) => {
-                        self.reauth_id = None;
-                        self.reauth_error = None;
-                        self.reauth_password.set(String::new());
-                    }
-                    Err(error) => self.reauth_error = Some(error),
+        if let Err(error) = result {
+            self.reauth_candidate = None;
+            self.reauth_error = Some(error);
+        } else {
+            let Some((account_id, secret)) = self.reauth_candidate.take() else {
+                self.reauth_error = Some("credential check result had no pending draft".into());
+                self.structure_dirty = true;
+                return;
+            };
+            let mut vault = accounts::SecretVault::open();
+            vault.put(&account_id, &secret);
+            match vault.try_save() {
+                Ok(()) => {
+                    self.reauth_id = None;
+                    self.reauth_error = None;
+                    self.reauth_password.set(String::new());
                 }
+                Err(error) => self.reauth_error = Some(error),
             }
         }
         self.structure_dirty = true;
@@ -1545,6 +1558,10 @@ fn relative_sync_time(unix: i64) -> String {
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "callers construct per-kind JSON values solely to merge them into the persisted opaque configuration"
+)]
 fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
     let Some(updates) = updates.as_object() else {
         return;
