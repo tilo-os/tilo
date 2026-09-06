@@ -8,13 +8,21 @@ use qos_actions::{
 use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "video-player.operation";
+/// The contextual resource snapshot remains responsive even for containers
+/// with an unusually large number of streams or chapters. Stable IDs still let
+/// a host resolve a specific omitted item on demand.
+pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlayerOperation {
-    Open { path: Option<String> },
+    Open {
+        path: Option<String>,
+    },
     Close,
     TogglePlayback,
     ToggleMute,
+    /// Bring the current player into view without changing playback state.
+    Reveal,
     SeekSeconds(f64),
     SeekBySeconds(f64),
     Restart,
@@ -22,9 +30,31 @@ pub enum PlayerOperation {
     SetVolume(f64),
     SetAutoplay(bool),
     SetLoop(bool),
-    ShowTracksUnavailable,
-    ShowChaptersUnavailable,
-    SetPlaybackRateUnavailable(f64),
+    /// Choose an enumerated embedded audio stream.
+    SelectAudioTrack {
+        source_id: String,
+        stream_id: String,
+        index: u32,
+    },
+    /// Choose an embedded subtitle stream; `None` turns captions off.
+    SelectSubtitleTrack {
+        source_id: String,
+        /// Requested subtitle stream. `None` turns captions off.
+        target_stream_id: Option<String>,
+        target_index: Option<u32>,
+        /// Selection that was current when this action was published. This
+        /// distinguishes "turn off" from "select the current track again".
+        expected_stream_id: Option<String>,
+        expected_index: Option<u32>,
+    },
+    /// A safe navigation action for a decoder-reported chapter.
+    JumpToChapter {
+        source_id: String,
+        id: String,
+        seconds: f64,
+    },
+    /// Set the shared transport speed in the bounded player range.
+    SetPlaybackRate(f64),
     ToggleFullscreen,
 }
 
@@ -36,21 +66,23 @@ impl PlayerOperation {
             Self::Close
                 | Self::TogglePlayback
                 | Self::ToggleMute
+                | Self::Reveal
                 | Self::SeekSeconds(_)
                 | Self::SeekBySeconds(_)
                 | Self::Restart
                 | Self::SeekToEnd
                 | Self::SetVolume(_)
                 | Self::SetLoop(_)
+                | Self::SelectAudioTrack { .. }
+                | Self::SelectSubtitleTrack { .. }
+                | Self::JumpToChapter { .. }
+                | Self::SetPlaybackRate(_)
         )
     }
 }
 
 /// State captured while publishing the player resource tree.
 ///
-/// It deliberately describes only capabilities the shared decoder currently
-/// provides. Container stream metadata, chapters, and rate control remain
-/// visible as explicitly unavailable rather than being guessed from a file.
 pub struct PlayerResourceCtx<'a> {
     /// Human-readable title of the open item, or the empty-state label.
     pub title: &'a str,
@@ -58,12 +90,22 @@ pub struct PlayerResourceCtx<'a> {
     pub media: MediaAvailability,
     /// The implemented, app-owned playback preferences.
     pub settings: PlaybackSettingsState,
+    /// Decoder-reported audio streams. Empty means the active media contains
+    /// none or discovery has not completed; it is never a fabricated default.
+    pub audio_tracks: &'a [TrackState],
+    /// Decoder-reported subtitle streams.
+    pub subtitle_tracks: &'a [TrackState],
+    /// Container chapters already materialized from a trusted source.
+    pub chapters: &'a [ChapterState],
 }
 
 /// Media availability and shared-transport authority at publication time.
 pub struct MediaAvailability {
     /// Whether a source is open (it may still be decoding its first frame).
     pub has_media: bool,
+    /// Exact identity of the currently-open source. Dynamic targets are never
+    /// published without it, so an old action cannot act on a later file.
+    pub source_id: Option<String>,
     /// Whether this peer may change shared transport state.
     pub can_control_transport: bool,
 }
@@ -74,6 +116,60 @@ pub struct PlaybackSettingsState {
     pub autoplay: bool,
     /// Whether the host repeats the current item at its end.
     pub loop_enabled: bool,
+    /// Current effective speed (`0.25..=4.0`).
+    pub rate: f32,
+}
+
+/// Stream metadata the decoder actually reported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackState {
+    pub stream_id: String,
+    pub index: u32,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// A compact, deterministic URI/stream token for a resource address. The raw
+/// identity remains in the operation payload and is compared before execution.
+pub fn identity_token_for_action(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
+    for byte in value.bytes() {
+        encoded.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        encoded.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    encoded
+}
+
+pub fn audio_resource_id(source_id: &str, stream_id: &str) -> String {
+    format!(
+        "video-player.tracks.audio.{}.{}",
+        identity_token_for_action(source_id),
+        identity_token_for_action(stream_id)
+    )
+}
+
+pub fn subtitle_resource_id(source_id: &str, stream_id: &str) -> String {
+    format!(
+        "video-player.tracks.subtitle.{}.{}",
+        identity_token_for_action(source_id),
+        identity_token_for_action(stream_id)
+    )
+}
+
+pub fn chapter_resource_id(source_id: &str, chapter_id: &str) -> String {
+    format!(
+        "video-player.chapters.{}.{}",
+        identity_token_for_action(source_id),
+        identity_token_for_action(chapter_id)
+    )
+}
+
+/// A stable chapter address and its playback target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChapterState {
+    pub id: String,
+    pub label: String,
+    pub seconds: f64,
 }
 
 fn encode(op: &PlayerOperation) -> EncodedAction {
@@ -81,49 +177,6 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
         type_id: OPERATION_TYPE.to_string(),
         payload: Vec::new(),
     })
-}
-
-/// Publish a limitation as a normal, searchable action descriptor. The action
-/// is unavailable at the protocol boundary, and its payload is still decoded
-/// defensively if an untrusted caller tries to bypass discovery.
-fn unavailable_action(
-    id: &'static str,
-    label: &'static str,
-    operation: PlayerOperation,
-    code: &'static str,
-    reason: &'static str,
-) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "",
-        OperationKind::View,
-        OPERATION_TYPE,
-        Vec::new(),
-        move |_| encode(&operation),
-    )
-    .unavailable(code, reason)
-}
-
-struct UnavailableResourceSpec {
-    id: &'static str,
-    kind: &'static str,
-    label: &'static str,
-    action_id: &'static str,
-    action_label: &'static str,
-    operation: PlayerOperation,
-    code: &'static str,
-    reason: &'static str,
-}
-
-fn unavailable_resource(spec: UnavailableResourceSpec) -> Resource {
-    Resource::new(spec.id, spec.kind, spec.label).with_action(unavailable_action(
-        spec.action_id,
-        spec.action_label,
-        spec.operation,
-        spec.code,
-        spec.reason,
-    ))
 }
 
 #[allow(
@@ -301,6 +354,19 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
             });
         }
     }
+    if let Ok(reveal) = ActionSpec::operation(
+        "reveal",
+        "Show player controls",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::Reveal,
+    ) {
+        transport = transport.with_action(if ctx.media.has_media {
+            reveal
+        } else {
+            reveal.unavailable("no_media", "Open a video before showing its controls")
+        });
+    }
 
     let mut audio = Resource::new("video-player.audio.current", "media.audio", "Audio");
     if let Ok(mute) = ActionSpec::operation(
@@ -359,7 +425,8 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         },
     );
     let settings_label = format!(
-        "Playback settings · autoplay {} · repeat {}",
+        "Playback settings · {}× · autoplay {} · repeat {}",
+        ctx.settings.rate,
         if ctx.settings.autoplay { "on" } else { "off" },
         if ctx.settings.loop_enabled {
             "on"
@@ -384,33 +451,222 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         )
     });
 
-    let tracks = unavailable_resource(UnavailableResourceSpec {
-        id: "video-player.tracks.current",
-        kind: "media.tracks",
-        label: "Audio and subtitle tracks",
-        action_id: "show-track-metadata",
-        action_label: "Track metadata unavailable",
-        operation: PlayerOperation::ShowTracksUnavailable,
-        code: "track_metadata_unavailable",
-        reason: "The shared decoder does not yet enumerate or switch embedded audio/subtitle tracks",
-    });
-    let chapters = unavailable_resource(UnavailableResourceSpec {
-        id: "video-player.chapters.current",
-        kind: "media.chapters",
-        label: "Chapters",
-        action_id: "show-chapters",
-        action_label: "Chapter metadata unavailable",
-        operation: PlayerOperation::ShowChaptersUnavailable,
-        code: "chapter_metadata_unavailable",
-        reason: "The shared decoder does not yet expose container chapter metadata",
-    });
-    settings = settings.with_action(unavailable_action(
+    let rate = ActionSpec::typed_operation(
         "set-playback-rate",
         "Set playback speed",
-        PlayerOperation::SetPlaybackRateUnavailable(1.0),
-        "playback_rate_unavailable",
-        "The shared decoder does not yet support playback-rate control",
-    ));
+        "1",
+        OperationKind::View,
+        OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned(
+                "rate",
+                ParamType::Number,
+                "Playback speed from 0.25× to 4×",
+            )
+            .with_schema(serde_json::json!({"minimum": 0.25, "maximum": 4.0})),
+        ],
+        |args: &ActionArgs| {
+            encode(&PlayerOperation::SetPlaybackRate(
+                args.number("rate").unwrap_or(1.0).clamp(0.25, 4.0),
+            ))
+        },
+    );
+    settings = settings.with_action(if !ctx.media.has_media {
+        rate.unavailable("no_media", "Open a video before changing playback speed")
+    } else if ctx.media.can_control_transport {
+        rate
+    } else {
+        rate.unavailable(
+            "following_host",
+            "The collaborative host controls playback speed",
+        )
+    });
+
+    let mut tracks = Resource::new(
+        "video-player.tracks.current",
+        "media.tracks",
+        format!(
+            "Audio and subtitles · {} audio · {} subtitles",
+            ctx.audio_tracks.len(),
+            ctx.subtitle_tracks.len()
+        ),
+    );
+    for track in ctx.audio_tracks.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let Some(source_id) = ctx.media.source_id.as_deref() else {
+            break;
+        };
+        let action_id = format!(
+            "select-audio-{}",
+            identity_token_for_action(&track.stream_id)
+        );
+        let selected = if track.selected { " · selected" } else { "" };
+        let spec = ActionSpec::typed_operation(
+            action_id,
+            format!("Use {}{selected}", track.label),
+            "Select this embedded audio stream",
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            {
+                let source_id = source_id.to_string();
+                let stream_id = track.stream_id.clone();
+                let index = track.index;
+                move |_| {
+                    encode(&PlayerOperation::SelectAudioTrack {
+                        source_id: source_id.clone(),
+                        stream_id: stream_id.clone(),
+                        index,
+                    })
+                }
+            },
+        )
+        .retry_policy(RetryPolicy::AtMostOnce);
+        tracks = tracks.with_child(
+            Resource::new(
+                audio_resource_id(source_id, &track.stream_id),
+                "media.audio-track",
+                format!("{}{}", track.label, selected),
+            )
+            .with_action(if ctx.media.has_media {
+                spec
+            } else {
+                spec.unavailable("no_media", "Open a video before selecting an audio stream")
+            }),
+        );
+    }
+    for track in ctx.subtitle_tracks.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let Some(source_id) = ctx.media.source_id.as_deref() else {
+            break;
+        };
+        let action_id = format!(
+            "select-subtitle-{}",
+            identity_token_for_action(&track.stream_id)
+        );
+        let selected = if track.selected { " · selected" } else { "" };
+        let expected_stream_id = ctx
+            .subtitle_tracks
+            .iter()
+            .find(|candidate| candidate.selected)
+            .map(|candidate| candidate.stream_id.clone());
+        let expected_index = ctx
+            .subtitle_tracks
+            .iter()
+            .find(|candidate| candidate.selected)
+            .map(|candidate| candidate.index);
+        let spec = ActionSpec::typed_operation(
+            action_id,
+            format!("Show {}{selected}", track.label),
+            "Select this embedded subtitle stream",
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            {
+                let source_id = source_id.to_string();
+                let stream_id = track.stream_id.clone();
+                let index = track.index;
+                move |_| {
+                    encode(&PlayerOperation::SelectSubtitleTrack {
+                        source_id: source_id.clone(),
+                        target_stream_id: Some(stream_id.clone()),
+                        target_index: Some(index),
+                        expected_stream_id: expected_stream_id.clone(),
+                        expected_index,
+                    })
+                }
+            },
+        )
+        .retry_policy(RetryPolicy::AtMostOnce);
+        tracks = tracks.with_child(
+            Resource::new(
+                subtitle_resource_id(source_id, &track.stream_id),
+                "media.subtitle-track",
+                format!("{}{}", track.label, selected),
+            )
+            .with_action(if ctx.media.has_media {
+                spec
+            } else {
+                spec.unavailable("no_media", "Open a video before selecting subtitles")
+            }),
+        );
+    }
+    let selected_subtitle = ctx.subtitle_tracks.iter().find(|track| track.selected);
+    let subtitles_off =
+        ctx.media
+            .source_id
+            .as_deref()
+            .zip(selected_subtitle)
+            .map(|(source_id, track)| {
+                ActionSpec::operation(
+                    "disable-subtitles",
+                    "Turn subtitles off",
+                    OperationKind::View,
+                    OPERATION_TYPE,
+                    &PlayerOperation::SelectSubtitleTrack {
+                        source_id: source_id.to_string(),
+                        target_stream_id: None,
+                        target_index: None,
+                        expected_stream_id: Some(track.stream_id.clone()),
+                        expected_index: Some(track.index),
+                    },
+                )
+                .map(|spec| spec.retry_policy(RetryPolicy::AtMostOnce))
+            });
+    if let Some(Ok(spec)) = subtitles_off {
+        tracks = tracks.with_action(if ctx.media.has_media {
+            spec
+        } else {
+            spec.unavailable("no_media", "Open a video before changing subtitles")
+        });
+    }
+
+    let mut chapters = Resource::new(
+        "video-player.chapters.current",
+        "media.chapters",
+        format!("Chapters · {} available", ctx.chapters.len()),
+    );
+    for chapter in ctx.chapters.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let Some(source_id) = ctx.media.source_id.as_deref() else {
+            break;
+        };
+        let spec = ActionSpec::typed_operation(
+            format!("jump-to-{}", identity_token_for_action(&chapter.id)),
+            format!("Go to {}", chapter.label),
+            format!("Seek to {:.1} seconds", chapter.seconds),
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            {
+                let source_id = source_id.to_string();
+                let id = chapter.id.clone();
+                let seconds = chapter.seconds;
+                move |_| {
+                    encode(&PlayerOperation::JumpToChapter {
+                        source_id: source_id.clone(),
+                        id: id.clone(),
+                        seconds,
+                    })
+                }
+            },
+        )
+        .retry_policy(RetryPolicy::AtMostOnce);
+        chapters = chapters.with_child(
+            Resource::new(
+                chapter_resource_id(source_id, &chapter.id),
+                "media.chapter",
+                format!("{} · {:.1}s", chapter.label, chapter.seconds),
+            )
+            .with_action(if !ctx.media.has_media {
+                spec.unavailable("no_media", "Open a video before navigating chapters")
+            } else if ctx.media.can_control_transport {
+                spec
+            } else {
+                spec.unavailable(
+                    "following_host",
+                    "The collaborative host controls timeline navigation",
+                )
+            }),
+        );
+    }
 
     let mut presentation = Resource::new(
         "video-player.presentation.current",
@@ -454,6 +710,85 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
     vec![app]
 }
 
+/// Lazily resolve one stable resource address omitted from the bounded
+/// contextual snapshot. A caller receives the exact same resource/action
+/// contract it would have received in the snapshot, and a stale stream or
+/// chapter ID simply refuses to resolve.
+pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
+    fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+        for resource in resources {
+            if resource.id.0 == id {
+                return Some(resource.clone());
+            }
+            if let Some(found) = find(&resource.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let doc = AutoCommit::new();
+    if let Some(found) = find(&resources(ctx, &doc), id) {
+        return Some(found);
+    }
+    let one_track = |audio: bool, tracks: &[TrackState]| -> Option<Resource> {
+        let source_id = ctx.media.source_id.as_deref()?;
+        let track = tracks.iter().find(|track| {
+            let expected = if audio {
+                audio_resource_id(source_id, &track.stream_id)
+            } else {
+                subtitle_resource_id(source_id, &track.stream_id)
+            };
+            expected == id
+        })?;
+        let one = [track.clone()];
+        let isolated = PlayerResourceCtx {
+            title: ctx.title,
+            media: MediaAvailability {
+                has_media: ctx.media.has_media,
+                source_id: ctx.media.source_id.clone(),
+                can_control_transport: ctx.media.can_control_transport,
+            },
+            settings: PlaybackSettingsState {
+                autoplay: ctx.settings.autoplay,
+                loop_enabled: ctx.settings.loop_enabled,
+                rate: ctx.settings.rate,
+            },
+            audio_tracks: if audio { &one } else { &[] },
+            subtitle_tracks: if audio { &[] } else { &one },
+            chapters: &[],
+        };
+        find(&resources(&isolated, &doc), id)
+    };
+    one_track(true, ctx.audio_tracks)
+        .or_else(|| one_track(false, ctx.subtitle_tracks))
+        .or_else(|| {
+            let source_id = ctx.media.source_id.as_deref()?;
+            let chapter = ctx
+                .chapters
+                .iter()
+                .find(|chapter| chapter_resource_id(source_id, &chapter.id) == id)?;
+            let one = [chapter.clone()];
+            let isolated = PlayerResourceCtx {
+                title: ctx.title,
+                media: MediaAvailability {
+                    has_media: ctx.media.has_media,
+                    source_id: ctx.media.source_id.clone(),
+                    can_control_transport: ctx.media.can_control_transport,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: ctx.settings.autoplay,
+                    loop_enabled: ctx.settings.loop_enabled,
+                    rate: ctx.settings.rate,
+                },
+                audio_tracks: &[],
+                subtitle_tracks: &[],
+                chapters: &one,
+            };
+            find(&resources(&isolated, &doc), id)
+        })
+}
+
 /// Decode a Video Player operation payload when `type_id` belongs to this app.
 ///
 /// # Errors
@@ -478,12 +813,17 @@ mod tests {
             title: if has_media { "Clip.mp4" } else { "No media" },
             media: MediaAvailability {
                 has_media,
+                source_id: has_media.then(|| "fixture://clip".to_string()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
                 autoplay: true,
                 loop_enabled: false,
+                rate: 1.0,
             },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
         }
     }
 
@@ -560,12 +900,86 @@ mod tests {
         );
         assert_eq!(seek_by.contract.retry, RetryPolicy::AtMostOnce);
         assert_eq!(play.contract.retry, RetryPolicy::AtMostOnce);
-        assert!(
-            !media.children[3].actions[0]
-                .contract
-                .availability
-                .is_available(),
-            "unsupported tracks remain discoverable but fail closed"
+        let rate = media.children[5]
+            .actions
+            .iter()
+            .find(|action| action.id == "set-playback-rate")
+            .expect("playback speed is a real action");
+        assert!(rate.contract.availability.is_available());
+        let encoded = rate
+            .build_json(
+                &serde_json::json!({"rate": 1.5})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PlayerOperation::SetPlaybackRate(1.5))
+        );
+    }
+
+    #[test]
+    fn omitted_decoder_metadata_resolves_lazily_by_its_stable_address() {
+        let audio: Vec<TrackState> = (0..CONTEXTUAL_CHILD_LIMIT as u32 + 2)
+            .map(|index| TrackState {
+                stream_id: format!("audio-stream-{index}"),
+                index,
+                label: format!("Áudio {index}"),
+                selected: index == 0,
+            })
+            .collect();
+        let chapters = vec![ChapterState {
+            id: "intro-夏".into(),
+            label: "Introduction 夏".into(),
+            seconds: 12.5,
+        }];
+        let mut context = ctx(true);
+        context.audio_tracks = &audio;
+        context.chapters = &chapters;
+        let snapshot = resources(&context, &AutoCommit::new());
+        let tracks = &snapshot[0].children[0].children[3];
+        assert_eq!(tracks.children.len(), CONTEXTUAL_CHILD_LIMIT);
+        let target = audio_resource_id(
+            "fixture://clip",
+            &format!("audio-stream-{}", CONTEXTUAL_CHILD_LIMIT + 1),
+        );
+        let resolved = resource(&context, &target).expect("lazy audio resource");
+        assert_eq!(resolved.id.0, target);
+        assert!(resource(&context, "video-player.tracks.audio.999").is_none());
+        let chapter = resource(&context, &chapter_resource_id("fixture://clip", "intro-夏"))
+            .expect("chapter");
+        assert_eq!(chapter.label, "Introduction 夏 · 12.5s");
+    }
+
+    #[test]
+    fn disable_subtitles_encodes_none_as_the_target_not_the_expected_track() {
+        let subtitles = [TrackState {
+            stream_id: "caption-en".into(),
+            index: 3,
+            label: "English captions".into(),
+            selected: true,
+        }];
+        let mut context = ctx(true);
+        context.subtitle_tracks = &subtitles;
+        let tree = resources(&context, &AutoCommit::new());
+        let tracks = &tree[0].children[0].children[3];
+        let off = tracks
+            .actions
+            .iter()
+            .find(|action| action.id == "disable-subtitles")
+            .unwrap();
+        let encoded = off.build_args([]).unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PlayerOperation::SelectSubtitleTrack {
+                source_id: "fixture://clip".into(),
+                target_stream_id: None,
+                target_index: None,
+                expected_stream_id: Some("caption-en".into()),
+                expected_index: Some(3),
+            })
         );
     }
 }
