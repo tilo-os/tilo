@@ -19,6 +19,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::widgets::{
     caption, card, card_with_action, cards, choice_row_described, rows, setting_row_described,
     status_pill, value_row,
@@ -31,10 +32,10 @@ const INBOUND_RELAY_KEY: &str = "device_mesh.inbound_relay";
 const REMOTE_RELAY_KEY: &str = "device_mesh.remote_control_relay";
 const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
-const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment";
-const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device";
-const CONFIRM_ROLE_KEY: &str = "device_mesh.confirm_role";
-const CANCEL_ROLE_KEY: &str = "device_mesh.cancel_role";
+const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment.edit";
+const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device.edit";
+const CONFIRM_ROLE_KEY: &str = "device_mesh.confirm_role.edit";
+const CANCEL_ROLE_KEY: &str = "device_mesh.cancel_role.edit";
 const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
 
@@ -54,6 +55,10 @@ const REPLICATION_OPTIONS: &[&str] = &[
     REPLICATION_FULL,
 ];
 const REVOKE_REASONS: &[&str] = &["Retired", "Lost", "Stolen", "Compromised"];
+
+fn draft_key(key: &str) -> String {
+    format!("{key}.edit")
+}
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
@@ -214,6 +219,7 @@ pub struct DeviceMeshPane {
     next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    actions: ui::ActionHost,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,7 +305,7 @@ fn registered_home_peers() -> Vec<qos_relay::HomePeerRegistration> {
 }
 
 fn peer_key(action: &str, device: &str) -> String {
-    format!("device_mesh.home_peer.{action}.{device}")
+    format!("device_mesh.home_peer.{action}.{device}.edit")
 }
 
 fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
@@ -308,7 +314,7 @@ fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
         use std::fmt::Write as _;
         let _ = write!(encoded, "{byte:02x}");
     }
-    format!("device_mesh.personal_device.{action}.{encoded}")
+    format!("device_mesh.personal_device.{action}.{encoded}.edit")
 }
 
 fn revocation_reason(label: &str) -> RevocationReason {
@@ -472,6 +478,7 @@ impl DeviceMeshPane {
             next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -489,6 +496,15 @@ impl DeviceMeshPane {
             })
     }
 
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
+    }
+
     fn refresh_runtime_status(&mut self) {
         let status = RelayRuntimeStatus::read(&self.config, SystemTime::now());
         if status != self.runtime_status {
@@ -502,7 +518,7 @@ impl DeviceMeshPane {
         &mut self,
         role: DeviceRole,
         state: &mut AutoCommit,
-        root: &ObjId,
+        _root: &ObjId,
     ) -> bool {
         if role == self.config.device_role {
             return false;
@@ -513,7 +529,7 @@ impl DeviceMeshPane {
         self.config.device_role = role;
         self.config.services.workspace_replication = role.can_serve();
         self.config.services.inbound_relay = role.can_serve();
-        let _ = state.put(root, INBOUND_RELAY_KEY, role.can_serve());
+        self.dispatch(state, &set_bool_action(INBOUND_RELAY_KEY, role.can_serve()));
         for workspace in &mut self.config.workspaces {
             workspace.pin = role.can_serve();
         }
@@ -529,18 +545,20 @@ impl DeviceMeshPane {
                         admitted_users: Vec::new(),
                     })
                     .collect();
-                for workspace in &self.discovered_workspaces {
-                    let _ = state.put(root, workspace_key(workspace.id), true);
+                for workspace in self.discovered_workspaces.clone() {
+                    self.dispatch(state, &set_bool_action(workspace_key(workspace.id), true));
                 }
             }
             self.config.services.full_content_replication = true;
             for workspace in &mut self.config.workspaces {
                 workspace.replication = ReplicationIntent::FullWorkspace;
             }
-            let _ = state.put(
-                root,
-                REPLICATION_KEY,
-                replication_label(&ReplicationIntent::FullWorkspace),
+            self.dispatch(
+                state,
+                &set_text_action(
+                    REPLICATION_KEY,
+                    replication_label(&ReplicationIntent::FullWorkspace),
+                ),
             );
         } else {
             self.config.services.full_content_replication = false;
@@ -559,7 +577,7 @@ impl DeviceMeshPane {
                 .iter()
                 .map(|label| (*label).to_string())
                 .collect(),
-            ROLE_KEY,
+            &draft_key(ROLE_KEY),
         )
         .with_id("device_mesh.role")
         .with_placeholder(role_label(self.config.device_role));
@@ -578,7 +596,7 @@ impl DeviceMeshPane {
                     .iter()
                     .map(|label| (*label).to_string())
                     .collect(),
-                REPLICATION_KEY,
+                &draft_key(REPLICATION_KEY),
             )
             .with_id("device_mesh.replication")
             .with_placeholder(replication_label(&self.common_replication()));
@@ -657,7 +675,7 @@ impl DeviceMeshPane {
                         setting_row_described(
                             &workspace.name,
                             "Keep this workspace available from this device",
-                            Box::new(Toggle::new(&key, &key).with_id(&key)),
+                            Box::new(Toggle::new(&key, &draft_key(&key)).with_id(&key)),
                         )
                     })
                     .collect(),
@@ -926,31 +944,40 @@ impl DeviceMeshPane {
                         "Collaboration and chat relay",
                         "Keep workspace updates and messages moving between devices",
                         Box::new(
-                            Toggle::new("settings.device_mesh.inbound_relay", INBOUND_RELAY_KEY)
-                                .with_id("device_mesh.inbound_relay"),
+                            Toggle::new(
+                                "settings.device_mesh.inbound_relay",
+                                &draft_key(INBOUND_RELAY_KEY),
+                            )
+                            .with_id("device_mesh.inbound_relay"),
                         ),
                     ),
                     setting_row_described(
                         "Remote-control relay",
                         "Connect remote-control sessions through this device when needed",
                         Box::new(
-                            Toggle::new("settings.device_mesh.remote_relay", REMOTE_RELAY_KEY)
-                                .with_id("device_mesh.remote_relay"),
+                            Toggle::new(
+                                "settings.device_mesh.remote_relay",
+                                &draft_key(REMOTE_RELAY_KEY),
+                            )
+                            .with_id("device_mesh.remote_relay"),
                         ),
                     ),
                     setting_row_described(
                         "Serve app backends",
                         "Run compatible app services from this device",
                         Box::new(
-                            Toggle::new("settings.device_mesh.app_serving", APP_SERVING_KEY)
-                                .with_id("device_mesh.app_serving"),
+                            Toggle::new(
+                                "settings.device_mesh.app_serving",
+                                &draft_key(APP_SERVING_KEY),
+                            )
+                            .with_id("device_mesh.app_serving"),
                         ),
                     ),
                     setting_row_described(
                         "Accept distributed jobs",
                         "Run compatible background jobs from this device",
                         Box::new(
-                            Toggle::new("settings.device_mesh.compute", COMPUTE_KEY)
+                            Toggle::new("settings.device_mesh.compute", &draft_key(COMPUTE_KEY))
                                 .with_id("device_mesh.compute"),
                         ),
                     ),
@@ -1409,7 +1436,17 @@ impl Widget for DeviceMeshPane {
             let _ = state.put(root, ROLE_KEY, role_label(self.config.device_role));
             let _ = state.put(
                 root,
+                draft_key(ROLE_KEY),
+                role_label(self.config.device_role),
+            );
+            let _ = state.put(
+                root,
                 REPLICATION_KEY,
+                replication_label(&self.common_replication()),
+            );
+            let _ = state.put(
+                root,
+                draft_key(REPLICATION_KEY),
                 replication_label(&self.common_replication()),
             );
             for (key, value) in [
@@ -1419,6 +1456,7 @@ impl Widget for DeviceMeshPane {
                 (COMPUTE_KEY, self.config.services.compute),
             ] {
                 let _ = state.put(root, key, value);
+                let _ = state.put(root, draft_key(key), value);
             }
             for workspace in &self.discovered_workspaces {
                 let selected = self
@@ -1427,6 +1465,7 @@ impl Widget for DeviceMeshPane {
                     .iter()
                     .any(|binding| binding.id == workspace.id);
                 let _ = state.put(root, workspace_key(workspace.id), selected);
+                let _ = state.put(root, draft_key(&workspace_key(workspace.id)), selected);
             }
             for peer in &self.home_peers {
                 let _ = state.put(
@@ -1450,6 +1489,54 @@ impl Widget for DeviceMeshPane {
             self.needs_seed = false;
         }
 
+        // Durable controls edit draft keys only.  Promote a changed draft by
+        // the same SettingsAction executor used by palette actions; local
+        // command latches below intentionally remain `.edit` presentation
+        // state and are never replayed as preferences.
+        let role = role_label(self.config.device_role);
+        if Self::read_str(state, root, ROLE_KEY).as_deref() == Some(role)
+            && let Some(draft) = Self::read_str(state, root, &draft_key(ROLE_KEY))
+            && draft != role
+            && role_from_label(&draft).is_some()
+        {
+            self.dispatch(state, &set_text_action(ROLE_KEY, draft));
+        }
+        let replication = replication_label(&self.common_replication());
+        if Self::read_str(state, root, REPLICATION_KEY).as_deref() == Some(replication)
+            && let Some(draft) = Self::read_str(state, root, &draft_key(REPLICATION_KEY))
+            && draft != replication
+            && replication_from_label(&draft).is_some()
+        {
+            self.dispatch(state, &set_text_action(REPLICATION_KEY, draft));
+        }
+        for (key, current) in [
+            (INBOUND_RELAY_KEY, self.config.services.inbound_relay),
+            (REMOTE_RELAY_KEY, self.config.services.remote_control_relay),
+            (APP_SERVING_KEY, self.config.services.app_serving),
+            (COMPUTE_KEY, self.config.services.compute),
+        ] {
+            if Self::read_bool(state, root, key) == Some(current)
+                && let Some(draft) = Self::read_bool(state, root, &draft_key(key))
+                && draft != current
+            {
+                self.dispatch(state, &set_bool_action(key, draft));
+            }
+        }
+        for workspace in self.discovered_workspaces.clone() {
+            let key = workspace_key(workspace.id);
+            let selected = self
+                .config
+                .workspaces
+                .iter()
+                .any(|binding| binding.id == workspace.id);
+            if Self::read_bool(state, root, &key) == Some(selected)
+                && let Some(draft) = Self::read_bool(state, root, &draft_key(&key))
+                && draft != selected
+            {
+                self.dispatch(state, &set_bool_action(key, draft));
+            }
+        }
+
         let mut changed = false;
         if Self::read_bool(state, root, CANCEL_ROLE_KEY) == Some(true) {
             let _ = state.put(root, CANCEL_ROLE_KEY, false);
@@ -1460,7 +1547,7 @@ impl Widget for DeviceMeshPane {
             let _ = state.put(root, CONFIRM_ROLE_KEY, false);
             if let Some(role) = self.pending_role.take() {
                 changed |= self.apply_role_change(role, state, root);
-                let _ = state.put(root, ROLE_KEY, role_label(role));
+                self.dispatch(state, &set_text_action(ROLE_KEY, role_label(role)));
                 self.structure_dirty = true;
             }
         }
@@ -1473,7 +1560,10 @@ impl Widget for DeviceMeshPane {
                 || self.config.device_role == DeviceRole::AlwaysOnServer
             {
                 self.pending_role = Some(role);
-                let _ = state.put(root, ROLE_KEY, role_label(self.config.device_role));
+                self.dispatch(
+                    state,
+                    &set_text_action(ROLE_KEY, role_label(self.config.device_role)),
+                );
                 self.structure_dirty = true;
             } else {
                 changed |= self.apply_role_change(role, state, root);
@@ -1745,6 +1835,10 @@ impl Widget for DeviceMeshPane {
         )
     }
 
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own || self
@@ -1795,10 +1889,16 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
-        doc.put(&automerge::ROOT, REPLICATION_KEY, REPLICATION_FULL)
+        doc.put(&automerge::ROOT, draft_key(ROLE_KEY), ROLE_ACTIVE)
             .unwrap();
-        doc.put(&automerge::ROOT, REMOTE_RELAY_KEY, false).unwrap();
+        doc.put(
+            &automerge::ROOT,
+            draft_key(REPLICATION_KEY),
+            REPLICATION_FULL,
+        )
+        .unwrap();
+        doc.put(&automerge::ROOT, draft_key(REMOTE_RELAY_KEY), false)
+            .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(pane.pending_role, Some(DeviceRole::Hybrid));
         doc.put(&automerge::ROOT, CONFIRM_ROLE_KEY, true).unwrap();
@@ -1820,7 +1920,10 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         assert!(pane.load_status.contains("Not configured"));
         assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-        assert_eq!(pane.config.services, Default::default());
+        assert_eq!(
+            pane.config.services,
+            qos_relay::ServiceCapabilities::default()
+        );
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!path.exists());
@@ -1893,7 +1996,7 @@ mod tests {
         let path = dir.path().join("relay.toml");
         let mut config = RelayConfig {
             device_role: DeviceRole::Interactive,
-            services: Default::default(),
+            services: qos_relay::ServiceCapabilities::default(),
             ..RelayConfig::default()
         };
         config.workspaces.push(WorkspaceBinding {
