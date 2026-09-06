@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -181,6 +181,9 @@ pub struct NotesApp {
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
     search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
+    /// rebuilding/cloning every page and block at open time.
+    search_provider: crate::search_provider::NoteSearchProvider,
 }
 
 impl NotesApp {
@@ -255,6 +258,7 @@ impl NotesApp {
         let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
         let page_saver =
             PageSaver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
+        let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
 
         let mut app = Self {
             workspace,
@@ -296,6 +300,7 @@ impl NotesApp {
             known_in_doc: std::collections::HashSet::new(),
             pending_block_reveal: None,
             search_blocks: HashMap::new(),
+            search_provider,
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -605,10 +610,12 @@ impl NotesApp {
             self.started = std::time::Instant::now();
             self.synced_once = true;
         }
-        // Apply local deletions to the shared doc BEFORE reading it, so the
-        // pull-loop below doesn't resurrect a just-deleted page.
+        // Apply local deletions through their canonical action BEFORE reading
+        // the document, so the pull-loop below doesn't resurrect a just-
+        // deleted page. `apply_event_for_test` uses this reconciliation path
+        // too, so it must not write straight to Automerge.
         for id in std::mem::take(&mut self.pending_doc_removals) {
-            NotesDoc::remove_page(state, id);
+            self.perform_action(state, &actions::delete_page_action(id));
         }
         let doc_pages = NotesDoc::list_pages(state);
         if !doc_pages.is_empty() {
@@ -663,7 +670,7 @@ impl NotesApp {
                 // carry-over or a test-created page), recording it as known.
                 for p in self.workspace.pages().to_vec() {
                     if !doc_ids.contains(&p.id) {
-                        NotesDoc::upsert_page_meta(state, &p);
+                        self.perform_action(state, &actions::upsert_page_action(&p));
                         self.known_in_doc.insert(p.id);
                     }
                 }
@@ -701,7 +708,7 @@ impl NotesApp {
                 );
             }
             for p in self.workspace.pages().to_vec() {
-                NotesDoc::upsert_page_meta(state, &p);
+                self.perform_action(state, &actions::upsert_page_action(&p));
                 self.known_in_doc.insert(p.id);
             }
             self.seeded = true;
@@ -751,6 +758,21 @@ impl NotesApp {
             .map(|m| m.title.clone())
             .unwrap_or_default();
         let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
+        // A page's first blocks are a durable mutation too. Seed them through
+        // the same action host that owns every subsequent editor delta; the
+        // panel only ever binds/adopts an already-action-owned list.
+        if state.length(&list) == 0 {
+            let action = actions::apply_block_ops_action(sel, MainPanel::seed_block_ops(&body));
+            if let Err(error) = self.actions.try_dispatch_with_context(
+                state,
+                actions::NOTES_ACTION_TYPE,
+                &action,
+                actions::history_context(&action),
+            ) {
+                tracing::error!(%error, page = %sel, "notes: could not seed page blocks");
+                return;
+            }
+        }
         self.main.bind_page(state, sel, &title, list, &body);
         self.bound_page = Some(sel);
     }
@@ -831,6 +853,8 @@ impl NotesApp {
                 (page.id, blocks)
             })
             .collect();
+        self.search_provider
+            .update(&self.workspace, &self.search_blocks);
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
@@ -1050,6 +1074,30 @@ impl NotesApp {
         let body = self.main.take_body_snapshot();
         if let Some(saver) = &self.page_saver {
             saver.request(id, body);
+        }
+    }
+
+    /// Dispatch action-owned semantic editor deltas. A stale page/block is a
+    /// normal collaborative race, not a silent best-effort write: refuse it,
+    /// then force the panel to rebind from the document on the next sync.
+    fn drain_block_ops(&mut self, state: &mut AutoCommit) {
+        let ops = self.main.take_block_ops();
+        if ops.is_empty() {
+            return;
+        }
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let action = actions::apply_block_ops_action(page, ops);
+        if let Err(error) = self.actions.try_dispatch_with_context(
+            state,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            actions::history_context(&action),
+        ) {
+            tracing::warn!(%error, page = %page, "notes: rejected stale editor operation; reconciling");
+            self.bound_page = None;
+            self.self_dirty = true;
         }
     }
 
@@ -1512,12 +1560,7 @@ impl Widget for NotesApp {
     /// every page findable there by title, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::NoteSearchProvider::with_blocks(
-                &self.workspace,
-                &self.searchable_blocks(),
-            ),
-        )]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
@@ -2391,6 +2434,10 @@ impl NotesApp {
                 taffy,
             );
         }
+        // The panel has only produced local semantic deltas at this point.
+        // Apply them before its next sync so a widget never writes the shared
+        // document behind the action/history/undo path.
+        self.drain_block_ops(state);
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
@@ -2533,6 +2580,11 @@ mod tests {
         let welcome = app
             .selected_for_test()
             .expect("welcome page seeded + selected");
+        // `sync` seeded the welcome page's initial blocks through the action
+        // host. The real window host drains that edge at the end of the frame;
+        // mirror that lifecycle here so subsequent tests bracket only the
+        // user action they dispatch.
+        let _ = Widget::take_committed_action(&mut app);
         (app, state, tmp, welcome)
     }
 
@@ -2649,7 +2701,7 @@ mod tests {
 
         // A collaborator inserts an identical-text block before the target.
         // Content and index cannot distinguish them; CRDT object identity can.
-        let list = NotesDoc::page_blocks_list(&mut state.doc, welcome).unwrap();
+        let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
         let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
         state.doc.put(&inserted, "kind", "paragraph").unwrap();
         let text = state
