@@ -4,6 +4,7 @@
 //! [`WinitBackend`] hosts on top of an existing Wayland/X11 session for
 //! development. [`DrmBackend`] drives a TTY directly.
 
+use crate::compositor::frame::FramePaint;
 use vello::Scene;
 // Absolute path: this module has a `pub mod winit;` child below that
 // would otherwise shadow the external `winit` crate.
@@ -178,6 +179,18 @@ pub enum BackendEvent {
 
 pub trait Backend {
     fn submit_frame(&mut self, scene: &Scene, output: OutputId);
+
+    /// Whether this backend consumes versioned native-pixel retained damage. Other backends use
+    /// the established dense `Scene` path and should not pay to construct segmented recordings.
+    fn supports_retained_scene_damage(&self) -> bool {
+        false
+    }
+
+    /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
+    /// previous native target keep the established dense scene path.
+    fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {
+        self.submit_frame(&frame.scene, output);
+    }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
     fn outputs(&self) -> &[Output];
 

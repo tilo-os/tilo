@@ -846,6 +846,21 @@ impl Widget for AppShell {
         out
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for slot in &self.slots {
+            match slot {
+                Slot::Back => visitor(&self.back),
+                Slot::Search => {
+                    if let Some(search) = &self.search {
+                        visitor(search.as_ref());
+                    }
+                }
+                Slot::Nav => visitor(self.nav.as_ref()),
+                Slot::Content => visitor(self.content.as_ref()),
+            }
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         // Borrow each field at most once, in slot order.
         let mut search = self.search.as_mut();

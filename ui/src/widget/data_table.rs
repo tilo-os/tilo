@@ -2037,6 +2037,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
             .collect()
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for cell in &self.mounted_cells {
+            visitor(cell.widget.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.mounted_cells
             .iter_mut()

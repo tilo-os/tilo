@@ -221,6 +221,10 @@ where
         vec![self.child.as_ref()]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.child.as_ref());
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.child.as_mut()]
     }
