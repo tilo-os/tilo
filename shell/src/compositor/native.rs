@@ -2221,6 +2221,36 @@ fn apply_session_transition(
     }
 }
 
+/// Result of waiting for the precise lock frame which allows a pending sleep
+/// request to proceed.  Kept pure so the failure policy is testable without a
+/// compositor, logind, seat, or GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SleepLockFrameStatus {
+    /// The frame is still in the healthy render queue.
+    Awaiting,
+    /// The required frame has retired; it is safe to acknowledge the delay
+    /// inhibitor.
+    Retired,
+    /// The render worker exited before retiring the required frame.  This is
+    /// intentionally not an acknowledgement: fail closed and let logind's
+    /// own bounded delay-inhibitor policy decide when to proceed.
+    PresenterLost,
+}
+
+fn sleep_lock_frame_status(
+    serial: u64,
+    presented: u64,
+    presenter_finished: bool,
+) -> SleepLockFrameStatus {
+    if presented >= serial {
+        SleepLockFrameStatus::Retired
+    } else if presenter_finished {
+        SleepLockFrameStatus::PresenterLost
+    } else {
+        SleepLockFrameStatus::Awaiting
+    }
+}
+
 /// Whether an event is the hardware power key being pressed — detected by
 /// both the logical [`NamedKey::Power`] and physical key code, keymap-independent.
 /// Translate the backend-neutral winit events into the evdev-shaped EIS
@@ -3935,10 +3965,19 @@ pub fn run() -> ! {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
-    // Set by PrepareForSleep and cleared only after a frame containing the
-    // compositor's existing lock UI has been submitted.
+    // Set by PrepareForSleep and cleared only after the compositor's lock
+    // frame has retired from the presenter (or DPMS is already off).
     let mut sleep_lock_frame_pending = false;
-    let mut sleep_lock_presented_at = None;
+    // The exact presenter-frame serial containing that lock UI.  A count of
+    // retired frames is insufficient: a desktop frame already queued when
+    // sleep starts can retire after we lock, but it is not evidence that the
+    // lock scene was ever displayed.
+    let mut sleep_lock_frame_serial = None;
+    // Once the presenter dies before that serial retires, this remains set
+    // until the next independent sleep request.  In particular, losing the
+    // pipe must not make the ordinary synchronous/no-presenter branch issue
+    // a false lock-frame acknowledgement.
+    let mut sleep_lock_frame_failed = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
@@ -4309,8 +4348,8 @@ pub fn run() -> ! {
                                     );
                                 }
                                 sleep_lock_frame_pending = true;
-                                sleep_lock_presented_at =
-                                    present_pipe.as_ref().map(|p| p.presented());
+                                sleep_lock_frame_serial = None;
+                                sleep_lock_frame_failed = false;
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
@@ -4583,7 +4622,8 @@ pub fn run() -> ! {
                         );
                     }
                     sleep_lock_frame_pending = true;
-                    sleep_lock_presented_at = present_pipe.as_ref().map(|p| p.presented());
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
                     power_bridge.request_suspend();
                 }
             } else {
@@ -4608,7 +4648,8 @@ pub fn run() -> ! {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                     sleep_lock_frame_pending = true;
-                    sleep_lock_presented_at = present_pipe.as_ref().map(|p| p.presented());
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
                 }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
@@ -4638,16 +4679,31 @@ pub fn run() -> ! {
             // locked state will be the first full frame after resume.
             power_bridge.lock_screen_drawn();
             sleep_lock_frame_pending = false;
-            sleep_lock_presented_at = None;
+            sleep_lock_frame_serial = None;
+            sleep_lock_frame_failed = false;
         } else if sleep_lock_frame_pending
             && session.is_locked()
-            && sleep_lock_presented_at
-                .zip(present_pipe.as_ref())
-                .is_some_and(|(before, pipe)| pipe.presented() > before)
+            && let Some((serial, pipe)) = sleep_lock_frame_serial.zip(present_pipe.as_ref())
         {
-            power_bridge.lock_screen_drawn();
-            sleep_lock_frame_pending = false;
-            sleep_lock_presented_at = None;
+            match sleep_lock_frame_status(serial, pipe.presented(), pipe.is_finished()) {
+                SleepLockFrameStatus::Awaiting => {}
+                SleepLockFrameStatus::Retired => {
+                    power_bridge.lock_screen_drawn();
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                }
+                SleepLockFrameStatus::PresenterLost => {
+                    if !sleep_lock_frame_failed {
+                        tracing::error!(
+                            target: "qos::power",
+                            serial,
+                            "presenter exited before the required lock frame retired; retaining sleep delay inhibitor"
+                        );
+                        sleep_lock_frame_failed = true;
+                    }
+                }
+            }
         }
 
         // `ext_session_lock_v1`: fold a protocol client's lock/unlock into the one
@@ -5450,6 +5506,17 @@ pub fn run() -> ! {
             let mut render_thread_lost = false;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
                 render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
+                // This serial belongs to the scene submitted above.  Do not
+                // use a before/after presentation count here: an older
+                // desktop frame can be in flight when sleep locks, and its
+                // retirement must never release logind's sleep-delay lock.
+                if !render_thread_lost
+                    && sleep_lock_frame_pending
+                    && sleep_lock_frame_serial.is_none()
+                    && session.is_locked()
+                {
+                    sleep_lock_frame_serial = Some(pipe.submitted());
+                }
                 true
             } else {
                 backend.submit_frame_with_damage(&frame_paint, OutputId(0));
@@ -5462,6 +5529,15 @@ pub fn run() -> ! {
                     "nirios compositor: render thread gone; presentation stopped \
                      (clients keep running)"
                 );
+                if sleep_lock_frame_pending {
+                    // The just-submitted lock frame (or an earlier accepted
+                    // one) might have been lost with the worker.
+                    // `present_pipe = None` normally means synchronous
+                    // presentation and is acknowledged below; latch this
+                    // exception so that fallback cannot release the sleep
+                    // delay on an unproven lock scene.
+                    sleep_lock_frame_failed = true;
+                }
                 present_pipe = None;
             } else {
                 output_presentation_repaint_pending = false;
@@ -5475,10 +5551,15 @@ pub fn run() -> ! {
             // Advance the deadline series off the moment the frame was handed to the
             // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
             frame_clock.note_presented(submit_done);
-            if sleep_lock_frame_pending && session.is_locked() && present_pipe.is_none() {
+            if sleep_lock_frame_pending
+                && !sleep_lock_frame_failed
+                && session.is_locked()
+                && present_pipe.is_none()
+            {
                 power_bridge.lock_screen_drawn();
                 sleep_lock_frame_pending = false;
-                sleep_lock_presented_at = None;
+                sleep_lock_frame_serial = None;
+                sleep_lock_frame_failed = false;
             }
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass can bump
@@ -6745,6 +6826,25 @@ mod tests {
         apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
+    }
+
+    #[test]
+    fn sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss() {
+        // A prior desktop frame has retired, but lock frame #42 has not: it
+        // cannot release the sleep-delay inhibitor.  If the presenter dies
+        // first, the only safe result is likewise no acknowledgement.
+        assert_eq!(
+            sleep_lock_frame_status(42, 41, false),
+            SleepLockFrameStatus::Awaiting
+        );
+        assert_eq!(
+            sleep_lock_frame_status(42, 42, false),
+            SleepLockFrameStatus::Retired
+        );
+        assert_eq!(
+            sleep_lock_frame_status(42, 41, true),
+            SleepLockFrameStatus::PresenterLost
+        );
     }
 }
 
