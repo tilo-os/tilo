@@ -54,6 +54,15 @@ fn to_f32(v: f64) -> f32 {
     v as f32
 }
 
+/// Toast cards have a fixed height and therefore paint each text field on a
+/// single baseline. Collapse all Unicode whitespace before measuring or
+/// eliding a field so an app-provided/localized newline cannot turn a card
+/// into an overflowing multi-line block. This also makes a body containing
+/// only whitespace behave like an omitted body.
+fn single_line_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Floors an already-non-negative screen-space `f64` to a small on-screen
 /// index (a card position within the stack).
 #[allow(
@@ -708,8 +717,15 @@ fn paint_card_text(
     let title_size = theme.tokens.typography.scale.sm;
     let body_size = theme.tokens.typography.scale.xs;
 
-    let has_caption = !card.caption.is_empty();
-    let has_body = !card.body.is_empty();
+    // A desktop notification may carry arbitrary localized or application
+    // text. Keep every field one-line before deriving heights and widths;
+    // otherwise `draw_text` interprets an embedded newline as a second line
+    // even though this card's geometry is intentionally fixed-height.
+    let caption_text = single_line_text(card.caption);
+    let title_text = single_line_text(card.title);
+    let body_text = single_line_text(card.body);
+    let has_caption = !caption_text.is_empty();
+    let has_body = !body_text.is_empty();
     let cap_h = if has_caption {
         f64::from(caption_size) + 4.0
     } else {
@@ -728,19 +744,19 @@ fn paint_card_text(
     // long diagnostics belong in the structured log, not in chrome.
     let caption = has_caption.then(|| {
         text_renderer.elide_to_width_weighted(
-            &card.caption.to_uppercase(),
+            &caption_text.to_uppercase(),
             caption_size,
             width_avail,
             TextWeight::Semibold,
         )
     });
     let title = text_renderer.elide_to_width_weighted(
-        card.title,
+        &title_text,
         title_size,
         width_avail,
         TextWeight::Semibold,
     );
-    let body = has_body.then(|| text_renderer.elide_to_width(card.body, body_size, width_avail));
+    let body = has_body.then(|| text_renderer.elide_to_width(&body_text, body_size, width_avail));
 
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
@@ -1048,6 +1064,49 @@ mod tests {
             !enc.resources.glyph_runs.is_empty(),
             "the title must push a glyph run into the scene",
         );
+    }
+
+    #[test]
+    fn fixed_height_card_collapses_multiline_localized_error_text() {
+        assert_eq!(
+            single_line_text("  App\nfailed:\u{00a0}profile\tmissing  "),
+            "App failed: profile missing"
+        );
+
+        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+        // This is the shape emitted for a launcher failure: caption, title,
+        // and long body all share one fixed-height card. Exercise both the
+        // normal and accessibility-large text scales so a localized newline
+        // cannot introduce an extra baseline or push the close affordance
+        // outside the bounded card.
+        for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let hit = paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                &ToastCard::new("Couldn't open\nNotes", ToastKind::Error)
+                    .caption("Applications\nlauncher")
+                    .body("The app stopped\nbefore opening. This deliberately long localized recovery message must elide safely.")
+                    .closable(true),
+            );
+            assert_eq!(hit.card_rect, rect);
+            assert!(hit.close_rect.area() > 0.0);
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "launcher failure text must render at text scale {}",
+                theme.text_scale
+            );
+        }
+
+        // The painter's text inputs are normalized before elision; this
+        // assertion protects the helper contract independently of glyph
+        // backend details.
+        assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
+        assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
     }
 
     #[test]
