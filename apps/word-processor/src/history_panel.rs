@@ -610,6 +610,14 @@ mod tests {
     fn refresh_builds_the_track_from_the_document() {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
+        // The production refresh binds an unregistered *local* actor to the
+        // machine identity. Register this fixture actor first so an ambient
+        // developer identity cannot relabel Alice's deterministic test edits.
+        let alice_actor = automerge::ActorId::from("alice".as_bytes()).to_hex_string();
+        panel.authors_mut().register(
+            &alice_actor,
+            ui::HistoryAuthor::new("alice", 210.0, "alice"),
+        );
         panel.refresh(&mut s.doc);
         assert_eq!(
             panel.version_count(),

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -225,6 +225,18 @@ fn with_alpha(base: Color, alpha: u8) -> Color {
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
+/// Body blocks retained as rich views for a large imported document. The
+/// canonical CRDT remains complete; this is strictly the renderer's bounded
+/// working set (the selected block and a generous viewport band).
+const VIEWPORT_BLOCK_WINDOW: usize = 192;
+/// Approximate body-block extent used only to choose a large-document window
+/// before it has been shaped. Measured blocks immediately replace this estimate
+/// inside the loaded window; it prevents an offscreen import from being shaped
+/// just to find the initial viewport.
+const ESTIMATED_BLOCK_EXTENT: f64 = 34.0;
+/// Small documents keep the straightforward all-block cache. Larger imports
+/// switch to the bounded viewport cache below.
+const VIRTUALIZE_BODY_AFTER: usize = VIEWPORT_BLOCK_WINDOW * 2;
 /// Height of the horizontal ruler band carved out of the canvas top (below the
 /// toolbar / recovery banner / find bar, above the page).
 const RULER_H: f64 = 24.0;
@@ -407,6 +419,22 @@ struct GuideDrag {
     kind: DragKind,
 }
 
+/// A transient free-object move. The document is only written on release, so a
+/// long pointer drag does not flood collaboration/history with intermediate
+/// coordinates; the final placement is one canonical action and gets the same
+/// stale-target refusal as palette-driven placement.
+#[derive(Clone)]
+struct ObjectDrag {
+    id: String,
+    start_pointer: Point,
+    start_x: f64,
+    start_y: f64,
+    page: usize,
+    x: f64,
+    y: f64,
+    moved: bool,
+}
+
 impl Side {
     fn opposite(self) -> Side {
         match self {
@@ -509,6 +537,17 @@ enum PanelHit {
     ImageFlipH,
     /// Mirror the selected image vertically (top↔bottom).
     ImageFlipV,
+    /// Inset every source edge by five percent. The canonical crop action
+    /// rejects any crop that would leave too little source visible.
+    ImageCropInset,
+    /// Restore the full source image without changing its display frame.
+    ImageCropReset,
+    /// Turn the selected object into a freely positioned page object.
+    ImageFreePosition,
+    /// Float the selected object at paragraph scope, with text on its right.
+    ImageWrapLeft,
+    /// Float the selected object at paragraph scope, with text on its left.
+    ImageWrapRight,
 }
 
 /// An in-progress drag-to-scrub on a numeric field.
@@ -874,6 +913,52 @@ fn image_wrap(b: &BlockView) -> &str {
         Some(AttrVal::Str(s)) => s.as_str(),
         _ => "none",
     }
+}
+
+/// The source-relative crop insets of an image in `[0, 1)`. They are stored
+/// as integer ten-thousandths so crop edits converge exactly across replicas;
+/// malformed imported data degrades to an uncropped edge instead of making the
+/// image scale non-finite.
+fn image_crop(b: &BlockView) -> (f64, f64, f64, f64) {
+    let edge = |key: &str| match b.attrs.get(key) {
+        Some(AttrVal::Int(value)) if (0..=9_500).contains(value) => {
+            num::f64_of_i64(*value) / 10_000.0
+        }
+        _ => 0.0,
+    };
+    let (left, top, right, bottom) = (
+        edge("crop_left"),
+        edge("crop_top"),
+        edge("crop_right"),
+        edge("crop_bottom"),
+    );
+    if left + right > 0.95 || top + bottom > 0.95 {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (left, top, right, bottom)
+    }
+}
+
+/// A page-relative free object's persisted position. The `Option` separates
+/// legacy/imported page anchors (which retain their old flow placement) from a
+/// user-positioned object, even when that user deliberately places it at 0,0.
+fn image_free_position(b: &BlockView) -> Option<(f64, f64, usize)> {
+    let int = |key: &str| match b.attrs.get(key) {
+        Some(AttrVal::Int(value)) => Some(*value),
+        _ => None,
+    };
+    let (x, y, page) = (int("offset_x")?, int("offset_y")?, int("page")?);
+    if !(-100_000..=100_000).contains(&x)
+        || !(-100_000..=100_000).contains(&y)
+        || !(0..=10_000).contains(&page)
+    {
+        return None;
+    }
+    Some((
+        num::f64_of_i64(x),
+        num::f64_of_i64(y),
+        num::usize_of_i64(page),
+    ))
 }
 
 /// An image block's explicit display size `(width, height)` in px from its
@@ -1577,6 +1662,15 @@ pub struct WordProcessorWidget {
     /// The toolbar button the pointer is currently over (for hover feedback).
     hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
+    /// Canonical body order for a large document. This is intentionally ids
+    /// only: offscreen rich text/marks/attrs stay in qdoc until its viewport
+    /// window asks for them.
+    body_order: Vec<String>,
+    /// Start offset into `body_order` represented by `blocks`.
+    body_window_start: usize,
+    /// Heads for which the body order and non-body snapshot data were loaded.
+    /// Avoids re-materializing on every paint of an unchanged document.
+    materialized_heads: Vec<ChangeHash>,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1615,6 +1709,8 @@ pub struct WordProcessorWidget {
     layout_mode: LayoutMode,
     /// Active guide drag (the side being dragged), if any.
     guide_drag: Option<GuideDrag>,
+    /// A page-positioned image currently being dragged directly on canvas.
+    object_drag: Option<ObjectDrag>,
     /// Whether the horizontal ruler band is shown (toggled via the toolbar
     /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
     /// surface for margin / indent / tab-stop editing.
@@ -1746,6 +1842,9 @@ impl WordProcessorWidget {
             image_cache: std::collections::HashMap::new(),
             hover_tool: None,
             blocks: Vec::new(),
+            body_order: Vec::new(),
+            body_window_start: 0,
+            materialized_heads: Vec::new(),
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -1763,6 +1862,7 @@ impl WordProcessorWidget {
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
             guide_drag: None,
+            object_drag: None,
             ruler_on: true,
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
@@ -2516,7 +2616,8 @@ impl WordProcessorWidget {
         } else {
             None
         };
-        let effect = self.find.open(seed.as_deref(), &self.blocks);
+        let blocks = self.search_blocks(state);
+        let effect = self.find.open(seed.as_deref(), &blocks);
         self.apply_find_effect(state, effect);
     }
 
@@ -2580,6 +2681,13 @@ impl WordProcessorWidget {
             // l.y_top is screen-space (post-scroll); recover content space.
             let content_y = l.y_top + self.scroll_y;
             self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
+        } else if let Some(index) = self.body_order.iter().position(|id| id == bid) {
+            // Find can target an offscreen block that is intentionally absent
+            // from the bounded render cache. Its stable canonical position gives
+            // us a cheap initial scroll estimate; the next sync loads/shapes the
+            // local window and refines the visual position.
+            self.scroll_y = (num::f64_of_usize(index) * ESTIMATED_BLOCK_EXTENT - 180.0)
+                .clamp(0.0, self.max_scroll);
         }
     }
 
@@ -2608,7 +2716,8 @@ impl WordProcessorWidget {
                 );
                 self.refresh_blocks(state);
                 self.needs_commit = true;
-                let effect = self.find.refresh(&self.blocks);
+                let blocks = self.search_blocks(state);
+                let effect = self.find.refresh(&blocks);
                 self.apply_find_effect(state, effect);
             }
             FindEffect::ReplaceAll => {
@@ -2629,7 +2738,8 @@ impl WordProcessorWidget {
                 }
                 self.refresh_blocks(state);
                 self.needs_commit = true;
-                let effect = self.find.refresh(&self.blocks);
+                let blocks = self.search_blocks(state);
+                let effect = self.find.refresh(&blocks);
                 self.apply_find_effect(state, effect);
             }
         }
@@ -2640,21 +2750,75 @@ impl WordProcessorWidget {
         self.apply_find_effect_mut(state, FindEffect::ReplaceAll);
     }
 
-    fn refresh_blocks(&mut self, state: &AutoCommit) {
-        if let Some(c) = self.inner.containers.as_ref() {
-            let snap = qdoc::model::materialize(state, c);
-            self.blocks = snap.blocks;
-            self.blobs = snap.blobs;
-            self.header = snap.header;
-            self.footer = snap.footer;
-            self.notes = snap.notes;
-            self.review.replace(snap.comments, snap.changes);
-            // Drop spell-cache entries for blocks that no longer exist so the cache
-            // stays bounded; surviving blocks keep their (text-keyed) spans.
-            let live: std::collections::HashSet<&str> =
-                self.blocks.iter().map(|b| b.id.as_str()).collect();
-            self.spell_cache.retain(|id, _| live.contains(id.as_str()));
+    /// The bounded slice to materialize from a large document. At the top of a
+    /// document the active caret wins (so opening an imported document preserves
+    /// its authored insertion point); after scrolling the scroll estimate wins.
+    fn body_window_bounds(&self) -> (usize, usize) {
+        let len = self.body_order.len();
+        if len <= VIRTUALIZE_BODY_AFTER {
+            return (0, len);
         }
+        let scrolled = num::usize_of_f64((self.scroll_y / ESTIMATED_BLOCK_EXTENT).floor());
+        let caret = self
+            .body_order
+            .iter()
+            .position(|id| id == &self.inner.caret.block)
+            .unwrap_or(0);
+        let focus = if self.scroll_y > 0.0 { scrolled } else { caret };
+        let start = focus.saturating_sub(VIEWPORT_BLOCK_WINDOW / 4);
+        let end = start.saturating_add(VIEWPORT_BLOCK_WINDOW).min(len);
+        (end.saturating_sub(VIEWPORT_BLOCK_WINDOW), end)
+    }
+
+    /// Materialize the body only when its CRDT heads change, or when scrolling
+    /// moves a large document's bounded working set. qdoc's requested-block API
+    /// preserves the canonical id order without doing a whole-region traversal.
+    fn refresh_blocks(&mut self, state: &mut AutoCommit) {
+        let Some(c) = self.inner.containers.as_ref() else {
+            return;
+        };
+        let heads = state.get_heads();
+        let changed = self.materialized_heads != heads;
+        if changed {
+            self.body_order = qdoc::model::blocks_in_order(state, c);
+        }
+        let (start, end) = self.body_window_bounds();
+        let window_changed =
+            self.body_window_start != start || self.blocks.len() != end.saturating_sub(start);
+        if !changed && !window_changed {
+            return;
+        }
+
+        if changed {
+            self.blobs = qdoc::model::blobs(state, c);
+            self.header = qdoc::model::materialize_region(state, c, Region::Header);
+            self.footer = qdoc::model::materialize_region(state, c, Region::Footer);
+            self.notes = qdoc::model::materialize_notes(state, c);
+            self.review.replace(
+                qdoc::model::materialize_comments(state, c),
+                qdoc::model::materialize_changes(state, c),
+            );
+            self.materialized_heads = heads;
+        }
+        let ids = self.body_order.get(start..end).unwrap_or(&[]);
+        self.blocks = qdoc::model::materialize_blocks(state, c, ids);
+        self.body_window_start = start;
+        // The spell cache deliberately follows the materialized render window:
+        // no offscreen import can retain shaped/checker text indefinitely.
+        let live: std::collections::HashSet<&str> =
+            self.blocks.iter().map(|b| b.id.as_str()).collect();
+        self.spell_cache.retain(|id, _| live.contains(id.as_str()));
+    }
+
+    /// Complete document search is intentionally separate from rendering's
+    /// bounded cache. It is built transiently for a Find operation, then dropped,
+    /// so search/resource identity sees every block without pinning offscreen
+    /// rich views in the frame cache.
+    fn search_blocks(&self, state: &AutoCommit) -> Vec<BlockView> {
+        self.inner
+            .containers
+            .as_ref()
+            .map_or_else(Vec::new, |c| qdoc::model::materialize(state, c).blocks)
     }
 
     /// The running region (if any) whose reference-page band contains content-
@@ -4027,9 +4191,14 @@ impl WordProcessorWidget {
     }
 
     /// The image inspector shown in the styles panel when an image is selected:
-    /// the current display size, a Size stepper (Smaller / Larger, aspect-locked)
-    /// and Flip toggles (Horizontal / Vertical). Registers its controls as
-    /// `panel_hits` so the panel's existing left-click routing dispatches them.
+    /// the current display size, a Size stepper (Smaller / Larger, aspect-locked),
+    /// Flip toggles, crop controls, and placement controls. Registers its controls
+    /// as `panel_hits` so pointer and assistive-technology activation share one
+    /// dispatch path.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the inspector's one ordered drawing/hit-registration sequence keeps every object control in visual tab order"
+    )]
     fn draw_image_inspector(
         &mut self,
         scene: &mut Scene,
@@ -4110,6 +4279,103 @@ impl WordProcessorWidget {
         y += 34.0;
 
         self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
+        y += 38.0;
+
+        // ---- Crop ---------------------------------------------------------
+        // Cropping keeps the object's display frame, while changing the source
+        // window inside it. A small deterministic inset is an accessible,
+        // keyboard/palette-equivalent starting point; Reset is always available
+        // once a crop exists.
+        tr.draw_text(
+            scene,
+            &t("panel-image-crop"),
+            12.5,
+            cc.text,
+            transform * Affine::translate((x0, y + 5.0)),
+            None,
+        );
+        let crop = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
+        let reset = Rect::new(right - bw, y, right, y + 26.0);
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            crop,
+            &t("panel-image-crop-inset"),
+            false,
+            true,
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            reset,
+            &t("panel-image-crop-reset"),
+            false,
+            true,
+        );
+        self.panel_hits.push((crop, PanelHit::ImageCropInset));
+        self.panel_hits.push((reset, PanelHit::ImageCropReset));
+        y += 38.0;
+
+        // ---- Object placement --------------------------------------------
+        // Keep Position as a real heading, rather than competing with three
+        // controls in the same horizontal row. This preserves the label at both
+        // desktop widths and the 390px inspector overlay.
+        tr.draw_text(
+            scene,
+            &t("panel-image-position"),
+            12.5,
+            cc.text,
+            transform * Affine::translate((x0, y)),
+            None,
+        );
+        y += 20.0;
+        let placement_gap = 6.0;
+        let placement_w = ((inner_w - placement_gap * 2.0) / 3.0).max(48.0);
+        let free = Rect::new(x0, y, x0 + placement_w, y + 26.0);
+        let left = Rect::new(
+            free.x1 + placement_gap,
+            y,
+            free.x1 + placement_gap + placement_w,
+            y + 26.0,
+        );
+        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + 26.0);
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            free,
+            &t("panel-image-free"),
+            false,
+            true,
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            left,
+            &t("panel-image-wrap-left"),
+            false,
+            true,
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            right_wrap,
+            &t("panel-image-wrap-right"),
+            false,
+            true,
+        );
+        self.panel_hits.push((free, PanelHit::ImageFreePosition));
+        self.panel_hits.push((left, PanelHit::ImageWrapLeft));
+        self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
     }
 
     /// The image inspector's Flip section: Horizontal / Vertical mirror
@@ -4723,6 +4989,52 @@ impl WordProcessorWidget {
         })
     }
 
+    /// Expose the selected image's placement choices from the exact hit list
+    /// painted by the inspector. The full names/descriptions avoid making the
+    /// compact visual labels the only cue for screen-reader and tooltip users.
+    fn image_placement_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let buttons = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                let (id, name, description) = match hit {
+                    PanelHit::ImageFreePosition => (
+                        "free",
+                        t("a11y-image-free-position"),
+                        t("a11y-image-free-position-description"),
+                    ),
+                    PanelHit::ImageWrapLeft => (
+                        "left",
+                        t("a11y-image-wrap-left"),
+                        t("a11y-image-wrap-left-description"),
+                    ),
+                    PanelHit::ImageWrapRight => (
+                        "right",
+                        t("a11y-image-wrap-right"),
+                        t("a11y-image-wrap-right-description"),
+                    ),
+                    _ => return None,
+                };
+                Some(A11yTreeNode::leaf(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_description(description)
+                        .with_bounds(*rect)
+                        .with_action_target(format!("word-processor.image-placement:{id}"))
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        }),
+                ))
+            })
+            .collect::<Vec<_>>();
+        (!buttons.is_empty()).then(|| A11yTreeNode {
+            node: AccessNode::new(Role::Group).with_name(t("a11y-group-image-placement")),
+            children: buttons,
+        })
+    }
+
     /// Assemble the full accessibility node tree: a [`Role::Document`] root holding
     /// one node per block (headings with level, paragraphs/list items with text,
     /// images with alt text, tables as [`Role::Table`]/[`Role::Cell`]), followed by
@@ -4765,6 +5077,9 @@ impl WordProcessorWidget {
         }
         if let Some(review) = self.review_access_node() {
             children.push(review);
+        }
+        if let Some(image_placement) = self.image_placement_access_node() {
+            children.push(image_placement);
         }
 
         A11yTreeNode {
@@ -4818,6 +5133,9 @@ struct PaginationResult {
 struct PageCursor {
     /// Current page index.
     cur_page: usize,
+    /// Highest page named by an out-of-flow object. It keeps the paper stack
+    /// present even when normal text flow has not reached that page yet.
+    max_object_page: usize,
     /// Whether anything has landed on the current page yet (the first item
     /// on a page never breaks, so an over-tall block simply overflows its
     /// own page — acceptable for v1).
@@ -5130,10 +5448,20 @@ impl WordProcessorWidget {
         // content y, the currently-active floated image (subsequent paragraphs
         // on its page are narrowed to flow beside it — coarse wrap, see
         // `FloatReserve`), and the per-level ordered-list counters.
+        let virtualized = self.body_order.len() > VIRTUALIZE_BODY_AFTER;
+        let band_h = (page_content_bottom(fg, 0) - page_content_top(fg, 0)).max(1.0);
+        let estimated_before = if virtualized {
+            num::f64_of_usize(self.body_window_start) * ESTIMATED_BLOCK_EXTENT
+        } else {
+            0.0
+        };
+        let initial_page = num::usize_of_f64((estimated_before / band_h).floor());
+        let initial_y = page_content_top(fg, initial_page) + estimated_before % band_h;
         let mut cur = PageCursor {
-            cur_page: 0,
-            placed_on_page: false,
-            y: page_content_top(fg, 0),
+            cur_page: initial_page,
+            max_object_page: 0,
+            placed_on_page: self.body_window_start > 0,
+            y: initial_y,
             active_float: None,
             ol_counts: Vec::new(),
         };
@@ -5181,10 +5509,24 @@ impl WordProcessorWidget {
             }
         }
 
+        // A virtual window only shapes the viewport band. Its tail still needs
+        // a stable estimated page extent for scrollbar geometry, but it must not
+        // cause a full-document render or cache allocation.
+        let estimated_last_page = if virtualized {
+            num::usize_of_f64(
+                ((num::f64_of_usize(self.body_order.len()) * ESTIMATED_BLOCK_EXTENT) / band_h)
+                    .floor(),
+            )
+        } else {
+            0
+        };
         PaginationResult {
             laid,
             cache: new_cache,
-            cur_page: cur.cur_page,
+            cur_page: cur
+                .cur_page
+                .max(cur.max_object_page)
+                .max(estimated_last_page),
             y: cur.y,
             blocks,
         }
@@ -5430,6 +5772,10 @@ impl WordProcessorWidget {
     /// One image block: resolve its decoded size, paginate it (a floated
     /// image reserves a column beside it instead of a full-width slot; see
     /// `FloatReserve`), and push its `Laid` entry.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one image pagination path keeps inline, wrapped, and free-object placement rules together"
+    )]
     fn paginate_image(
         &mut self,
         b: &BlockView,
@@ -5442,6 +5788,48 @@ impl WordProcessorWidget {
         cur.ol_counts.clear();
         let (hash, intrinsic, draw_w, draw_h) =
             self.resolve_image_display_size(b, fg, text_renderer, new_cache);
+        // A user-positioned page object is intentionally out of normal flow:
+        // text retains its natural cursor while the object is painted at its
+        // durable page-relative coordinates. Imported `anchor=page` objects
+        // without those coordinates keep the legacy centred-flow treatment
+        // below, avoiding a layout change merely from opening an old file.
+        let transient_position = self
+            .object_drag
+            .as_ref()
+            .and_then(|drag| (drag.id == b.id).then_some((drag.x, drag.y, drag.page)));
+        if image_anchor(b) == "page"
+            && let Some((offset_x, offset_y, requested_page)) =
+                transient_position.or_else(|| image_free_position(b))
+        {
+            let page = requested_page;
+            let max_x = (f64::from(fg.content_w) - draw_w).max(0.0);
+            let max_y = (fg.letter_h - fg.m.top - fg.m.bottom - draw_h).max(0.0);
+            let img_x = fg.content_x + offset_x.clamp(0.0, max_x);
+            let img_y = page_content_top(fg, page) + offset_y.clamp(0.0, max_y);
+            laid.push(Laid {
+                id: b.id.clone(),
+                text: String::new(),
+                kind: "image".into(),
+                size: 16.0,
+                y_top: img_y,
+                text_x: img_x,
+                width: draw_w,
+                height: draw_h,
+                layout_y: img_y,
+                clip: None,
+                bullet: None,
+                ink: PAPER_INK,
+                image_hash: intrinsic.map(|_| hash),
+                cell_box: None,
+                cell_row: None,
+                page,
+            });
+            // Keep enough sheets alive to show a deliberately later placement,
+            // but leave `y` untouched so a free object cannot create phantom
+            // blank paragraphs in the document flow.
+            cur.max_object_page = cur.max_object_page.max(page);
+            return;
+        }
         // Break to the next page on a manual page break, or if the image
         // would not fit.
         let force_break = block_page_break_before(b);
@@ -5914,7 +6302,25 @@ impl WordProcessorWidget {
         // the header/footer content is shared across pages, like Word).
         let edit_region = self.inner.region();
         self.region_laid.clear();
-        for i in 0..num_pages {
+        // Drawing every sheet makes a long imported document O(page_count) per
+        // frame even though the canvas clips all but a handful. Paint only the
+        // visible sheets plus one neighbour for the inter-page indicator.
+        let visible_top = sy + fg.canvas.y0;
+        let visible_bottom = sy + fg.canvas.y1 / self.zoom.factor();
+        let first_page = num::usize_of_f64(
+            ((visible_top - fg.page_top) / fg.page_pitch)
+                .floor()
+                .max(0.0),
+        )
+        .min(num_pages.saturating_sub(1));
+        let last_page = num::usize_of_f64(
+            ((visible_bottom - fg.page_top) / fg.page_pitch)
+                .ceil()
+                .max(0.0),
+        )
+        .saturating_add(1)
+        .min(num_pages);
+        for i in first_page..last_page {
             self.draw_page_sheet(
                 scene,
                 text_renderer,
@@ -5928,13 +6334,14 @@ impl WordProcessorWidget {
         }
         self.header = header;
         self.footer = footer;
-        // The first page is the reference rect for the margin-guide overlay
-        // (margins apply to every page identically).
+        // The visible page is the reference rect for guides and hit-testing.
+        // Margins apply identically to every sheet, so retaining page zero here
+        // would make guides unusable after scrolling through a long document.
         let page = Rect::new(
             fg.page_x,
-            fg.page_top - sy,
+            fg.page_top + num::f64_of_usize(first_page) * fg.page_pitch - sy,
             fg.page_x + fg.page_w,
-            fg.page_top + fg.letter_h - sy,
+            fg.page_top + num::f64_of_usize(first_page) * fg.page_pitch + fg.letter_h - sy,
         );
         self.page_rect = page;
         page
@@ -6232,6 +6639,10 @@ impl WordProcessorWidget {
     /// One pass-2 image item: paint it (mirrored per `flip_h`/`flip_v`, or a
     /// placeholder if undecoded), then ring it with the selection chrome when
     /// it's the caret's block.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one image paint path keeps crop, flip, fallback, and selection chrome geometrically consistent"
+    )]
     fn draw_laid_image(
         &mut self,
         scene: &mut Scene,
@@ -6243,16 +6654,16 @@ impl WordProcessorWidget {
         // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
         // scale-about-centre on the paint transform, so the image draws
         // mirrored in place without moving its slot.
-        let (fh, fv) = self
-            .blocks
-            .iter()
-            .find(|b| b.id == l.id)
-            .map_or((false, false), |b| {
+        let (fh, fv, crop) = self.blocks.iter().find(|b| b.id == l.id).map_or(
+            (false, false, (0.0, 0.0, 0.0, 0.0)),
+            |b| {
                 (
                     matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
                     matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+                    image_crop(b),
                 )
-            });
+            },
+        );
         let itf = if fh || fv {
             let cx = f64::midpoint(rect.x0, rect.x1);
             let cy = f64::midpoint(rect.y0, rect.y1);
@@ -6270,7 +6681,31 @@ impl WordProcessorWidget {
             if let Some(slot) = self.image_cache.get_mut(hash)
                 && let Some(img) = slot
             {
-                img.paint_at(scene, itf, rect);
+                let (left, top, right, bottom) = crop;
+                let visible_w = (1.0 - left - right).max(0.05);
+                let visible_h = (1.0 - top - bottom).max(0.05);
+                // Paint a scaled full-source rectangle through a clip matching
+                // the stable display frame. This is source cropping, not a
+                // resize: the frame and surrounding text layout never jump.
+                let source = Rect::new(
+                    rect.x0 - rect.width() * left / visible_w,
+                    rect.y0 - rect.height() * top / visible_h,
+                    rect.x0 + rect.width() * (1.0 - left) / visible_w,
+                    rect.y0 + rect.height() * (1.0 - top) / visible_h,
+                );
+                if left != 0.0 || top != 0.0 || right != 0.0 || bottom != 0.0 {
+                    scene.push_layer(
+                        Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0,
+                        fg.ctf,
+                        &rect,
+                    );
+                    img.paint_at(scene, itf, source);
+                    scene.pop_layer();
+                } else {
+                    img.paint_at(scene, itf, rect);
+                }
             }
         } else {
             // Missing or undecodable (e.g. non-PNG) image — placeholder.
@@ -6696,7 +7131,22 @@ impl WordProcessorWidget {
         sy: f64,
     ) {
         if self.inner.in_running_region() {
-            for i in 0..num_pages {
+            let visible_top = sy + fg.canvas.y0;
+            let visible_bottom = sy + fg.canvas.y1 / self.zoom.factor();
+            let first_page = num::usize_of_f64(
+                ((visible_top - fg.page_top) / fg.page_pitch)
+                    .floor()
+                    .max(0.0),
+            )
+            .min(num_pages.saturating_sub(1));
+            let last_page = num::usize_of_f64(
+                ((visible_bottom - fg.page_top) / fg.page_pitch)
+                    .ceil()
+                    .max(0.0),
+            )
+            .saturating_add(1)
+            .min(num_pages);
+            for i in first_page..last_page {
                 let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
                 let body_top = ptop + fg.m.top;
                 let body_bot = ptop + fg.letter_h - fg.m.bottom;
@@ -6999,6 +7449,20 @@ impl WordProcessorWidget {
                 }
                 self.dirty = true;
             }
+            *handled = true;
+        } else if self.object_drag.is_some() {
+            let cp = self.pointer_to_content(self.pointer);
+            let Some(drag) = self.object_drag.as_mut() else {
+                return;
+            };
+            let dx = cp.x - drag.start_pointer.x;
+            let dy = cp.y - drag.start_pointer.y;
+            if dx.abs() > 1.0 || dy.abs() > 1.0 {
+                drag.moved = true;
+            }
+            drag.x = (drag.start_x + dx).clamp(0.0, 100_000.0);
+            drag.y = (drag.start_y + dy).clamp(0.0, 100_000.0);
+            self.dirty = true;
             *handled = true;
         } else if self.ruler.is_dragging() {
             // Live-drag a ruler marker (margin / indent / tab). Updates the
@@ -7332,6 +7796,51 @@ impl WordProcessorWidget {
             *handled = true;
             return;
         }
+        // Direct manipulation for free page objects. The laid rectangles and
+        // pointer were both converted to unscaled content space, so this
+        // selection never drifts at non-100% zoom.
+        let free_image = self
+            .laid
+            .iter()
+            .rev()
+            .find(|laid| {
+                laid.kind == "image"
+                    && Rect::new(
+                        laid.text_x,
+                        laid.y_top,
+                        laid.text_x + laid.width,
+                        laid.y_top + laid.height,
+                    )
+                    .contains(cp)
+            })
+            .and_then(|image| {
+                self.blocks
+                    .iter()
+                    .find(|block| block.id == image.id)
+                    .filter(|block| image_anchor(block) == "page")
+                    .and_then(image_free_position)
+                    .map(|(x, y, page)| (image.id.clone(), x, y, page))
+            });
+        if let Some((id, x, y, page)) = free_image {
+            self.inner.clear_anchor();
+            self.inner.set_caret(Caret {
+                block: id.clone(),
+                offset: 0,
+            });
+            self.object_drag = Some(ObjectDrag {
+                id,
+                start_pointer: cp,
+                start_x: x,
+                start_y: y,
+                page,
+                x,
+                y,
+                moved: false,
+            });
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         // Edit-context switch: a click into a page header/footer band
         // focuses that running region (creating an empty paragraph if the
         // region is empty); a click in the body while editing a running
@@ -7390,6 +7899,25 @@ impl WordProcessorWidget {
                     .focused_style_key()
                     .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
                 self.edit_buf = fmt_num(cur);
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(drag) = self.object_drag.take() {
+            if drag.moved {
+                self.perform_action(
+                    state,
+                    &crate::actions::set_image_placement_action(
+                        &drag.id,
+                        "page",
+                        "none",
+                        num::i64_of_f64(drag.x.round()),
+                        num::i64_of_f64(drag.y.round()),
+                        num::i64_of_usize(drag.page),
+                    ),
+                );
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                self.modified = true;
             }
             self.dirty = true;
             *handled = true;
@@ -7659,6 +8187,15 @@ impl WordProcessorWidget {
         handled: &mut bool,
     ) -> bool {
         if !self.focused {
+            return true;
+        }
+        // A free-object drag is a preview until release. Escape discards that
+        // preview (rather than committing an accidental move) and leaves the
+        // document/action history untouched.
+        if matches!(logical_key, Key::Named(NamedKey::Escape)) && self.object_drag.is_some() {
+            self.object_drag = None;
+            self.dirty = true;
+            *handled = true;
             return true;
         }
         // Escape dismisses an open context / style menu before anything else.
@@ -8488,6 +9025,19 @@ impl Widget for WordProcessorWidget {
             self.note_edit_for_autosave(state);
             return true;
         }
+        if let Some(panel_hit) = self.panel_hits.iter().find_map(|(_, panel_hit)| {
+            let id = match panel_hit {
+                PanelHit::ImageFreePosition => "free",
+                PanelHit::ImageWrapLeft => "left",
+                PanelHit::ImageWrapRight => "right",
+                _ => return None,
+            };
+            (ui::a11y::hash_key(&format!("word-processor.image-placement:{id}")) == target)
+                .then(|| panel_hit.clone())
+        }) {
+            self.apply_panel_hit(state, panel_hit);
+            return true;
+        }
         let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
             let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));
             (ui::a11y::hash_key(&id) == target).then_some(*tool)
@@ -9056,6 +9606,17 @@ impl WordProcessorWidget {
             PanelHit::ImageScale(factor) => self.apply_panel_hit_image_scale(state, factor),
             PanelHit::ImageFlipH => self.apply_panel_hit_image_flip(state, true),
             PanelHit::ImageFlipV => self.apply_panel_hit_image_flip(state, false),
+            PanelHit::ImageCropInset => self.apply_panel_hit_image_crop(state, true),
+            PanelHit::ImageCropReset => self.apply_panel_hit_image_crop(state, false),
+            PanelHit::ImageFreePosition => {
+                self.apply_panel_hit_image_placement(state, "page", "none");
+            }
+            PanelHit::ImageWrapLeft => {
+                self.apply_panel_hit_image_placement(state, "paragraph", "left");
+            }
+            PanelHit::ImageWrapRight => {
+                self.apply_panel_hit_image_placement(state, "paragraph", "right");
+            }
         }
     }
 
@@ -9106,8 +9667,15 @@ impl WordProcessorWidget {
             .image_size(state, &id)
             .or_else(|| self.selected_image_dims())
             .unwrap_or((240.0, 160.0));
-        self.inner
-            .set_image_size(state, &id, cw * factor, ch * factor);
+        // Keep width + height in one action/undo boundary. Direct writes here
+        // used to make a resize invisible to the action catalogue and could
+        // replay as two independently stale attributes.
+        let width = num::i64_of_f64((cw * factor).round().clamp(16.0, 4_000.0));
+        let height = num::i64_of_f64((ch * factor).round().clamp(16.0, 4_000.0));
+        self.perform_action(
+            state,
+            &crate::actions::set_image_size_action(&id, width, height),
+        );
         self.refresh_blocks(state);
         self.needs_commit = true;
         self.modified = true;
@@ -9120,7 +9688,88 @@ impl WordProcessorWidget {
         let Some(id) = self.selected_image_id() else {
             return;
         };
-        self.inner.flip_image(state, &id, horizontal);
+        let key = if horizontal { "flip_h" } else { "flip_v" };
+        let active = self
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .is_some_and(|b| matches!(b.attrs.get(key), Some(AttrVal::Bool(true))));
+        self.perform_action(
+            state,
+            &crate::actions::set_block_attr_action(
+                crate::actions::RegionKind::Body,
+                vec![id],
+                key,
+                crate::actions::AttrVal::Bool(!active),
+            ),
+        );
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.dirty = true;
+    }
+
+    /// Crop or reset the selected image through one atomic action. The panel and
+    /// Ctrl+K image resource intentionally calculate exactly the same 5% inset.
+    fn apply_panel_hit_image_crop(&mut self, state: &mut AutoCommit, inset: bool) {
+        let Some(id) = self.selected_image_id() else {
+            return;
+        };
+        let Some(block) = self.blocks.iter().find(|b| b.id == id) else {
+            return;
+        };
+        let edge = |key: &str| match block.attrs.get(key) {
+            Some(AttrVal::Int(value)) => *value,
+            _ => 0,
+        };
+        let (mut left, mut top, mut right, mut bottom) = (
+            edge("crop_left"),
+            edge("crop_top"),
+            edge("crop_right"),
+            edge("crop_bottom"),
+        );
+        if inset {
+            // Preserve a visible 5% source window; at the limit the control is
+            // a harmless no-op rather than writing an invalid crop.
+            if left.saturating_add(right) > 8_500 || top.saturating_add(bottom) > 8_500 {
+                return;
+            }
+            left += 250;
+            top += 250;
+            right += 250;
+            bottom += 250;
+        } else {
+            left = 0;
+            top = 0;
+            right = 0;
+            bottom = 0;
+        }
+        self.perform_action(
+            state,
+            &crate::actions::set_image_crop_action(&id, left, top, right, bottom),
+        );
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.dirty = true;
+    }
+
+    /// Choose one of the image's canonical placement modes. The free mode is
+    /// page-relative and therefore does not participate in text flow; the two
+    /// wrap modes preserve paragraph-relative flow.
+    fn apply_panel_hit_image_placement(
+        &mut self,
+        state: &mut AutoCommit,
+        anchor: &str,
+        wrap: &str,
+    ) {
+        let Some(id) = self.selected_image_id() else {
+            return;
+        };
+        self.perform_action(
+            state,
+            &crate::actions::set_image_placement_action(&id, anchor, wrap, 0, 0, 0),
+        );
         self.refresh_blocks(state);
         self.needs_commit = true;
         self.modified = true;
@@ -10428,6 +11077,45 @@ mod tests {
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
     }
 
+    #[test]
+    fn large_body_uses_a_bounded_viewport_cache_while_find_remains_complete() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut after = None;
+            for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                let id = dm.insert_block(after.as_deref(), "paragraph");
+                dm.splice_text(&id, 0, 0, &format!("Imported paragraph {i}"));
+                after = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        assert_eq!(wp.body_order.len(), VIEWPORT_BLOCK_WINDOW * 4);
+        assert!(
+            wp.blocks.len() <= VIEWPORT_BLOCK_WINDOW,
+            "offscreen rich block views stay bounded: {}",
+            wp.blocks.len()
+        );
+        assert!(
+            wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW,
+            "offscreen shaped layouts stay bounded: {}",
+            wp.layout_cache.len()
+        );
+        // Find gets a short-lived complete view rather than silently searching
+        // only the visible cache. Its result can target the final imported block.
+        let all = wp.search_blocks(&state.doc);
+        assert_eq!(all.len(), VIEWPORT_BLOCK_WINDOW * 4);
+        assert!(all.last().is_some_and(|b| b.text.ends_with("767")));
+        drop(all);
+
+        wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.body_window_start > 0, "scrolling loads a later window");
+        assert!(wp.blocks.len() <= VIEWPORT_BLOCK_WINDOW);
+        assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+    }
+
     /// Select `[start, end)` chars of the (single) caret block.
     fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
         let block = wp.model().caret.block.clone();
@@ -10461,7 +11149,7 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Intro");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
         let resources = Widget::resources(&wp, &state.doc);
@@ -10480,7 +11168,7 @@ mod tests {
             "toolbar affordance and palette spec build the same EncodedAction"
         );
         // And the affordance really created the table (a 2x2 = four cells).
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             wp.blocks.iter().filter(|b| b.kind == "cell").count(),
             4,
@@ -10496,7 +11184,7 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Body text");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let before = state.doc.get_heads();
 
         wp.apply_panel_hit(&mut state.doc, PanelHit::ParaAlign("center"));
@@ -10530,7 +11218,7 @@ mod tests {
             "panel align and palette spec build the same EncodedAction"
         );
         // The block really carries the centre alignment.
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let aligned = wp
             .blocks
             .iter()
@@ -10546,7 +11234,7 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "hello world");
         select_range(&mut wp, 0, 5);
         wp.model_mut().set_highlight(&mut state.doc, "#fff35c");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let b = wp
             .blocks
             .iter()
@@ -10577,7 +11265,7 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "x2");
         select_range(&mut wp, 1, 2); // the "2"
         wp.model_mut().toggle_super(&mut state.doc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let b = wp
             .blocks
             .iter()
@@ -10625,7 +11313,7 @@ mod tests {
 
         // Now set double spacing and redraw on the same path.
         wp.model_mut().set_line_spacing(&mut state.doc, 2.0);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
             2.0,
@@ -10708,7 +11396,7 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "hello world hello there");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         wp.find.set_queries_for_tests("hello", "hi");
         wp.find.open(None, &wp.blocks);
@@ -10719,7 +11407,7 @@ mod tests {
         );
 
         wp.replace_all(&mut state.doc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.blocks[0].text, "hi world hi there");
         assert!(
             wp.find.matches().is_empty(),
@@ -10746,7 +11434,7 @@ mod tests {
 
         // Picking the Quote style makes the caret block adopt it (component-instance).
         wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("quote".into()));
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             wp.focused_style_key().as_deref(),
             Some("quote"),
@@ -10823,7 +11511,7 @@ mod tests {
             n_before + 1,
             "a new style id was added"
         );
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let key = wp.focused_style_key().unwrap();
         assert!(
             key.starts_with("custom"),
@@ -11106,7 +11794,7 @@ mod tests {
         );
 
         wp.apply_tool(&mut state.doc, ToolAction::FontSizeInc);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         let up = wp.current_font_size();
         assert!(up > base, "A+ enlarges the selection: {base} -> {up}");
         // The nudge is a per-run character mark, not an edit of the Body style.
@@ -11129,7 +11817,7 @@ mod tests {
         assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
 
         wp.apply_tool(&mut state.doc, ToolAction::Bold);
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert!(
             wp.mark_active_in_selection("strong"),
             "the whole selection is now bold"
@@ -13721,7 +14409,7 @@ mod tests {
         // Author some pre-existing content so we can prove it's actually replaced.
         wp.model_mut()
             .insert_str(&mut state.doc, "Pre-existing rough draft");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
         assert_eq!(
             first_block(&wp, &state).map(|b| b.text),
             Some("Pre-existing rough draft".to_string()),
@@ -14017,7 +14705,7 @@ mod tests {
         wp.set_recovery_dir(dir.clone());
         wp.set_file(dir.join("d.md"), WpFormat::Markdown);
         wp.model_mut().insert_str(&mut state.doc, "Keep me");
-        wp.refresh_blocks(&state.doc);
+        wp.refresh_blocks(&mut state.doc);
 
         let rp = wp.recovery_path();
         std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
@@ -15359,6 +16047,100 @@ mod tests {
         assert!(has(&PanelHit::ImageFlipV), "flip-vertical control present");
     }
 
+    /// Position keeps a dedicated heading above its three controls. The same
+    /// full-width geometry must hold in the 390px overlay, where a label/control
+    /// collision is otherwise easy to miss in a desktop-only test.
+    #[test]
+    fn image_position_controls_fit_the_narrow_inspector_without_covering_the_heading() {
+        let (mut wp, mut state, _id) = doc_with_selected_image();
+        pipeline_draw(&mut wp, &mut state, 390, 844);
+
+        let rect_for = |want: PanelHit| {
+            wp.panel_hits
+                .iter()
+                .find(|(_, hit)| *hit == want)
+                .map(|(rect, _)| *rect)
+                .expect("position control is painted")
+        };
+        let free = rect_for(PanelHit::ImageFreePosition);
+        let left = rect_for(PanelHit::ImageWrapLeft);
+        let right = rect_for(PanelHit::ImageWrapRight);
+        for rect in [free, left, right] {
+            assert!(
+                rect.x0 >= wp.panel_rect.x0 && rect.x1 <= wp.panel_rect.x1,
+                "position control stays inside the narrow inspector: {rect:?}",
+            );
+        }
+        assert!(
+            free.x1 < left.x0 && left.x1 < right.x0,
+            "controls do not overlap"
+        );
+        assert!(
+            (free.y0 - left.y0).abs() < f64::EPSILON && (left.y0 - right.y0).abs() < f64::EPSILON,
+            "placement choices share their own row below Position",
+        );
+    }
+
+    /// Compact visual labels are backed by explicit screen-reader names and
+    /// descriptions, and AT activation reaches the same canonical placement
+    /// mutation as a pointer click.
+    #[test]
+    fn image_position_controls_are_named_described_and_at_actionable() {
+        use ui::a11y::Role;
+
+        crate::i18n::set_locale("en-US");
+        let (mut wp, mut state, _id) = doc_with_selected_image();
+        let tree = wp.accessibility_tree();
+        let group = tree
+            .children
+            .iter()
+            .find(|child| child.node.name.as_deref() == Some("Image position"))
+            .expect("selected image placement group is exported");
+        let expected = [
+            "Free image position",
+            "Image left with text wrap",
+            "Image right with text wrap",
+        ];
+        assert_eq!(
+            group
+                .children
+                .iter()
+                .filter_map(|child| child.node.name.as_deref())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        assert!(group.children.iter().all(|child| {
+            child.node.role == Role::Button
+                && child.node.description.is_some()
+                && child.node.bounds.is_some()
+                && child.node.action_target.is_some()
+                && child.node.state.focusable
+        }));
+
+        let target = "word-processor.image-placement:left".to_string();
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&target)],
+            &mut state.doc,
+            &state.root,
+        ));
+        let containers = wp.model().containers.clone().expect("open document");
+        let image = qdoc::model::materialize(&state.doc, &containers)
+            .blocks
+            .into_iter()
+            .find(|block| block.kind == "image")
+            .expect("selected image remains materialized");
+        assert!(matches!(
+            image.attrs.get("anchor"),
+            Some(qdoc::AttrVal::Str(anchor)) if anchor == "paragraph"
+        ));
+        assert!(matches!(
+            image.attrs.get("wrap"),
+            Some(qdoc::AttrVal::Str(wrap)) if wrap == "left"
+        ));
+    }
+
     /// Clicking the panel's "Larger" control resizes the selected image (its
     /// explicit width grows), driven through the production panel-hit path.
     #[test]
@@ -15914,6 +16696,16 @@ mod history_strip_tests {
         }
         qdoc::history::commit_stamped(&mut bob);
         state.doc.merge(&mut bob).expect("peers merge");
+
+        // Keep the fixture's authored labels independent of the developer's
+        // local qOS identity, which production history otherwise registers for
+        // the local Automerge actor on refresh.
+        for (handle, hue) in [("alice", 210.0_f32), ("bob", 25.0_f32)] {
+            let actor = automerge::ActorId::from(handle.as_bytes()).to_hex_string();
+            wp.history
+                .authors_mut()
+                .register(&actor, ui::HistoryAuthor::new(handle, hue, handle));
+        }
 
         pipeline_draw(&mut wp, &mut state, w, h);
         (wp, state)
