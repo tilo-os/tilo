@@ -10803,8 +10803,23 @@ impl Widget for ShellOverlayHost {
             );
             // First-login is a modal machine surface. Even an event the
             // current control does not consume must never fall through to
-            // hidden desktop chrome.
-            *handled = true;
+            // hidden desktop chrome. Leave the one standard Tab path
+            // unclaimed, though: FrameBuilder owns global focus traversal,
+            // and must be allowed to advance between the onboarding
+            // controls. Modified Tab remains a shell/application chord and
+            // is consumed here with every other event.
+            let is_unmodified_tab = matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Tab))
+                        && !modifiers.state().control_key()
+                        && !modifiers.state().alt_key()
+                        && !modifiers.state().super_key()
+            );
+            if !is_unmodified_tab {
+                *handled = true;
+            }
             return;
         }
         // Split into named gates and dispatch stages — was one
