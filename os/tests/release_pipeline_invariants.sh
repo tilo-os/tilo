@@ -73,7 +73,9 @@ grep -Fq 'publish-os-payload:' "$desktop" \
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
   && grep -Fq 'max-parallelism = 1' "$os" \
-  && grep -Fq 'id=qos-composefs-v2,target=/var/tmp,sharing=locked' "$repo/os/Containerfile" \
+  && test "$(grep -Fc 'QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 2 \
+  && grep -Fq 'QOS_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
+  && ! grep -Fq 'id=qos-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
   && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \

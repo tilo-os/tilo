@@ -498,6 +498,9 @@ jobs:
           # doesn't have to wait on the engine. Pushes and PRs carry no inputs,
           # so the `||` keeps them on the full image — this must never resolve
           # to empty, `FROM wpe-builder-` is not a stage.
+          # The install gate below computes and reseals the authoritative
+          # digest. A placeholder avoids duplicating the rootfs in composefs
+          # scratch just to create the deliberately rejected first-pass UKI.
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
@@ -510,6 +513,7 @@ jobs:
             QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto
@@ -562,6 +566,7 @@ jobs:
             QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto

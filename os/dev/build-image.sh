@@ -197,7 +197,12 @@ if [ "$QOS_SKIP_BUILD" != 1 ]; then
     || die "set QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY to the published qOS-main Ed25519 owner key"
 fi
 
-# $1 = the composefs digest to seal into the UKI ("" to let bootc compute it).
+# $1 = the composefs digest to seal into the UKI. The first image deliberately
+# carries a deterministic placeholder: bootc install computes the authoritative
+# digest, and the existing /boot-only second pass replaces it without changing
+# the rootfs whose digest is being sealed. Computing a provisional composefs
+# repository here duplicates the rootfs and can exhaust an ephemeral builder.
+QOS_PROVISIONAL_CFS_DIGEST="$(printf '0%.0s' {1..128})"
 build_image() {
   podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
     --build-context "github-assets=$QOS_REPO/os/external-assets/cache" \
@@ -211,7 +216,7 @@ build_image() {
     --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
     --build-arg "QOS_GENERATION=$QOS_GENERATION" \
     --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
-    --build-arg "QOS_CFS_DIGEST=${1:-}" \
+    --build-arg "QOS_CFS_DIGEST=${1:-$QOS_PROVISIONAL_CFS_DIGEST}" \
     --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
     "$QOS_REPO"
 }
@@ -230,7 +235,7 @@ if [ "$QOS_SKIP_BUILD" = "1" ]; then
   msg "1/2 skipped (QOS_SKIP_BUILD=1): imaging the existing $QOS_IMAGE"
 else
   msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
-  build_image ""
+  build_image "$QOS_PROVISIONAL_CFS_DIGEST"
 fi
 
 msg "2/2 disk image -> qcow2"

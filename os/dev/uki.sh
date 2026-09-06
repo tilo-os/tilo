@@ -52,6 +52,11 @@ ukify_args=(
 )
 
 if [ -n "${CFS_DIGEST:-}" ]; then
+  cfs_digest="${CFS_DIGEST#sha512:}"
+  [[ "$cfs_digest" =~ ^[0-9a-f]{128}$ ]] || {
+    echo "CFS_DIGEST must be a SHA-512 digest (128 lowercase hex characters)" >&2
+    exit 1
+  }
   # Assemble the command line by hand: the kargs the image declares, in kargs.d
   # order, then the digest install told us it wants.
   #
@@ -69,7 +74,7 @@ print(" ".join(args))
 EOPY
 )"
   [ -n "$cmdline" ] || { echo "no kargs found under $target/usr/lib/bootc/kargs.d" >&2; exit 1; }
-  cmdline="${cmdline} composefs=${CFS_DIGEST#sha512:}"
+  cmdline="${cmdline} composefs=${cfs_digest}"
   printf '%s\n' "$cmdline" > /out/cmdline.in
   echo "sealing the composefs digest bootc install asked for (bootc#2334)"
   ukify build \
