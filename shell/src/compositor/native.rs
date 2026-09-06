@@ -3887,18 +3887,12 @@ pub fn run() -> ! {
     // desktop session is a different trust tier: it promises to keep the
     // distro applications the person already installed usable, including
     // legacy X11 software, and labels those launches as unconfined.
-    let xwayland = if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args())
-    {
-        match super::xwayland::SessionXwayland::start(&socket_name) {
-            Ok(bridge) => Some(bridge),
-            Err(error) => {
-                tracing::warn!(%error, "rootless Xwayland compatibility is unavailable");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mut xwayland =
+        if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args()) {
+            Some(super::xwayland::XwaylandSupervisor::start(&socket_name))
+        } else {
+            None
+        };
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -4269,6 +4263,13 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        // The bridge is optional, but its published DISPLAY/XAUTHORITY pair
+        // must track its child exactly. Poll before processing launch actions
+        // so an X11/Electron launch in this tick either gets a live bridge or
+        // falls back to the Wayland-only environment.
+        if let Some(xwayland) = xwayland.as_mut() {
+            xwayland.poll(&socket_name, &frame_builder.chrome_handle());
+        }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
                 service,
