@@ -102,10 +102,18 @@ jobs:
             echo "runner did not expose the FUSE character device" >&2
             exit 1
           fi
-          command -v fusermount3 || {
+          if ! test -r /dev/fuse || ! test -w /dev/fuse; then
+            ls -l /dev/fuse 2>&1 || true
+            echo "runner exposed /dev/fuse without read/write access" >&2
+            exit 1
+          fi
+          fuse_helper=$(command -v fusermount3) || {
             echo "qOS builder image does not contain fusermount3" >&2
             exit 1
           }
+          ls -l /dev/fuse
+          echo "FUSE preflight ready: ${fuse_helper}"
+          exit 0
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/qos-session-lifecycle.sh
