@@ -28,13 +28,18 @@
 //! [`Action::apply`] never touches the RNG or the wall-clock. Toggles
 //! (like / saved-album / followed-artist) read the document's current membership
 //! and flip it, so two replicas at the same base heads land on the same result.
-//! A malformed payload (an empty id, an unknown playlist) is a **no-op** rather
-//! than an error, so a bad replay can't wedge a peer.
+//! A malformed or stale payload is refused before it changes the document. This
+//! prevents an external caller from recording a successful-looking history
+//! entry that actually wrote a dangling library reference.
+
+use std::collections::BTreeSet;
 
 use automerge::AutoCommit;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use qos_actions::resource::INVALID_ARGUMENTS_TYPE;
 use qos_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
@@ -46,6 +51,10 @@ use crate::doc as mdoc;
 /// Registry `type_id` for every Music action.
 pub const MUSIC_ACTION_TYPE: &str = "music.action";
 pub const MUSIC_OPERATION_TYPE: &str = "music.operation";
+/// The maximum decoded size of a portable embedded playlist cover.
+pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
+/// Portal normalization never persists an image wider or taller than this.
+pub const MAX_PORTABLE_COVER_EDGE: u32 = 512;
 
 pub fn track_resource_id(id: &str) -> String {
     format!("music.track:{id}")
@@ -61,6 +70,13 @@ pub fn artist_resource_id(id: &str) -> String {
 
 pub fn playlist_resource_id(id: &str) -> String {
     format!("music.playlist:{id}")
+}
+
+/// A playlist membership is distinct from the track itself: it owns the
+/// playlist-specific remove and reorder actions without duplicating a track's
+/// library-level identity in the resource tree.
+pub fn playlist_track_resource_id(playlist: &str, track: &str) -> String {
+    format!("music.playlist-track:{playlist}:{track}")
 }
 
 pub fn play_track_address(id: &str) -> ActionAddress {
@@ -153,9 +169,10 @@ pub enum MusicAction {
         from: usize,
         to: usize,
     },
-    /// Set (or clear, with an empty string) a playlist's cover image URL. The
-    /// *pick* (the native file portal) is app-side, non-deterministic work; the
-    /// resulting write of the chosen URL is this deterministic, replayable action.
+    /// Set (or clear, with an empty string) a playlist's portable cover value.
+    /// The *pick* (the native file portal) is app-side, non-deterministic work;
+    /// it is normalized into an HTTPS URL or bounded PNG data URL before this
+    /// deterministic, replayable action is written to the shared document.
     SetPlaylistCover {
         playlist: String,
         cover: String,
@@ -242,8 +259,16 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
 impl Action for MusicAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            MusicAction::SetPlayback(playback) => mdoc::write_playback(doc, playback),
+            MusicAction::SetPlayback(playback) => {
+                validate_playback(doc, playback)?;
+                mdoc::write_playback(doc, playback);
+            }
             MusicAction::SetOffline { tracks, keep } => {
+                if tracks.iter().any(|track| !mdoc::has_track(doc, track)) {
+                    return Err(ActionError::Refused(
+                        "offline-cache target is no longer in the library".into(),
+                    ));
+                }
                 let state = if *keep {
                     crate::model::CacheState::Cached
                 } else {
@@ -261,30 +286,70 @@ impl Action for MusicAction {
                 }
             }
             MusicAction::RenamePlaylist { id, name } => {
+                require(
+                    mdoc::has_playlist(doc, id),
+                    "playlist is no longer in the library",
+                )?;
                 mdoc::rename_playlist(doc, id, name);
             }
             MusicAction::DeletePlaylist { id } => {
+                require(
+                    mdoc::has_playlist(doc, id),
+                    "playlist is no longer in the library",
+                )?;
                 mdoc::delete_playlist(doc, id);
             }
             MusicAction::AddTrackToPlaylist { playlist, track } => {
+                require(
+                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
+                    "playlist or track is no longer in the library",
+                )?;
                 mdoc::add_track_to_playlist(doc, playlist, track);
             }
             MusicAction::RemoveTrackFromPlaylist { playlist, track } => {
+                require(
+                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
+                    "playlist or track is no longer in the library",
+                )?;
                 mdoc::remove_track_from_playlist(doc, playlist, track);
             }
             MusicAction::MoveTrackInPlaylist { playlist, from, to } => {
+                require(
+                    mdoc::has_playlist(doc, playlist),
+                    "playlist is no longer in the library",
+                )?;
                 mdoc::move_track_in_playlist(doc, playlist, *from, *to);
             }
             MusicAction::SetPlaylistCover { playlist, cover } => {
+                require(
+                    mdoc::has_playlist(doc, playlist),
+                    "playlist is no longer in the library",
+                )?;
+                require(
+                    portable_cover_value(cover),
+                    "playlist covers must be HTTPS URLs or bounded embedded PNG data",
+                )?;
                 mdoc::set_playlist_cover(doc, playlist, cover);
             }
             MusicAction::ToggleLiked { track } => {
+                require(
+                    mdoc::has_track(doc, track),
+                    "track is no longer in the library",
+                )?;
                 mdoc::toggle_liked(doc, track);
             }
             MusicAction::ToggleSavedAlbum { album } => {
+                require(
+                    mdoc::has_album(doc, album),
+                    "album is no longer in the library",
+                )?;
                 mdoc::toggle_saved_album(doc, album);
             }
             MusicAction::ToggleFollowedArtist { artist } => {
+                require(
+                    mdoc::has_artist(doc, artist),
+                    "artist is no longer in the library",
+                )?;
                 mdoc::toggle_followed_artist(doc, artist);
             }
         }
@@ -294,6 +359,109 @@ impl Action for MusicAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+}
+
+fn require(condition: bool, message: &str) -> Result<(), ActionError> {
+    if condition {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(message.into()))
+    }
+}
+
+fn validate_playback(doc: &Doc, playback: &crate::model::Playback) -> Result<(), ActionError> {
+    const MAX_QUEUE_TRACKS: usize = 10_000;
+    if playback.queue.len() > MAX_QUEUE_TRACKS {
+        return Err(ActionError::Refused(
+            "playback queue exceeds 10,000 tracks".into(),
+        ));
+    }
+    if playback.volume > 100 {
+        return Err(ActionError::Refused(
+            "playback volume must be in the 0–100 range".into(),
+        ));
+    }
+    if playback.queue.iter().any(|id| !mdoc::has_track(doc, id)) {
+        return Err(ActionError::Refused(
+            "playback queue contains a track that is no longer in the library".into(),
+        ));
+    }
+    match playback.current.as_deref() {
+        None => {
+            if playback.playing || playback.position_ms != 0 || playback.queue_index != 0 {
+                return Err(ActionError::Refused(
+                    "an empty player must be stopped at position zero".into(),
+                ));
+            }
+        }
+        Some(current) => {
+            if !mdoc::has_track(doc, current)
+                || playback.queue_index >= playback.queue.len()
+                || playback
+                    .queue
+                    .get(playback.queue_index)
+                    .is_none_or(|id| id != current)
+            {
+                return Err(ActionError::Refused(
+                    "current playback track does not match the queue".into(),
+                ));
+            }
+            let max_position = mdoc::load_library(doc)
+                .track(current)
+                .map_or(0, crate::model::Track::duration_ms);
+            if playback.position_ms > max_position {
+                return Err(ActionError::Refused(
+                    "playback position exceeds the selected track duration".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn invalid_arguments(reason: &str) -> EncodedAction {
+    EncodedAction {
+        type_id: INVALID_ARGUMENTS_TYPE.to_string(),
+        payload: reason.as_bytes().to_vec(),
+    }
+}
+
+/// The only durable cover values: a short HTTPS URL, an empty value to clear,
+/// or an app-generated PNG data URL whose decoded bytes fit the document budget.
+pub fn portable_cover_value(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if value.starts_with("https://") {
+        return value.len() <= 2_048 && !value.chars().any(char::is_whitespace);
+    }
+    let Some(encoded) = value.strip_prefix("data:image/png;base64,") else {
+        return false;
+    };
+    if encoded.is_empty() || value.len() > MAX_PORTABLE_COVER_BYTES.saturating_mul(2) {
+        return false;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .is_ok_and(|bytes| {
+            bytes.len() <= MAX_PORTABLE_COVER_BYTES
+                && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                && image::ImageReader::with_format(
+                    std::io::Cursor::new(&bytes),
+                    image::ImageFormat::Png,
+                )
+                .into_dimensions()
+                .is_ok_and(|(width, height)| {
+                    width > 0
+                        && height > 0
+                        && width <= MAX_PORTABLE_COVER_EDGE
+                        && height <= MAX_PORTABLE_COVER_EDGE
+                })
+                // Header dimensions cap the decode allocation. Fully decode
+                // afterwards so a PNG signature with malformed/truncated data
+                // never becomes a durable cover peers cannot render.
+                && image::load_from_memory(&bytes).is_ok()
+        })
 }
 
 /// Register Music's action decoder for palette execution + remote replay.
@@ -413,6 +581,7 @@ pub fn set_offline_action(tracks: &[String], keep: bool) -> MusicAction {
 pub struct TrackRef {
     pub id: String,
     pub label: String,
+    pub liked: bool,
 }
 
 /// One playlist surfaced as a resource, with its ordered tracks.
@@ -424,10 +593,25 @@ pub struct PlaylistResource {
 }
 
 #[derive(Debug, Clone)]
-pub struct CatalogResource {
+pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
     pub offline: bool,
+    pub liked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogAlbumResource {
+    pub id: String,
+    pub label: String,
+    pub saved: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogArtistResource {
+    pub id: String,
+    pub label: String,
+    pub followed: bool,
 }
 
 /// The presentation context Music hands [`provide_resources`]: the user's
@@ -436,9 +620,9 @@ pub struct CatalogResource {
 #[derive(Debug, Clone, Default)]
 pub struct MusicResourceCtx {
     pub playlists: Vec<PlaylistResource>,
-    pub tracks: Vec<CatalogResource>,
-    pub albums: Vec<CatalogResource>,
-    pub artists: Vec<CatalogResource>,
+    pub tracks: Vec<CatalogTrackResource>,
+    pub albums: Vec<CatalogAlbumResource>,
+    pub artists: Vec<CatalogArtistResource>,
     pub playback: crate::model::Playback,
 }
 
@@ -480,7 +664,17 @@ fn playlist_label(p: &PlaylistResource) -> String {
     }
 }
 
-fn with_playback_actions(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+fn with_playback_actions(
+    root: Resource,
+    playback: &crate::model::Playback,
+    known_tracks: &BTreeSet<String>,
+) -> Resource {
+    let root = with_transport_settings(root, playback);
+    let root = with_transport_navigation(root, playback);
+    with_queue_actions(root, playback, known_tracks)
+}
+
+fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback) -> Resource {
     if playback.current.is_some() {
         let mut toggled = playback.clone();
         toggled.playing = !toggled.playing;
@@ -539,11 +733,99 @@ fn with_playback_actions(mut root: Resource, playback: &crate::model::Playback) 
         "Toggle mute",
         &MusicAction::SetPlayback(muted),
     ));
-    with_queue_actions(root, playback)
+    let mut shuffled = playback.clone();
+    shuffled.shuffle = !shuffled.shuffle;
+    root = root.with_action(immediate_spec(
+        "toggle-shuffle",
+        if playback.shuffle {
+            "Turn shuffle off"
+        } else {
+            "Turn shuffle on"
+        },
+        &MusicAction::SetPlayback(shuffled),
+    ));
+    let mut repeated = playback.clone();
+    repeated.repeat = repeated.repeat.next();
+    root = root.with_action(immediate_spec(
+        "cycle-repeat",
+        "Change repeat mode",
+        &MusicAction::SetPlayback(repeated),
+    ));
+
+    root
 }
 
-fn with_queue_actions(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+fn with_transport_navigation(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+    let mut previous = playback.clone();
+    if previous.queue_index > 0 {
+        previous.queue_index -= 1;
+        previous.current = previous.queue.get(previous.queue_index).cloned();
+    }
+    previous.position_ms = 0;
+    let previous_spec = immediate_spec(
+        "previous",
+        "Previous track",
+        &MusicAction::SetPlayback(previous),
+    );
+    root = root.with_action(if playback.current.is_none() {
+        previous_spec.unavailable(
+            "nothing_playing",
+            "Choose a track before using playback controls",
+        )
+    } else if playback.queue.is_empty() {
+        previous_spec.unavailable("empty_queue", "There are no queued tracks")
+    } else {
+        previous_spec
+    });
+
+    // Music's on-screen shuffle permutation is intentionally device-local so
+    // it never leaks a random, non-replayable decision into the CRDT. A remote
+    // caller can still select a concrete track, but a generic "next" would be
+    // dishonest while that local permutation is active.
+    let mut next = playback.clone();
+    if next.queue_index + 1 < next.queue.len() {
+        next.queue_index += 1;
+        next.current = next.queue.get(next.queue_index).cloned();
+        next.position_ms = 0;
+    } else if next.repeat == crate::model::RepeatMode::All && !next.queue.is_empty() {
+        next.queue_index = 0;
+        next.current = next.queue.first().cloned();
+        next.position_ms = 0;
+    } else {
+        next.playing = false;
+    }
+    let next_spec = immediate_spec("next", "Next queued track", &MusicAction::SetPlayback(next));
+    root = root.with_action(if playback.current.is_none() {
+        next_spec.unavailable(
+            "nothing_playing",
+            "Choose a track before using playback controls",
+        )
+    } else if playback.queue.is_empty() {
+        next_spec.unavailable("empty_queue", "There are no queued tracks")
+    } else if playback.shuffle {
+        next_spec.unavailable(
+            "local_shuffle_order",
+            "Choose a concrete track while this device's shuffle order is active",
+        )
+    } else {
+        next_spec
+    });
+    root
+}
+
+fn track_id_from_resource(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("music.track:")
+        .filter(|id| !id.is_empty())
+}
+
+fn with_queue_actions(
+    mut root: Resource,
+    playback: &crate::model::Playback,
+    known_tracks: &BTreeSet<String>,
+) -> Resource {
     let add_queue = playback.clone();
+    let queue_track_ids = known_tracks.clone();
     root = root.with_action(ActionSpec::typed(
         "queue-add",
         "Add track to queue",
@@ -551,18 +833,23 @@ fn with_queue_actions(mut root: Resource, playback: &crate::model::Playback) -> 
         ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "track",
-            ParamType::Text,
-            "library track id",
+            ParamType::Resource,
+            "stable music.track resource address",
         )],
         move |args: &ActionArgs| {
-            let mut next = add_queue.clone();
-            if let Some(track) = args.text("track").filter(|track| !track.is_empty()) {
-                next.queue.push(track.to_string());
+            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
+                return invalid_arguments("track must be a music.track resource");
+            };
+            if !queue_track_ids.contains(track) {
+                return invalid_arguments("track is no longer in the library");
             }
+            let mut next = add_queue.clone();
+            next.queue.push(track.to_string());
             encode(&MusicAction::SetPlayback(next))
         },
     ));
     let remove_queue = playback.clone();
+    let remove_track_ids = known_tracks.clone();
     let remove = ActionSpec::typed(
         "queue-remove",
         "Remove track from queue",
@@ -570,15 +857,34 @@ fn with_queue_actions(mut root: Resource, playback: &crate::model::Playback) -> 
         ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "track",
-            ParamType::Text,
-            "queued track id",
+            ParamType::Resource,
+            "stable music.track resource address",
         )],
         move |args: &ActionArgs| {
+            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
+                return invalid_arguments("track must be a music.track resource");
+            };
+            if !remove_track_ids.contains(track) {
+                return invalid_arguments("track is no longer in the library");
+            }
             let mut next = remove_queue.clone();
-            if let Some(track) = args.text("track")
-                && let Some(index) = next.queue.iter().position(|queued| queued == track)
-            {
-                next.queue.remove(index);
+            let Some(index) = next.queue.iter().position(|queued| queued == track) else {
+                return invalid_arguments("track is not in the current queue");
+            };
+            next.queue.remove(index);
+            if index < next.queue_index {
+                next.queue_index -= 1;
+            } else if index == next.queue_index {
+                if next.queue.is_empty() {
+                    next.current = None;
+                    next.playing = false;
+                    next.queue_index = 0;
+                    next.position_ms = 0;
+                } else {
+                    next.queue_index = next.queue_index.min(next.queue.len() - 1);
+                    next.current = next.queue.get(next.queue_index).cloned();
+                    next.position_ms = 0;
+                }
             }
             encode(&MusicAction::SetPlayback(next))
         },
@@ -593,7 +899,7 @@ fn with_queue_actions(mut root: Resource, playback: &crate::model::Playback) -> 
     root
 }
 
-fn playlist_resource(playlist: &PlaylistResource) -> Resource {
+fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String>) -> Resource {
     let mut resource = Resource::new(
         playlist_resource_id(&playlist.id),
         "music.playlist",
@@ -627,29 +933,112 @@ fn playlist_resource(playlist: &PlaylistResource) -> Resource {
         )
         .destructive(),
     );
-    for track in &playlist.tracks {
-        resource = resource.with_child(
-            Resource::new(
-                format!("music.track:{}:{}", playlist.id, track.id),
-                "music.track",
-                track.label.clone(),
-            )
-            .with_action(immediate_spec(
-                "remove",
-                "Remove from playlist",
-                &remove_track_action(&playlist.id, &track.id),
-            ))
-            .with_action(immediate_spec(
-                "toggle-like",
-                "Toggle like",
-                &toggle_liked_action(&track.id),
-            )),
-        );
+    let add_playlist = playlist.id.clone();
+    let add_track_ids = known_tracks.clone();
+    resource = resource.with_action(ActionSpec::typed(
+        "add-track",
+        "Add track to playlist",
+        "track resource…",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "track",
+            ParamType::Resource,
+            "stable music.track resource address",
+        )],
+        move |args: &ActionArgs| {
+            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
+                return invalid_arguments("track must be a music.track resource");
+            };
+            if !add_track_ids.contains(track) {
+                return invalid_arguments("track is no longer in the library");
+            }
+            encode(&add_track_action(&add_playlist, track))
+        },
+    ));
+    let cover_playlist = playlist.id.clone();
+    resource = resource.with_action(
+        ActionSpec::prompted(
+            "set-cover-url",
+            "Set playlist cover URL",
+            "Cover URL",
+            "https://… (blank clears)",
+            ExecutionLocus::ClientLocal,
+            move |cover| encode(&set_cover_action(&cover_playlist, cover.trim())),
+        )
+        .reversible(),
+    );
+    for (index, track) in playlist.tracks.iter().enumerate() {
+        resource = resource.with_child(playlist_track_resource(
+            playlist,
+            track,
+            index,
+            playlist.tracks.len(),
+        ));
     }
     resource
 }
 
-fn catalog_track_resource(track: &CatalogResource, playback: &crate::model::Playback) -> Resource {
+fn playlist_track_resource(
+    playlist: &PlaylistResource,
+    track: &TrackRef,
+    index: usize,
+    total: usize,
+) -> Resource {
+    Resource::new(
+        playlist_track_resource_id(&playlist.id, &track.id),
+        "music.playlist-track",
+        track.label.clone(),
+    )
+    .with_action(immediate_spec(
+        "remove",
+        "Remove from playlist",
+        &remove_track_action(&playlist.id, &track.id),
+    ))
+    .with_action(immediate_spec(
+        "toggle-like",
+        if track.liked {
+            "Unlike song"
+        } else {
+            "Like song"
+        },
+        &toggle_liked_action(&track.id),
+    ))
+    .with_action(if index > 0 {
+        immediate_spec(
+            "move-up",
+            "Move track up",
+            &move_track_action(&playlist.id, index, index - 1),
+        )
+        .reversible()
+    } else {
+        immediate_spec(
+            "move-up",
+            "Move track up",
+            &move_track_action(&playlist.id, index, index),
+        )
+        .unavailable("first_track", "This track is already first in the playlist")
+    })
+    .with_action(if index + 1 < total {
+        immediate_spec(
+            "move-down",
+            "Move track down",
+            &move_track_action(&playlist.id, index, index + 1),
+        )
+        .reversible()
+    } else {
+        immediate_spec(
+            "move-down",
+            "Move track down",
+            &move_track_action(&playlist.id, index, index),
+        )
+        .unavailable("last_track", "This track is already last in the playlist")
+    })
+}
+
+fn catalog_track_resource(
+    track: &CatalogTrackResource,
+    playback: &crate::model::Playback,
+) -> Resource {
     let mut next = playback.clone();
     next.queue = vec![track.id.clone()];
     next.queue_index = 0;
@@ -679,6 +1068,38 @@ fn catalog_track_resource(track: &CatalogResource, playback: &crate::model::Play
         },
         &set_offline_action(std::slice::from_ref(&track.id), !track.offline),
     ))
+    .with_action(immediate_spec(
+        "toggle-like",
+        if track.liked {
+            "Unlike song"
+        } else {
+            "Like song"
+        },
+        &toggle_liked_action(&track.id),
+    ))
+    .with_action({
+        let mut queued = playback.clone();
+        queued.queue.push(track.id.clone());
+        immediate_spec(
+            "add-to-queue",
+            "Add to queue",
+            &MusicAction::SetPlayback(queued),
+        )
+    })
+    .with_action({
+        let mut next = playback.clone();
+        if next.queue.is_empty() || next.current.is_none() {
+            next.queue = vec![track.id.clone()];
+            next.current = Some(track.id.clone());
+            next.queue_index = 0;
+            next.playing = true;
+            next.position_ms = 0;
+        } else {
+            let at = (next.queue_index + 1).min(next.queue.len());
+            next.queue.insert(at, track.id.clone());
+        }
+        immediate_spec("play-next", "Play next", &MusicAction::SetPlayback(next))
+    })
 }
 
 /// Build the resource tree Music currently has open: the library (with a "New
@@ -686,10 +1107,17 @@ fn catalog_track_resource(track: &CatalogResource, playback: &crate::model::Play
 /// playlist (remove + toggle-like). Every document-mutating operation is
 /// exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = with_playback_actions(
-        Resource::new("music.library", "music.library", "Library"),
+    let known_tracks = ctx
+        .tracks
+        .iter()
+        .map(|track| track.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut root = Resource::new("music.library", "music.library", "Library");
+    root = root.with_child(with_playback_actions(
+        Resource::new("music.player:player", "music.player", "Player"),
         &ctx.playback,
-    );
+        &known_tracks,
+    ));
 
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
@@ -714,7 +1142,7 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     );
 
     for playlist in &ctx.playlists {
-        root = root.with_child(playlist_resource(playlist));
+        root = root.with_child(playlist_resource(playlist, &known_tracks));
     }
 
     for track in &ctx.tracks {
@@ -734,6 +1162,15 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 &MusicOperation::OpenAlbum {
                     id: album.id.clone(),
                 },
+            ))
+            .with_action(immediate_spec(
+                "toggle-save",
+                if album.saved {
+                    "Remove album from library"
+                } else {
+                    "Save album to library"
+                },
+                &toggle_saved_album_action(&album.id),
             )),
         );
     }
@@ -751,6 +1188,15 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 &MusicOperation::OpenArtist {
                     id: artist.id.clone(),
                 },
+            ))
+            .with_action(immediate_spec(
+                "toggle-follow",
+                if artist.followed {
+                    "Unfollow artist"
+                } else {
+                    "Follow artist"
+                },
+                &toggle_followed_artist_action(&artist.id),
             )),
         );
     }
@@ -768,7 +1214,7 @@ impl ResourceProvider for crate::app::MusicApp {
 mod tests {
     use super::*;
     use crate::app::MusicApp;
-    use qos_actions::{ActionInput, LocalTransport};
+    use qos_actions::{ActionInput, ArgValue, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -789,6 +1235,17 @@ mod tests {
             ActionInput::Prompted { build, .. } => build(arg),
             ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
+    }
+
+    fn tiny_portable_png() -> String {
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(output.into_inner())
+        )
     }
 
     /// A Music app with the sample library synced into a fresh document.
@@ -833,17 +1290,56 @@ mod tests {
             qos_actions::RiskLevel::Destructive
         );
 
-        // A playlist with tracks nests a track resource with remove + toggle-like.
+        let player = lib
+            .children
+            .iter()
+            .find(|r| r.kind == "music.player")
+            .expect("a stable player resource");
+        assert!(player.actions.iter().any(|action| action.id == "queue-add"));
+        assert!(
+            player
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-shuffle")
+        );
+
+        // A playlist with tracks nests a membership resource with remove,
+        // reorder and like. It is not a duplicate of the catalog track entity.
         let with_tracks = lib
             .children
             .iter()
             .find(|r| !r.children.is_empty())
             .expect("a playlist with tracks");
         let track = &with_tracks.children[0];
-        assert_eq!(track.kind, "music.track");
+        assert_eq!(track.kind, "music.playlist-track");
         let tk_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(tk_actions.contains(&"remove"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"toggle-like"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"move-up"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"move-down"), "{tk_actions:?}");
+
+        let album = lib
+            .children
+            .iter()
+            .find(|r| r.kind == "music.album")
+            .expect("album resource");
+        assert!(
+            album
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-save")
+        );
+        let artist = lib
+            .children
+            .iter()
+            .find(|r| r.kind == "music.artist")
+            .expect("artist resource");
+        assert!(
+            artist
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-follow")
+        );
 
         // The full flattened tree exports every action, including the nested
         // track ops that sort after the playlists.
@@ -972,6 +1468,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn portable_playlist_cover_replays_to_a_peer_without_a_local_path() {
+        let (_app, seeded_doc) = seeded();
+        let mut a = seeded_doc;
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let playlist = crate::doc::load_library(&a).playlists[0].id.clone();
+        // A tiny valid PNG, representative of the normalized portal output.
+        let cover = tiny_portable_png();
+        assert!(portable_cover_value(&cover));
+        assert!(!cover.contains("file:"));
+        assert!(!cover.contains("/tmp/"));
+
+        let action = set_cover_action(&playlist, &cover);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "cover replay converges exactly"
+        );
+        assert_eq!(
+            crate::doc::load_library(&b)
+                .playlist(&playlist)
+                .unwrap()
+                .cover,
+            cover,
+            "the peer receives a portable value, not the picker's local path"
+        );
+    }
+
+    #[test]
+    fn playlist_cover_action_refuses_local_unsafe_and_malformed_values() {
+        let (_app, mut doc) = seeded();
+        let playlist = crate::doc::load_library(&doc).playlists[0].id.clone();
+        let oversized = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_PORTABLE_COVER_BYTES.saturating_mul(2))
+        );
+        for cover in [
+            "file:///tmp/cover.png",
+            "/tmp/cover.png",
+            "http://example.test/cover.png",
+            "data:image/png;base64,not-valid-base64",
+            "data:image/png;base64,iVBORw0KGgo=",
+            "data:image/jpeg;base64,iVBORw0KGgo=",
+            oversized.as_str(),
+        ] {
+            let action = set_cover_action(&playlist, cover);
+            assert!(
+                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                "must refuse hostile/nonportable cover {cover:?}"
+            );
+        }
+    }
+
     /// A deterministic toggle (like) also converges byte-identically — each
     /// replica reads the shared membership and flips it.
     #[test]
@@ -1090,7 +1643,11 @@ mod tests {
         ctx.playback.current = Some("track-1".into());
         ctx.playback.queue.push("track-1".into());
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        let root = &resources[0];
+        let root = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "music.player")
+            .unwrap();
         for id in [
             "play-pause",
             "seek",
@@ -1110,5 +1667,91 @@ mod tests {
                 .ty,
             ParamType::Integer
         );
+    }
+
+    #[test]
+    fn resource_arguments_refuse_wrong_kind_and_stale_tracks() {
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let library = &resources[0];
+        let player = library
+            .children
+            .iter()
+            .find(|resource| resource.kind == "music.player")
+            .unwrap();
+        let queue_add = player
+            .actions
+            .iter()
+            .find(|action| action.id == "queue-add")
+            .unwrap();
+
+        for address in ["music.album:not-a-track", "music.track:removed"] {
+            let encoded = queue_add
+                .build_args([(String::from("track"), ArgValue::Resource(address.into()))])
+                .expect("generic resource shape binds before Music validates its kind/state");
+            assert_eq!(
+                encoded.type_id,
+                qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+                "{address}"
+            );
+        }
+
+        let playlist = library
+            .children
+            .iter()
+            .find(|resource| resource.kind == "music.playlist")
+            .unwrap();
+        let add_track = playlist
+            .actions
+            .iter()
+            .find(|action| action.id == "add-track")
+            .unwrap();
+        let encoded = add_track
+            .build_args([(
+                String::from("track"),
+                ArgValue::Resource("music.track:removed".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            encoded.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
+    }
+
+    #[test]
+    fn stale_or_impossible_replayed_actions_are_refused() {
+        let (_app, mut doc) = seeded();
+        let stale = MusicAction::AddTrackToPlaylist {
+            playlist: "gone".into(),
+            track: "gone".into(),
+        };
+        assert!(matches!(
+            stale.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+
+        let impossible = MusicAction::SetPlayback(crate::model::Playback {
+            current: Some("gone".into()),
+            queue: vec!["gone".into()],
+            queue_index: 0,
+            playing: true,
+            position_ms: 0,
+            shuffle: false,
+            repeat: crate::model::RepeatMode::Off,
+            volume: 100,
+        });
+        assert!(matches!(
+            impossible.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+
+        let invalid_volume = MusicAction::SetPlayback(crate::model::Playback {
+            volume: 101,
+            ..crate::model::Playback::default()
+        });
+        assert!(matches!(
+            invalid_volume.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
     }
 }

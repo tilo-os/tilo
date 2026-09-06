@@ -8745,7 +8745,9 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "base64 0.22.1",
  "gstreamer",
+ "image",
  "qos-actions",
  "qos-app",
  "reqwest 0.12.28",
