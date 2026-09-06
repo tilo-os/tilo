@@ -14,6 +14,7 @@ rpm -q --requires qos-session | grep -Fxq xwayland-satellite
 rpm -q --requires qos-session | grep -Fxq xdg-desktop-portal
 rpm -q --requires qos-session | grep -Fxq xdg-dbus-proxy
 rpm -q --requires qos-session | grep -Fxq dbus-tools
+rpm -q --requires qos-session | grep -Fxq upower
 if (( expect_devel )); then
     "$repo_root/dist/verify-devel-payload.sh" /
     rpm -q qos-session-devel >/dev/null

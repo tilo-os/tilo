@@ -63,6 +63,11 @@ Requires:       dbus-tools
 # standard session services available and stops them before another desktop
 # starts.
 Requires:       systemd
+# The power service constructs both the logind and UPower proxies before it can
+# receive PrepareForSleep. Without UPower it deliberately declines to run, so
+# the mandatory lock-before-suspend path would be absent rather than merely
+# losing a battery indicator.
+Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding qOS.
 Requires:       xwayland-satellite
