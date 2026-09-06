@@ -1633,8 +1633,10 @@ impl ChatApp {
                 .take(target_index)
                 .map(RowM::height)
                 .sum::<f64>();
-            let target_mid = divider_h + before + rows[target_index].height() / 2.0;
-            self.scroll = area.center().y - start_y - target_mid;
+            if let Some(row) = rows.get(target_index) {
+                let target_mid = divider_h + before + row.height() / 2.0;
+                self.scroll = area.center().y - start_y - target_mid;
+            }
         }
         let y = (start_y + self.scroll).clamp(min_start, max_start);
 
