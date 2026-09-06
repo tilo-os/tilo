@@ -6,8 +6,8 @@ set -euo pipefail
 
 mode=${1:-}
 case "$mode" in
-  oobe|desktop|lock) ;;
-  *) echo "usage: $0 {oobe|desktop|lock}" >&2; exit 2 ;;
+  oobe|oobe-actions|desktop|lock) ;;
+  *) echo "usage: $0 {oobe|oobe-actions|desktop|lock}" >&2; exit 2 ;;
 esac
 
 command -v busctl >/dev/null
@@ -51,6 +51,8 @@ for _ in $(seq 1 200); do
 done
 [[ -n "$app_bus" ]] || {
   echo "qOS compositor did not register on the AT-SPI bus" >&2
+  echo "shell pid: $shell_pid" >&2
+  busctl --address="$atspi_address" list --no-pager >&2 || true
   exit 1
 }
 
@@ -71,44 +73,121 @@ children() {
 }
 
 # Bound the walk so a corrupt cyclic provider fails rather than hanging the
-# release. Names are the user-facing contract an external reader consumes.
-queue=(/org/a11y/atspi/accessible/root)
-declare -A seen=()
+# release. Keep each node's real AT-SPI object path: action validation must
+# address the same externally-exported node a screen reader sees, not an
+# in-process mirror or a synthetic test bus.
+declare -A node_names=()
 names=""
-for _ in $(seq 1 256); do
-  ((${#queue[@]} > 0)) || break
-  path=${queue[0]}
-  queue=("${queue[@]:1}")
-  [[ -z "${seen[$path]:-}" ]] || continue
-  seen[$path]=1
-  names+="$(property "$path" Name 2>/dev/null || true)"$'\n'
-  while IFS= read -r child; do
-    [[ -n "$child" && -z "${seen[$child]:-}" ]] && queue+=("$child")
-  done < <(children "$path" 2>/dev/null \
-    | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true)
-done
 
-require_name() {
-  local expected=$1
-  [[ "$names" == *"$expected"* ]] || {
-    echo "AT-SPI $mode tree is missing '$expected'" >&2
-    printf '%s\n' "$names" >&2
-    exit 1
+collect_tree() {
+  local path child name
+  local -a queue=(/org/a11y/atspi/accessible/root)
+  local -A seen=()
+  node_names=()
+  names=""
+  for _ in $(seq 1 256); do
+    ((${#queue[@]} > 0)) || break
+    path=${queue[0]}
+    queue=("${queue[@]:1}")
+    [[ -z "${seen[$path]:-}" ]] || continue
+    seen[$path]=1
+    # A tree can be replaced between GetChildren and Get. Treat that as an
+    # in-flight transaction and retry the whole bounded walk; never turn it
+    # into an empty successful tree.
+    name=$(property "$path" Name) || return 1
+    node_names["$path"]=$name
+    names+="$name"$'\n'
+    while IFS= read -r child; do
+      [[ -n "$child" && -z "${seen[$child]:-}" ]] && queue+=("$child")
+    done < <(children "$path" \
+      | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true)
+  done
+  ((${#node_names[@]} > 0))
+}
+
+node_named() {
+  local expected=$1 path needle
+  needle="'$expected'"
+  for path in "${!node_names[@]}"; do
+    [[ ${node_names[$path]} == *"$needle"* ]] && {
+      printf '%s\n' "$path"
+      return 0
+    }
+  done
+  return 1
+}
+
+wait_for_names() {
+  local missing expected attempt
+  for attempt in $(seq 1 400); do
+    if collect_tree; then
+      missing=""
+      for expected in "$@"; do
+        node_named "$expected" >/dev/null || missing+=" $expected"
+      done
+      [[ -z "$missing" ]] && return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never exposed:$missing" >&2
+  printf '%s\n' "$names" >&2
+  return 1
+}
+
+click_named() {
+  local expected=$1 path candidate needle actions result
+  needle="'$expected'"
+  # A labelled control can have a sibling text node with the same spoken
+  # label. Resolve the actionable one from the live AT-SPI interfaces rather
+  # than relying on traversal order or an implementation-specific path.
+  for candidate in "${!node_names[@]}"; do
+    [[ ${node_names[$candidate]} == *"$needle"* ]] || continue
+    actions=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$candidate" \
+      --method org.a11y.atspi.Action.GetActions 2>/dev/null) || continue
+    if [[ $actions == *"('click',"* ]]; then
+      path=$candidate
+      break
+    fi
+  done
+  [[ -n ${path:-} ]] || {
+    echo "AT-SPI $mode tree has no click-capable node named '$expected'" >&2
+    return 1
+  }
+  result=$(gdbus call --address "$atspi_address" \
+    --dest "$app_bus" \
+    --object-path "$path" \
+    --method org.a11y.atspi.Action.DoAction 0)
+  [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+    echo "AT-SPI click on '$expected' was rejected: $result" >&2
+    return 1
   }
 }
 
 case "$mode" in
-  oobe)
-    require_name "Use existing"
-    require_name "Create identity"
+  oobe|oobe-actions)
+    wait_for_names "Use existing" "Create identity"
+    if [[ $mode == oobe-actions ]]; then
+      # This is the release's external action proof. Each transition is made
+      # through org.a11y.atspi.Action, then observed back through the live
+      # AT-SPI tree. It catches a provider that advertises controls but drops
+      # ActionRequest messages before the compositor's widget dispatcher.
+      click_named "Create identity"
+      wait_for_names \
+        "I understand that losing this device without a backup means losing this identity." \
+        "Create"
+      click_named "I understand that losing this device without a backup means losing this identity."
+      wait_for_names "Create"
+      click_named "Create"
+      wait_for_names "Your identity is ready"
+    fi
     ;;
   desktop)
-    require_name "qOS workspace"
+    wait_for_names "qOS workspace"
     ;;
   lock)
-    require_name "qOS lock screen"
-    require_name "Password"
-    require_name "Type your password and press Enter"
+    wait_for_names "qOS lock screen" "Password" "Type your password and press Enter"
     ;;
 esac
 
