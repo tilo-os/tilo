@@ -265,7 +265,9 @@ mod tests {
             ..Default::default()
         };
         let actions = RecordingActions::default();
-        pane.list.layout(panel, 2);
+        // The pane reserves its hotspot card before discovery rows; prepare
+        // the same geometry that `handle_click` will use.
+        pane.list.layout_from(panel, 2, 116.0);
         assert_eq!(
             pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
             DrillInOutcome::Changed
