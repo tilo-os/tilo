@@ -4261,6 +4261,7 @@ impl App {
             app: self,
             window: None,
             render: None,
+            audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,
             a11y_proxy,
@@ -4492,6 +4493,11 @@ struct AppHandler {
     /// `None` again in `exiting`, after the worker is joined, so its surface
     /// drops BEFORE the `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    /// A real, separate fullscreen output for a root widget's audience view.
+    /// It is deliberately not modelled as a floating surface: it has no
+    /// desktop-space proxy or compositor handoff and is always destroyed
+    /// before its renderer/window during stop and app teardown.
+    audience_presentation: Option<AudiencePresentationWindow>,
     floating_windows: Vec<NativeFloatingWindow>,
     /// `None` until `resumed` creates the window (must be built while
     /// hidden); lazy, so the hot path pays nothing with no screen reader
@@ -4517,6 +4523,43 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
+}
+
+struct AudiencePresentationWindow {
+    monitor: winit::monitor::MonitorHandle,
+    window: Arc<Window>,
+    render: Option<RenderThreadHandle>,
+    render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
+}
+
+/// Keep the audience bound to the same monitor object across hotplug list
+/// reordering; indices are only a one-tick selection aid.
+fn audience_monitor_still_selected<T: PartialEq>(
+    current: Option<&T>,
+    selected: Option<&T>,
+) -> bool {
+    current
+        .zip(selected)
+        .is_some_and(|(current, selected)| current == selected)
+}
+
+#[cfg(test)]
+mod audience_monitor_identity_tests {
+    use super::audience_monitor_still_selected;
+
+    #[test]
+    fn stable_identity_survives_monitor_enumeration_reordering() {
+        let audience = "connector-2";
+        let reordered = ["connector-2", "connector-1"];
+        assert!(audience_monitor_still_selected(
+            reordered.first(),
+            Some(&audience)
+        ));
+        assert!(!audience_monitor_still_selected(
+            reordered.get(1),
+            Some(&audience)
+        ));
+    }
 }
 
 struct NativeFloatingWindow {
@@ -4915,6 +4958,199 @@ impl AppHandler {
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         self.render = Some(create_window_render(window, false)?);
         Ok(())
+    }
+
+    /// Reconcile the root's optional audience projection with a *separate*
+    /// native toplevel. A missing monitor list, a one-output session, or an
+    /// invalid/self-target all leave this `None`; the root's normal fullscreen
+    /// intent then supplies the single-output fallback.
+    fn sync_audience_presentation(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        presenter: &Arc<Window>,
+    ) {
+        let request = self.app.root_widget.audience_presentation_request();
+        let monitors: Vec<winit::monitor::MonitorHandle> = presenter.available_monitors().collect();
+        let primary_monitor = presenter.primary_monitor();
+        let local_monitor = presenter
+            .current_monitor()
+            .or_else(|| primary_monitor.clone());
+        let presenter_index = local_monitor.as_ref().and_then(|current| {
+            monitors
+                .iter()
+                .position(|monitor| monitor == current)
+                .and_then(|index| u32::try_from(index).ok())
+        });
+        let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| crate::fullscreen::MonitorInfo {
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+                width: monitor.size().width,
+                height: monitor.size().height,
+                primary: primary_monitor.as_ref() == Some(monitor),
+                scale: monitor.scale_factor(),
+            })
+            .collect();
+        let target = request.and_then(|request| {
+            crate::fullscreen::select_audience_output(&infos, request.target, presenter_index)
+        });
+
+        if self.audience_presentation.as_ref().is_some_and(|audience| {
+            audience_monitor_still_selected(
+                target.and_then(|index| monitors.get(index as usize)),
+                Some(&audience.monitor),
+            )
+        }) {
+            return;
+        }
+        self.close_audience_presentation();
+        let Some(index) = target else {
+            return;
+        };
+        let Some(monitor) = monitors.get(index as usize).cloned() else {
+            return;
+        };
+
+        let mut attributes = Window::default_attributes()
+            .with_title("Audience presentation")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(false);
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+            let app_id = resolve_app_id(
+                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| {
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    })
+                    .as_deref(),
+            );
+            // A role-like suffix keeps a compositor from mistaking the
+            // audience output for a duplicate editor surface.
+            attributes = attributes.with_name(format!("{app_id}.audience"), "");
+        }
+        let Ok(window) = event_loop.create_window(attributes) else {
+            tracing::warn!(
+                "could not create separate audience presentation window; using single-output fallback"
+            );
+            return;
+        };
+        let window = Arc::new(window);
+        window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor.clone()))));
+        window.set_visible(true);
+        window.request_redraw();
+        self.audience_presentation = Some(AudiencePresentationWindow {
+            monitor,
+            window,
+            render: None,
+            render_init: None,
+        });
+        self.app.root_widget.on_audience_presentation_changed(true);
+        self.app.layout_dirty = true;
+        presenter.request_redraw();
+    }
+
+    /// Drop the render worker before the Window Arc, as required by wgpu's
+    /// surface lifetime. This is deliberately idempotent: hotplug, explicit
+    /// stop, and process teardown can race through the same state transition.
+    fn close_audience_presentation(&mut self) {
+        let Some(mut audience) = self.audience_presentation.take() else {
+            return;
+        };
+        audience.window.set_visible(false);
+        if let Some(mut render) = audience.render.take() {
+            render.shutdown_and_join();
+        }
+        self.app.root_widget.on_audience_presentation_changed(false);
+        self.app.layout_dirty = true;
+    }
+
+    /// Paint one audience frame without running a second widget layout or
+    /// synchronising a second document. The root is responsible for a pure
+    /// audience projection of the same model used by the presenter surface.
+    fn handle_audience_redraw(&mut self) -> bool {
+        let Some(audience) = self.audience_presentation.as_mut() else {
+            return false;
+        };
+        if audience.render.is_none() {
+            if audience.render_init.is_none() {
+                match begin_window_render_init(audience.window.clone(), false) {
+                    Ok(init) => audience.render_init = Some(init),
+                    Err(error) => tracing::warn!(%error, "could not start audience renderer"),
+                }
+            }
+            let Some(init) = audience.render_init.as_ref() else {
+                return true;
+            };
+            match init.try_recv() {
+                Ok(Ok(render)) => {
+                    audience.render = Some(render);
+                    audience.render_init = None;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "could not initialise audience renderer");
+                    audience.render_init = None;
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Empty) => return true,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    audience.render_init = None;
+                    return false;
+                }
+            }
+        }
+        let Some(render) = audience.render.as_mut() else {
+            return false;
+        };
+        let mut scene = match render.scene_pool.try_recv() {
+            Ok(scene) => scene,
+            Err(mpsc::TryRecvError::Empty) => return true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                tracing::warn!("audience render worker exited");
+                return false;
+            }
+        };
+        scene.reset();
+        let size = audience.window.inner_size();
+        let scale = audience.window.scale_factor();
+        let rect = vello::kurbo::Rect::new(
+            0.0,
+            0.0,
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        );
+        let drawn = self.app.root_widget.draw_audience_presentation(
+            &mut scene,
+            Affine::scale(scale),
+            &mut self.app.text_renderer,
+            &self.app.theme,
+            rect,
+        );
+        if !drawn {
+            return false;
+        }
+        if render
+            .render_tx
+            .send(RenderRequest::Frame {
+                scene: Box::new(scene),
+                width: size.width.max(1),
+                height: size.height.max(1),
+                base_color: Color::BLACK,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                "audience render worker stopped; returning to the single-output fallback"
+            );
+            return false;
+        }
+        true
     }
 
     fn sync_ime(&mut self, window: &Window) {
@@ -5685,6 +5921,9 @@ impl AppHandler {
         for surface in &self.floating_windows {
             surface.window.request_redraw();
         }
+        if let Some(audience) = self.audience_presentation.as_ref() {
+            audience.window.request_redraw();
+        }
     }
 
     /// Split out of `window_event`'s catch-all arm (`clippy::too_many_lines`). Body
@@ -6451,6 +6690,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.app.autosave_flush();
         self.app.root_widget.unmount_native_views();
+        self.close_audience_presentation();
         for surface in &mut self.floating_windows {
             if let Some(mut render) = surface.render.take() {
                 render.shutdown_and_join();
@@ -6472,6 +6712,60 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if self
+            .audience_presentation
+            .as_ref()
+            .is_some_and(|audience| audience.window.id() == window_id)
+        {
+            let audience_window = self
+                .audience_presentation
+                .as_ref()
+                .map(|audience| audience.window.clone());
+            let Some(audience_window) = audience_window else {
+                return;
+            };
+            match event {
+                WindowEvent::CloseRequested => {
+                    // Closing the audience is an explicit stop, unlike a
+                    // temporary hotplug reconciliation which retains the
+                    // presentation and falls back to the primary output.
+                    self.app.root_widget.on_audience_presentation_closed();
+                    self.close_audience_presentation();
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                }
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    audience_window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    if !self.handle_audience_redraw() {
+                        self.close_audience_presentation();
+                        if let Some(primary) = self.window.as_ref() {
+                            primary.request_redraw();
+                        }
+                    }
+                }
+                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                other => {
+                    let handled = self.app.root_widget.handle_audience_presentation_event(
+                        &other,
+                        &mut self.app.state.doc,
+                        &self.app.state.root,
+                    );
+                    if handled {
+                        self.app.commit_action();
+                        self.app.needs_sync = true;
+                        self.app.layout_dirty = true;
+                        if let Some(primary) = self.window.as_ref() {
+                            primary.request_redraw();
+                        }
+                        audience_window.request_redraw();
+                    }
+                }
+            }
+            return;
+        }
         if let Some(index) = self
             .floating_windows
             .iter()
@@ -6627,6 +6921,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             for surface in &self.floating_windows {
                 surface.window.request_redraw();
             }
+        }
+
+        // This runs before the ordinary fullscreen reconciliation below. If a
+        // real second output appears, the root is notified first and keeps
+        // the local window as the presenter dashboard; if it disappears the
+        // existing fullscreen path immediately becomes the safe fallback.
+        self.sync_audience_presentation(event_loop, &window);
+        if let Some(audience) = self.audience_presentation.as_ref()
+            && audience.render_init.is_some()
+        {
+            // Poll the worker result without ever blocking the presenter
+            // event loop; this is short-lived only while GPU setup runs.
+            audience.window.request_redraw();
         }
 
         let app = &mut self.app;
