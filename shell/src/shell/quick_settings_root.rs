@@ -66,6 +66,10 @@ pub struct QuickSettingsRoot {
     slider_drag: Option<usize>,
     keyboard_focus: Option<usize>,
     config: QuickSettingsConfig,
+    // Hosts that inject a model (tests, screenshots and embedders) must not
+    // silently rewrite the desktop user's persisted arrangement. Only the
+    // normal session constructor owns that file.
+    persist_config: bool,
     edit_mode: bool,
     edit_drag: DragController<QuickSettingsControl>,
 }
@@ -99,15 +103,22 @@ impl QuickSettingsRoot {
     const EDIT_FOOTER: f64 = 38.0;
 
     pub fn load_persisted() -> Self {
-        Self::with_config(QuickSettingsConfig::load())
+        Self::from_config(QuickSettingsConfig::load(), true)
     }
+    /// Construct a deterministic, non-persisting root. This is for an
+    /// embedding host that supplies its own model; production sessions use
+    /// [`Self::load_persisted`] and are the only ones permitted to save.
     pub fn with_config(config: QuickSettingsConfig) -> Self {
+        Self::from_config(config, false)
+    }
+    fn from_config(config: QuickSettingsConfig, persist_config: bool) -> Self {
         Self {
             panel: Rect::ZERO,
             layout_scale: 1.0,
             slider_drag: None,
             keyboard_focus: None,
             config: config.normalised(),
+            persist_config,
             edit_mode: false,
             edit_drag: DragController::vertical(),
         }
@@ -253,11 +264,12 @@ impl QuickSettingsRoot {
     }
     fn save_config(&mut self) {
         self.config = self.config.clone().normalised();
-        // Interaction tests exercise add/remove/reorder with the same model
-        // but must never write a developer's real desktop preferences.
-        #[cfg(test)]
-        return;
-        #[cfg(not(test))]
+        if !self.persist_config {
+            // Interaction tests and embedded previews exercise the same
+            // model, but never write a developer's real desktop settings.
+            // Their caller owns persistence, if any.
+            return;
+        }
         if let Err(error) = self.config.save() {
             tracing::warn!(%error, "could not persist Quick Settings layout");
         }
@@ -924,26 +936,32 @@ impl QuickSettingsRoot {
         // Destinations stay first, in the place established by the original
         // compact shell, instead of being hidden behind unexplained footer
         // glyphs.
-        for (i, (icon, accessible)) in [
-            (ui::icons::Icon::Settings2, "Open Settings"),
-            (ui::icons::Icon::Shield, "Privacy controls"),
-            (ui::icons::Icon::History, "Notification history"),
-            (ui::icons::Icon::Power, "Power menu"),
+        let mut action_tooltip = None;
+        for (i, (icon, accessible, tooltip)) in [
+            (ui::icons::Icon::Settings2, "Open Settings", "Settings"),
+            (ui::icons::Icon::Shield, "Privacy controls", "Privacy"),
+            (ui::icons::Icon::History, "Notification history", "History"),
+            (ui::icons::Icon::Power, "Power menu", "Power"),
         ]
         .into_iter()
         .enumerate()
         {
             let r = self.action(i);
             let power = i == 3;
+            let hovered = cursor.is_some_and(|p| r.contains(p));
             Button::paint(
                 scene,
                 transform,
                 text,
                 theme,
                 &ButtonFace::new(r, "")
-                    .hovered(cursor.is_some_and(|p| r.contains(p)))
+                    .hovered(hovered)
+                    .focused(self.keyboard_focus == Some(i + 1))
                     .accessible_name(accessible),
             );
+            if hovered {
+                action_tooltip = Some((tooltip, r));
+            }
             let color = if power {
                 colors.semantic.danger
             } else {
@@ -1030,6 +1048,7 @@ impl QuickSettingsRoot {
                     }),
                 )
                 .hovered(cursor.is_some_and(|p| face.contains(p)))
+                .focused(self.keyboard_focus == Some(5 + i))
                 .dragging(self.slider_drag == Some(i)),
             );
         }
@@ -1048,6 +1067,7 @@ impl QuickSettingsRoot {
             );
         }
         let r = self.power_geometry(self.panel, state);
+        let power_focus = 7 + self.visible_controls(state).len();
         Button::paint(
             scene,
             transform,
@@ -1055,6 +1075,7 @@ impl QuickSettingsRoot {
             theme,
             &ButtonFace::new(r, "")
                 .hovered(cursor.is_some_and(|p| r.contains(p)))
+                .focused(self.keyboard_focus == Some(power_focus))
                 .accessible_name("Change power profile"),
         );
         ui::icons::draw_icon(
@@ -1075,7 +1096,7 @@ impl QuickSettingsRoot {
             state.power_profile.label(),
             theme.tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(21.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(17.)).into()),
             None,
             TextWeight::Semibold,
         );
@@ -1089,7 +1110,7 @@ impl QuickSettingsRoot {
             &battery_detail,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(39.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(33.)).into()),
             None,
         );
         ui::icons::draw_icon(
@@ -1105,6 +1126,15 @@ impl QuickSettingsRoot {
             colors.text_dim,
             1.5,
         );
+        if let Some((label, anchor)) = action_tooltip {
+            // The compact top actions intentionally avoid permanent captions;
+            // a hover label restores immediate discoverability without
+            // turning the utility row back into a second header. Keyboard
+            // users receive the same names through the focus ring and a11y.
+            ui::widget::tooltip::draw_hover_tooltip(
+                scene, transform, text, theme, anchor, label, self.panel,
+            );
+        }
     }
     fn draw_control(
         &self,
@@ -1128,6 +1158,7 @@ impl QuickSettingsRoot {
             theme,
             &ButtonFace::new(r, "")
                 .hovered(cursor.is_some_and(|p| r.contains(p)))
+                .focused(self.keyboard_focus == Some(7 + i))
                 .accessible_name(Self::rendered_label(c, s)),
         );
         ui::icons::draw_icon(
@@ -1152,7 +1183,7 @@ impl QuickSettingsRoot {
             Self::rendered_label(c, s),
             theme.tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(43.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(40.)).into()),
             None,
             TextWeight::Semibold,
         );
@@ -1166,7 +1197,7 @@ impl QuickSettingsRoot {
             &sub,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(59.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(55.)).into()),
             None,
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
@@ -1255,6 +1286,7 @@ impl QuickSettingsRoot {
                 theme,
                 &ButtonFace::new(r, "")
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
+                    .focused(self.keyboard_focus == Some(i + 1))
                     .accessible_name(Self::label(c)),
             );
             // A six-dot grip is a familiar, intentional reorder affordance;
