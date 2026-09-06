@@ -329,6 +329,10 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// viewport. Unlike named documentation scenarios, responsive-matrix captures
 /// must preserve the caller's exact dimensions and let the real shell
 /// breakpoint select docked versus drill-in navigation.
+///
+/// # Errors
+///
+/// Returns the offscreen renderer or PNG write error.
 pub fn render_responsive_to_path(
     viewport: (u32, u32),
     out: &Path,

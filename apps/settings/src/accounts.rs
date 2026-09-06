@@ -5,7 +5,7 @@
 //! # Why Settings owns these
 //!
 //! Account inventory in qOS is presented in one place: this app's External
-//! Accounts panel. Password/app-password accounts for Mail, CalDAV, WebDAV,
+//! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
 //! and Nextcloud can be added, edited, tested, reauthenticated, and removed
 //! there. Provider-specific OAuth authorization remains in its owning app.
 //!
@@ -28,7 +28,7 @@
 //!
 //! # Legacy migration
 //!
-//! Older installs kept WebDAV and Nextcloud metadata in per-app JSON files.
+//! Older installs kept `WebDAV` and Nextcloud metadata in per-app JSON files.
 //! [`AccountDirectory::load`] imports those records into the canonical store
 //! once (upsert by stable id), leaving the old files untouched as a rollback
 //! aid. New writes only target the canonical store.
@@ -46,10 +46,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountMutationJournal {
-    previous_store: accounts::AccountStore,
-    previous_statuses: accounts::AccountSyncStatusStore,
+    #[serde(rename = "previous_store")]
+    store: accounts::AccountStore,
+    #[serde(rename = "previous_statuses")]
+    statuses: accounts::AccountSyncStatusStore,
     /// Previous vault ciphertext, never plaintext credential material.
-    previous_vault_ciphertext: Option<Vec<u8>>,
+    #[serde(rename = "previous_vault_ciphertext")]
+    vault_ciphertext: Option<Vec<u8>>,
 }
 
 fn mutation_journal_path() -> Result<PathBuf, String> {
@@ -57,18 +60,20 @@ fn mutation_journal_path() -> Result<PathBuf, String> {
     Ok(accounts::accounts_dir_in(&root).join("mutation-journal.json"))
 }
 
+/// # Errors
+///
+/// Returns an error when the recovery check or durable journal write fails.
 pub fn begin_account_mutation(
     previous_store: &accounts::AccountStore,
     previous_statuses: &accounts::AccountSyncStatusStore,
 ) -> Result<(), String> {
     recover_account_mutation()?;
     let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
-    let previous_vault_ciphertext =
-        std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
+    let vault_ciphertext = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
     let journal = AccountMutationJournal {
-        previous_store: previous_store.clone(),
-        previous_statuses: previous_statuses.clone(),
-        previous_vault_ciphertext,
+        store: previous_store.clone(),
+        statuses: previous_statuses.clone(),
+        vault_ciphertext,
     };
     let bytes = serde_json::to_vec(&journal)
         .map_err(|error| format!("could not serialize account transaction: {error}"))?;
@@ -76,6 +81,9 @@ pub fn begin_account_mutation(
         .map_err(|error| format!("could not persist account transaction intent: {error}"))
 }
 
+/// # Errors
+///
+/// Returns an error when the completed mutation journal cannot be removed.
 pub fn finish_account_mutation() -> Result<(), String> {
     let path = mutation_journal_path()?;
     match std::fs::remove_file(&path) {
@@ -97,6 +105,11 @@ pub fn finish_account_mutation() -> Result<(), String> {
 /// Roll back an interrupted metadata/vault/status mutation before presenting
 /// the account inventory. The journal contains ciphertext, never a plaintext
 /// password or token.
+///
+/// # Errors
+///
+/// Returns an error when the journal or the recovered stores cannot be read
+/// or durably restored.
 pub fn recover_account_mutation() -> Result<(), String> {
     let path = mutation_journal_path()?;
     let bytes = match std::fs::read(&path) {
@@ -111,16 +124,16 @@ pub fn recover_account_mutation() -> Result<(), String> {
     let journal: AccountMutationJournal = serde_json::from_slice(&bytes)
         .map_err(|error| format!("account transaction intent is invalid: {error}"))?;
     journal
-        .previous_store
+        .store
         .save()
         .map_err(|error| format!("could not recover account metadata: {error}"))?;
     journal
-        .previous_statuses
+        .statuses
         .save()
         .map_err(|error| format!("could not recover account sync status: {error}"))?;
     let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
     let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
-    match journal.previous_vault_ciphertext {
+    match journal.vault_ciphertext {
         Some(ciphertext) => {
             atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
                 .map_err(|error| format!("could not recover credential vault: {error}"))?;
@@ -555,7 +568,7 @@ pub struct AccountDirectory {
 impl AccountDirectory {
     /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. Legacy WebDAV
+    /// Calendar read, so the shapes can no longer drift apart. Legacy `WebDAV`
     /// and Nextcloud JSON is imported idempotently before projecting the view.
     pub fn load() -> Self {
         if accounts::config_root().is_some()
@@ -783,7 +796,7 @@ fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
             .filter_map(|a| {
                 let mut config = a.config_as::<DavAccount>()?;
                 config.id = a.id.to_string();
-                config.label = a.display_name.clone();
+                config.label.clone_from(&a.display_name);
                 config.enabled = a.enabled;
                 config.tint = a.tint;
                 config.password.clear();
@@ -803,7 +816,7 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
             .filter_map(|a| {
                 let mut config = a.config_as::<NextcloudAccount>()?;
                 config.id = a.id.to_string();
-                config.label = a.display_name.clone();
+                config.label.clone_from(&a.display_name);
                 config.enabled = a.enabled;
                 config.tint = a.tint;
                 config.password.clear();
@@ -826,7 +839,7 @@ pub fn import_legacy_accounts(
         let id = accounts::AccountId::from(legacy.id.clone());
         if shared.get(&id).is_none() {
             let mut stored = accounts::Account::new(id, WEBDAV_TYPE);
-            stored.display_name = legacy.label.clone();
+            stored.display_name.clone_from(&legacy.label);
             stored.enabled = legacy.enabled;
             stored.tint = legacy.tint;
             stored.set_config(legacy);
@@ -837,7 +850,7 @@ pub fn import_legacy_accounts(
         let id = accounts::AccountId::from(legacy.id.clone());
         if shared.get(&id).is_none() {
             let mut stored = accounts::Account::new(id, NEXTCLOUD_TYPE);
-            stored.display_name = legacy.label.clone();
+            stored.display_name.clone_from(&legacy.label);
             stored.enabled = legacy.enabled;
             stored.tint = legacy.tint;
             stored.set_config(legacy);
