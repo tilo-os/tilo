@@ -328,76 +328,14 @@ impl Presentation {
 
     /// Draw a blanked audience surface. Returns true when it fully owns the
     /// frame, allowing the caller to skip deck rendering.
-    pub(crate) fn draw_blank(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        rect: Rect,
-    ) -> bool {
-        let (background, foreground, message) = match self.blank {
+    pub(crate) fn draw_blank(&self, scene: &mut Scene, transform: Affine, rect: Rect) -> bool {
+        let background = match self.blank {
             Blank::None => return false,
-            Blank::White => (
-                Color::WHITE,
-                render::with_alpha(Color::BLACK, 120),
-                "Screen whited out  ·  press W to resume",
-            ),
-            Blank::Black => (
-                Color::BLACK,
-                render::with_alpha(Color::WHITE, 120),
-                "Screen blacked out  ·  press B to resume",
-            ),
+            Blank::White => Color::WHITE,
+            Blank::Black => Color::BLACK,
         };
         chrome::fill_rect(scene, transform, rect, background);
-        text.draw_text_weighted(
-            scene,
-            message,
-            14.0,
-            foreground,
-            transform * Affine::translate((rect.x0 + 40.0, rect.y1 - 40.0)),
-            None,
-            TextWeight::Regular,
-        );
         true
-    }
-
-    pub(crate) fn draw_timer_pill(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        rect: Rect,
-    ) {
-        let paused = self.is_paused();
-        let clock = if paused {
-            format!("II  {}", self.clock())
-        } else {
-            self.clock()
-        };
-        let width = chrome::est_width(&clock, 13.0) + 26.0;
-        let pill = Rect::new(
-            rect.x1 - 20.0 - width,
-            rect.y0 + 16.0,
-            rect.x1 - 20.0,
-            rect.y0 + 44.0,
-        );
-        chrome::fill_rrect(
-            scene,
-            transform,
-            pill,
-            14.0,
-            render::with_alpha(Color::WHITE, if paused { 14 } else { 24 }),
-        );
-        chrome::text_centered(
-            scene,
-            transform,
-            text,
-            &clock,
-            pill,
-            13.0,
-            render::with_alpha(Color::WHITE, if paused { 150 } else { 255 }),
-            TextWeight::Semibold,
-        );
     }
 
     pub(crate) fn draw(
@@ -415,7 +353,7 @@ impl Presentation {
         }
 
         chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
-        if self.draw_blank(scene, transform, text, frame.rect) {
+        if self.draw_blank(scene, transform, frame.rect) {
             return;
         }
 
@@ -485,11 +423,6 @@ impl Presentation {
             self.append_settled_slide(scene, transform, text, theme, frame, &palette, destination);
         }
 
-        draw_progress(scene, transform, frame, &palette, 4.0, Color::WHITE, 30);
-        self.draw_timer_pill(scene, transform, text, frame.rect);
-        if destination.y1 + 40.0 < area.y1 {
-            draw_counter_hint(scene, transform, text, frame, destination);
-        }
         if let Some(panel) = notes_panel {
             self.draw_notes_panel(scene, transform, text, theme, frame, &palette, panel);
         }
@@ -794,60 +727,6 @@ fn draw_progress(
         ),
         palette.accent,
     );
-}
-
-fn draw_counter_hint(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    frame: &PresentationFrame<'_>,
-    destination: Rect,
-) {
-    let counter = format!("{} / {}", frame.current + 1, frame.deck.slides.len());
-    let width = chrome::est_width(&counter, 13.0) + 24.0;
-    let pill = Rect::new(
-        destination.x1 - width,
-        destination.y1 + 8.0,
-        destination.x1,
-        destination.y1 + 34.0,
-    );
-    chrome::fill_rrect(
-        scene,
-        transform,
-        pill,
-        13.0,
-        render::with_alpha(Color::WHITE, 26),
-    );
-    chrome::text_centered(
-        scene,
-        transform,
-        text,
-        &counter,
-        pill,
-        13.0,
-        Color::WHITE,
-        TextWeight::Semibold,
-    );
-    let max_width = (pill.x0 - 16.0 - destination.x0).max(0.0);
-    let hints = [
-        "← →  navigate    Home / End  first · last    P  presenter    S  notes    B / W  blank    Esc  exit",
-        "← →  navigate    P  presenter    S  notes    Esc  exit",
-        "← →  navigate    Esc  exit",
-    ];
-    if let Some(hint) = hints
-        .into_iter()
-        .find(|hint| chrome::est_width(hint, 12.5) <= max_width)
-    {
-        text.draw_text_weighted(
-            scene,
-            hint,
-            12.5,
-            render::with_alpha(Color::WHITE, 150),
-            transform * Affine::translate((destination.x0, destination.y1 + 14.0)),
-            Some(max_width as f32),
-            TextWeight::Regular,
-        );
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

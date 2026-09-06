@@ -154,9 +154,9 @@ const HANDLE_OFFSET: f64 = 8.0;
 /// (rail + inspector) only fit comfortably above this width.
 const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
 /// Below this allocated width the inspector also collapses to a right-edge
-/// overlay flap, so the narrowest windows give the canvas the full width. Set
-/// below [`NARROW_BREAKPOINT`] so a mid-width window keeps the inspector docked.
-const INSPECTOR_BREAKPOINT: f64 = 760.0;
+/// overlay flap. It intentionally matches the rail breakpoint: a compact
+/// window must never sacrifice the canvas to two permanent sidebars.
+const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
 /// Size of the toolbar hamburger toggle that summons the collapsed rail.
 const HAMBURGER: f64 = 34.0;
 
@@ -524,6 +524,10 @@ pub struct SlidesApp {
     /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
+    /// Complete, incremental Ctrl+K index. Cloning its provider handle is
+    /// cheap; rebuilding a large deck's postings each frame is not.
+    search_provider: crate::search_provider::SlideSearchProvider,
+
     /// Path-keyed decode cache for image elements. Decodes off the UI thread;
     /// the slide shows a light loading state until the pixels land.
     images: ImageStore,
@@ -629,6 +633,7 @@ impl SlidesApp {
     }
 
     fn build(deck: Deck) -> Self {
+        let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
         SlidesApp {
             deck,
             rect: Rect::ZERO,
@@ -663,6 +668,7 @@ impl SlidesApp {
             flap_uninitialised: true,
             breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
+            search_provider,
             images: ImageStore::new(),
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
@@ -705,6 +711,10 @@ impl SlidesApp {
     fn apply_scenario(&mut self, shot: &str) {
         self.apply_scenario_layout(shot);
         self.apply_scenario_content(shot);
+        // Scenarios may deliberately swap or extend the in-memory deck before
+        // the first CRDT seed. Keep Ctrl+K's cached durable index truthful to
+        // the exact screen the capture (and accessibility harness) sees.
+        self.search_provider.refresh(&self.deck);
     }
 
     /// The `--shots` scenarios that only pick a mode / viewport preference —
@@ -761,6 +771,12 @@ impl SlidesApp {
             // Narrow layout with the inspector flap summoned open.
             "inspector" => self.inspector_flap.open(),
             // "edit" (and anything unknown) keeps the default editor screen.
+            "empty" => {
+                self.deck = starter_deck();
+                self.cur_slide = 0;
+                self.sel = None;
+                self.bootstrapped = true;
+            }
             _ => {}
         }
     }
@@ -811,6 +827,15 @@ impl SlidesApp {
             // A slide carrying a real decoded raster, to prove the image
             // pipeline in a headless screenshot.
             "image" => self.apply_scenario_image(),
+            // The first frame after image insertion has an intentional loading
+            // placeholder while decoding runs off-thread; it is a real editor
+            // state, captured here without pretending a bitmap is ready.
+            "image_loading" => self.apply_scenario_loading_image(),
+            // This is the same concise failure toast `drain_doc_portal` shows
+            // after a decoder rejects a user-selected presentation.
+            "open_error" => {
+                self.io_toast = Some(("Could not open the presentation".into(), ToastKind::Error));
+            }
             // Right-click context menus (opened on the first drawn frame once
             // the layout rect is known — see `draw`).
             "element_menu" => self.apply_scenario_element_menu(),
@@ -901,6 +926,25 @@ impl SlidesApp {
             // Keep this slide selected — skip the slide-2 view bootstrap.
             self.bootstrapped = true;
         }
+    }
+
+    fn apply_scenario_loading_image(&mut self) {
+        let mut slide = Slide::new(Layout::TitleContent);
+        slide.add(
+            Element::text("Importing photo", 96.0, 70.0, 1088.0, 90.0, 56.0)
+                .with(|element| element.bold = true),
+        );
+        slide.add(Element::image(
+            "/tmp/qos-slides-intentionally-loading-image.png",
+            96.0,
+            200.0,
+            1088.0,
+            420.0,
+        ));
+        self.deck.slides.push(slide);
+        self.cur_slide = self.deck.slides.len() - 1;
+        self.sel = None;
+        self.bootstrapped = true;
     }
 
     /// `edit_text` scenario body: select the first text element on slide 2
@@ -1007,11 +1051,15 @@ impl SlidesApp {
         if self.drag.active() {
             return; // cache is authoritative mid-drag
         }
-        if let Some(deck) = SlidesDoc::load(doc) {
+        if let Some(deck) = SlidesDoc::load(doc)
+            && deck != self.deck
+        {
             self.deck = deck;
-            // Bump so the present-mode slide cache re-shapes after any edit /
-            // undo / remote change. Cheap — `reload` runs on events, not per
-            // frame, so this never thrashes the cache during a live talk.
+            self.search_provider.refresh(&self.deck);
+            // Bump only for an actual local/remote/undo deck change. `sync`
+            // runs per frame, so equality here keeps both the settled-slide
+            // cache and the complete search catalogue cold while a talk is
+            // simply being presented.
             self.deck_rev = self.deck_rev.wrapping_add(1);
         }
         if self.deck.slides.is_empty() {
@@ -2280,10 +2328,38 @@ impl SlidesApp {
             Hit::EditNotes => {
                 self.begin_notes_edit(doc);
             }
-            Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
-            Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
+            Hit::ToggleRail => self.toggle_rail_flap(),
+            Hit::ToggleInspector => self.toggle_inspector_flap(),
         }
         self.reload(doc);
+    }
+
+    /// Compact editing exposes one drawer at a time. Opening the slide rail
+    /// immediately dismisses an overlay inspector, keeping the slide usable
+    /// behind the drawer instead of sandwiching it between two panels.
+    fn toggle_rail_flap(&mut self) {
+        let layout = self.rail_layout();
+        if layout == SplitLayout::Overlay
+            && self.inspector_layout() == SplitLayout::Overlay
+            && !self.rail_open()
+        {
+            self.inspector_flap.snap(false);
+        }
+        self.rail_flap.toggle(layout);
+    }
+
+    /// Mirror [`Self::toggle_rail_flap`] for the Properties drawer. Docked
+    /// panels remain independent on roomy windows; mutual exclusion applies
+    /// only where both are overlays.
+    fn toggle_inspector_flap(&mut self) {
+        let layout = self.inspector_layout();
+        if layout == SplitLayout::Overlay
+            && self.rail_layout() == SplitLayout::Overlay
+            && !self.inspector_open()
+        {
+            self.rail_flap.snap(false);
+        }
+        self.inspector_flap.toggle(layout);
     }
 
     fn set_sel_str(&mut self, doc: &mut AutoCommit, key: &str, v: &str) {
@@ -4755,13 +4831,14 @@ impl Widget for SlidesApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        use crate::actions::SlidesOperation;
+
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::SlidesOperation;
         match operation {
             SlidesOperation::ShowEditor => self.mode = Mode::Edit,
             SlidesOperation::ShowOverview => self.mode = Mode::Overview,
@@ -4784,7 +4861,12 @@ impl Widget for SlidesApp {
                 let Some(idx) = self.deck.index_of(&slide) else {
                     return Err("slide no longer exists".into());
                 };
-                let Some(target) = self.deck.slides[idx].element(&element) else {
+                let Some(target) = self
+                    .deck
+                    .slides
+                    .get(idx)
+                    .and_then(|candidate| candidate.element(&element))
+                else {
                     return Err("element no longer exists".into());
                 };
                 if edit_text && target.kind != ElementKind::Text {
@@ -5318,6 +5400,10 @@ impl Widget for SlidesApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -5329,9 +5415,7 @@ impl Widget for SlidesApp {
     /// palette. Every row addresses an exported resource `View` operation, so
     /// search uses the same brokered navigation route as agents and a11y.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SlideSearchProvider::new(
-            &self.deck,
-        ))]
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -7439,6 +7523,44 @@ mod tests {
         );
         app.apply_hit(&mut doc, Hit::ToggleInspector);
         assert!(!app.inspector_open(), "ToggleInspector closes it again");
+    }
+
+    #[test]
+    fn compact_editor_keeps_the_canvas_wide_with_both_panels_as_drawers() {
+        let app = app_sized(820.0);
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.layout, SplitLayout::Overlay);
+        assert_eq!(chrome.inspector_layout, SplitLayout::Overlay);
+        assert!(
+            chrome.slide_dest.width() > 700.0,
+            "closed drawers leave a useful slide canvas at compact laptop widths"
+        );
+        assert!(
+            chrome
+                .buttons
+                .iter()
+                .any(|button| matches!(button.hit, Hit::ToggleRail))
+                && chrome
+                    .buttons
+                    .iter()
+                    .any(|button| matches!(button.hit, Hit::ToggleInspector)),
+            "both drawers retain explicit toolbar controls"
+        );
+    }
+
+    #[test]
+    fn compact_drawers_are_mutually_exclusive() {
+        let mut app = app_sized(820.0);
+        let mut doc = AutoCommit::new();
+        app.apply_hit(&mut doc, Hit::ToggleRail);
+        assert!(app.rail_open());
+        assert!(!app.inspector_open());
+        app.apply_hit(&mut doc, Hit::ToggleInspector);
+        assert!(app.inspector_open(), "properties drawer opens");
+        assert!(
+            !app.rail_open(),
+            "opening properties closes the slide drawer immediately"
+        );
     }
 
     #[test]
