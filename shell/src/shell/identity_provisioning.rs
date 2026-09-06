@@ -421,6 +421,17 @@ fn serve_pairing_request(
             authority.publish_pairer_reply(&n, value, mac);
             PairingBrokerResponse::Ok
         }
+        PairingBrokerRequest::PutPairerExchange(n, round1, round2, mac) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) =>
+        {
+            let Some(mac) = mac.into_bytes() else {
+                return PairingBrokerResponse::Denied;
+            };
+            if authority.publish_pairer_exchange(&n, round1, round2, mac) {
+                PairingBrokerResponse::Ok
+            } else {
+                PairingBrokerResponse::Denied
+            }
+        }
         PairingBrokerRequest::TakePairerExchange(n) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) => {
             PairingBrokerResponse::PairerExchange(
                 authority
