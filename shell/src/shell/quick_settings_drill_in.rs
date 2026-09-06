@@ -186,9 +186,15 @@ impl DrillInList {
             row.x0 + 32.0,
             row.y0 + f64::midpoint(row.height(), 20.0),
         );
+        // Wi-Fi strength, Bluetooth battery and connection status all occupy
+        // the trailing edge of a discovery row. Never let a long SSID or
+        // device name paint underneath those truthful status indicators.
+        let label_width = (row.x1 - 72.0 - (glyph.x1 + 12.0)).max(1.0);
+        let label =
+            text.elide_to_width(label, theme.tokens.typography.scale.sm, label_width as f32);
         text.draw_text_weighted(
             scene,
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform.pre_translate((glyph.x1 + 12.0, row.y0 + (row.height() - 14.0) / 2.0).into()),
