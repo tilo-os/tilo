@@ -90,7 +90,36 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchErr
         .transpose()
         .map_err(|error| LaunchError::Operation(error.to_string()))?
         .flatten();
-    Ok(Box::new(LiveStore::new(StoreWorker::spawn(opened_ref))))
+    let store_target = args
+        .positionals()
+        .first()
+        .filter(|value| value.starts_with("qos-store:"))
+        .map(|value| parse_store_uri(value))
+        .transpose()?;
+    Ok(Box::new(LiveStore::new(
+        StoreWorker::spawn(opened_ref),
+        store_target,
+    )))
+}
+
+/// Decode the sole Store deep-link shape. The launcher already validates the
+/// scheme claim; this second check keeps malformed or argument-like values
+/// from becoming a catalogue identity inside the app.
+fn parse_store_uri(uri: &str) -> Result<String, LaunchError> {
+    let Some(id) = uri.strip_prefix("qos-store:app/") else {
+        return Err(LaunchError::Operation("unsupported App Store link".into()));
+    };
+    if id.is_empty()
+        || id.len() > 255
+        || id
+            .chars()
+            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
+    {
+        return Err(LaunchError::Operation(
+            "invalid App Store app identity".into(),
+        ));
+    }
+    Ok(id.to_string())
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -115,10 +144,31 @@ struct LiveStore {
 }
 
 impl LiveStore {
-    fn new(worker: StoreWorker) -> Self {
-        Self {
-            inner: StoreApp::new().with_image_store(store::images::image_store()),
-            worker,
+    fn new(worker: StoreWorker, store_target: Option<String>) -> Self {
+        let mut inner = StoreApp::new().with_image_store(store::images::image_store());
+        if let Some(id) = store_target {
+            inner.open_catalogue_item(id);
+        }
+        Self { inner, worker }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_store_uri;
+
+    #[test]
+    fn store_deep_link_accepts_only_a_stable_app_identity() {
+        assert_eq!(
+            parse_store_uri("qos-store:app/dev.qos.notes").unwrap(),
+            "dev.qos.notes"
+        );
+        for invalid in [
+            "qos-store:app/",
+            "qos-store:app/dev.qos.notes?install=true",
+            "qos-store:remote/dev.qos.notes",
+        ] {
+            assert!(parse_store_uri(invalid).is_err(), "{invalid}");
         }
     }
 }
