@@ -82,8 +82,9 @@ const REFRESH_STRIP_H: f64 = 52.0;
 
 /// At or above this width the three panes fit side by side (docked sidebar +
 /// article list + reader). Sized so the sidebar (256) + a usable article list
-/// (400) + a readable reader column (~344) all fit at once.
-const WIDE_BREAKPOINT: f64 = 1000.0;
+/// (400) + a reader column (~464) that keeps its byline and external-link
+/// affordance separate all fit at once.
+const WIDE_BREAKPOINT: f64 = 1120.0;
 /// At or above this width (but below [`WIDE_BREAKPOINT`]) the sidebar stays
 /// docked (fixed) but only one content pane — the article list OR the reader —
 /// shares the remaining width, with a top-left Back returning reader→list.
@@ -868,6 +869,7 @@ impl FeedsApp {
             .map(|f| actions::FolderRef {
                 id: f.id,
                 name: f.name.clone(),
+                collapsed: f.collapsed,
             })
             .collect();
         let mut feeds: Vec<actions::FeedRef> = self
@@ -904,6 +906,7 @@ impl FeedsApp {
             folders,
             feeds,
             next_folder_order,
+            settings: self.settings,
         }
     }
 
@@ -911,7 +914,7 @@ impl FeedsApp {
         if let Some(f) = self.store.folders.iter_mut().find(|f| f.id == id) {
             f.collapsed = !f.collapsed;
             let collapsed = f.collapsed;
-            FeedsDoc::set_folder_collapsed(doc, id, collapsed);
+            self.perform_action(doc, &actions::set_folder_collapsed_action(id, collapsed));
         }
     }
 
@@ -925,7 +928,7 @@ impl FeedsApp {
         f(&mut s);
         s = s.clamped();
         self.settings = s;
-        FeedsDoc::write_settings(doc, &s);
+        self.perform_action(doc, &actions::set_read_settings_action(s));
     }
 
     fn apply_settings_action(&mut self, action: SettingsAction, doc: &mut AutoCommit) {
@@ -4152,7 +4155,10 @@ impl Widget for FeedsApp {
             "feeds.sidebar" => self.sidebar.toggle(self.nav_layout()),
             "feeds.back" => self.show_master(),
             _ if target.starts_with("feeds.article:") => {
-                let Ok(id) = target["feeds.article:".len()..].parse() else {
+                let Some(raw_id) = target.strip_prefix("feeds.article:") else {
+                    return false;
+                };
+                let Ok(id) = raw_id.parse() else {
                     return false;
                 };
                 if self.store.article(id).is_none() {
@@ -4161,7 +4167,10 @@ impl Widget for FeedsApp {
                 self.select_article(id, state);
             }
             _ if target.starts_with("feeds.star:") => {
-                let Ok(id) = target["feeds.star:".len()..].parse() else {
+                let Some(raw_id) = target.strip_prefix("feeds.star:") else {
+                    return false;
+                };
+                let Ok(id) = raw_id.parse() else {
                     return false;
                 };
                 if self.store.article(id).is_none() {
@@ -5212,11 +5221,16 @@ mod tests {
     fn tier_resolves_from_width() {
         assert_eq!(Tier::from_width(1280.0), Tier::Wide);
         assert_eq!(
-            Tier::from_width(1000.0),
+            Tier::from_width(WIDE_BREAKPOINT),
             Tier::Wide,
             "wide boundary is inclusive"
         );
-        assert_eq!(Tier::from_width(999.0), Tier::Middle);
+        assert_eq!(
+            Tier::from_width(1024.0),
+            Tier::Middle,
+            "a high-contrast 1024px reader must not squeeze three panes"
+        );
+        assert_eq!(Tier::from_width(WIDE_BREAKPOINT - 1.0), Tier::Middle);
         assert_eq!(
             Tier::from_width(640.0),
             Tier::Middle,
