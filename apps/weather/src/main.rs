@@ -59,6 +59,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("dev.qos.weather", weather::app_root)
             .shot_root(shot_root)
+            .configure_app(|app| weather::actions::register(app.action_registry_mut()))
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .scenarios(&[
                 "onboarding",
