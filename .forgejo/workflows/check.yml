@@ -1,4 +1,4 @@
-name: Check affected workspace packages
+name: CI / affected packages
 
 # Pull requests and pushes compile/test only packages touched by the change and
 # their transitive workspace dependants. Full target and test coverage remains
@@ -110,6 +110,7 @@ jobs:
           bash os/tests/first_boot_service_readiness.sh
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
+          bash os/tests/rollback-initrd-hook.sh
           bash os/tests/installer_guided_alongside.sh
           bash os/tests/installer_boot_menu.sh
           bash os/tests/live_recovery.sh
@@ -118,11 +119,14 @@ jobs:
           bash os/tests/installer_profile_transport.sh
           bash os/tests/imager_release_invariants.sh
           bash os/tests/imager_broker_credentials.sh
+          bash os/tests/imager_ephemeral_runner.sh
+          bash os/tests/imager_ephemeral_runner_windows.sh
           bash os/tests/imager_linux_release_trust.sh
           bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
           bash os/tests/system_extension_invariants.sh
           bash os/tests/local_model_catalog_invariants.sh
+          bash os/tests/release_pipeline_invariants.sh
 
       - name: Select and balance affected packages
         id: plan

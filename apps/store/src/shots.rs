@@ -19,7 +19,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use crate::app::StoreApp;
-use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource};
+use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
 
@@ -38,13 +38,15 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         name: name.into(),
         description: desc.into(),
         categories: vec![cat.into()],
-        icon_url: None,
+        icon_url: Some(format!("https://artwork.invalid/{name}.png")),
+        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: "qOS main".into(),
         },
+        trust: StoreTrust::PublisherSigned,
         versions: vec![StoreItemVersion {
             version: ver.into(),
             released_at_unix: 0,
@@ -60,11 +62,13 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         name: name.into(),
         description: desc.into(),
         categories: vec![cat.into()],
-        icon_url: None,
+        icon_url: Some(format!("https://artwork.invalid/{name}.png")),
+        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Flathub,
+        trust: StoreTrust::Flathub,
         versions: vec![StoreItemVersion {
             version: "3.2.1".into(),
             released_at_unix: 0,
@@ -149,7 +153,64 @@ pub fn seeded_app() -> StoreApp {
 /// Propagates a `taffy` layout error from [`render_widget`] — building or
 /// computing the widget tree's layout at `viewport` size.
 pub fn render_to_path(viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    render_scenario_to_path(viewport, out, None)
+}
+
+/// Render a named representative Store state to a PNG.
+///
+/// # Errors
+///
+/// Propagates layout, renderer initialization, and PNG-write failures.
+pub fn render_scenario_to_path(
+    viewport: (u32, u32),
+    out: &Path,
+    scenario: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
+    app.set_layout_width_hint(f64::from(viewport.0));
+    match scenario {
+        Some("detail") => app.focus_detail_for_shot("dev.qos.notes"),
+        Some("progress") => {
+            app.set_status_line("Installing Notes · verifying signed package…");
+            app.set_worker_busy(true);
+        }
+        Some("error") => {
+            let message = "Install failed · package signature did not match the catalogue";
+            app.set_status_line(message);
+            app.set_operation_error(Some(message.into()));
+        }
+        Some("moderation") => app.show_safety_for_shot(),
+        Some("moderation-case") => app.show_moderation_case_for_shot("Needs information"),
+        Some("moderation-loading") => {
+            app.show_moderation_case_for_shot("Open");
+            app.set_worker_busy(true);
+            app.set_status_line("Contacting the authoritative registry…");
+        }
+        Some("moderation-offline") => {
+            app.show_moderation_case_for_shot("Last confirmed · Open");
+            let message = "Registry is offline · draft and last confirmed status are unchanged";
+            app.set_status_line(message);
+            app.set_operation_error(Some(message.into()));
+        }
+        Some("moderation-error") => {
+            app.show_moderation_case_for_shot("Last confirmed · Quarantined");
+            let message =
+                "Appeal was refused · this workspace identity is not the package publisher";
+            app.set_status_line(message);
+            app.set_operation_error(Some(message.into()));
+        }
+        Some("empty") => {
+            app.clear_catalogue_for_shot();
+            app.set_status_line("No catalogue entries are available.");
+        }
+        Some("offline") => {
+            app.clear_catalogue_for_shot();
+            let message = "Could not reach any configured catalogue.";
+            app.set_status_line(message);
+            app.set_operation_error(Some(message.into()));
+        }
+        _ => {}
+    }
     // Force the floating status chip fully visible so this single
     // headless frame captures it (a still can't hover it).
     app.arm_status_bubble_for_shots();

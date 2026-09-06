@@ -40,12 +40,12 @@ If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 
 ```bash
 # 1. Build the image (≈ a few min incremental; first cargo build is long).
-./os/dev/build-image.sh
+QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 
 # …or skip the browser and the WPE WebKit engine stage that builds its engine
 # from source — ~45 of the ~60 minutes a cold build costs. The boot chain is
 # untouched, so this is the build to use when the question is "does it boot?".
-QOS_WITH_BROWSER=0 ./os/dev/build-image.sh
+QOS_WITH_BROWSER=0 QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 
 # …or don't build at all. The image builds in CI here, so the local half of
 # the pipeline is often just the disk step: pull what CI published and image

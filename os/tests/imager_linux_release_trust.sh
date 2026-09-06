@@ -6,8 +6,16 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 verify="$repo/apps/imager/packaging/verify-linux-release.sh"
 sign="$repo/apps/imager/packaging/sign-linux-release-file.sh"
 work="$(mktemp -d /var/tmp/qos-imager-linux-trust-test.XXXXXX)"
-trap 'find "$work" -depth -delete' EXIT
 export GNUPGHOME="$work/signing-keyring"
+cleanup() {
+  # GnuPG may remove its agent sockets while find is walking the temporary
+  # keyring. Stop the agent first, then make best-effort cleanup explicitly
+  # non-authoritative: trust-test failures come from the assertions above, not
+  # an already-vanished socket in this disposable directory.
+  gpgconf --homedir "$GNUPGHOME" --kill all >/dev/null 2>&1 || true
+  find "$work" -depth -delete 2>/dev/null || true
+}
+trap cleanup EXIT
 mkdir -m 0700 "$GNUPGHOME"
 gpg --batch --passphrase '' --quick-generate-key \
   'qOS release trust test <release-test@qos.invalid>' ed25519 sign 1d >/dev/null 2>&1
@@ -21,7 +29,7 @@ mkdir -p "$assets/linux-x86_64" "$assets/linux-aarch64" \
 
 for arch in x86_64 aarch64; do
   directory="$assets/linux-$arch"
-  for suffix in AppImage tar.gz; do
+  for suffix in AppImage tar.gz flatpak; do
     artifact="$directory/qos-imager-linux-$arch.$suffix"
     printf 'qOS Imager test artifact: %s %s\n' "$arch" "$suffix" >"$artifact"
     (cd "$directory" && sha256sum "$(basename "$artifact")" \
@@ -55,7 +63,7 @@ printf '%s\n' "$fingerprint" >"$assets/release-key/qos-release-key.fingerprint"
   >qos-release-key.fingerprint.sha256)
 
 QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
-  | grep -Fq 'verified 7 Linux and installer artifacts'
+  | grep -Fq 'verified 9 Linux and installer artifacts'
 
 wrong="${fingerprint%?}0"
 [ "$wrong" != "$fingerprint" ] || wrong="${fingerprint%?}1"

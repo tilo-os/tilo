@@ -1,13 +1,13 @@
-name: Build qOS image (publish on tags + dispatch)
+name: Release / OS
 
 # Builds the bootc OS container image (multi-stage, see os/Containerfile).
 # CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
 # (verify it builds + is reproducible — no registry churn or queue flooding).
 # Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
 # the complete bootc image for every source-only commit duplicates that work.
-# The signed image is
-# pushed to code.sandbox.example/qos/qos:latest ONLY on a version tag (v*) or a
-# manual run, so `bootc upgrade` tracks deliberate releases, not every commit.
+# The signed image is pushed to code.sandbox.example/qos/qos:latest ONLY on a
+# version tag (v*), an explicitly publishing manual run from main, or an opted-in
+# continuous release, so `bootc upgrade` tracks deliberate releases.
 
 on:
   schedule:
@@ -18,47 +18,75 @@ on:
     tags: ["v*"]
     paths:
       - "os/**"
+      - "shell/**"
+      - "ui/**"
+      - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "os/**"
+      - "shell/**"
+      - "ui/**"
+      - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
+      publish:
+        description: "Publish a signed OS release (main only); leave disabled for an integration build"
+        type: boolean
+        required: false
+        default: false
       with_browser:
         description: "Include the browser + WPE WebKit engine stage (0 = omit, ~45min faster)"
         required: false
         default: "1"
+      app_collection_url:
+        description: "Pinned qos-apps-<arch>.tar.gz URL; empty uses vars.QOS_APP_COLLECTION_URL."
+        required: false
+        default: ""
+      app_collection_sha256:
+        description: "SHA-256 of app_collection_url; empty uses vars.QOS_APP_COLLECTION_SHA256."
+        required: false
+        default: ""
+      app_collection_publisher:
+        description: "Expected 64-hex Ed25519 publisher key; empty uses vars.QOS_APP_COLLECTION_PUBLISHER."
+        required: false
+        default: ""
+      desktop_payload_url:
+        description: "Pinned qos-desktop-os-<arch>.tar.gz URL; empty uses the architecture channel variable."
+        required: false
+        default: ""
+      desktop_payload_sha256:
+        description: "SHA-256 of desktop_payload_url; empty uses the architecture channel variable."
+        required: false
+        default: ""
 
 concurrency:
-  # Generations are a single dense security series. Two tag/manual jobs must
-  # never both observe N and publish different images as N+1.
+  # Generations are a single dense security series. This workflow can publish
+  # from a tag, a manual main run, or an opted-in continuous main push, so every
+  # invocation must share the lock: build-time event expressions cannot safely
+  # predict the repository variable that enables the third publication path.
   group: qos-os-image-series
   cancel-in-progress: false
 
 jobs:
   build-and-push:
     runs-on: runner
+    enable-openid-connect: true
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          # Private repo checkout: reuse the REGISTRY_TOKEN PAT.
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -83,6 +111,187 @@ jobs:
       # dropped from the workspace (that once orphaned 37 apps).
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
+
+      - name: Materialize the pinned app collection
+        env:
+          COLLECTION_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
+          COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
+          COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
+          COLLECTION_URL_DEFAULT: ${{ vars.QOS_APP_COLLECTION_URL }}
+          COLLECTION_SHA256_DEFAULT: ${{ vars.QOS_APP_COLLECTION_SHA256 }}
+          COLLECTION_URL_X86_64: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 }}
+          COLLECTION_SHA256_X86_64: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 }}
+          COLLECTION_URL_AARCH64: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
+          COLLECTION_SHA256_AARCH64: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
+          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
+        run: |
+          set -euo pipefail
+          echo 'QOS_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+          # The Authorized Integration grants only short-lived package read to
+          # this workflow. Pull requests therefore test the exact immutable
+          # app/OS boundary without receiving a reusable registry credential.
+          case "$(uname -m)" in
+            x86_64)
+              COLLECTION_URL=${COLLECTION_URL_INPUT:-${COLLECTION_URL_X86_64:-$COLLECTION_URL_DEFAULT}}
+              COLLECTION_SHA256=${COLLECTION_SHA256_INPUT:-${COLLECTION_SHA256_X86_64:-$COLLECTION_SHA256_DEFAULT}}
+              ;;
+            aarch64)
+              COLLECTION_URL=${COLLECTION_URL_INPUT:-$COLLECTION_URL_AARCH64}
+              COLLECTION_SHA256=${COLLECTION_SHA256_INPUT:-$COLLECTION_SHA256_AARCH64}
+              ;;
+            *) printf 'unsupported app-collection architecture\n' >&2; exit 1 ;;
+          esac
+          [[ -n ${COLLECTION_URL:-} ]] || exit 0
+          [[ -n ${COLLECTION_AUDIENCE:-} ]] || {
+            printf 'the OS app collection Authorized Integration audience is required\n' >&2
+            exit 1
+          }
+          [[ $COLLECTION_SHA256 =~ ^[0-9a-fA-F]{64}$ ]] || {
+            printf 'a pinned app collection requires its SHA-256\n' >&2
+            exit 1
+          }
+          [[ $COLLECTION_PUBLISHER =~ ^[0-9a-fA-F]{64}$ ]] || {
+            printf 'a pinned app collection requires its publisher key\n' >&2
+            exit 1
+          }
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
+            | jq -er .value)
+          echo "::add-mask::$jwt"
+          case "$COLLECTION_URL" in
+            https://*)
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
+                --header "Authorization: Bearer $jwt" \
+                "$COLLECTION_URL" -o "$work/apps.tar.gz"
+              ;;
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+              # The in-cluster Forgejo service is reached over the cluster's
+              # private network. Do not follow redirects from this allowlisted
+              # HTTP origin, and never permit arbitrary cleartext package URLs.
+              curl --proto '=http' --fail --retry 3 \
+                --header "Authorization: Bearer $jwt" \
+                "$COLLECTION_URL" -o "$work/apps.tar.gz"
+              ;;
+            *)
+              printf 'unsupported app collection URL origin\n' >&2
+              exit 1
+              ;;
+          esac
+          printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
+            | sha256sum --check --strict
+          found=0
+          while IFS= read -r member; do
+            if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
+              continue
+            elif [[ $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
+              found=1
+            elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
+              continue
+            else
+              printf 'unexpected app collection member: %s\n' "$member" >&2
+              exit 1
+            fi
+          done < <(tar -tzf "$work/apps.tar.gz")
+          [[ $found == 1 ]]
+          tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
+            --no-same-owner --no-same-permissions
+          if find "$work/qpkg" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+            printf 'app collection contains links or special files\n' >&2
+            exit 1
+          fi
+          (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
+          find os/app-runtime -mindepth 1 ! -name .gitignore -delete
+          cp "$work"/qpkg/*.qpkg os/app-artifacts/
+          cp -a "$work"/runtime/. os/app-runtime/
+          test -n "$(find os/app-artifacts -name '*.qpkg' -print -quit)"
+          test -s os/app-runtime/runtime-bundle-publisher.hex
+          test -n "$(find os/app-runtime/qos-runtime -name bundle.toml -print -quit)"
+          echo 'QOS_PREBUILT_APPS=1' >> "$GITHUB_ENV"
+          echo "QOS_APP_COLLECTION_SHA256=${COLLECTION_SHA256,,}" >> "$GITHUB_ENV"
+          echo "QOS_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"
+          echo '::notice::using pinned prebuilt app collection'
+
+      - name: Materialize the pinned desktop payload
+        env:
+          PAYLOAD_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
+          PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
+          PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
+          PAYLOAD_URL_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_URL }}
+          PAYLOAD_SHA256_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256 }}
+          PAYLOAD_URL_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_X86_64 }}
+          PAYLOAD_SHA256_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_X86_64 }}
+          PAYLOAD_URL_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_AARCH64 }}
+          PAYLOAD_SHA256_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+        run: |
+          set -euo pipefail
+          echo 'QOS_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
+          case "$(uname -m)" in
+            x86_64)
+              architecture=x86_64
+              PAYLOAD_URL=${PAYLOAD_URL_INPUT:-${PAYLOAD_URL_X86_64:-$PAYLOAD_URL_DEFAULT}}
+              PAYLOAD_SHA256=${PAYLOAD_SHA256_INPUT:-${PAYLOAD_SHA256_X86_64:-$PAYLOAD_SHA256_DEFAULT}}
+              ;;
+            aarch64)
+              architecture=aarch64
+              PAYLOAD_URL=${PAYLOAD_URL_INPUT:-$PAYLOAD_URL_AARCH64}
+              PAYLOAD_SHA256=${PAYLOAD_SHA256_INPUT:-$PAYLOAD_SHA256_AARCH64}
+              ;;
+            *) printf 'unsupported desktop payload architecture\n' >&2; exit 1 ;;
+          esac
+          [[ -n ${PAYLOAD_URL:-} ]] || exit 0
+          [[ -n ${PAYLOAD_AUDIENCE:-} && $PAYLOAD_SHA256 =~ ^[0-9a-fA-F]{64}$ ]]
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
+            | jq -er .value)
+          echo "::add-mask::$jwt"
+          case "$PAYLOAD_URL" in
+            https://*)
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
+                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --output "$work/desktop.tar.gz"
+              ;;
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+              curl --proto '=http' --fail --retry 3 \
+                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --output "$work/desktop.tar.gz"
+              ;;
+            *)
+              printf 'unsupported desktop payload URL origin\n' >&2
+              exit 1
+              ;;
+          esac
+          printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
+            | sha256sum --check --strict
+          expected=$'SHA256SUMS\nmanifest.json\nqos-launcher\nqos-unlock-helper\nshell'
+          actual=$(tar -tzf "$work/desktop.tar.gz" | LC_ALL=C sort)
+          [[ $actual == "$expected" ]] || {
+            printf 'unexpected desktop payload members:\n%s\n' "$actual" >&2
+            exit 1
+          }
+          tar --extract --gzip --file "$work/desktop.tar.gz" --directory "$work" \
+            --no-same-owner --no-same-permissions
+          if find "$work" -mindepth 1 -type l -o \( ! -type f ! -type d \) | grep -q .; then
+            printf 'desktop payload contains links or special files\n' >&2
+            exit 1
+          fi
+          (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          [[ $(jq -er .architecture "$work/manifest.json") == "$architecture" ]]
+          find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
+          install -m 0755 "$work/shell" "$work/qos-launcher" \
+            "$work/qos-unlock-helper" os/desktop-artifacts/
+          cp "$work/manifest.json" os/desktop-artifacts/
+          echo 'QOS_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
+          echo "QOS_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
+          echo '::notice::using pinned prebuilt desktop payload'
 
       # Log in on EVERY build: the build installs from the private, digest-pinned
       # frozen RPM repo (RPMS_REF), pulled as a stage — so even build-only runs
@@ -112,12 +321,34 @@ jobs:
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
 
+      # Branch/PR runs validate the OS integration boundary. Browser engine
+      # compilation has its own signed snapshot workflow and is exercised by
+      # an OS release; rebuilding it on every OS patch adds roughly 45 minutes
+      # and made PR checks fail whenever no release snapshot was promoted yet.
+      - name: Select the OS validation profile
+        env:
+          REQUESTED_BROWSER: ${{ github.event.inputs.with_browser }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) with_browser=1 ;;
+            *)
+              if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+                with_browser=${REQUESTED_BROWSER:-1}
+              else
+                with_browser=0
+              fi
+              ;;
+          esac
+          [[ $with_browser == 0 || $with_browser == 1 ]]
+          echo "QOS_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
+          echo "::notice::OS validation profile: with_browser=$with_browser"
+
       - name: Verify frozen package snapshot matches every consumer
         run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
 
       - name: Require the promoted native WPE buildroot
         env:
-          WITH_BROWSER: ${{ github.event.inputs.with_browser || '1' }}
+          WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}
         run: |
           set -euo pipefail
           . os/wpe-buildroot-snapshot.env
@@ -146,6 +377,48 @@ jobs:
       # builder stage honours it for the compile.
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Select build, validation, or publication mode
+        id: release-mode
+        env:
+          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+        run: |
+          publish=false
+          validate=false
+          if [[ $GITHUB_REF == refs/tags/v* \
+                || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+                     && ${REQUESTED_PUBLISH:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
+                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
+            publish=true
+          fi
+          if [[ $GITHUB_EVENT_NAME != pull_request ]]; then
+            validate=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "validate=$validate" >> "$GITHUB_OUTPUT"
+          echo "::notice::OS integration validation: $validate; publication: $publish"
+
+      - name: Load the pinned marketplace owner trust input
+        shell: bash
+        run: |
+          set -euo pipefail
+          key='${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
+          if [[ ! "$key" =~ ^[0-9a-fA-F]{64}$ \
+                || "$key" == 0000000000000000000000000000000000000000000000000000000000000000 ]]; then
+            if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+              echo '::error::publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY'
+              exit 1
+            fi
+            # RFC 8032 test-vector key: deliberately public/non-production and
+            # permitted only for an ephemeral build-validation image. It lets
+            # CI exercise the fail-closed trust-anchor plumbing before the
+            # independently held production owner key is provisioned.
+            key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+            echo '::notice::using the non-production owner key for build validation only'
+          fi
+          echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
 
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
@@ -178,6 +451,17 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
+          # The OS graph contains several large RPM and Rust stages. Letting
+          # BuildKit run all of them at once exhausts the ephemeral runner's
+          # backing store and can tear SQLite's rpmdb while a layer is being
+          # committed. In particular, composefs needs temporary room comparable
+          # to the completed root while sealing the UKI; a second active solver
+          # operation has exhausted that headroom on otherwise healthy runners.
+          # Serialize the solver so the installed-image and AT-SPI gates are not
+          # skipped because an unrelated stage consumed composefs's workspace.
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 1
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -185,7 +469,7 @@ jobs:
         with:
           images: code.sandbox.example/qos/qos
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=pr
@@ -202,8 +486,8 @@ jobs:
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
-      # run buildx writes an OCI archive for that gate; ordinary build-only runs
-      # exercise the complete build and registry cache without retaining output.
+      # run buildx writes an OCI archive for that gate; pull requests exercise
+      # the complete build and registry cache without retaining output.
       - name: Build the qOS image
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -215,7 +499,7 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/Containerfile
           push: false
-          outputs: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -224,14 +508,22 @@ jobs:
           # doesn't have to wait on the engine. Pushes and PRs carry no inputs,
           # so the `||` keeps them on the full image — this must never resolve
           # to empty, `FROM wpe-builder-` is not a stage.
+          # The install gate below computes and reseals the authoritative
+          # digest. A placeholder avoids duplicating the rootfs in composefs
+          # scratch just to create the deliberately rejected first-pass UKI.
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
+            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
+            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto
@@ -260,7 +552,7 @@ jobs:
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.validate == 'true'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -278,8 +570,13 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
+            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
+            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
+            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto
@@ -291,9 +588,9 @@ jobs:
           provenance: false
           no-cache: true
 
-      - name: Reseal, install, boot, and publish the verified image
+      - name: Reseal, install, boot, and stage the verified image
         id: release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.validate == 'true'
         timeout-minutes: 60
         env:
           QOS_IMAGE: localhost/qos:release-candidate
@@ -393,11 +690,12 @@ jobs:
           done
 
           # This is a fresh installed user, so the real compositor must start
-          # directly into its trusted first-login identity ceremony. Drive the
-          # keyboard-accessible flow exactly as a person does:
-          # Continue -> acknowledge no recovery -> Create -> Start qOS. The
-          # artifact poll is the deterministic barrier between Create and the
-          # final screen; no test-only minting or bypass enters the image.
+          # directly into its trusted first-login identity ceremony. The
+          # release invokes the three normal setup actions through the real
+          # AT-SPI provider, then observes each resulting tree transaction;
+          # finish still uses ordinary keyboard input. The artifact poll is
+          # the deterministic barrier between Create and the final screen; no
+          # test-only minting or bypass enters the image.
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
               "pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null"; then
@@ -411,15 +709,11 @@ jobs:
             sleep 1
           done
           sleep 2
-          # The intro exposes two actions in focus order: connect an existing
-          # identity, then create a new one. Select the latter explicitly.
-          ./os/dev/vm.sh keys tab tab ret
-          sleep 1
-          ./os/dev/vm.sh keys tab spc
-          sleep 1
-          # Enabling the acknowledgement rebuilds the button in place while
-          # preserving checkbox focus. One Tab reaches the enabled action.
-          ./os/dev/vm.sh keys tab ret
+          # Unit/native audits prove the AccessKit shape in-process. This is
+          # the release gate that proves the compositor-owned first-use UI is
+          # actually visible to an external AT-SPI consumer on the installed
+          # graphical session.
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
               "test -s \"\$HOME/.config/qos/identity/primary.json\" && test -s /var/lib/qos/device/cert.bin"; then
@@ -436,20 +730,33 @@ jobs:
 
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
           ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh desktop
 
-          # Upload through a non-channel candidate tag. latest, semver and genN
-          # are promoted only after signature, SBOM and provenance verification
-          # in later steps, so update clients can never observe a half-published
-          # release through a channel tag.
-          digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
-          candidate="code.sandbox.example/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
-          podman tag "$QOS_IMAGE" "$candidate"
-          podman push --digestfile "$digest_file" "$candidate"
-          digest="$(tr -d '[:space:]' < "$digest_file")"
-          test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
-          echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
+          # Lock is compositor-owned too, and historically fell outside the
+          # app-window AT-SPI path. Exercise the real Super+L route and require
+          # its protected password field and instructions on the session bus.
+          ./os/dev/vm.sh keys meta_l-l
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh lock
+          ./os/dev/vm.sh type "$QOS_PASS"
+          ./os/dev/vm.sh keys ret
+
+          if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+            # Upload through a non-channel candidate tag. latest, semver and
+            # genN are promoted only after signature, SBOM and provenance
+            # verification, so update clients cannot observe a half-published
+            # release through a channel tag.
+            digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
+            candidate="code.sandbox.example/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+            podman tag "$QOS_IMAGE" "$candidate"
+            podman push --digestfile "$digest_file" "$candidate"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+            test -n "$digest"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+            echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
+          else
+            echo '::notice::installed OS, desktop, and app integration passed; publication was not requested'
+          fi
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
@@ -457,7 +764,7 @@ jobs:
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
       - name: Sign the published image
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           # URI only (for example gcpkms://, awskms://, azurekms:// or
           # hashivault://). The signing key is non-exportable and never enters
@@ -471,26 +778,23 @@ jobs:
           cosign sign --yes --key "$COSIGN_KEY_REF" \
             "code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}"
 
+      - name: Install checksum-pinned Syft from the persistent asset cache
+        if: steps.release-mode.outputs.publish == 'true'
+        run: ./os/dev/install-cached-syft.sh
+
       # SBOM (security plan §9): generate an SPDX inventory of the image and
       # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
-      # what shipped + verify it came from us.
+      # what shipped + verify it came from us. Use the reviewed native binary:
+      # Forgejo cannot resolve GitHub-only transitive action dependencies.
       - name: Generate SBOM (syft → SPDX)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          image: code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-          # Skip the workflow-artifact upload: forgejo's action runner doesn't
-          # implement the GitHub Actions Artifact API v2 that upload-artifact@v4
-          # (which sbom-action calls internally) requires. The SBOM only needs
-          # to reach the next step's cosign attest — no artifact upload needed.
-          upload-artifact: false
-          # Same for release assets — we don't cut GitHub releases on forgejo.
-          upload-release-assets: false
+        if: steps.release-mode.outputs.publish == 'true'
+        run: |
+          syft \
+            "code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}" \
+            --output spdx-json=sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
@@ -500,14 +804,14 @@ jobs:
             "code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
         run: |
           ./os/dev/release-provenance.sh provenance.json
           cosign attest --yes \
-            --predicate provenance.json --type slsaprovenance \
+            --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
             "code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}"
 
@@ -517,7 +821,7 @@ jobs:
       # keys; this release-signed statement is the migration anchor and is still
       # required before any channel becomes visible.
       - name: Generate and attest release freshness
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
@@ -530,7 +834,7 @@ jobs:
             "code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}"
 
       - name: Verify candidate and promote release channels
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           image="code.sandbox.example/qos/qos@${{ steps.release.outputs.digest }}"
@@ -538,7 +842,7 @@ jobs:
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
-            --type slsaprovenance "$image" >/dev/null
+            --type slsaprovenance1 "$image" >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
             --type https://qos.dev/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"

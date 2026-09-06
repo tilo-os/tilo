@@ -348,6 +348,9 @@ pub enum Action {
     SwitchWorkspace(usize),
     SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
+    /// Open the production host-session first-login chrome with an isolated,
+    /// nonexistent identity path so screenshot tests cannot mutate user data.
+    ShowHostDesktopOnboarding,
 }
 
 /// A named, ordered list of actions.
@@ -583,6 +586,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureExecutionEnabled(enabled) => {
             driver.set_capture_execution_enabled(*enabled);
         }
+        Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -1465,6 +1469,7 @@ fn escape_json_str(s: &str) -> String {
 /// dumps these; `--scenario NAME` looks NAME up here.
 pub fn catalogue() -> Vec<Scenario> {
     vec![
+        host_desktop_first_login(),
         capture_studio(),
         capture_selection_editing(),
         capture_countdown(),
@@ -1522,6 +1527,20 @@ pub fn catalogue() -> Vec<Scenario> {
         wifi_password_prompt(),
         file_chooser_dialog(),
     ]
+}
+
+/// The exact identity introduction shown on first qOS login when the package
+/// is layered onto an existing Linux installation.
+fn host_desktop_first_login() -> Scenario {
+    Scenario {
+        name: "host_desktop_first_login",
+        description: "Render the host-session identity setup exactly as the compositor shows it.",
+        actions: vec![
+            Action::ShowHostDesktopOnboarding,
+            Action::Wait(4),
+            Action::Snapshot("01-identity-introduction"),
+        ],
+    }
 }
 
 /// Desktop help is itself a reachable control surface, not a documentation

@@ -18,8 +18,7 @@ pub enum TileContent {
     /// A live in-process app; `app_kind`/`app_title`/`app_icon` drive
     /// presentation and permission gating, the `Widget` handles the rest.
     App(Box<dyn AppWidget>),
-    /// A static placeholder card — "coming soon" apps (the browser), or a
-    /// fallback when `AppWidget::new`/`spawn_default` fails.
+    /// A static fallback card used when a live app cannot be constructed.
     Stub { kind: UiAppKind, label: String },
 }
 

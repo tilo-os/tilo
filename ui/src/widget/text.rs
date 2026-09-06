@@ -23,6 +23,10 @@ enum TextSource {
     Document(DocumentTextSource),
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent typography, wrapping, localization, and render-cache flags are orthogonal presentation options rather than a single state machine"
+)]
 pub struct Text {
     label: String,
     test_id: Option<String>,
@@ -46,6 +50,8 @@ pub struct Text {
     engine_revision: u64,
     /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
+    /// Resolve to the active theme's secondary ink.
+    dimmed: bool,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -83,6 +89,7 @@ impl Text {
             layout_engine: None,
             engine_revision: 0,
             color: None,
+            dimmed: false,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -546,6 +553,18 @@ impl Text {
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
+        self.dimmed = false;
+        self
+    }
+
+    /// Use the active theme's secondary text colour. This avoids freezing a
+    /// dark-palette colour into a widget that may render in light or
+    /// high-contrast mode.
+    #[must_use]
+    pub fn dimmed(mut self) -> Self {
+        self.color = None;
+        self.dimmed = true;
+        self.dirty = true;
         self
     }
 
@@ -693,7 +712,13 @@ impl Widget for Text {
                 reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
             )]
             let max_width = self.rect.width() as f32;
-            let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
+            let color = self.color.unwrap_or({
+                if self.dimmed {
+                    theme.text_dim
+                } else {
+                    theme.tokens.colors.text_primary
+                }
+            });
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
             let constraints = TextLayoutConstraints {
                 max_width: Some(max_width + 1.0),

@@ -8,7 +8,44 @@
 //! silently clobber an existing file.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// Accept one portable filesystem leaf name, never a path expression.
+///
+/// Both action prompts and inline rename reach these operations. In
+/// particular, `.` and `..` must not be accepted as names: either would make
+/// a supposedly local operation address an ancestor directory instead.
+fn leaf_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(crate::i18n::t("files-name-empty"));
+    }
+    let path = Path::new(name);
+    if name.contains('/')
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+        || path.components().count() != 1
+    {
+        return Err(crate::i18n::t("files-name-slash"));
+    }
+    Ok(name)
+}
+
+/// Refuse a recursive directory copy or move before any destination exists.
+/// Resolving the destination catches a symlink that points back into `src`.
+fn ensure_destination_is_outside_source(src: &Path, dest_dir: &Path) -> Result<(), String> {
+    if !std::fs::symlink_metadata(src)
+        .map_err(|error| error.to_string())?
+        .is_dir()
+    {
+        return Ok(());
+    }
+    let source = std::fs::canonicalize(src).map_err(|error| error.to_string())?;
+    let destination = std::fs::canonicalize(dest_dir).map_err(|error| error.to_string())?;
+    if destination.starts_with(&source) {
+        return Err("cannot copy or move a folder into itself".into());
+    }
+    Ok(())
+}
 
 // --- trash ----------------------------------------------------------------
 
@@ -130,16 +167,14 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error if `name` is empty or contains `/`, or if creating the
-/// directory fails (e.g. `parent` is not writable).
+/// Returns an error if `name` is empty, a path expression (`/`, `.` or `..`),
+/// or if creating the directory fails (e.g. `parent` is not writable).
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(crate::i18n::t("files-folder-name-empty"));
-    }
-    if name.contains('/') {
-        return Err(crate::i18n::t("files-folder-name-slash"));
-    }
+    let name = match leaf_name(name) {
+        Ok(name) => name,
+        Err(_) if name.trim().is_empty() => return Err(crate::i18n::t("files-folder-name-empty")),
+        Err(error) => return Err(error),
+    };
     let dest = unique_destination(parent, name);
     std::fs::create_dir(&dest).map_err(|e| e.to_string())?;
     Ok(dest)
@@ -149,17 +184,11 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 ///
 /// # Errors
 ///
-/// Returns an error if `new_name` is empty or contains `/`, if `path` has
-/// no parent directory, if a file already exists at the destination name,
+/// Returns an error if `new_name` is empty or a path expression, if `path`
+/// has no parent directory, if a file already exists at the destination name,
 /// or if the OS rename fails.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
-    let new_name = new_name.trim();
-    if new_name.is_empty() {
-        return Err(crate::i18n::t("files-name-empty"));
-    }
-    if new_name.contains('/') {
-        return Err(crate::i18n::t("files-name-slash"));
-    }
+    let new_name = leaf_name(new_name)?;
     let parent = path
         .parent()
         .ok_or_else(|| crate::i18n::t("files-no-parent"))?;
@@ -200,6 +229,7 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
 /// Returns an error if `src` has no file name, or the recursive copy fails
 /// (a read/write/permission error partway through the tree).
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -218,10 +248,18 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
 /// the copy-then-delete fallback fail (a read/write/permission error, or
 /// `src` could not be removed after a successful copy).
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
+    let source_parent = src
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    let destination_dir = std::fs::canonicalize(dest_dir).ok();
+    if source_parent.is_some() && source_parent == destination_dir {
+        return Err("the item is already in this folder".into());
+    }
     let dest = unique_destination(dest_dir, &name);
     if let Ok(()) = std::fs::rename(src, &dest) {
         Ok(dest)
@@ -244,7 +282,12 @@ fn remove_path(p: &Path) -> std::io::Result<()> {
 /// Copy a file or (recursively) a directory tree to an exact `dest` path.
 fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
-    if meta.is_dir() {
+    if meta.file_type().is_symlink() {
+        // Never silently dereference a link: that could copy an unbounded
+        // tree outside the source a person selected. Preserve the link object,
+        // including a dangling link, just as a same-filesystem move does.
+        copy_symlink(src, dest)
+    } else if meta.is_dir() {
         std::fs::create_dir_all(dest)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
@@ -259,6 +302,24 @@ fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::copy(src, dest)?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    symlink(std::fs::read_link(src)?, dest)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "copying symbolic links is not supported on this platform",
+    ))
 }
 
 #[cfg(test)]
@@ -294,6 +355,10 @@ mod tests {
         assert_eq!(p2.file_name().unwrap().to_string_lossy(), "Stuff 2");
         assert!(new_folder(d.path(), "  ").is_err());
         assert!(new_folder(d.path(), "a/b").is_err());
+        assert!(new_folder(d.path(), ".").is_err());
+        assert!(new_folder(d.path(), "..").is_err());
+        let unicode = new_folder(d.path(), "文書 📁").unwrap();
+        assert!(unicode.is_dir());
     }
 
     #[test]
@@ -308,6 +373,7 @@ mod tests {
         // Collision is refused.
         fs::write(d.path().join("taken.txt"), b"x").unwrap();
         assert!(rename(&renamed, "taken.txt").is_err());
+        assert!(rename(&renamed, "..").is_err());
     }
 
     #[test]
@@ -327,6 +393,62 @@ mod tests {
         // A second copy into the same dir dedups the folder name.
         let copied2 = copy_into(&src, &destdir).unwrap();
         assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
+    }
+
+    #[test]
+    fn recursive_copy_and_move_refuse_a_destination_inside_the_source() {
+        let d = tmp();
+        let source = d.path().join("source");
+        let nested_destination = source.join("nested");
+        fs::create_dir_all(&nested_destination).unwrap();
+        fs::write(source.join("file.txt"), b"x").unwrap();
+
+        assert!(copy_into(&source, &nested_destination).is_err());
+        assert!(move_into(&source, &nested_destination).is_err());
+        assert!(
+            source.join("file.txt").exists(),
+            "refusal has no side effect"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_preserves_symlinks_without_reading_their_targets() {
+        use std::os::unix::fs::symlink;
+
+        let d = tmp();
+        let source = d.path().join("source");
+        let destination = d.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        // This deliberately points outside the selected source tree. A copy
+        // must reproduce the link rather than dereferencing `/etc/passwd`.
+        symlink("/etc/passwd", source.join("outside-link")).unwrap();
+        symlink("missing-target", source.join("dangling-link")).unwrap();
+
+        let copied = copy_into(&source, &destination).unwrap();
+        let outside = copied.join("outside-link");
+        let dangling = copied.join("dangling-link");
+        assert!(
+            fs::symlink_metadata(&outside)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_link(&outside).unwrap(),
+            PathBuf::from("/etc/passwd")
+        );
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_link(&dangling).unwrap(),
+            PathBuf::from("missing-target")
+        );
     }
 
     #[test]

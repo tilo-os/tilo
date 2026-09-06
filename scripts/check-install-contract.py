@@ -22,8 +22,11 @@ assert contract["completeSystem"]["alongside"] == {
 }
 
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-for runner, architecture in (("runner", "x86_64"), ("runner-arm64", "aarch64")):
-    assert f"arch: {architecture}\n            runner: {runner}" in imager_workflow
+for runner, architecture in (
+    ("imager-linux-x86_64", "x86_64"),
+    ("imager-linux-aarch64", "aarch64"),
+):
+    assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
     medium = f"qos-installer-linux-{architecture}.img.zst"
     assert f"            {medium}" in imager_workflow
 assert """      - name: Verify the installer-medium release payload
@@ -49,15 +52,24 @@ linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["depen
 assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
-assert "Restore the ARM64 include only when" in session_workflow
-assert "arch: amd64" in session_workflow
-assert "arch: arm64" not in session_workflow
+assert "Select native release lanes" in session_workflow
+assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
+assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
+assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
+assert '{arch:"amd64",runner:"runner",targets:$targets}' in session_workflow
+assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
+assert "release_arches=amd64,arm64" in session_workflow
+assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
+assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow
+assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
+assert "QOS_LANE_TARGETS" in session_workflow
+assert "while IFS='|' read -r distro image revision" in session_workflow
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]
 for item in targets.values():
-    assert len(item["architectures"]) == 1
-    assert len(item["plannedArchitectures"]) == 1
+    assert len(item["architectures"]) == 2
+    assert item["plannedArchitectures"] == []
     assert item["package"] == "qos-session"
 
 print("install contract matches the current Imager and desktop-session release lanes")

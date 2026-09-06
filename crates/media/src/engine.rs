@@ -26,6 +26,29 @@ use crate::ring::{PrefetchProgress, Prefetcher};
 use crate::source::Source;
 use crate::transport::{Correction, TransportState, correction};
 
+/// A selectable elementary stream reported by the active decoder. The label is
+/// intentionally conservative: if a container did not provide a human name,
+/// callers receive "Audio track 1" rather than a guessed language.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaTrack {
+    /// Decoder supplied elementary-stream identity.  Unlike the selection
+    /// index this remains meaningful when a container exposes its streams in
+    /// a different order after a re-open.
+    pub id: String,
+    pub index: u32,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// A chapter supplied by a container table of contents. `id` is the container
+/// UID and `start_ms` is suitable for direct, frame-accurate seeking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaChapter {
+    pub id: String,
+    pub label: String,
+    pub start_ms: u64,
+}
+
 #[cfg(feature = "decode")]
 pub use crate::gst_backend::SeekMode;
 
@@ -153,6 +176,10 @@ pub struct MediaEngine {
     source: Option<Source>,
     volume: f32,
     muted: bool,
+    /// The requested playback multiplier. Kept at the engine boundary so the
+    /// synthesized fallback, real decoder, collaborative transport, and every
+    /// consumer agree on the one value the user selected.
+    rate: f32,
     config: EngineConfig,
 }
 
@@ -193,6 +220,7 @@ impl MediaEngine {
                     source: None,
                     volume: config.volume,
                     muted: false,
+                    rate: 1.0,
                     config,
                 };
             }
@@ -202,6 +230,7 @@ impl MediaEngine {
             source: None,
             volume: config.volume,
             muted: false,
+            rate: 1.0,
             config,
         }
     }
@@ -215,6 +244,7 @@ impl MediaEngine {
             source: None,
             volume: 0.8,
             muted: false,
+            rate: 1.0,
             config: EngineConfig::default(),
         }
     }
@@ -412,6 +442,77 @@ impl MediaEngine {
         self.muted
     }
 
+    /// Set playback speed. Values outside the deliberately small, intelligible
+    /// range are clamped rather than passed to a backend that may interpret a
+    /// negative or denormal rate differently. `1.0` is normal speed.
+    pub fn set_rate(&mut self, rate: f32) {
+        self.rate = rate.clamp(0.25, 4.0);
+        match &mut self.backend {
+            Backend::Synth(state) => state.set_rate(self.rate),
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.set_rate(self.rate),
+        }
+    }
+
+    /// The effective playback speed, always in `0.25..=4.0`.
+    pub fn rate(&self) -> f32 {
+        self.rate
+    }
+
+    /// Enumerate audio tracks after the container has exposed them. An empty
+    /// list is an honest result for the synthesized backend and for video-only
+    /// media; it is not an unsupported API.
+    pub fn audio_tracks(&self) -> Vec<MediaTrack> {
+        match &self.backend {
+            Backend::Synth(_) => Vec::new(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.audio_tracks(),
+        }
+    }
+
+    /// Enumerate subtitle/text tracks exposed by the active container.
+    pub fn subtitle_tracks(&self) -> Vec<MediaTrack> {
+        match &self.backend {
+            Backend::Synth(_) => Vec::new(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.subtitle_tracks(),
+        }
+    }
+
+    /// Container table-of-contents chapters observed by the decoder. An empty
+    /// list means the container has not supplied chapter metadata.
+    pub fn chapters(&self) -> Vec<MediaChapter> {
+        match &self.backend {
+            Backend::Synth(_) => Vec::new(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.chapters(),
+        }
+    }
+
+    /// Select an audio stream by its stable, decoder-provided index.
+    pub fn select_audio_track(&mut self, index: u32) -> bool {
+        match &mut self.backend {
+            Backend::Synth(_) => {
+                let _ = index;
+                false
+            }
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.select_audio_track(index),
+        }
+    }
+
+    /// Select a subtitle stream, or `None` to turn subtitles off.
+    pub fn select_subtitle_track(&mut self, index: Option<u32>) -> bool {
+        match &mut self.backend {
+            Backend::Synth(_) => {
+                let _ = index;
+                false
+            }
+            #[cfg(feature = "decode")]
+            Backend::Gst(state) => state.select_subtitle_track(index),
+        }
+    }
+
     /// The audio sink element, for routing or monitoring this source's output
     /// — setting a `PipeWire` target node, attaching a level meter, or tapping a
     /// tee into a mixer. `None` on the synthesized backend (no audio at all)
@@ -527,7 +628,7 @@ impl MediaEngine {
         TransportState {
             playing: self.is_playing(),
             position_ms: self.position_ms(),
-            rate: 1.0,
+            rate: self.rate,
             epoch_ms: now_ms,
         }
     }
@@ -536,6 +637,7 @@ impl MediaEngine {
     /// the projected playhead at `now_ms` and hard-seeking only when drift
     /// exceeds the threshold. Returns `true` if a corrective seek was issued.
     pub fn apply_transport(&mut self, state: &TransportState, now_ms: u64) -> bool {
+        self.set_rate(state.rate);
         let target = state.projected_position(now_ms);
         let seeked = match correction(self.position_ms(), target) {
             Correction::Seek(ms) => {
@@ -577,6 +679,7 @@ struct SynthState {
     /// rather than a synthesized test pattern.
     opened: bool,
     playing: bool,
+    rate: f32,
     position: u64,
     duration: u64,
     /// Wall-clock ms at the previous poll (baseline for advancing the
@@ -603,6 +706,7 @@ impl SynthState {
         Self {
             opened: false,
             playing: false,
+            rate: 1.0,
             position: 0,
             duration: DEFAULT_SYNTH_DURATION_MS,
             last_tick: None,
@@ -659,6 +763,11 @@ impl SynthState {
         self.last_tick = None; // re-baseline the clock across the state change
     }
 
+    fn set_rate(&mut self, rate: f32) {
+        self.rate = rate.clamp(0.25, 4.0);
+        self.last_tick = None;
+    }
+
     fn seek(&mut self, ms: u64) {
         self.position = ms.min(self.duration);
         self.ended = self.position >= self.duration;
@@ -697,7 +806,17 @@ impl SynthState {
         if self.playing && !self.ended {
             if let Some(last) = self.last_tick {
                 let dt = now_ms.saturating_sub(last);
-                self.position = self.position.saturating_add(dt);
+                // A poll gap longer than `u32::MAX` ms is almost fifty days;
+                // treating it as that upper bound avoids a lossy integer cast
+                // while still making a stalled synthesized player catch up.
+                let dt = u32::try_from(dt).unwrap_or(u32::MAX);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "both factors are finite and non-negative; the rate is bounded to 0.25..=4.0 and the fractional millisecond is intentionally discarded"
+                )]
+                let advance = (f64::from(dt) * f64::from(self.rate)) as u64;
+                self.position = self.position.saturating_add(advance);
             }
             if self.position >= self.duration {
                 self.position = self.duration;
@@ -869,6 +988,22 @@ mod tests {
         e.poll_at(2_000);
         e.poll_at(3_000);
         assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
+    }
+
+    #[test]
+    fn playback_rate_is_clamped_and_drives_synthesized_transport() {
+        let mut engine = MediaEngine::new_synthesized();
+        engine.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        engine.set_rate(2.0);
+        engine.play();
+        engine.poll_at(0);
+        engine.poll_at(1_000);
+        assert_eq!(engine.position_ms(), 2_000);
+        assert!((engine.transport_state(1_000).rate - 2.0).abs() < f32::EPSILON);
+        engine.set_rate(99.0);
+        assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
     }
 
     #[test]

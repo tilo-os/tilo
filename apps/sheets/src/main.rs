@@ -73,6 +73,7 @@ const SCENARIOS: &[&str] = &[
     "fbarselect",
     "commandpalette",
     "fillseries",
+    "scrollbars",
     "pasteformula",
 ];
 
@@ -121,6 +122,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
         Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
         Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
+        Some("scrollbars") => Box::new(|a, _d| a.shots_scroll_both_axes()),
         Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
         Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
         _ => Box::new(|_a, _d| {}),

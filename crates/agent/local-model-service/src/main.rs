@@ -73,7 +73,7 @@ enum Action {
         model: String,
     },
     /// Ask the root-owned hardware policy for this machine's exact signed
-    /// `BootPack` and enqueue it for immutable deployment staging.
+    /// BootPack and enqueue it for immutable deployment staging.
     StageAccelerator,
     #[command(hide = true)]
     Worker {
@@ -363,7 +363,7 @@ impl HttpsTransport for ReqwestTransport {
         }
         let mut response = response;
         let mut count = 0_u64;
-        let mut buffer = vec![0_u8; 32 * 1024].into_boxed_slice();
+        let mut buffer = [0_u8; 32 * 1024];
         loop {
             let read = response.read(&mut buffer)?;
             if read == 0 {
@@ -376,9 +376,9 @@ impl HttpsTransport for ReqwestTransport {
             if count > maximum_bytes {
                 return Err(ServiceError::PartialTooLarge);
             }
-            let read = usize::try_from(read).map_err(|_| ServiceError::PartialTooLarge)?;
-            let chunk = buffer.get(..read).ok_or(ServiceError::PartialTooLarge)?;
-            destination.write_all(chunk)?;
+            destination.write_all(
+                &buffer[..usize::try_from(read).map_err(|_| ServiceError::PartialTooLarge)?],
+            )?;
             // State is published by the service after every confirmed write,
             // not optimistically from Content-Length.
             progress(count);
@@ -480,10 +480,7 @@ impl ProcessSupervisor for SystemdSupervisor {
     }
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
-        let digest_prefix = digest
-            .get(..16)
-            .ok_or_else(|| ServiceError::Backend("invalid model digest".into()))?;
-        let unit = format!("qos-vllm-{digest_prefix}");
+        let unit = format!("qos-vllm-{}", &digest[..16]);
         let status = Command::new("systemd-run")
             .args([
                 "--user",
@@ -515,9 +512,7 @@ impl ProcessSupervisor for SystemdSupervisor {
         // Loading real model weights routinely takes minutes. This worker is
         // already detached from Settings, so favour a truthful bounded wait
         // over reporting a healthy large model as failed after 20 seconds.
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10 * 60))
-            .unwrap_or_else(Instant::now);
+        let deadline = Instant::now() + Duration::from_secs(10 * 60);
         while Instant::now() < deadline {
             if std::net::TcpStream::connect_timeout(
                 &address.parse().map_err(|_| ServiceError::InvalidEndpoint)?,
@@ -535,9 +530,9 @@ impl ProcessSupervisor for SystemdSupervisor {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        Err(ServiceError::Backend(
+        return Err(ServiceError::Backend(
             "verified vLLM service did not become ready".into(),
-        ))
+        ));
     }
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
         let status = Command::new("systemctl")
@@ -569,7 +564,8 @@ fn local_hardware() -> HardwareSnapshot {
                     .ok()
             })
         })
-        .map_or(0, |kib| kib / 1024);
+        .map(|kib| kib / 1024)
+        .unwrap_or(0);
     let free_storage_mib = free_storage_mib("/var/lib/qos/models").unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
@@ -610,7 +606,8 @@ fn local_hardware() -> HardwareSnapshot {
                 let vram_mib = std::fs::read_to_string(device.join("mem_info_vram_total"))
                     .ok()
                     .and_then(|bytes| bytes.trim().parse::<u64>().ok())
-                    .map_or(0, |bytes| bytes / 1024 / 1024);
+                    .map(|bytes| bytes / 1024 / 1024)
+                    .unwrap_or(0);
                 accelerators.push(Accelerator::Amd {
                     vram_mib,
                     rocm: rocm.clone(),
@@ -632,8 +629,7 @@ fn local_hardware() -> HardwareSnapshot {
     }
     HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
-            .ok()
-            .and_then(|count| u16::try_from(count.get()).ok())
+            .map(|count| count.get() as u16)
             .unwrap_or(1),
         memory_mib,
         free_storage_mib,
@@ -647,8 +643,9 @@ fn free_storage_mib(path: &str) -> Option<u64> {
         return None;
     }
     let info = unsafe { info.assume_init() };
-    info.f_bavail
-        .checked_mul(info.f_frsize)?
+    u64::try_from(info.f_bavail)
+        .ok()?
+        .checked_mul(u64::try_from(info.f_frsize).ok()?)?
         .checked_div(1024 * 1024)
 }
 fn package(model: &LocalModelRelease) -> LocalModelPackage {
@@ -764,7 +761,7 @@ fn recommendation(
                 .iter()
                 .filter_map(|item| match item {
                     Accelerator::Nvidia { vram_mib, .. } => Some(*vram_mib),
-                    Accelerator::Amd { .. } => None,
+                    _ => None,
                 })
                 .max();
             (
@@ -992,9 +989,7 @@ fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
 
 fn same_user(stream: &UnixStream) -> bool {
     let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `credentials` points to a correctly-sized output buffer and
     // `stream` is a Unix-domain socket supplied by UnixListener::accept.
     let result = unsafe {
@@ -1003,7 +998,7 @@ fn same_user(stream: &UnixStream) -> bool {
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             credentials.as_mut_ptr().cast(),
-            &raw mut length,
+            &mut length,
         )
     };
     result == 0
@@ -1140,7 +1135,8 @@ fn user_model_root() -> PathBuf {
         return PathBuf::from(data).join("qos/models");
     }
     std::env::var_os("HOME")
-        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".local/share/qos/models")
 }
 
@@ -1263,10 +1259,6 @@ fn stage_recommended_accelerator() -> Result<(), String> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the command dispatcher keeps lifecycle transitions and their durable failure handling together"
-)]
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
     if let Action::Snapshot { format } = &cli.command {
@@ -1346,10 +1338,12 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .queue_install(release)
                 .map_err(|error| error.to_string())?;
-            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref())
-                .inspect_err(|error| {
-                    let _ = service.record_failure(&model, error.clone());
-                })?;
+            enqueue_worker(&root, &catalog_path, &key_path, &model, revision.as_deref()).map_err(
+                |error| {
+                    let _ = service.record_failure(&model, &error);
+                    error
+                },
+            )?;
         }
         Action::Start { model } => {
             if !catalog.models.iter().any(|release| release.id == model) {
@@ -1358,8 +1352,9 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
-            enqueue_start_worker(&root, &catalog_path, &key_path, &model).inspect_err(|error| {
-                let _ = service.record_failure(&model, error.clone());
+            enqueue_start_worker(&root, &catalog_path, &key_path, &model).map_err(|error| {
+                let _ = service.record_failure(&model, &error);
+                error
             })?;
         }
         Action::Stop { model } => {
@@ -1409,9 +1404,7 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 return Err(error.to_string());
             }
         }
-        Action::Snapshot { .. } | Action::Serve { .. } => {
-            return Err("command was already handled before lifecycle dispatch".into());
-        }
+        Action::Snapshot { .. } | Action::Serve { .. } => unreachable!(),
     }
     Ok(None)
 }
@@ -1425,10 +1418,7 @@ fn enqueue_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let digest_prefix = digest
-        .get(..16)
-        .ok_or_else(|| "invalid model digest".to_string())?;
-    let unit = format!("qos-model-download-{digest_prefix}");
+    let unit = format!("qos-model-download-{}", &digest[..16]);
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])
@@ -1472,10 +1462,7 @@ fn enqueue_start_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let digest_prefix = digest
-        .get(..16)
-        .ok_or_else(|| "invalid model digest".to_string())?;
-    let unit = format!("qos-model-start-{digest_prefix}");
+    let unit = format!("qos-model-start-{}", &digest[..16]);
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])

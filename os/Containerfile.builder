@@ -66,15 +66,21 @@ RUN curl -fsSL https://sh.rustup.rs \
 # per-job download. Pin and verify the upstream static binary so every shard
 # gets the same client without spending runner CPU compiling sccache itself.
 ARG SCCACHE_VERSION=0.17.0
-ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
 RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
-    archive="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    && echo "${SCCACHE_SHA256}  /qos-assets/${archive}" | sha256sum -c - \
+    case "$(uname -m)" in \
+      x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
+      aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
+      *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && archive="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl.tar.gz" \
+    && echo "${sccache_sha}  /qos-assets/${archive}" | sha256sum -c - \
     && tar -xzf "/qos-assets/${archive}" -C /tmp \
     && install -m 0755 \
-      "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
+      "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl/sccache" \
       /usr/local/bin/sccache \
-    && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
     && sccache --version
 
 RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \

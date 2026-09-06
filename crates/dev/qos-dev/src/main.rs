@@ -1330,19 +1330,11 @@ fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
             mode_root.display(),
             paths.len()
         );
-        let path = paths
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("responsive PNG disappeared during validation"))?;
-        validate_responsive_png(path, expected)?;
+        validate_responsive_png(&paths[0], expected)?;
     }
     Ok(())
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::cast_precision_loss,
-    reason = "validated screenshot dimensions bound pixel counts well below f64 precision limits"
-)]
 fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
     use image::GenericImageView as _;
 
@@ -1355,13 +1347,10 @@ fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
         expected
     );
     let pixels = image.to_rgba8();
-    let total = u64::from(expected.0)
-        .checked_mul(u64::from(expected.1))
-        .context("responsive screenshot dimensions overflow")?;
+    let total = u64::from(expected.0) * u64::from(expected.1);
     let mut colours = std::collections::HashMap::<[u8; 4], u64>::new();
     for pixel in pixels.pixels() {
-        let count = colours.entry(pixel.0).or_default();
-        *count = count.saturating_add(1);
+        *colours.entry(pixel.0).or_default() += 1;
     }
     let dominant = colours.values().copied().max().unwrap_or(total);
     anyhow::ensure!(

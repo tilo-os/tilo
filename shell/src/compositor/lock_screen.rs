@@ -21,6 +21,22 @@ use vello::peniko::{Extend, Fill, ImageBrush, ImageData};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
+use ui::accesskit::{
+    Action as AccessAction, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
+    Role as AccessRole, TreeId, TreeInfo, TreeUpdate,
+};
+
+// `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
+// 1<<63 for desktop widgets/resources/actions/text/synthetic nodes. Keeping
+// the lock in the unused 3<<60 range makes a stale hidden-desktop action
+// incapable of aliasing a credential control after the tree swap.
+const LOCK_ID_BASE: u64 = 3_u64 << 60;
+pub const LOCK_ROOT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE);
+pub const LOCK_PASSWORD_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 1);
+const LOCK_CLOCK_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 2);
+const LOCK_HELP_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 3);
+const LOCK_STATUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 4);
+
 /// Live lock-screen state to render, computed by the caller so this paint
 /// stays pure and unit-testable (no clock reads, no auth state of its own).
 #[derive(Debug, Clone, Copy, Default)]
@@ -63,6 +79,88 @@ impl LockOutput {
             self.origin.0 + self.size.0 / 2.0,
             self.origin.1 + self.size.1 / 2.0,
         )
+    }
+}
+
+/// Build the complete, compositor-owned semantic tree shown while the session
+/// is locked. It intentionally contains no application/chrome nodes and never
+/// publishes the password value (not even its masked representation).
+///
+/// The password field supports AT focus and value entry; Enter remains the
+/// single submit gesture, shared with physical keyboard input. This avoids a
+/// synthetic "Unlock" control that is not present on the painted surface.
+pub fn build_accessibility_tree(outputs: &[LockOutput], view: &LockView<'_>) -> TreeUpdate {
+    let (width, height) = combined_extent(outputs);
+    let output = outputs.first().copied().unwrap_or(LockOutput {
+        origin: (0.0, 0.0),
+        size: (width, height),
+    });
+    let (cx, cy) = output.center();
+
+    let mut root = AccessNode::new(AccessRole::Window);
+    root.set_label("qOS lock screen");
+    root.set_bounds(AccessRect::new(0.0, 0.0, width, height));
+
+    let mut clock = AccessNode::new(AccessRole::Label);
+    let clock_label = if view.clock.is_empty() {
+        "Session locked".to_string()
+    } else if view.date.is_empty() {
+        format!("Session locked, {}", view.clock)
+    } else {
+        format!("Session locked, {}, {}", view.clock, view.date)
+    };
+    clock.set_label(clock_label);
+
+    let mut password = AccessNode::new(AccessRole::TextInput);
+    password.set_label("Password");
+    password.set_bounds(AccessRect::new(
+        cx - 140.0,
+        cy + 42.0,
+        cx + 140.0,
+        cy + 86.0,
+    ));
+    password.add_action(AccessAction::Focus);
+    if view.verifying {
+        password.set_disabled();
+    } else {
+        password.add_action(AccessAction::SetValue);
+    }
+
+    let mut help = AccessNode::new(AccessRole::Label);
+    help.set_label("Type your password and press Enter");
+
+    let mut children = vec![LOCK_CLOCK_ID, LOCK_PASSWORD_ID, LOCK_HELP_ID];
+    let mut nodes = vec![
+        (LOCK_CLOCK_ID, clock),
+        (LOCK_PASSWORD_ID, password),
+        (LOCK_HELP_ID, help),
+    ];
+    let status = if view.verifying {
+        Some("Verifying password".to_string())
+    } else if let Some(error) = view.error {
+        Some(error.to_string())
+    } else if view.notification_count > 0 {
+        Some(format!("{} notifications", view.notification_count))
+    } else {
+        None
+    };
+    if let Some(status) = status {
+        let mut node = AccessNode::new(AccessRole::Label);
+        node.set_label(status);
+        children.push(LOCK_STATUS_ID);
+        nodes.push((LOCK_STATUS_ID, node));
+    }
+    root.set_children(children);
+    nodes.push((LOCK_ROOT_ID, root));
+    TreeUpdate {
+        nodes,
+        tree: Some(TreeInfo::new(LOCK_ROOT_ID)),
+        tree_id: TreeId::ROOT,
+        focus: if view.verifying {
+            LOCK_ROOT_ID
+        } else {
+            LOCK_PASSWORD_ID
+        },
     }
 }
 
@@ -462,6 +560,58 @@ mod tests {
             origin: (0.0, 0.0),
             size: (w, h),
         }]
+    }
+
+    #[test]
+    fn lock_accessibility_tree_is_actionable_and_never_exposes_password() {
+        let v = LockView {
+            password_len: 12,
+            notification_count: 4,
+            ..view()
+        };
+        let update = build_accessibility_tree(&single(1600.0, 900.0), &v);
+        assert_eq!(update.focus, LOCK_PASSWORD_ID);
+        let (_, password) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == LOCK_PASSWORD_ID)
+            .expect("password field is present");
+        assert_eq!(password.role(), AccessRole::TextInput);
+        assert_eq!(password.label(), Some("Password"));
+        assert!(password.supports_action(AccessAction::Focus));
+        assert!(password.supports_action(AccessAction::SetValue));
+        assert_eq!(
+            password.value(),
+            None,
+            "masked credentials are not semantic values"
+        );
+        assert!(
+            update.nodes.iter().all(|(_, node)| {
+                node.label()
+                    .is_none_or(|label| !label.contains("••") && !label.contains("********"))
+            }),
+            "the semantic tree must not encode the password or its mask"
+        );
+    }
+
+    #[test]
+    fn verifying_lock_tree_disables_password_mutation_and_announces_state() {
+        let v = LockView {
+            verifying: true,
+            ..view()
+        };
+        let update = build_accessibility_tree(&single(800.0, 600.0), &v);
+        assert_eq!(update.focus, LOCK_ROOT_ID);
+        let (_, password) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == LOCK_PASSWORD_ID)
+            .expect("password field is present");
+        assert!(!password.supports_action(AccessAction::SetValue));
+        assert!(update.nodes.iter().any(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label == "Verifying password")
+        }));
     }
 
     /// The lock scene must encode *something* — a blank scene would mean

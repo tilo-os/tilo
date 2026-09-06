@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{
-    ArtifactId, ChannelState, Ed25519PublicKey, OpId, SignedOp, ValidationError,
-    parse_redact_payload,
+    ArtifactId, ChannelId, ChannelState, Ed25519PublicKey, EncryptionMetadata, OpId, SignedOp,
+    ValidationError, parse_redact_payload,
 };
 
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
@@ -80,6 +80,12 @@ pub struct BrokerChannels {
     pub states: HashMap<ArtifactId, ChannelState>,
     pub audit: AuditLog,
     pub redactions: RedactionLog,
+    /// Registered per-route MLS journals. Their persisted gate is consulted
+    /// on every local and peer document ingress; the broker holds no MLS key.
+    pub governance: HashMap<ChannelId, channel_crypto::GovernanceJournal>,
+    /// Production Secret Service provider installed by shell startup. Kept
+    /// behind the broker boundary; applications see only opaque receipts.
+    pub mls_vault: Option<Arc<super::collab_mls_authority::SecretServiceMlsVault>>,
 }
 
 impl BrokerChannels {
@@ -89,6 +95,34 @@ impl BrokerChannels {
 
     pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
         self.states.insert(artifact, state);
+    }
+
+    pub fn register_governance_journal(
+        &mut self,
+        channel: ChannelId,
+        journal: channel_crypto::GovernanceJournal,
+    ) {
+        self.governance.insert(channel, journal);
+    }
+
+    /// A route without a registered journal remains in explicit migration /
+    /// legacy mode. Once its durable journal flips `encryption_required`, no
+    /// plaintext envelope can pass either ingress path, including after restart.
+    pub fn document_encryption_allowed(
+        &self,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> bool {
+        self.governance
+            .get(&channel)
+            .is_none_or(|journal| journal.accepts_document_encryption(encryption, channel))
+    }
+
+    pub fn install_mls_vault(
+        &mut self,
+        vault: Arc<super::collab_mls_authority::SecretServiceMlsVault>,
+    ) {
+        self.mls_vault = Some(vault);
     }
 }
 

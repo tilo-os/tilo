@@ -25,6 +25,7 @@ cosign_workflows=(
   "$workflows/release-imager.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
 )
+syft_workflow="$workflows/build-image.yml"
 
 while IFS=: read -r file line match; do
   ref="${match#uses:}"
@@ -137,6 +138,33 @@ if ! grep -Fq 'cache-github-assets.sh" "$asset"' \
   fail=1
 elif [ "$fail" = 0 ]; then
   printf 'ok    every Cosign workflow uses cached, checksum-pinned native binaries\n'
+fi
+
+declare -A syft_sha=(
+  [amd64]=2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f
+  [arm64]=6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900
+)
+for arch in amd64 arm64; do
+  name="syft-1.51.0-linux-$arch.tar.gz"
+  if ! awk -F '\t' -v n="$name" -v arch="$arch" -v sha="${syft_sha[$arch]}" \
+    '$1 == sha && $2 == n && $3 == "https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_" arch ".tar.gz" { found=1 }
+     END { exit !found }' "$manifest"; then
+    printf 'missing checksum-pinned Syft input: %s\n' "$name" >&2
+    fail=1
+  fi
+done
+if grep -Rq 'anchore/sbom-action' "$workflows"; then
+  printf 'workflow still depends on a GitHub-only SBOM action\n' >&2
+  fail=1
+fi
+if ! grep -Fq './os/dev/install-cached-syft.sh' "$syft_workflow" \
+  || ! grep -Fq 'spdx-json=sbom.spdx.json' "$syft_workflow" \
+  || ! grep -Fq 'cache-github-assets.sh" "$asset"' \
+    "$repo/os/dev/install-cached-syft.sh"; then
+  printf 'image SBOM bypasses the checksum-verified Syft cache\n' >&2
+  fail=1
+elif [ "$fail" = 0 ]; then
+  printf 'ok    image SBOM uses a cached, checksum-pinned native Syft binary\n'
 fi
 
 for workflow in "${github_cache_workflows[@]}"; do

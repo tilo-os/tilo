@@ -55,6 +55,8 @@
             environment.systemPackages = [ cfg.package ];
             services.displayManager.sessionPackages = [ cfg.package ];
             environment.etc."pam.d/qos-unlock".source = "${cfg.package}/etc/pam.d/qos-unlock";
+            environment.etc."systemd/user/qos-graphical-session.target".source =
+              "${cfg.package}/share/systemd/user/qos-graphical-session.target";
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };

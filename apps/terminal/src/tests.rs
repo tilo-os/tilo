@@ -1269,8 +1269,10 @@ fn accessibility_exposes_visible_terminal_output_and_focus() {
     let node = w
         .accessibility()
         .expect("terminal has an assistive semantic node");
-    assert_eq!(node.role, Role::MultilineTextInput);
-    assert!(node.state.focusable && node.state.focused && node.state.multiline);
+    assert_eq!(node.role, Role::Terminal);
+    assert!(
+        node.state.focusable && node.state.focused && node.state.multiline && node.state.read_only
+    );
     assert!(
         node.value
             .as_deref()
@@ -1280,6 +1282,113 @@ fn accessibility_exposes_visible_terminal_output_and_focus() {
     assert!(
         w.ime_cursor_rect().is_some(),
         "focused terminal anchors the platform IME"
+    );
+}
+
+#[test]
+fn semantic_terminal_transcript_rejects_edits() {
+    use ui::a11y::Action;
+    use ui::widget::Widget;
+
+    let (mut w, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.init_crdt(&mut doc, &automerge::ROOT);
+    assert!(!Widget::perform_action(
+        &mut w,
+        &Action::SetValue("printf semantic".to_string()),
+        &mut doc,
+        &automerge::ROOT,
+    ));
+    assert!(
+        drain_writes(&writes).is_empty(),
+        "a read-only transcript must never interpret SetValue as PTY input"
+    );
+}
+
+#[test]
+fn semantic_selection_uses_graphemes_not_utf8_bytes() {
+    use ui::a11y::Action;
+    use ui::widget::Widget;
+
+    let (mut w, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
+    w.force_grid(vec!["A🦀e\u{301}".to_string(), "go".to_string()]);
+    assert!(Widget::perform_action(
+        &mut w,
+        &Action::SetSelection {
+            anchor: 1,
+            focus: 3,
+        },
+        &mut doc,
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        w.selection(),
+        Some(Selection {
+            anchor: GridPos { row: 0, col: 1 },
+            cursor: GridPos { row: 0, col: 4 },
+        }),
+        "the crab emoji is one a11y grapheme but occupies two terminal cells"
+    );
+    assert_eq!(
+        w.accessibility().and_then(|node| node.text_selection),
+        Some(ui::a11y::AccessibleTextSelection {
+            anchor: 1,
+            focus: "A🦀e\u{301}".len(),
+        }),
+        "the exported UTF-8 selection maps back to the same grapheme endpoints"
+    );
+    assert!(Widget::perform_action(
+        &mut w,
+        &Action::SetSelection {
+            anchor: 1,
+            focus: 6,
+        },
+        &mut doc,
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        w.selection(),
+        Some(Selection {
+            anchor: GridPos { row: 0, col: 1 },
+            cursor: GridPos { row: 1, col: 2 },
+        }),
+        "the newline between visible rows consumes one a11y grapheme endpoint"
+    );
+    assert_eq!(
+        w.accessibility().and_then(|node| node.text_selection),
+        Some(ui::a11y::AccessibleTextSelection {
+            anchor: 1,
+            focus: "A🦀e\u{301}\ngo".len(),
+        })
+    );
+}
+
+#[test]
+fn terminal_resource_uses_the_shared_pane_identity() {
+    use ui::widget::Widget;
+
+    let (mut w, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.init_crdt(&mut doc, &automerge::ROOT);
+    let resource = Widget::resources(&w, &doc)
+        .into_iter()
+        .next()
+        .expect("terminal session resource");
+    let saved = doc.save();
+    let mut peer_doc = AutoCommit::load(&saved).expect("load collaborator replica");
+    let (mut peer, _writes) = build_test_widget();
+    peer.init_crdt(&mut peer_doc, &automerge::ROOT);
+    let peer_resource = Widget::resources(&peer, &peer_doc)
+        .into_iter()
+        .next()
+        .expect("peer terminal session resource");
+    assert_eq!(resource.id, peer_resource.id);
+    assert_eq!(
+        Widget::control_action_bindings(&w).len(),
+        0,
+        "resource actions are command-palette/agent operations, not phantom controls"
     );
 }
 

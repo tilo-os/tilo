@@ -173,7 +173,7 @@ mod workspace_id_serde {
 
     #[allow(
         clippy::trivially_copy_pass_by_ref,
-        reason = "Serde's serialize_with contract passes the field by reference"
+        reason = "serde's with-module serialization callback requires a reference to the field"
     )]
     pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
     where

@@ -73,6 +73,128 @@ pub(crate) struct ReadingSettings {
 type FontPill = (String, String, f64, bool);
 
 impl ReadingSettings {
+    pub(crate) fn accessibility_nodes(
+        &self,
+        settings: &Settings,
+        focused: Option<&str>,
+    ) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut nodes = self
+            .hits
+            .iter()
+            .filter_map(|hit| {
+                let (target, name, role, checked) = match &hit.action {
+                    ReadingSettingsAction::OpenManager => (
+                        "books.reader.settings.manage".into(),
+                        "Manage fonts and colour themes".into(),
+                        Role::Button,
+                        None,
+                    ),
+                    ReadingSettingsAction::Dismiss => (
+                        "books.reader.settings.close".into(),
+                        "Close reading appearance".into(),
+                        Role::Button,
+                        None,
+                    ),
+                    ReadingSettingsAction::SetMode(mode) => (
+                        format!("books.reader.settings.mode:{}", mode.as_str()),
+                        format!("{} reading mode", mode.label()),
+                        Role::RadioButton,
+                        Some(settings.mode == *mode),
+                    ),
+                    ReadingSettingsAction::SetComposition(style) => (
+                        format!("books.reader.settings.composition:{}", style.as_str()),
+                        format!("{} text composition", style.label()),
+                        Role::RadioButton,
+                        Some(settings.composition == *style),
+                    ),
+                    ReadingSettingsAction::SetFont(id) => (
+                        format!("books.reader.settings.font:{id}"),
+                        format!("Use {id} font"),
+                        Role::RadioButton,
+                        Some(settings.font_id == *id),
+                    ),
+                    ReadingSettingsAction::SetReadTheme(theme) => (
+                        format!("books.reader.settings.theme:{}", theme.as_str()),
+                        format!("{} reading theme", theme.label()),
+                        Role::RadioButton,
+                        Some(settings.theme == *theme && settings.scheme_id.is_empty()),
+                    ),
+                    ReadingSettingsAction::SetScheme(id) => (
+                        format!("books.reader.settings.scheme:{id}"),
+                        format!("Use {id} colour theme"),
+                        Role::RadioButton,
+                        Some(settings.scheme_id == *id),
+                    ),
+                    ReadingSettingsAction::Swallow
+                    | ReadingSettingsAction::SetFontScale(_)
+                    | ReadingSettingsAction::SetLineSpacing(_) => return None,
+                };
+                let mut state = AccessState::new()
+                    .focusable(true)
+                    .focused(focused == Some(target.as_str()));
+                if let Some(checked) = checked {
+                    state = state.checked(checked);
+                }
+                Some(
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_state(state)
+                        .with_bounds(hit.rect)
+                        .with_action_target(target),
+                )
+            })
+            .collect::<Vec<_>>();
+        nodes.extend(self.numbers.accessibility_nodes());
+        nodes
+    }
+
+    pub(crate) fn perform_number_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> Option<ReadingSettingsAction> {
+        let (field, value) = self
+            .numbers
+            .perform_semantic_action(target, action, state, root)?;
+        let value = value?;
+        match field {
+            NumberField::FontScale => {
+                Some(ReadingSettingsAction::SetFontScale((value / 100.0) as f32))
+            }
+            NumberField::LineSpacing => Some(ReadingSettingsAction::SetLineSpacing(value as f32)),
+            NumberField::FontMult(_) => None,
+        }
+    }
+
+    pub(crate) fn semantic_action(&self, target: &str) -> Option<ReadingSettingsAction> {
+        self.hits.iter().rev().find_map(|hit| {
+            let candidate = match &hit.action {
+                ReadingSettingsAction::OpenManager => "books.reader.settings.manage".into(),
+                ReadingSettingsAction::Dismiss => "books.reader.settings.close".into(),
+                ReadingSettingsAction::SetMode(mode) => {
+                    format!("books.reader.settings.mode:{}", mode.as_str())
+                }
+                ReadingSettingsAction::SetComposition(style) => {
+                    format!("books.reader.settings.composition:{}", style.as_str())
+                }
+                ReadingSettingsAction::SetFont(id) => {
+                    format!("books.reader.settings.font:{id}")
+                }
+                ReadingSettingsAction::SetReadTheme(theme) => {
+                    format!("books.reader.settings.theme:{}", theme.as_str())
+                }
+                ReadingSettingsAction::SetScheme(id) => {
+                    format!("books.reader.settings.scheme:{id}")
+                }
+                _ => return None,
+            };
+            (candidate == target).then(|| hit.action.clone())
+        })
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.open
     }

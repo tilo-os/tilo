@@ -93,9 +93,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--collapse` collapses the persistent sidebar (wide layout) so a shot
         // can prove the three-abreast layout folds down to calendar + detail.
         let collapse = args.iter().any(|a| a == "--collapse");
-        // `--empty` renders the real live app (persisted document + configured
-        // accounts, i.e. empty on a fresh machine) rather than the sample seed.
+        // `--empty` is a hermetic first-run state, never the developer's saved
+        // calendar. This makes empty/error screenshots meaningful and avoids
+        // a prior local draft leaking into visual review.
         let empty = args.iter().any(|a| a == "--empty");
+        let sync_state = parse_flag_value(&args, "--sync-state")
+            .and_then(|value| value.to_str().map(ToOwned::to_owned));
         // Event-form screenshots: `--new-event` opens the New-Event edit form;
         // `--date-popover` / `--calendar-popover` additionally float the date
         // grid / calendar selector over it.
@@ -103,18 +106,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.iter().any(|a| a == "--new-event") || screen.as_deref() == Some("new-event");
         let date_popover = args.iter().any(|a| a == "--date-popover");
         let calendar_popover = args.iter().any(|a| a == "--calendar-popover");
+        let task_detail =
+            args.iter().any(|a| a == "--task-detail") || screen.as_deref() == Some("task");
+        // `--task-picker` opens one direct task-detail chooser for visual
+        // review: `due`, `priority`, or `project`.
+        let task_picker = parse_flag_value(&args, "--task-picker")
+            .and_then(|value| value.to_str().map(ToOwned::to_owned));
         // `--scroll-hour N` pins the week/day timeline scroll to hour N (0 = top
         // of the day, 24 = bottom) so a shot can prove the full 24h scrolls.
         let scroll_hour = parse_flag_value(&args, "--scroll-hour")
             .and_then(|p| p.to_str().and_then(|s| s.trim().parse::<f64>().ok()));
         let build = || {
             if empty {
-                let mut app = CalendarApp::new();
+                let mut app = CalendarApp::new_empty_for_shots();
                 if let Some(v) = view {
                     app.shots_set_view(v);
                 }
                 if let Some(hr) = scroll_hour {
                     app.shots_scroll_timeline(hr);
+                }
+                if let Some(state) = &sync_state {
+                    app.shots_set_sync_state(state);
                 }
                 return Box::new(app) as Box<dyn Widget>;
             }
@@ -125,8 +137,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(hr) = scroll_hour {
                 app.shots_scroll_timeline(hr);
             }
+            if let Some(state) = &sync_state {
+                app.shots_set_sync_state(state);
+            }
             if screen.as_deref() == Some("calendar") {
                 app.shots_show_calendar();
+            }
+            if task_detail {
+                app.shots_show_task_detail();
+            }
+            if let Some(picker) = &task_picker {
+                app.shots_open_task_picker(picker);
             }
             if flap {
                 app.shots_open_flap();

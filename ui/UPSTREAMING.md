@@ -415,10 +415,15 @@ straight swap to the matching `ui::format` fn + deletion of the local copy):
   Camera also divides by 1000. Their precision and zero-value conventions do
   not exactly match `ui::format::bytes_si`, so they remain until that API can
   preserve the caller-visible formatting rather than changing it incidentally.
-- timecode (5): `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`,
-  `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`.
-- compact-count (3): `tube util.rs:human_count`, inline in `monitor`,
-  inline in `store`.
+- timecode: `tube util.rs:clock`+`duration_hms`, `video_editor
+  timecode.rs:clock`, `camera app.rs:fmt_dur`, and `slides
+  presentation.rs:clock` now delegate to `ui::format::timecode`. Video Editor's
+  frame-aware `HH:MM:SS:FF` formatter and Maps' prose route duration (`2 h 15
+  min`) are different semantics and intentionally remain local.
+- compact-count: `tube util.rs:human_count` now delegates to
+  `ui::format::compact_count`. The shared formatter also promotes rounded unit
+  boundaries (`999_999` -> `1M`, never `1000.0K`) and omits redundant `.0`.
+  Inline copies in `monitor` and `store` remain adopters.
 - relative-time (8): `camera app.rs:ago`, `feeds model.rs:relative_time`,
   `git_client repo.rs:relative_time`, `chat model.rs:day_label`,
   `calendar date.rs:relative_label`, `tube ytdlp.rs`, plus `vpn model.rs:human_ago`

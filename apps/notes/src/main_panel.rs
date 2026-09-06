@@ -44,7 +44,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
+use ui::widget::{BlockEditOp, BlockEditor, EditOutcome, EditableLabel, EmptyState};
 
 use crate::model::PageId;
 use crate::num;
@@ -63,6 +63,21 @@ const TITLE_TO_EDITOR_GAP: f64 = 14.0;
 /// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
 /// caret band without clipping descenders.
 const TITLE_HEIGHT: f64 = 44.0;
+
+fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
+        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
+        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
+        BlockKind::Checklist { indent, done } => {
+            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
+        }
+        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
+        BlockKind::Divider => "divider".into(),
+    }
+}
 
 pub struct MainPanel {
     /// Currently displayed page (None until a selection lands). Also the
@@ -120,6 +135,10 @@ pub struct MainPanel {
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
+    /// Semantic deltas emitted by the action-owned editor during an input
+    /// event. The app drains these through `NotesAction::ApplyBlockOps` before
+    /// the next sync; the widget itself never owns a document mutation.
+    pending_block_ops: Vec<BlockEditOp>,
 }
 
 impl MainPanel {
@@ -144,6 +163,7 @@ impl MainPanel {
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
             empty_action_focused: false,
+            pending_block_ops: Vec::new(),
         }
     }
 
@@ -163,6 +183,22 @@ impl MainPanel {
     /// on read.
     pub fn take_title_rename(&mut self) -> Option<String> {
         self.pending_rename.take()
+    }
+
+    /// Accept an assistive-technology value change for the painted page title.
+    /// It deliberately only queues the rename: [`NotesApp`](crate::NotesApp)
+    /// drains it into the same typed page action as a pointer/keyboard commit,
+    /// preserving undo, history and collaboration rather than bypassing them.
+    fn set_title_from_semantics(&mut self, value: &str) -> bool {
+        let value = value.trim();
+        if self.page_id.is_none() || value.is_empty() || self.title_label.value() == value {
+            return false;
+        }
+        self.title_label.cancel();
+        self.title_label.set_value(value);
+        self.pending_rename = Some(value.to_string());
+        self.dirty = true;
+        true
     }
 
     /// Load a page into the panel. The body is parsed and handed to
@@ -228,10 +264,11 @@ impl MainPanel {
 
     /// Bind the panel's editor to a page's `blocks` List in the shared
     /// Automerge document. `body` is the page's markdown, used only to
-    /// **seed** the doc when its block list is still empty (a brand-new
-    /// page); if the doc already has blocks (an existing or remote page)
-    /// the editor adopts them and `body` is ignored. After this, every
-    /// edit syncs through the CRDT and remote edits appear via `sync`.
+    /// adopts an action-seeded list (a brand-new page is seeded by
+    /// `NotesAction::ApplyBlockOps` before this method runs); if the doc
+    /// already has blocks (an existing or remote page) `body` is ignored.
+    /// After this, the editor emits semantic operations for the app action
+    /// host and remote edits appear via `sync`.
     pub fn bind_page(
         &mut self,
         state: &mut AutoCommit,
@@ -247,7 +284,9 @@ impl MainPanel {
         self.editor = BlockEditor::new();
         self.editor.set_blocks(blocks);
         self.editor.set_local_author(self.local_author.clone());
-        // Seeds the doc if empty, otherwise adopts the doc's blocks.
+        self.editor.set_action_interception(true);
+        // The app action-seeds a new document before binding. This only adopts
+        // the action-owned list; it must not create or mutate it itself.
         self.editor.bind_blocks(state, blocks_list);
         self.editor.set_focus(true);
         self.editor
@@ -306,6 +345,36 @@ impl MainPanel {
         self.editor.is_dirty()
     }
 
+    /// Turn markdown into the action payload that seeds an empty durable page.
+    /// The parser mints stable UUIDs once here; the resulting action can be
+    /// replayed identically on every peer without the editor touching Automerge.
+    pub fn seed_block_ops(body: &str) -> Vec<BlockEditOp> {
+        let specs = crate::markdown::parse(body);
+        let blocks = crate::markdown::specs_to_blocks(&specs);
+        let mut after = None;
+        blocks
+            .into_iter()
+            .map(|block| {
+                let id = block.id.clone();
+                let op = BlockEditOp::Insert {
+                    block_id: id.clone(),
+                    after: after.clone(),
+                    kind: block_kind_wire(&block.kind),
+                    text: block.text().to_string(),
+                };
+                after = Some(id);
+                op
+            })
+            .collect()
+    }
+
+    /// Drain local editor changes for the app's canonical action dispatcher.
+    pub fn take_block_ops(&mut self) -> Vec<BlockEditOp> {
+        self.pending_block_ops
+            .extend(self.editor.take_pending_semantic_ops());
+        std::mem::take(&mut self.pending_block_ops)
+    }
+
     /// Re-serialise the editor's content into the cached `body` and
     /// return a clone for persistence. Called by the app's tick when
     /// `editor_is_dirty()` came back true.
@@ -341,6 +410,18 @@ impl MainPanel {
     /// the resulting markdown.
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
         &mut self.editor
+    }
+
+    /// Reveal a block without mutating the collaborative document.
+    pub fn reveal_block(&mut self, index: usize) -> bool {
+        if index >= self.editor.blocks().len() {
+            return false;
+        }
+        self.editor.set_focus(true);
+        self.editor
+            .focus_block(index, ui::widget::CursorPlacement::Start);
+        self.dirty = true;
+        true
     }
 
     /// Test hook: the panel's current vertical scroll offset in px.
@@ -759,6 +840,7 @@ impl Widget for MainPanel {
             }
         }
         if let Some(n) = self.editor_node {
+            self.editor.begin_action_intercept();
             self.editor.handle_event(
                 event,
                 scale_factor,
@@ -770,6 +852,8 @@ impl Widget for MainPanel {
                 n,
                 taffy,
             );
+            self.pending_block_ops
+                .extend(self.editor.take_intercepted_ops());
         }
     }
 
@@ -811,17 +895,31 @@ impl Widget for MainPanel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        self.page_id.is_none().then(|| {
-            AccessNode::new(Role::Button)
-                .with_name("New note")
-                .with_description("Create the first note in this workspace")
-                .with_action_target("notes.first_note")
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.empty_action_focused,
-                    ..Default::default()
-                })
-        })
+        if self.page_id.is_none() {
+            return Some(
+                AccessNode::new(Role::Button)
+                    .with_name("New note")
+                    .with_description("Create the first note in this workspace")
+                    .with_action_target("notes.first_note")
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.empty_action_focused,
+                        ..Default::default()
+                    }),
+            );
+        }
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_name("Page title")
+                .with_value(self.title_label.current_text())
+                .with_action_target("notes.page-title")
+                .with_bounds(self.title_rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.title_label.is_editing()),
+                ),
+        )
     }
 
     fn perform_action(
@@ -835,6 +933,16 @@ impl Widget for MainPanel {
             self.empty_action_focused = true;
             self.dirty = true;
             true
+        } else if self.page_id.is_some() {
+            match action {
+                ui::a11y::Action::Activate | ui::a11y::Action::Focus => {
+                    self.title_label.begin_edit();
+                    self.dirty = true;
+                    true
+                }
+                ui::a11y::Action::SetValue(value) => self.set_title_from_semantics(value),
+                _ => false,
+            }
         } else {
             false
         }
@@ -885,6 +993,26 @@ mod tests {
         p.mark_drawn();
         p.set_title(Some("Hello".into()));
         assert!(!p.needs_redraw());
+    }
+
+    #[test]
+    fn accessible_page_title_queues_the_same_rename_boundary() {
+        let mut panel = MainPanel::new();
+        let id = fresh_page_id();
+        panel.load_page(id, "Launch", String::new());
+        let node = panel
+            .accessibility()
+            .expect("open pages expose their title");
+        assert_eq!(node.role, ui::a11y::Role::TextInput);
+        assert_eq!(node.action_target.as_deref(), Some("notes.page-title"));
+
+        let mut doc = AutoCommit::new();
+        assert!(panel.perform_action(
+            &ui::a11y::Action::SetValue("Launch plan".into()),
+            &mut doc,
+            &ObjId::Root,
+        ));
+        assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
     }
 
     #[test]

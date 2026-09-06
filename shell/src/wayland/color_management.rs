@@ -90,11 +90,11 @@ pub struct ColorManagerState {
 impl Default for ColorManagerState {
     fn default() -> Self {
         Self {
-            // BT.709 / sRGB (=1) and BT.2020 (=6). Display-P3 (=9) is
-            // covered by the wgpu backend but only enabled when the
-            // output's EDID actually advertises P3 (see the follow-up
-            // TODO in ColorManagementOutputData).
-            supported_primaries: vec![1, 6],
+            // Named input spaces the compositor's color pipeline accepts.
+            // These are renderer capabilities, not a claim that every sink
+            // physically covers each gamut: the output description below is
+            // populated independently from that output's EDID/profile.
+            supported_primaries: vec![1, 6, 9],
             // BT.1886 (=1), gamma22 (=2), ST 2084 PQ (=11), HLG (=13).
             // The v1 spec's `srgb` (=9) is deprecated since v2; we
             // don't advertise it — clients get gamma22 or the sibling
@@ -475,8 +475,8 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
-    // Retained, not yet read: `get_image_description` still answers from
-    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
+    // Retains the protocol object this descriptor belongs to. Color metadata
+    // is updated separately by the DRM output/profile path below.
     #[allow(dead_code)]
     output: WlOutput,
     /// Colorimetry the compositor tells clients this output actually
@@ -529,8 +529,8 @@ impl ColorManagementOutputData {
 /// which surface to mutate.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceUserData {
-    // Retained, not yet read: `get_image_description` still answers from
-    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
+    // Retains the protocol surface identity; pending/current color state lives
+    // in the compositor surface data map and is applied on wl_surface.commit.
     #[allow(dead_code)]
     surface: WlSurface,
 }
@@ -548,8 +548,7 @@ impl ColorManagementSurfaceUserData {
 /// back the compositor's preferred description.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceFeedbackData {
-    // Retained, not yet read: `get_image_description` still answers from
-    // a synthesised profile pending `wayland::edid::parse_hdr_display_info`.
+    // Retains the surface identity for preferred-description feedback.
     #[allow(dead_code)]
     surface: WlSurface,
 }
@@ -1212,6 +1211,10 @@ mod tests {
                 .contains(&(Primaries::Bt2020 as u32))
         );
         assert!(cfg.supported_primaries.contains(&(Primaries::Srgb as u32)));
+        assert!(
+            cfg.supported_primaries
+                .contains(&(Primaries::DisplayP3 as u32))
+        );
         assert!(
             cfg.supported_transfers
                 .contains(&(TransferFunction::St2084Pq as u32))

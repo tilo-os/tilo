@@ -199,7 +199,6 @@ impl Hydrator {
             .filter(|peer| !any_ready || peer.retry_after <= now)
             .cloned()
             .collect();
-        drop(peers);
         ranked.sort_by_key(|peer| {
             (
                 peer.consecutive_failures,
@@ -207,6 +206,7 @@ impl Hydrator {
                 peer.addr.id,
             )
         });
+        drop(peers);
         ranked.into_iter().map(|peer| peer.addr).collect()
     }
 
@@ -217,6 +217,7 @@ impl Hydrator {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == id) else {
+            drop(peers);
             return;
         };
         if success {
@@ -224,14 +225,17 @@ impl Hydrator {
             peer.consecutive_failures = 0;
             peer.retry_after = now;
             peer.latency = Some(peer.latency.map_or(elapsed, |old| {
-                old.saturating_mul(3).saturating_add(elapsed).div_f64(4.0)
+                old.saturating_mul(3)
+                    .saturating_add(elapsed)
+                    .checked_div(4)
+                    .unwrap_or(Duration::ZERO)
             }));
         } else {
             peer.consecutive_failures = peer.consecutive_failures.saturating_add(1);
             let exponent = peer.consecutive_failures.min(6);
-            let multiplier = 1_u64.checked_shl(u32::from(exponent)).unwrap_or(u64::MAX);
-            let delay = Duration::from_millis(250_u64.saturating_mul(multiplier));
-            peer.retry_after = now.checked_add(delay).unwrap_or(now);
+            let delay =
+                250_u64.saturating_mul(1_u64.checked_shl(u32::from(exponent)).unwrap_or(u64::MAX));
+            peer.retry_after = now.checked_add(Duration::from_millis(delay)).unwrap_or(now);
         }
         drop(peers);
     }
@@ -333,8 +337,9 @@ impl Hydrator {
                 for (index, peer) in peers.into_iter().enumerate() {
                     attempts.push(async move {
                         if index > 0 {
-                            let multiplier = u32::try_from(index).unwrap_or(u32::MAX);
-                            tokio::time::sleep(HEDGE_DELAY.saturating_mul(multiplier)).await;
+                            let delay = u32::try_from(index)
+                                .map_or(Duration::MAX, |index| HEDGE_DELAY.saturating_mul(index));
+                            tokio::time::sleep(delay).await;
                         }
                         self.fetch_from(hash, peer).await
                     });
@@ -449,8 +454,7 @@ impl Hydrator {
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest or any required chunk cannot be
-    /// fetched, verified, decoded, or persisted.
+    /// Returns an error when a required manifest or chunk cannot be hydrated.
     pub async fn prefetch_with_progress(
         &self,
         manifest_hash: Hash,
@@ -760,16 +764,15 @@ mod tests {
         hydrator.add_peer(fresh.clone());
         assert_eq!(hydrator.known_peers(), vec![fresh]);
 
-        let stale_time = Instant::now()
-            .checked_sub(PEER_STALE_AFTER.saturating_add(Duration::from_secs(1)))
-            .unwrap_or_else(Instant::now);
         hydrator
             .peers
             .write()
             .unwrap()
             .first_mut()
             .unwrap()
-            .last_seen = stale_time;
+            .last_seen = Instant::now()
+            .checked_sub(PEER_STALE_AFTER.saturating_add(Duration::from_secs(1)))
+            .expect("test monotonic clock has sufficient range");
         assert!(hydrator.known_peers().is_empty());
     }
 

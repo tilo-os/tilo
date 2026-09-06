@@ -66,6 +66,7 @@
     )
 )]
 
+pub mod actions;
 pub mod api;
 pub mod app;
 pub mod chart;

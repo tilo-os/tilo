@@ -41,9 +41,9 @@
 //!
 //! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this
 //! client applies + replicates; peers replay) or `ServerPreferred`
-//! (route to a host). [`dispatch`](executor::dispatch) honours it
-//! against an [`ActionTransport`](executor::ActionTransport), falling
-//! back to local execution when no host answers.
+//! (route to an authoritative host). [`dispatch`](executor::dispatch) honours
+//! it against an [`ActionTransport`](executor::ActionTransport) and refuses
+//! the operation when no host answers.
 //!
 //! ## Sharing this vocabulary with the compositor
 //!
@@ -84,6 +84,7 @@ pub mod contract;
 pub mod door;
 pub mod envelope;
 pub mod executor;
+pub mod interaction;
 pub mod optimistic;
 pub mod outcome;
 pub mod params;
@@ -108,10 +109,16 @@ pub use executor::{
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
     dispatch_with_context, replay,
 };
+pub use interaction::{
+    INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
+    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionTextRange,
+    InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES,
+    MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
+};
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
-    ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, InvocationId, InvocationUpdate,
-    content_hash, content_resource,
+    ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
+    InvocationUpdate, content_hash, content_resource,
 };
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType,
@@ -222,6 +229,49 @@ mod tests {
         assert_eq!(bv.to_i64(), av.to_i64());
     }
 
+    /// Two peers can author from the same base and receive each other's
+    /// envelopes after their own action has already advanced the live doc.
+    /// Replay must still reproduce each action at its recorded base and merge
+    /// the resulting CRDT change; applying either payload directly to the
+    /// newer live state would make document-reading actions order-dependent.
+    #[test]
+    fn concurrent_envelopes_replay_from_their_recorded_base() {
+        let (mut a, mut b) = two_replicas();
+        let left = Counter::Put {
+            key: "left".into(),
+            value: 1,
+        };
+        let right = Counter::Put {
+            key: "right".into(),
+            value: 2,
+        };
+
+        let left_env = apply_local(
+            &mut a,
+            &left,
+            EncodedAction::encode(COUNTER_TYPE, &left).unwrap(),
+        )
+        .unwrap();
+        let right_env = apply_local(
+            &mut b,
+            &right,
+            EncodedAction::encode(COUNTER_TYPE, &right).unwrap(),
+        )
+        .unwrap();
+
+        replay(&mut a, &right_env, &registry()).unwrap();
+        replay(&mut b, &left_env, &registry()).unwrap();
+
+        assert_eq!(a.get_heads(), b.get_heads());
+        for doc in [&a, &b] {
+            assert_eq!(doc.get(&ROOT, "left").unwrap().unwrap().0.to_i64(), Some(1));
+            assert_eq!(
+                doc.get(&ROOT, "right").unwrap().unwrap().0.to_i64(),
+                Some(2)
+            );
+        }
+    }
+
     /// The replayed change is content-addressed *identical* to the origin's,
     /// so if the replicas later exchange native Automerge changes (ordinary
     /// CRDT sync) the duplicate dedupes instead of double-applying — why
@@ -234,12 +284,9 @@ mod tests {
             value: "vid1".into(),
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
-        // Append is ServerPreferred; with the local (no-host) transport it
-        // falls back to a local apply. Grab that envelope.
-        let mut tx = LocalTransport::new();
-        let d = dispatch(&mut a, &action, encoded, &mut tx).unwrap();
-        assert!(matches!(d, Dispatched::AppliedLocalFallback(_)));
-        let env = d.envelope().clone();
+        // This test is about deterministic replay, not locus routing; apply it
+        // explicitly at the origin and retain the resulting envelope.
+        let env = apply_local(&mut a, &action, encoded).unwrap();
 
         // B replays the envelope -> reproduces the identical change.
         replay(&mut b, &env, &registry()).unwrap();
@@ -315,25 +362,24 @@ mod tests {
     }
 
     #[test]
-    fn server_preferred_falls_back_local_without_host() {
+    fn server_preferred_refuses_without_host() {
         let (mut a, _) = two_replicas();
+        let before = a.get_heads();
         let action = Counter::Append {
             key: "queue".into(),
             value: "vidY".into(),
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
         let mut tx = LocalTransport::new();
-        let d = dispatch(&mut a, &action, encoded, &mut tx).unwrap();
-        assert!(matches!(d, Dispatched::AppliedLocalFallback(_)));
-        assert!(d.mutated_local());
-        assert_eq!(tx.replicated.len(), 1);
-        // The append landed in the list.
-        let (val, list) = a.get(&ROOT, "queue").unwrap().unwrap();
-        assert!(matches!(
-            val,
-            automerge::Value::Object(automerge::ObjType::List)
-        ));
-        assert_eq!(a.length(&list), 1);
+        let error = dispatch(&mut a, &action, encoded, &mut tx).unwrap_err();
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert_eq!(
+            a.get_heads(),
+            before,
+            "an unavailable host grants no authority"
+        );
+        assert!(tx.replicated.is_empty());
+        assert!(a.get(&ROOT, "queue").unwrap().is_none());
     }
 
     #[test]

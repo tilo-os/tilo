@@ -486,6 +486,11 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
 }
 
+/// Hard result budget shared by both PDF backends. The find UI and resource
+/// projection remain responsive even for adversarial documents containing a
+/// match at every character; users can refine the query to narrow it.
+pub const MAX_SEARCH_RESULTS: usize = 500;
+
 /// True when the byte at `idx` (or just before it) is part of a "word":
 /// ASCII letters, digits and underscore. Used for whole-word boundaries.
 fn is_word_byte(bytes: &[u8], idx: usize) -> bool {
@@ -536,6 +541,9 @@ pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
                         start,
                         len: needle.len(),
                     });
+                    if out.len() >= MAX_SEARCH_RESULTS {
+                        return out;
+                    }
                 }
                 from = start + needle.len().max(1);
             }
@@ -914,6 +922,16 @@ mod tests {
         let d = sample_document();
         assert!(search(&d, "   ", SearchOptions::default()).is_empty());
         assert!(search(&d, "", SearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn search_materialization_is_bounded() {
+        let mut d = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
+        d.pages[0].blocks = vec![Block::Body("a ".repeat(MAX_SEARCH_RESULTS + 100))];
+        assert_eq!(
+            search(&d, "a", SearchOptions::default()).len(),
+            MAX_SEARCH_RESULTS
+        );
     }
 
     #[test]

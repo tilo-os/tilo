@@ -211,7 +211,7 @@ pub fn is_p2p_available() -> bool {
 /// bidirectional stream, exactly as `fs/src/sync.rs` does it.
 #[cfg(feature = "p2p")]
 pub mod live {
-    use super::*;
+    use super::{AutoCommit, LibrarySync};
 
     /// The iroh-backed library sync. This is the seam where a real endpoint
     /// is bound and peers/clients are dialed; the convergence logic itself is
@@ -262,7 +262,7 @@ pub mod live {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AutoCommit, LibrarySync, LoopbackSync, converge, default_sync, is_p2p_available};
     use crate::{doc, seed};
 
     fn seeded() -> AutoCommit {

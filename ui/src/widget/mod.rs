@@ -122,6 +122,21 @@ pub(crate) fn collect_widget_resources(
     widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
 }
 
+/// Resolve one lazily published resource from the retained widget tree.
+pub(crate) fn resolve_widget_resource(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<qos_actions::Resource> {
+    if let Some(resource) = widget.resource(doc, id) {
+        return Some(resource);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| resolve_widget_resource(child, doc, id))
+}
+
 /// Last-resort accessible label for controls whose constructor already
 /// requires a stable id. Explicit localized names remain preferable, but a
 /// standard control should never become silent merely because an author did
@@ -929,6 +944,20 @@ pub trait Widget {
         None
     }
 
+    /// Apply the effective reduced-motion preference before the host asks this
+    /// subtree whether it needs another animation frame. The default forwards
+    /// recursively, making the preference a framework policy instead of an
+    /// optional convention that every container has to remember to implement.
+    ///
+    /// Custom-painted roots with app-local animation state should override
+    /// this, settle any in-flight decorative transitions when `reduced` is
+    /// true, and then forward to retained child widgets if they have any.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
+    }
+
     /// Inverse of [`Self::record_intent`]. A widget that publishes
     /// presence **must** fold this into its presence key — two instances
     /// of one app are two records, and a key that only names the field
@@ -963,6 +992,12 @@ pub trait Widget {
     /// living in the CRDT.
     fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         Vec::new()
+    }
+
+    /// Resolve an addressable resource omitted from the contextual snapshot.
+    /// Large apps override this through their `ResourceProvider` index.
+    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<qos_actions::Resource> {
+        None
     }
 
     /// Folded into the unified Ctrl+K palette alongside
@@ -1125,6 +1160,29 @@ pub trait Widget {
         }
         self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
             .map(|result| result.map(ResourceOperationStart::Completed))
+    }
+
+    /// Admit an operation that may need to commit a document follow-up after
+    /// completing device I/O. The mutable document is deliberately available
+    /// only at this top-level admission boundary: ordinary effect handlers
+    /// inherit the read-only adapter above, while a compound operation can
+    /// perform its effect and dispatch the exact replayable metadata action in
+    /// one host-owned turn instead of publishing a permanently disabled UI.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same admission/operation failures as
+    /// [`Self::start_resource_operation`].
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
     }
 
     /// Poll one admitted operation without blocking the UI thread.
@@ -1449,7 +1507,8 @@ pub mod rich_text_editor;
 pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
-    Block, BlockEditor, BlockKind, CursorPlacement, DocumentPosition, DocumentSelection,
+    Block, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
+    DocumentSelection, legacy_block_id,
 };
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;
@@ -1516,7 +1575,7 @@ pub use progress_bar::ProgressBar;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod date_picker;
-pub use date_picker::DatePicker;
+pub use date_picker::{DatePicker, ExternalDatePickerHit};
 pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;

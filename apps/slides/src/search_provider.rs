@@ -1,77 +1,200 @@
-//! Slides as a qOS global-search source.
+//! Slides' complete, cursor-paged global-search index.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the deck editor declares
-//! its searchable type by implementing [`SearchProvider`] over a snapshot of
-//! the deck, so a slide is findable from the unified Ctrl+K palette by any of
-//! its text — the title/body of its text boxes and its speaker notes.
-//! Activating a row hands back an opaque `action_id` (the slide's stable id)
-//! the app resolves to an index and jumps to.
-//!
-//! Slides carry no dedicated title field; the "title" shown for a result is the
-//! first non-empty text box, falling back to the slide number.
+//! The index retains the entire durable deck corpus, while the palette only
+//! receives bounded pages. Every row names a canonical resource action and is
+//! lazily re-resolved against the current deck before activation.
 
+use std::collections::BTreeSet;
+
+use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
+};
 
-use crate::model::{Deck, ElementKind, Slide};
+use crate::actions::{self, ElementResource, SlideResource, SlidesResourceCtx};
+use crate::model::{Deck, Element, ElementKind, Slide};
 
-/// The kind label (and result-group header) Slides produces.
 pub const SLIDE_KIND: &str = "Slides";
+pub const ELEMENT_KIND: &str = "Slide elements";
+pub const TEXT_KIND: &str = "Slide text";
+pub const NOTES_KIND: &str = "Speaker notes";
 
-/// The `action_id` prefix. A chosen row's `action_id` is `slide:<id>`;
-/// [`parse_action_id`] turns it back into the slide id.
-const ACTION_PREFIX: &str = "slide:";
-
-/// A [`SearchProvider`] over a snapshot of the deck's slides.
+/// A cheap-to-clone, incrementally refreshed full-deck catalogue. The app owns
+/// one instance and refreshes it only when its CRDT mirror changes; providers
+/// handed to Ctrl+K therefore share the cached postings rather than rebuilding
+/// a large index for each frame.
+#[derive(Clone)]
 pub struct SlideSearchProvider {
-    slides: Vec<Slide>,
+    catalog: SearchCatalog,
+    deck: Deck,
+    indexed_ids: BTreeSet<String>,
 }
 
 impl SlideSearchProvider {
-    /// Snapshot the current deck into a provider.
     pub fn new(deck: &Deck) -> Self {
-        Self {
-            slides: deck.slides.clone(),
+        let mut provider = Self {
+            catalog: SearchCatalog::new(SLIDE_KIND),
+            deck: Deck {
+                title: String::new(),
+                palette: crate::model::PaletteKind::Indigo,
+                slides: Vec::new(),
+            },
+            indexed_ids: BTreeSet::new(),
+        };
+        provider.refresh(deck);
+        provider
+    }
+
+    /// Apply a complete deck mirror to the catalogue incrementally. Existing
+    /// ids retain their order; only changed, inserted, or removed records touch
+    /// postings. This runs off the CRDT reload boundary, never per keystroke.
+    pub fn refresh(&mut self, deck: &Deck) {
+        let mut live = BTreeSet::new();
+        for (index, slide) in deck.slides.iter().enumerate() {
+            let number = index + 1;
+            let title = Self::slide_title(slide, index);
+            self.upsert(
+                &mut live,
+                actions::slide_resource_id(&slide.id),
+                Self::slide_haystack(slide),
+                SearchResult::for_action(
+                    SLIDE_KIND,
+                    title.clone(),
+                    actions::open_slide_address(&slide.id),
+                )
+                .with_subtitle(format!("Slide {number}"))
+                .with_icon(Icon::Layers),
+            );
+            for element in &slide.elements {
+                self.upsert(
+                    &mut live,
+                    actions::element_resource_id(&element.id),
+                    Self::element_haystack(element),
+                    SearchResult::for_action(
+                        ELEMENT_KIND,
+                        element.kind.label(),
+                        actions::open_element_address(&element.id),
+                    )
+                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_icon(Icon::Layers),
+                );
+                if element.kind == ElementKind::Text && !element.text.trim().is_empty() {
+                    self.upsert(
+                        &mut live,
+                        actions::text_resource_id(&element.id),
+                        &element.text,
+                        SearchResult::for_action(
+                            TEXT_KIND,
+                            Self::preview(&element.text),
+                            actions::open_text_address(&element.id),
+                        )
+                        .with_subtitle(format!("{title} · Slide {number}"))
+                        .with_icon(Icon::FileText),
+                    );
+                }
+            }
+            if !slide.notes.trim().is_empty() {
+                self.upsert(
+                    &mut live,
+                    actions::notes_resource_id(&slide.id),
+                    &slide.notes,
+                    SearchResult::for_action(
+                        NOTES_KIND,
+                        Self::preview(&slide.notes),
+                        actions::open_notes_address(&slide.id),
+                    )
+                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_icon(Icon::FileText),
+                );
+            }
+        }
+        for removed in self.indexed_ids.difference(&live) {
+            self.catalog.remove(removed);
+        }
+        self.indexed_ids = live;
+        self.deck = deck.clone();
+    }
+
+    fn upsert(
+        &self,
+        live: &mut BTreeSet<String>,
+        id: String,
+        text: impl AsRef<str>,
+        result: SearchResult,
+    ) {
+        // The id and action are assembled together above. Refuse an invalid
+        // record rather than offering a private navigation route if that ever
+        // changes.
+        if self.catalog.upsert(&id, text, result).is_ok() {
+            live.insert(id);
         }
     }
 
-    /// The `action_id` for a slide — what a chosen row hands back.
-    pub fn action_id(id: &str) -> String {
-        format!("{ACTION_PREFIX}{id}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back into a slide id.
-    pub fn parse_action_id(action_id: &str) -> Option<&str> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .filter(|s| !s.is_empty())
-    }
-
-    /// The first non-empty text box on the slide — used as its title.
     fn slide_title(slide: &Slide, index: usize) -> String {
         slide
             .elements
             .iter()
-            .filter(|e| e.kind == ElementKind::Text)
-            .map(|e| e.text.trim())
-            .find(|t| !t.is_empty())
+            .filter(|element| element.kind == ElementKind::Text)
+            .map(|element| element.text.trim())
+            .find(|text| !text.is_empty())
             .map_or_else(
                 || format!("Slide {}", index + 1),
-                |t| t.lines().next().unwrap_or(t).to_string(),
+                |text| text.lines().next().unwrap_or(text).to_string(),
             )
     }
 
-    /// All searchable text on a slide: every text box plus the speaker notes.
     fn slide_haystack(slide: &Slide) -> String {
-        let mut s = String::new();
-        for e in &slide.elements {
-            if e.kind == ElementKind::Text && !e.text.is_empty() {
-                s.push_str(&e.text);
-                s.push('\n');
-            }
+        let mut text = slide
+            .elements
+            .iter()
+            .filter(|element| element.kind == ElementKind::Text)
+            .map(|element| element.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.push('\n');
+        text.push_str(&slide.notes);
+        text
+    }
+
+    fn preview(text: &str) -> String {
+        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.chars().count() > 72 {
+            collapsed.chars().take(69).collect::<String>() + "…"
+        } else {
+            collapsed
         }
-        s.push_str(&slide.notes);
-        s
+    }
+
+    fn element_haystack(element: &Element) -> String {
+        format!("{} {}", element.kind.label(), element.src)
+    }
+
+    fn resource_context(&self) -> SlidesResourceCtx {
+        let slides = self
+            .deck
+            .slides
+            .iter()
+            .enumerate()
+            .map(|(idx, slide)| SlideResource {
+                idx,
+                data: actions::SlideData::from_slide(slide),
+                elements: slide
+                    .z_sorted()
+                    .into_iter()
+                    .map(|element| ElementResource {
+                        id: element.id.clone(),
+                        kind: element.kind,
+                        text: element.text.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        SlidesResourceCtx {
+            deck_title: self.deck.title.clone(),
+            slides,
+        }
     }
 }
 
@@ -81,117 +204,164 @@ impl SearchProvider for SlideSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let q = query.to_lowercase();
-        self.slides
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| q.is_empty() || Self::slide_haystack(s).to_lowercase().contains(&q))
-            .map(|(i, s)| {
-                let subtitle = if s.notes.trim().is_empty() {
-                    format!("Slide {}", i + 1)
-                } else {
-                    format!("Slide {} · notes", i + 1)
-                };
-                SearchResult::new(SLIDE_KIND, Self::slide_title(s, i), Self::action_id(&s.id))
-                    .with_subtitle(subtitle)
-                    .with_icon(Icon::Layers)
-            })
-            .collect()
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+        actions::resolve_resource(&self.resource_context(), &address.resource)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ROOT};
     use ui::search::SearchRegistry;
+    use ui::widget::Widget;
 
-    fn seeded() -> Deck {
-        crate::model::seed_deck()
+    fn large_deck(count: usize, last: &str) -> Deck {
+        let mut deck = Deck {
+            title: "Large deck".into(),
+            palette: crate::model::PaletteKind::Indigo,
+            slides: Vec::new(),
+        };
+        for index in 0..count {
+            let mut slide = Slide::new(crate::model::Layout::Blank);
+            let text = if index + 1 == count {
+                last
+            } else {
+                "common opening routine material"
+            };
+            slide.add(Element::text(text, 0.0, 0.0, 100.0, 50.0, 12.0));
+            deck.slides.push(slide);
+        }
+        deck
     }
 
     #[test]
-    fn provider_finds_a_slide_by_its_text() {
-        let deck = seeded();
-        let provider = SlideSearchProvider::new(&deck);
-        // Pull a real word from the first slide's first text box.
+    fn provider_finds_slide_and_exact_text_resource() {
+        let deck = crate::model::seed_deck();
         let first = &deck.slides[0];
-        let word = first
+        let element = first
             .elements
             .iter()
-            .find(|e| e.kind == ElementKind::Text && !e.text.trim().is_empty())
-            .and_then(|e| e.text.split_whitespace().next())
-            .expect("the seeded deck has text");
-        let hits = provider.search(word);
-        assert!(!hits.is_empty(), "a real slide word surfaces a slide row");
-        assert!(hits.iter().all(|r| r.kind == SLIDE_KIND));
-    }
-
-    #[test]
-    fn empty_query_browses_every_slide() {
-        let deck = seeded();
-        let provider = SlideSearchProvider::new(&deck);
-        assert_eq!(provider.search("").len(), deck.slides.len());
-    }
-
-    #[test]
-    fn action_id_round_trips_to_the_chosen_slide() {
-        let deck = seeded();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(SlideSearchProvider::new(&deck)));
-        let target = &deck.slides[2];
-        let hit = registry
-            .query("")
-            .into_iter()
-            .find(|r| r.action_id == SlideSearchProvider::action_id(&target.id))
-            .expect("the slide is browsable through the registry");
-        let id = SlideSearchProvider::parse_action_id(&hit.action_id).unwrap();
+            .find(|element| element.kind == ElementKind::Text && !element.text.trim().is_empty())
+            .unwrap();
+        let word = element.text.split_whitespace().next().unwrap();
+        let hits = SlideSearchProvider::new(&deck).search(word);
+        assert!(hits.iter().any(|hit| hit.kind == SLIDE_KIND));
         assert_eq!(
-            deck.index_of(id),
-            Some(2),
-            "the id resolves back to the right slide index"
+            hits.iter()
+                .find(|hit| hit.kind == TEXT_KIND)
+                .unwrap()
+                .action_address(),
+            Some(actions::open_text_address(&element.id))
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(SlideSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(SlideSearchProvider::parse_action_id("slide:").is_none());
+    fn late_match_is_reachable_through_bounded_cursor_pages() {
+        let provider =
+            SlideSearchProvider::new(&large_deck(4_200, "common opening nebula lantern finale"));
+        let mut cursor = None;
+        let mut found = false;
+        for _ in 0..240 {
+            let page = provider.search_page("", cursor.as_ref(), 64, 64);
+            assert!(page.inspected <= 64);
+            found |= page
+                .results
+                .iter()
+                .any(|hit| hit.kind == TEXT_KIND && hit.title.contains("nebula"));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(found, "a late durable record is eventually reachable");
     }
 
     #[test]
-    fn widget_hooks_find_then_navigate_to_the_slide() {
-        use automerge::{AutoCommit, ROOT};
-        use ui::widget::Widget;
+    fn refresh_removes_stale_resources_instead_of_rebinding_them() {
+        let mut deck = large_deck(2, "needle");
+        let stale_id = deck.slides[1].elements[0].id.clone();
+        let mut provider = SlideSearchProvider::new(&deck);
+        assert!(
+            provider
+                .resolve_action_resource(&actions::open_text_address(&stale_id))
+                .is_some()
+        );
+        deck.slides.pop();
+        provider.refresh(&deck);
+        assert!(provider.search("needle").is_empty());
+        assert!(
+            provider
+                .resolve_action_resource(&actions::open_text_address(&stale_id))
+                .is_none()
+        );
+    }
 
+    #[test]
+    fn every_hit_carries_a_canonical_action_address() {
+        let deck = crate::model::seed_deck();
+        let mut registry = SearchRegistry::new();
+        registry.register(Box::new(SlideSearchProvider::new(&deck)));
+        let word = deck.slides[0].elements[0]
+            .text
+            .split_whitespace()
+            .next()
+            .unwrap();
+        let hits = registry.query(word);
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|hit| hit.action_address().is_some()));
+    }
+
+    #[test]
+    fn search_address_resolves_through_the_published_resource_tree() {
         let mut app = crate::app::SlidesApp::demo(None);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-
-        // Browse the app's OWN provider: it emits one row per slide in deck
-        // order, so the 3rd row is the app's real slide-index 2 (its ids are
-        // whatever the CRDT reload produced).
-        let target_idx = 2usize;
-        let action_id = {
-            let providers = app.search_providers();
-            assert!(!providers.is_empty(), "slides publishes a search provider");
-            let rows = providers[0].search("");
-            assert!(
-                rows.len() > target_idx,
-                "the seeded deck has several slides"
-            );
-            rows[target_idx].action_id.clone()
-        };
-        assert_ne!(
-            app.current_slide(),
-            target_idx,
-            "not already on the target slide"
+        let target = app.resources(&doc)[0].children[2].id.0.clone();
+        let slide_id = target.strip_prefix("slides.slide:").unwrap();
+        let hit = app.search_providers()[0]
+            .search("")
+            .into_iter()
+            .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))
+            .unwrap();
+        let address = hit.action_address().unwrap();
+        let resource = app.resource(&doc, &address.resource).unwrap();
+        let encoded = qos_actions::door::encode(&[resource], &address, None).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT
+            )
+            .unwrap()
         );
-
-        app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(
-            app.current_slide(),
-            target_idx,
-            "activation navigated to the chosen slide"
-        );
+        assert_eq!(app.current_slide(), 2);
     }
 }

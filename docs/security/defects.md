@@ -398,8 +398,32 @@ guarantee is that the group key rotates on *every* membership change; removal is
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
 
-Also: `channel-crypto` is a **dev-dependency** of `shell` (`shell/Cargo.toml:251`), so MLS is
-compiled only for tests and is absent from production builds.
+Historically `channel-crypto` was a **dev-dependency** of `shell`, so MLS was
+compiled only for tests and absent from application endpoints.
+
+**Library defect resolved; production integration remains open.**
+`ChannelGroup::remove_member` now creates and merges an OpenMLS removal commit
+and returns its serialized bytes for fan-out. Existing members process the same
+commit, and the removed member becomes inactive after processing it. The
+two-member convenience admission now refuses once an existing peer would need
+a commit, so multi-party admission cannot silently discard epoch state. Held by
+`third_member_joins::removal_commit_advances_survivors_and_excludes_removed_member`
+and `multi_party_add_cannot_drop_the_commit`. Production brokers now validate
+route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
+`ui::collaboration` can encrypt/decrypt after a trusted caller installs the
+exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
+atomic OpenMLS state, signed revision-bound governance frames, a durable
+targeted Welcome/commit/removal journal, partial-failure rollback, and a
+snapshot-acknowledged plaintext gate. The shell now has a broker-internal,
+handle-only workspace authority transaction with idempotency and crash recovery
+tying those primitives to role admission/revocation. Production broker startup
+installs the Secret Service provider without a file-key fallback. Its document
+store fsyncs encrypted compaction snapshots before minting route-bound receipts;
+restart, wrong-route and tamper behavior are covered by hermetic provider tests.
+The remaining work is user-facing device/member provisioning and recovery UX,
+plus an authenticated peer-control adapter that drains and acknowledges the
+already durable targeted governance outbox. The ciphertext document relay is
+intentionally not that adapter; it must never broadcast Welcome bytes.
 
 ---
 
@@ -417,6 +441,18 @@ in `shell/`, `ui/`, or `apps/`. Roles are therefore advisory in practice.
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
 tests. `ui/src/widget/channel_browser.rs` is a complete widget with no shell call site.
 
+**Resolved.** Both production ingress paths now call
+`validate_admitted_inbound_op` before recording or fanning out an operation.
+The network broker validates the certified route and current workspace role;
+the Cap'n Proto broker uses the independently admitted join identity and the
+same artifact state. Invalid signatures, stale/replayed operations, route
+mismatches, role violations and already-redacted targets are rejected before
+publication. The old `register_channel_state` observation described a previous
+bootstrap shape; current authority is populated from admitted workspace state
+at the ingress boundary instead of trusting an app-supplied role attestation.
+Held by the broker ingress tests in `collab_broker.rs` and
+`collab_broker_capnp.rs` plus `collab-types/tests/validator.rs`.
+
 ---
 
 ## P1-5 — No lock on suspend; idle auto-lock off by default
@@ -428,6 +464,13 @@ can lock before the machine sleeps"* — which is not implemented.
 
 `shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `QOS_IDLE_LOCK_SECS`.
+
+**Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
+`PowerSignal::Lock` before sleep, while the resume edge resets idle state.
+The compositor defaults both blanking and locking to five minutes; an explicit
+`QOS_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
+sleep-edge mapping and secure default, and `shell/tests/session_lock_e2e.rs`
+drives idle lock plus failed and successful unlock through the live loop.
 
 ---
 
@@ -646,6 +689,14 @@ mechanism is how a strong one gets "simplified" later.
 `os/usr/libexec/qos-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
 `SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
+
+**Resolved.** Required-invariant failures now accumulate and return a non-zero
+health result. The unit is wanted rather than required, so this remains
+diagnostic and cannot strand the user during boot, but system health, logs and
+agents can no longer mistake a failed audit for success. The image-policy check
+binds the qOS registry scope, `sigstoreSigned` rule, pinned key path and the
+installed non-empty verification key instead of accepting an unrelated string.
+Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 

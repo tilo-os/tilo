@@ -29,8 +29,8 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    Resource, RetryPolicy,
+    ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec, ControlInvocation,
+    EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -38,13 +38,15 @@ use ui::webview::test_engine::TestEngine;
 use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent, normalise_url};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, IconDescriptor, ProgressBar, Row, TextInput,
-    TextInputKind, WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, EmptyState, IconDescriptor, ProgressBar, Row,
+    ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind, WebView, Widget,
 };
 
+use crate::actions::{BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id};
 use crate::address_overlay::AddressSuggestions;
 use crate::history::History;
-use crate::settings::{Settings, SettingsPane};
+use crate::library::Bookmarks;
+use crate::settings::{Settings, SettingsActionBindings, SettingsPane};
 
 /// CRDT path for the address-bar text.
 const URL_PATH: &str = "browser.url";
@@ -54,6 +56,39 @@ const FORWARD_FLAG: &str = "browser.forward_clicked";
 const RELOAD_FLAG: &str = "browser.reload_clicked";
 /// Gear button → toggle the settings pane.
 const SETTINGS_FLAG: &str = "browser.settings_clicked";
+const LIBRARY_FLAG: &str = "browser.library_clicked";
+const LIBRARY_HISTORY_FLAG: &str = "browser.library.history_clicked";
+const LIBRARY_BOOKMARKS_FLAG: &str = "browser.library.bookmarks_clicked";
+const LIBRARY_DOWNLOADS_FLAG: &str = "browser.library.downloads_clicked";
+const LIBRARY_EXTENSIONS_FLAG: &str = "browser.library.extensions_clicked";
+const HISTORY_OPEN_FLAGS: [&str; 12] = [
+    "browser.library.history.open.0",
+    "browser.library.history.open.1",
+    "browser.library.history.open.2",
+    "browser.library.history.open.3",
+    "browser.library.history.open.4",
+    "browser.library.history.open.5",
+    "browser.library.history.open.6",
+    "browser.library.history.open.7",
+    "browser.library.history.open.8",
+    "browser.library.history.open.9",
+    "browser.library.history.open.10",
+    "browser.library.history.open.11",
+];
+const BOOKMARK_OPEN_FLAGS: [&str; 12] = [
+    "browser.library.bookmark.open.0",
+    "browser.library.bookmark.open.1",
+    "browser.library.bookmark.open.2",
+    "browser.library.bookmark.open.3",
+    "browser.library.bookmark.open.4",
+    "browser.library.bookmark.open.5",
+    "browser.library.bookmark.open.6",
+    "browser.library.bookmark.open.7",
+    "browser.library.bookmark.open.8",
+    "browser.library.bookmark.open.9",
+    "browser.library.bookmark.open.10",
+    "browser.library.bookmark.open.11",
+];
 const PIP_FLAG: &str = "browser.pip_clicked";
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
@@ -65,6 +100,7 @@ const SUGGESTION_LIMIT: usize = 8;
 const URL_INPUT_ID: &str = "browser.url_input";
 const PIP_FEEDBACK_LIFETIME: std::time::Duration = std::time::Duration::from_millis(4200);
 const PIP_FEEDBACK_FADE: std::time::Duration = std::time::Duration::from_millis(180);
+const SEARCH_QUERY_TOKEN: &str = "{query}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PipFeedbackKind {
@@ -79,12 +115,30 @@ struct PipFeedback {
 
 const BROWSER_OPERATION_TYPE: &str = "browser.operation";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibrarySection {
+    History,
+    Bookmarks,
+    Downloads,
+    Extensions,
+}
+
 #[derive(Clone, Debug)]
 enum BrowserOperation {
     Back,
     Forward,
     Reload,
     Navigate { url: String },
+    ShowLibrary { section: LibrarySection },
+    ShowSettings,
+    ShowPage,
+    ClearHistory,
+    ClearWebsiteData,
+    SetAdblock { enabled: bool },
+    SetClearOnExit { enabled: bool },
+    SetHomepage { url: String },
+    SetSearchEngine { template: String },
+    TogglePictureInPicture,
 }
 
 fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
@@ -94,6 +148,36 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::Reload => serde_json::json!({ "operation": "reload" }),
         BrowserOperation::Navigate { url } => {
             serde_json::json!({ "operation": "navigate", "url": url })
+        }
+        BrowserOperation::ShowLibrary { section } => serde_json::json!({
+            "operation": "show-library",
+            "section": match section {
+                LibrarySection::History => "history",
+                LibrarySection::Bookmarks => "bookmarks",
+                LibrarySection::Downloads => "downloads",
+                LibrarySection::Extensions => "extensions",
+            }
+        }),
+        BrowserOperation::ShowSettings => serde_json::json!({ "operation": "show-settings" }),
+        BrowserOperation::ShowPage => serde_json::json!({ "operation": "show-page" }),
+        BrowserOperation::ClearHistory => serde_json::json!({ "operation": "clear-history" }),
+        BrowserOperation::ClearWebsiteData => {
+            serde_json::json!({ "operation": "clear-website-data" })
+        }
+        BrowserOperation::SetAdblock { enabled } => {
+            serde_json::json!({ "operation": "set-adblock", "enabled": enabled })
+        }
+        BrowserOperation::SetClearOnExit { enabled } => {
+            serde_json::json!({ "operation": "set-clear-on-exit", "enabled": enabled })
+        }
+        BrowserOperation::SetHomepage { url } => {
+            serde_json::json!({ "operation": "set-homepage", "url": url })
+        }
+        BrowserOperation::SetSearchEngine { template } => {
+            serde_json::json!({ "operation": "set-search-engine", "template": template })
+        }
+        BrowserOperation::TogglePictureInPicture => {
+            serde_json::json!({ "operation": "toggle-picture-in-picture" })
         }
     }
 }
@@ -121,6 +205,47 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
                 url: url.to_string(),
             })
             .ok_or_else(|| "browser navigate operation is missing `url`".to_string()),
+        Some("show-library") => {
+            let section = match value.get("section").and_then(serde_json::Value::as_str) {
+                Some("history") => LibrarySection::History,
+                Some("bookmarks") => LibrarySection::Bookmarks,
+                Some("downloads") => LibrarySection::Downloads,
+                Some("extensions") => LibrarySection::Extensions,
+                _ => return Err("browser library operation has an unknown section".into()),
+            };
+            Ok(BrowserOperation::ShowLibrary { section })
+        }
+        Some("show-settings") => Ok(BrowserOperation::ShowSettings),
+        Some("show-page") => Ok(BrowserOperation::ShowPage),
+        Some("clear-history") => Ok(BrowserOperation::ClearHistory),
+        Some("clear-website-data") => Ok(BrowserOperation::ClearWebsiteData),
+        Some("set-adblock") => Ok(BrowserOperation::SetAdblock {
+            enabled: value
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }),
+        Some("set-clear-on-exit") => Ok(BrowserOperation::SetClearOnExit {
+            enabled: value
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }),
+        Some("set-homepage") => Ok(BrowserOperation::SetHomepage {
+            url: value
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+        }),
+        Some("set-search-engine") => Ok(BrowserOperation::SetSearchEngine {
+            template: value
+                .get("template")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+        }),
+        Some("toggle-picture-in-picture") => Ok(BrowserOperation::TogglePictureInPicture),
         _ => Err("unknown browser operation".to_string()),
     }
 }
@@ -167,15 +292,25 @@ pub struct BrowserWidget {
     /// Most recent URI the engine reported — recorded into history on
     /// load-finished.
     current_uri: String,
+    load_error: Option<String>,
+    forced_load_error: bool,
+    forced_loading: bool,
 
     // User-facing browser state.
     settings: Settings,
+    settings_dirty: bool,
     history: History,
+    bookmarks: Bookmarks,
+    /// Retained full-corpus index. Provider handles are cheap and unchanged
+    /// frames compare only the durable corpus revision tokens.
+    search_index: crate::search_provider::BrowserSearchIndex,
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
     /// tree child: driven here and painted in `draw_overlay`).
     suggestions: AddressSuggestions,
     /// Whether the settings pane replaces the page surface.
     show_settings: bool,
+    show_library: bool,
+    library_section: LibrarySection,
     /// Set when `show_settings` flips, so the host rebuilds the tree.
     structure_dirty: bool,
     /// Last address-bar text a suggestion query ran for, to avoid
@@ -208,6 +343,9 @@ pub struct BrowserWidget {
     pip_select_area_rect: Rect,
     pending_capture_studio: Option<ui::widget::CaptureMode>,
     cursor: Point,
+    compact_chrome: bool,
+    motion_reduced: bool,
+    pending_controls: std::collections::VecDeque<ControlInvocation>,
 }
 
 impl BrowserWidget {
@@ -255,6 +393,13 @@ impl BrowserWidget {
         } else {
             History::load()
         };
+        let bookmarks = if headless {
+            Bookmarks::default()
+        } else {
+            Bookmarks::load()
+        };
+        let search_index = crate::search_provider::BrowserSearchIndex::default();
+        search_index.sync(&history, &bookmarks);
         Self {
             rect: Rect::ZERO,
             engine,
@@ -267,10 +412,18 @@ impl BrowserWidget {
             progress: 1.0,
             title: String::new(),
             current_uri: String::new(),
+            load_error: None,
+            forced_load_error: false,
+            forced_loading: false,
             settings,
+            settings_dirty: false,
             history,
+            bookmarks,
+            search_index,
             suggestions: AddressSuggestions::new(),
             show_settings: false,
+            show_library: false,
+            library_section: LibrarySection::History,
             structure_dirty: false,
             last_query: None,
             force_suggestions: false,
@@ -293,6 +446,9 @@ impl BrowserWidget {
             pip_select_area_rect: Rect::ZERO,
             pending_capture_studio: None,
             cursor: Point::ZERO,
+            compact_chrome: false,
+            motion_reduced: false,
+            pending_controls: std::collections::VecDeque::new(),
         }
     }
 
@@ -307,11 +463,13 @@ impl BrowserWidget {
     pub fn debug_show_empty_pip_feedback(&mut self) {
         self.pip_feedback = Some(PipFeedback {
             kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now() - std::time::Duration::from_millis(500),
+            started: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(500))
+                .unwrap_or_else(std::time::Instant::now),
         });
     }
 
-    /// Headless visual-review hook for the toolbar's adopted PiP state.
+    /// Headless visual-review hook for the toolbar's adopted `PiP` state.
     pub fn debug_show_active_pip(&mut self) {
         self.active_pip = true;
         self.active_pip_element = Some(MediaElementInfo {
@@ -320,6 +478,62 @@ impl BrowserWidget {
             intrinsic_size: [1_920, 1_080],
             label: "The active film".into(),
         });
+    }
+
+    /// Headless visual-review hook for the recoverable navigation error state.
+    pub fn debug_show_load_error(&mut self) {
+        self.current_uri = "https://offline.example.test".into();
+        self.initial_url = self.current_uri.clone();
+        self.title = "Couldn’t open this page".into();
+        self.load_error =
+            Some("The site did not respond. Check your connection and try again.".into());
+        self.forced_load_error = true;
+    }
+
+    /// Headless visual-review hook for the in-flight navigation state.
+    pub fn debug_show_loading(&mut self) {
+        self.current_uri = "https://loading.example.test".into();
+        self.initial_url = self.current_uri.clone();
+        self.title = "Opening loading.example.test".into();
+        self.progress = 0.42;
+        self.forced_loading = true;
+    }
+
+    /// Seed the responsive breakpoint before a single-frame offscreen render.
+    pub fn debug_set_viewport_width(&mut self, width: u32) {
+        self.compact_chrome = width < 600;
+    }
+
+    /// Populate and open a browser-library section for deterministic review.
+    pub fn debug_show_library(&mut self, section: &str) {
+        self.history
+            .record_at("https://www.rust-lang.org/learn", "Learn Rust", 3);
+        self.history.record_at(
+            "https://developer.mozilla.org/en-US/docs/Web",
+            "MDN Web Docs",
+            2,
+        );
+        self.history
+            .record_at("https://example.org/long-form", "Long-form reading", 1);
+        let _ = self
+            .bookmarks
+            .add("https://www.rust-lang.org/learn", "Learn Rust");
+        let _ = self
+            .bookmarks
+            .add("https://developer.mozilla.org/", "MDN Web Docs");
+        self.library_section = match section {
+            "bookmarks" => LibrarySection::Bookmarks,
+            "downloads" => LibrarySection::Downloads,
+            "extensions" => LibrarySection::Extensions,
+            _ => LibrarySection::History,
+        };
+        self.show_library = true;
+        self.show_settings = false;
+    }
+
+    pub fn debug_show_settings(&mut self) {
+        self.show_settings = true;
+        self.show_library = false;
     }
 
     /// Real-engine integration hook used by `browser --shots-live --probe-pip`.
@@ -336,16 +550,188 @@ impl BrowserWidget {
         self.content_rect.clone()
     }
 
-    fn perform_browser_operation(&self, operation: BrowserOperation) {
-        let command = match operation {
-            BrowserOperation::Back => WebViewCommand::GoBack,
-            BrowserOperation::Forward => WebViewCommand::GoForward,
-            BrowserOperation::Reload => WebViewCommand::Reload,
+    fn perform_browser_operation(&mut self, operation: BrowserOperation) {
+        match operation {
+            BrowserOperation::Back => self.engine.send(WebViewCommand::GoBack),
+            BrowserOperation::Forward => self.engine.send(WebViewCommand::GoForward),
+            BrowserOperation::Reload => self.engine.send(WebViewCommand::Reload),
             BrowserOperation::Navigate { url } => {
-                WebViewCommand::Navigate(normalise_url(url.trim()))
+                self.show_library = false;
+                self.show_settings = false;
+                self.structure_dirty = true;
+                self.engine
+                    .send(WebViewCommand::Navigate(self.navigation_target(url.trim())));
             }
+            BrowserOperation::ShowLibrary { section } => {
+                self.library_section = section;
+                self.show_library = true;
+                self.show_settings = false;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::ShowSettings => {
+                self.show_settings = true;
+                self.show_library = false;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::ShowPage => {
+                self.show_settings = false;
+                self.show_library = false;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::ClearHistory => {
+                self.history.clear();
+                if !self.headless {
+                    let _ = self.history.save();
+                }
+                self.structure_dirty = true;
+            }
+            BrowserOperation::ClearWebsiteData => {
+                self.engine.send(WebViewCommand::ClearWebsiteData);
+            }
+            BrowserOperation::SetAdblock { enabled } => {
+                self.settings.adblock_enabled = enabled;
+                self.set_adblock(enabled);
+                if !self.headless {
+                    self.settings.save();
+                }
+                self.settings_dirty = true;
+            }
+            BrowserOperation::SetClearOnExit { enabled } => {
+                self.settings.clear_on_exit = enabled;
+                if !self.headless {
+                    self.settings.save();
+                }
+                self.settings_dirty = true;
+            }
+            BrowserOperation::SetHomepage { url } => {
+                if url::Url::parse(&url).is_ok() {
+                    self.settings.homepage = url;
+                    if !self.headless {
+                        self.settings.save();
+                    }
+                    self.settings_dirty = true;
+                }
+            }
+            BrowserOperation::SetSearchEngine { template } => {
+                if url::Url::parse(&template).is_ok() {
+                    self.settings.search_engine = template;
+                    if !self.headless {
+                        self.settings.save();
+                    }
+                    self.settings_dirty = true;
+                }
+            }
+            BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
+        }
+    }
+
+    fn resource_by_id(&self, wanted: &str) -> Option<Resource> {
+        fn walk(resources: &[Resource], wanted: &str) -> Option<Resource> {
+            resources.iter().find_map(|resource| {
+                (resource.id.0 == wanted)
+                    .then(|| resource.clone())
+                    .or_else(|| walk(&resource.children, wanted))
+            })
+        }
+        walk(&self.resources(&AutoCommit::new()), wanted)
+    }
+
+    fn unit_binding(&self, resource: &str, action: &str) -> Option<ActionBinding<()>> {
+        let resource = self.resource_by_id(resource)?;
+        ActionBinding::unit_for(&resource, action).ok()
+    }
+
+    fn boolean_binding(
+        &self,
+        resource: &str,
+        action: &str,
+        parameter: &'static str,
+    ) -> Option<ActionBinding<bool>> {
+        let resource = self.resource_by_id(resource)?;
+        let spec = resource.actions.iter().find(|spec| spec.id == action)?;
+        ActionBinding::new(&resource, spec, move |value| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(parameter.into(), serde_json::Value::Bool(value));
+            arguments
+        })
+        .ok()
+    }
+
+    fn text_binding(
+        &self,
+        resource: &str,
+        action: &str,
+        parameter: &'static str,
+    ) -> Option<ActionBinding<String>> {
+        let resource = self.resource_by_id(resource)?;
+        let spec = resource.actions.iter().find(|spec| spec.id == action)?;
+        ActionBinding::new(&resource, spec, move |value| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(parameter.into(), serde_json::Value::String(value));
+            arguments
+        })
+        .ok()
+    }
+
+    fn settings_action_bindings(&self) -> SettingsActionBindings {
+        SettingsActionBindings {
+            adblock: self.boolean_binding("browser.settings", "set-adblock", "enabled"),
+            clear_on_exit: self.boolean_binding("browser.settings", "set-clear-on-exit", "enabled"),
+            homepage: self.text_binding("browser.settings", "set-homepage", "url"),
+            search_engine: self.text_binding("browser.settings", "set-search-engine", "template"),
+            clear_history: self.unit_binding("browser.history", "clear"),
+            clear_site_data: self.unit_binding("browser.settings", "clear-site-data"),
+        }
+    }
+
+    fn bind_button(&self, button: Button, resource: &str, action: &str) -> Button {
+        match self.unit_binding(resource, action) {
+            Some(binding) => button.on_action(binding),
+            None => button,
+        }
+    }
+
+    /// Route a keyboard equivalent through the same canonical resource action
+    /// as the corresponding toolbar control.  Focus movement is local UI
+    /// state; navigation itself remains observable/replayable to the host.
+    fn queue_unit_operation(&mut self, resource: &str, action: &str) {
+        if let Some(binding) = self.unit_binding(resource, action)
+            && let Ok(invocation) = binding.invoke(())
+        {
+            self.pending_controls.push_back(invocation);
+        }
+    }
+
+    fn queue_navigate(&mut self, value: String) {
+        let Some(resource) = self.resource_by_id("browser.page") else {
+            return;
         };
-        self.engine.send(command);
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("url".into(), serde_json::Value::String(value));
+        if let Ok(binding) = ActionBinding::static_json_for(&resource, "navigate", arguments)
+            && let Ok(invocation) = binding.invoke(())
+        {
+            self.pending_controls.push_back(invocation);
+        }
+    }
+
+    fn navigation_target(&self, input: &str) -> String {
+        let input = input.trim();
+        if url::Url::parse(input)
+            .ok()
+            .is_some_and(|url| matches!(url.scheme(), "http" | "https" | "file"))
+            || (!input.chars().any(char::is_whitespace) && input.contains('.'))
+        {
+            return normalise_url(input);
+        }
+        let query: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
+        if self.settings.search_engine.contains(SEARCH_QUERY_TOKEN) {
+            self.settings
+                .search_engine
+                .replace(SEARCH_QUERY_TOKEN, &query)
+        } else {
+            format!("{}{query}", self.settings.search_engine)
+        }
     }
 
     fn page_rect(&self) -> Rect {
@@ -353,7 +739,7 @@ impl BrowserWidget {
             .lock()
             .ok()
             .and_then(|r| *r)
-            .map(|[x0, y0, x1, y1]| {
+            .map_or(self.rect, |[x0, y0, x1, y1]| {
                 Rect::new(
                     self.rect.x0 + f64::from(x0) * self.rect.width(),
                     self.rect.y0 + f64::from(y0) * self.rect.height(),
@@ -361,7 +747,6 @@ impl BrowserWidget {
                     self.rect.y0 + f64::from(y1) * self.rect.height(),
                 )
             })
-            .unwrap_or(self.rect)
     }
 
     fn begin_pip_probe(&mut self) {
@@ -598,46 +983,73 @@ impl BrowserWidget {
         });
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The browser chrome is intentionally composed in one ordered layout function."
+    )]
     fn build_composition(&self) -> Box<dyn Widget> {
         // Compact, square-ish icon buttons (44×40 — a comfortable touch
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
         // even on a narrow / mobile-width window.
         const NAV_BTN: (f32, f32) = (44.0, 40.0);
-        let back = Button::new("browser.back", "", Some(BACK_FLAG))
-            .with_icon(Icon::ArrowLeft)
-            .tooltip("Back")
-            .with_size(NAV_BTN.0, NAV_BTN.1)
-            .with_enabled(self.can_go_back);
-        let forward = Button::new("browser.forward", "", Some(FORWARD_FLAG))
-            .with_icon(Icon::ArrowRight)
-            .tooltip("Forward")
-            .with_size(NAV_BTN.0, NAV_BTN.1)
-            .with_enabled(self.can_go_forward);
-        let reload = Button::new("browser.reload", "", Some(RELOAD_FLAG))
-            .with_icon(Icon::Refresh)
-            .tooltip("Reload")
-            .with_size(NAV_BTN.0, NAV_BTN.1);
+        let back = self.bind_button(
+            Button::new("browser.back", "", Some(BACK_FLAG))
+                .with_icon(Icon::ArrowLeft)
+                .with_accessible_name("Back")
+                .tooltip("Back (Alt+Left)")
+                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_enabled(self.can_go_back),
+            "browser.page",
+            "back",
+        );
+        let forward = self.bind_button(
+            Button::new("browser.forward", "", Some(FORWARD_FLAG))
+                .with_icon(Icon::ArrowRight)
+                .with_accessible_name("Forward")
+                .tooltip("Forward (Alt+Right)")
+                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_enabled(self.can_go_forward),
+            "browser.page",
+            "forward",
+        );
+        let reload = self.bind_button(
+            Button::new("browser.reload", "", Some(RELOAD_FLAG))
+                .with_icon(Icon::Refresh)
+                .with_accessible_name("Reload")
+                .tooltip("Reload (Ctrl+R)")
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.page",
+            "reload",
+        );
         let url_input = TextInput::new(vec![])
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
             .with_on_change_path(URL_PATH)
             .with_accessible_name("Address and search")
             .with_placeholder("Search or enter address");
-        let settings_btn = Button::new("browser.settings", "", Some(SETTINGS_FLAG))
-            .with_icon(Icon::Settings)
-            .tooltip("Browser settings")
-            .with_size(NAV_BTN.0, NAV_BTN.1);
+        let settings_btn = self.bind_button(
+            Button::new("browser.settings", "", Some(SETTINGS_FLAG))
+                .with_icon(Icon::Settings)
+                .tooltip("Browser settings")
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.settings",
+            "show",
+        );
         let pip_label = if self.active_pip {
             "Close Picture in Picture"
         } else {
             "Picture in Picture"
         };
-        let pip_btn = Button::new("browser.pip", "", Some(PIP_FLAG))
-            .with_icon(Icon::PictureInPicture2)
-            .with_accessible_name(pip_label)
-            .tooltip(pip_label)
-            .with_size(NAV_BTN.0, NAV_BTN.1);
+        let pip_btn = self.bind_button(
+            Button::new("browser.pip", "", Some(PIP_FLAG))
+                .with_icon(Icon::PictureInPicture2)
+                .with_accessible_name(pip_label)
+                .tooltip(pip_label)
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.page",
+            "picture-in-picture",
+        );
         let pip_btn = if self.active_pip {
             pip_btn.primary()
         } else {
@@ -647,14 +1059,54 @@ impl BrowserWidget {
         // `no_wrap` keeps the address input on the same line as the
         // buttons (a wrapping row would push the 100%-width input onto
         // its own line instead of shrinking it to the remaining space).
-        let toolbar = Row::new()
+        let mut toolbar = Row::new()
             .no_wrap()
             .push(Box::new(back))
-            .push(Box::new(forward))
-            .push(Box::new(reload))
-            .push(Box::new(url_input))
-            .push(Box::new(pip_btn))
-            .push(Box::new(settings_btn));
+            .push(Box::new(reload));
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(forward));
+        }
+        toolbar = toolbar.push(Box::new(url_input));
+        let bookmark_label = if self.bookmarks.contains(&self.current_uri) {
+            "Page bookmarked"
+        } else {
+            "Bookmark this page"
+        };
+        let bookmark_btn = self.bind_button(
+            Button::new("browser.bookmark", "", None)
+                .with_icon(Icon::Star)
+                .with_accessible_name(bookmark_label)
+                .tooltip(bookmark_label)
+                .with_enabled(!self.current_uri.trim().is_empty())
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.page",
+            "bookmark",
+        );
+        let library_btn = self.bind_button(
+            Button::new("browser.library", "", Some(LIBRARY_FLAG))
+                .with_icon(Icon::History)
+                .with_accessible_name(if self.show_library {
+                    "Close browser library"
+                } else {
+                    "Open browser library"
+                })
+                .tooltip("History, bookmarks and downloads")
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.history",
+            "show",
+        );
+        // On a phone-width window the disabled bookmark affordance was
+        // consuming the only useful address-bar width. Bookmarks remain in
+        // the Library/resource surface; keep the toolbar focused on finding
+        // or entering a destination and recovering history.
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(bookmark_btn));
+        }
+        toolbar = toolbar.push(Box::new(library_btn));
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(pip_btn));
+        }
+        toolbar = toolbar.push(Box::new(settings_btn));
 
         // The web view must reach the window edges — no border, no gap.
         // Only the toolbar keeps an inset (its wrapping Container's
@@ -670,12 +1122,267 @@ impl BrowserWidget {
         }
         // The content region is either the settings pane or the live page.
         let content: Box<dyn Widget> = if self.show_settings {
-            Box::new(SettingsPane::with_settings(self.settings.clone()))
+            Box::new(
+                SettingsPane::with_settings(self.settings.clone())
+                    .with_action_bindings(self.settings_action_bindings()),
+            )
+        } else if self.show_library {
+            self.build_library_composition()
+        } else if let Some(error) = &self.load_error {
+            Box::new(
+                EmptyState::new("Couldn’t open this page")
+                    .with_icon(Icon::Wifi)
+                    .with_message(error)
+                    .with_action("Try again")
+                    .with_action_id("browser.retry")
+                    .with_action_path(RELOAD_FLAG),
+            )
         } else {
             Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
         };
         column = column.push(content);
         Box::new(column)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The library sections share one ordered composition for consistent focus traversal."
+    )]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "Each row list is explicitly capped to its matching fixed flag array."
+    )]
+    fn build_library_composition(&self) -> Box<dyn Widget> {
+        let heading = Row::new()
+            .push(Box::new(Text::new("Library").with_size(24.0)))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(
+                self.bind_button(
+                    Button::new("browser.library.close", "Done", Some(LIBRARY_FLAG))
+                        .with_size(96.0, 36.0),
+                    "browser",
+                    "show-page",
+                ),
+            ));
+        let mut sections = Row::new();
+        for (id, label, flag, selected, resource) in [
+            (
+                "browser.library.history",
+                "History",
+                LIBRARY_HISTORY_FLAG,
+                self.library_section == LibrarySection::History,
+                "browser.history",
+            ),
+            (
+                "browser.library.bookmarks",
+                "Bookmarks",
+                LIBRARY_BOOKMARKS_FLAG,
+                self.library_section == LibrarySection::Bookmarks,
+                "browser.bookmarks",
+            ),
+            (
+                "browser.library.downloads",
+                "Downloads",
+                LIBRARY_DOWNLOADS_FLAG,
+                self.library_section == LibrarySection::Downloads,
+                "browser.downloads",
+            ),
+            (
+                "browser.library.extensions",
+                "Extensions",
+                LIBRARY_EXTENSIONS_FLAG,
+                self.library_section == LibrarySection::Extensions,
+                "browser.extensions",
+            ),
+        ] {
+            let button = self.bind_button(
+                Button::new(id, label, Some(flag))
+                    .with_accessible_name(&format!("Show {label}"))
+                    .with_size(132.0, 40.0),
+                resource,
+                "show",
+            );
+            sections = sections.push(Box::new(if selected { button.primary() } else { button }));
+        }
+
+        let body: Box<dyn Widget> = match self.library_section {
+            LibrarySection::History if self.history.is_empty() => Box::new(
+                EmptyState::new("No browsing history yet")
+                    .with_icon(Icon::History)
+                    .with_message("Pages you visit appear here. History stays on this device."),
+            ),
+            LibrarySection::History => {
+                let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                for (index, entry) in self.history.entries().iter().rev().take(12).enumerate() {
+                    let resource_id = format!(
+                        "browser.history.{}",
+                        blake3::hash(entry.url.as_bytes()).to_hex()
+                    );
+                    let title = if entry.title.trim().is_empty() {
+                        entry.url.as_str()
+                    } else {
+                        entry.title.as_str()
+                    };
+                    rows = rows
+                        .push(Box::new(
+                            Container::new().with_background().with_child(Box::new(
+                                Row::new()
+                                    .push(Box::new(
+                                        Column::new()
+                                            .with_no_padding()
+                                            .with_intrinsic_height()
+                                            .push(Box::new(Text::new(title).with_size(15.0)))
+                                            .push(Box::new(
+                                                Text::new(&entry.url).with_size(12.0).dimmed(),
+                                            )),
+                                    ))
+                                    .push(Box::new(Spacer::new()))
+                                    .push(Box::new(
+                                        self.bind_button(
+                                            Button::new(
+                                                HISTORY_OPEN_FLAGS[index],
+                                                "Open",
+                                                Some(HISTORY_OPEN_FLAGS[index]),
+                                            )
+                                            .with_accessible_name(&format!("Open {title}"))
+                                            .tooltip("Open page")
+                                            .with_size(84.0, 36.0),
+                                            &resource_id,
+                                            "open",
+                                        ),
+                                    )),
+                            )),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_height(10.0),
+                        ));
+                }
+                Box::new(rows)
+            }
+            LibrarySection::Bookmarks if self.bookmarks.entries().is_empty() => Box::new(
+                EmptyState::new("No bookmarks yet")
+                    .with_icon(Icon::Star)
+                    .with_message("Use the star in the address bar to keep a page."),
+            ),
+            LibrarySection::Bookmarks => {
+                let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                for (index, entry) in self.bookmarks.entries().iter().take(12).enumerate() {
+                    // Use the same normalized identity as the resource
+                    // surface. In particular, legacy JSON can contain a URL
+                    // without its canonical trailing slash.
+                    let resource_id = bookmark_resource_id(&entry.url);
+                    let remove_control_id = format!("{resource_id}.remove");
+                    rows = rows
+                        .push(Box::new(
+                            Container::new().with_background().with_child(Box::new(
+                                Row::new()
+                                    .push(Box::new(
+                                        Column::new()
+                                            .with_no_padding()
+                                            .with_intrinsic_height()
+                                            .push(Box::new(Text::new(&entry.title).with_size(15.0)))
+                                            .push(Box::new(
+                                                Text::new(&entry.url).with_size(12.0).dimmed(),
+                                            )),
+                                    ))
+                                    .push(Box::new(Spacer::new()))
+                                    .push(Box::new(
+                                        self.bind_button(
+                                            Button::new(
+                                                BOOKMARK_OPEN_FLAGS[index],
+                                                "Open",
+                                                Some(BOOKMARK_OPEN_FLAGS[index]),
+                                            )
+                                            .with_accessible_name(&format!("Open {}", entry.title))
+                                            .with_size(84.0, 36.0),
+                                            &resource_id,
+                                            "open",
+                                        ),
+                                    ))
+                                    .push(Box::new(
+                                        self.bind_button(
+                                            Button::new(&remove_control_id, "Remove", None)
+                                                .with_accessible_name(&format!(
+                                                    "Remove bookmark {}",
+                                                    entry.title
+                                                ))
+                                                .tooltip("Remove bookmark")
+                                                .with_size(96.0, 36.0),
+                                            &resource_id,
+                                            "remove",
+                                        ),
+                                    )),
+                            )),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_height(10.0),
+                        ));
+                }
+                Box::new(rows)
+            }
+            LibrarySection::Downloads => Box::new(
+                EmptyState::new("No downloads in this window")
+                    .with_icon(Icon::Download)
+                    .with_message(
+                        "Saved files appear in Files. Transfer progress is not available yet.",
+                    ),
+            ),
+            LibrarySection::Extensions => {
+                let installed = if self.headless {
+                    Vec::new()
+                } else {
+                    crate::extensions::list_installed()
+                };
+                if installed.is_empty() {
+                    Box::new(
+                        EmptyState::new("No active extensions")
+                            .with_icon(Icon::Layers)
+                            .with_message(
+                                "Extension packages can be inspected, but this WebKit build cannot activate them yet.",
+                            ),
+                    )
+                } else {
+                    let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                    for extension in installed.into_iter().take(100) {
+                        let status = format!("Version {} · installed, inactive", extension.version);
+                        rows = rows
+                            .push(Box::new(
+                                Container::new().with_background().with_child(Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_intrinsic_height()
+                                        .push(Box::new(Text::new(&extension.name).with_size(15.0)))
+                                        .push(Box::new(
+                                            Text::new(&status).with_size(12.0).dimmed(),
+                                        )),
+                                )),
+                            ))
+                            .push(Box::new(
+                                Container::new().with_no_padding().with_height(10.0),
+                            ));
+                    }
+                    Box::new(rows)
+                }
+            }
+        };
+
+        let content = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(heading))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(18.0),
+            ))
+            .push(Box::new(sections))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(18.0),
+            ))
+            .push(body);
+        Box::new(
+            Scrollable::new(ScrollAxis::Vertical)
+                .fill_parent_height()
+                .with_child(Box::new(Container::new().with_child(Box::new(content)))),
+        )
     }
 
     /// One-shot CRDT bootstrap so children can read/write their paths
@@ -686,11 +1393,30 @@ impl BrowserWidget {
         {
             let _ = state.splice_text(&obj_id, 0, 0, &self.initial_url);
         }
+        // V2 bookmark entries are root-level, namespaced keys so concurrent
+        // first actions do not contend on a newly-created map object. Existing
+        // local JSON remains legacy input until a replayable bookmark action
+        // migrates it.
+        if crate::actions::bookmarks_from_doc(state).is_none()
+            && !self.bookmarks.entries().is_empty()
+            && state
+                .get(root, "browser.bookmarks")
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            let _ = state.put(root, "browser.bookmarks", self.bookmarks.to_json());
+        }
         for flag in [
             BACK_FLAG,
             FORWARD_FLAG,
             RELOAD_FLAG,
             SETTINGS_FLAG,
+            LIBRARY_FLAG,
+            LIBRARY_HISTORY_FLAG,
+            LIBRARY_BOOKMARKS_FLAG,
+            LIBRARY_DOWNLOADS_FLAG,
+            LIBRARY_EXTENSIONS_FLAG,
             PIP_FLAG,
         ] {
             if state.get(root, flag).ok().flatten().is_none() {
@@ -705,6 +1431,48 @@ impl BrowserWidget {
         } else {
             None
         }
+    }
+
+    fn sync_bookmarks(&mut self, state: &AutoCommit, _root: &ObjId) {
+        let Some(incoming) = crate::actions::bookmarks_from_doc(state) else {
+            return;
+        };
+        if incoming != self.bookmarks {
+            self.bookmarks = incoming;
+            self.search_index.invalidate();
+            if !self.headless {
+                let _ = self.bookmarks.save();
+            }
+            self.structure_dirty = true;
+        }
+    }
+
+    fn publish_settings_if_dirty(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !std::mem::take(&mut self.settings_dirty) {
+            return;
+        }
+        let _ = state.put(
+            root,
+            crate::settings::ADBLOCK_PATH,
+            self.settings.adblock_enabled,
+        );
+        let _ = state.put(
+            root,
+            crate::settings::CLEAR_ON_EXIT_PATH,
+            self.settings.clear_on_exit,
+        );
+        ui::put_text_diffed(
+            state,
+            root,
+            crate::settings::HOMEPAGE_PATH,
+            &self.settings.homepage,
+        );
+        ui::put_text_diffed(
+            state,
+            root,
+            crate::settings::SEARCH_ENGINE_PATH,
+            &self.settings.search_engine,
+        );
     }
 
     fn continuation_url(state: &AutoCommit, root: &ObjId) -> Option<String> {
@@ -768,15 +1536,24 @@ impl BrowserWidget {
         for event in self.engine.drain_events() {
             match event {
                 WebViewEvent::UriChanged(uri) => {
+                    if !self.forced_load_error {
+                        self.load_error = None;
+                    }
                     if !editing {
                         ui::put_text_diffed(state, root, URL_PATH, &uri);
                     }
                     self.current_uri = uri;
                 }
                 WebViewEvent::TitleChanged(title) => self.title = title,
-                WebViewEvent::LoadProgress(p) => self.progress = p,
+                WebViewEvent::LoadProgress(p) if !self.forced_loading => self.progress = p,
+                WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
-                    self.progress = 1.0;
+                    if !self.forced_load_error {
+                        self.load_error = None;
+                    }
+                    if !self.forced_loading {
+                        self.progress = 1.0;
+                    }
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if !self.headless && self.current_uri.starts_with("http") {
@@ -795,6 +1572,8 @@ impl BrowserWidget {
                     self.progress = 1.0;
                     tracing::warn!("load failed for {uri}: {error}");
                     self.title = format!("Failed to load {uri}");
+                    self.load_error = Some(error.chars().take(240).collect());
+                    self.structure_dirty = true;
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_result =
                             Some(ui::qos_actions::InvocationUpdate::Failed {
@@ -827,12 +1606,11 @@ impl BrowserWidget {
     }
 
     /// Navigate to whatever the address bar currently holds.
-    fn navigate_to_input(&self, state: &AutoCommit, root: &ObjId) {
+    fn navigate_to_input(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(url) = Self::read_url(state, root) {
             let trimmed = url.trim();
             if !trimmed.is_empty() {
-                self.engine
-                    .send(WebViewCommand::Navigate(normalise_url(trimmed)));
+                self.queue_navigate(trimmed.to_string());
             }
         }
     }
@@ -884,6 +1662,20 @@ impl BrowserWidget {
             self.settings.clear_on_exit = v;
             changed = true;
         }
+        if let Some(value) = intents.search_engine {
+            let value = value.trim();
+            if !value.is_empty() && value != self.settings.search_engine {
+                self.settings.search_engine = value.to_string();
+                changed = true;
+            }
+        }
+        if let Some(value) = intents.homepage {
+            let value = value.trim();
+            if url::Url::parse(value).is_ok() && value != self.settings.homepage {
+                self.settings.homepage = value.to_string();
+                changed = true;
+            }
+        }
         if changed && !self.headless {
             self.settings.save();
         }
@@ -934,7 +1726,7 @@ impl BrowserWidget {
     }
 
     /// The icon-only toolbar buttons intentionally have empty visible labels,
-    /// so their generic widget test id is not useful as an anchor. The PiP
+    /// so their generic widget test id is not useful as an anchor. The `PiP`
     /// affordance is the penultimate toolbar button (settings is last).
     fn pip_button_rect(&self) -> Option<Rect> {
         fn collect(w: &dyn Widget, rects: &mut Vec<Rect>) {
@@ -951,6 +1743,67 @@ impl BrowserWidget {
         }
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         rects.get(rects.len().checked_sub(2)?).copied()
+    }
+
+    /// Keep the transient `PiP` guidance card wholly inside the Browser's
+    /// viewport. On compact chrome its logical anchor can sit near either
+    /// edge, so anchoring only the card's trailing side would clip the text
+    /// and first action offscreen.
+    fn pip_feedback_rect_for_anchor(
+        viewport: Rect,
+        anchor: Rect,
+        has_actions: bool,
+    ) -> Option<Rect> {
+        const INSET: f64 = 12.0;
+        let available_width = viewport.width() - INSET * 2.0;
+        if available_width <= 0.0 {
+            return None;
+        }
+        let desired_width: f64 = if has_actions { 354.0 } else { 326.0 };
+        let width = desired_width.min(available_width);
+        let height = if has_actions { 112.0 } else { 64.0 };
+        let left_bound = viewport.x0 + INSET;
+        let right_bound = (viewport.x1 - INSET - width).max(left_bound);
+        let x0 = (anchor.x1 + 2.0 - width).clamp(left_bound, right_bound);
+        let top_bound = viewport.y0 + INSET;
+        let bottom_bound = (viewport.y1 - INSET - height).max(top_bound);
+        let y0 = (anchor.y1 + 8.0).clamp(top_bound, bottom_bound);
+        Some(Rect::new(x0, y0, x0 + width, y0 + height))
+    }
+
+    fn sync_search_and_suggestions(&mut self, state: &AutoCommit, path: &ObjId) {
+        self.search_index.sync(&self.history, &self.bookmarks);
+        self.update_suggestions(state, path);
+    }
+
+    fn handle_browser_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed || self.show_settings || self.show_library {
+            return false;
+        }
+        let modifiers = modifiers.state();
+        let alt_navigation =
+            modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
+        let reload = (modifiers.control_key() || modifiers.super_key())
+            && !modifiers.alt_key()
+            && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("r"));
+        let action = match (&key.logical_key, alt_navigation, reload) {
+            (WKey::Named(WNamedKey::ArrowLeft), true, _) => Some("back"),
+            (WKey::Named(WNamedKey::ArrowRight), true, _) => Some("forward"),
+            (_, _, true) => Some("reload"),
+            _ => None,
+        };
+        if let Some(action) = action {
+            self.queue_unit_operation("browser.page", action);
+            return true;
+        }
+        false
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -1046,7 +1899,7 @@ impl Widget for BrowserWidget {
             return false;
         }
         ui::put_text_diffed(state, root, URL_PATH, url);
-        self.initial_url = url.to_owned();
+        url.clone_into(&mut self.initial_url);
         if self.bootstrap_done {
             self.engine.send(WebViewCommand::Navigate(url.to_owned()));
         }
@@ -1057,7 +1910,26 @@ impl Widget for BrowserWidget {
         &[BROWSER_OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Resource definitions stay together so their action contracts remain discoverable."
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        const MATERIALIZED_LIMIT: usize = 100;
+        let resource_id = |kind: &str, url: &str| {
+            format!("browser.{kind}.{}", blake3::hash(url.as_bytes()).to_hex())
+        };
+        let operation =
+            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
+                ActionSpec::operation(
+                    id,
+                    label,
+                    kind,
+                    BROWSER_OPERATION_TYPE,
+                    &browser_operation_payload(&operation),
+                )
+                .ok()
+            };
         let mut page = Resource::new(
             "browser.page",
             "browser.page",
@@ -1120,7 +1992,266 @@ impl Widget for BrowserWidget {
             )
             .with_contract(navigation_contract()),
         );
-        vec![page]
+        if let Ok(spec) = ActionSpec::immediate(
+            "bookmark",
+            "Bookmark this page",
+            BROWSER_ACTION_TYPE,
+            &BrowserAction::AddBookmark {
+                url: self.current_uri.clone(),
+                title: self.title.clone(),
+                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+            },
+        ) {
+            page.actions.push(if self.current_uri.trim().is_empty() {
+                spec.unavailable("no_page", "Open a page before bookmarking it")
+            } else if self.bookmarks.contains(&self.current_uri) {
+                spec.unavailable("already_bookmarked", "This page is already bookmarked")
+            } else {
+                spec.reversible()
+            });
+        }
+        if let Some(spec) = operation(
+            "picture-in-picture",
+            if self.active_pip {
+                "Close Picture in Picture"
+            } else {
+                "Open Picture in Picture"
+            },
+            OperationKind::View,
+            BrowserOperation::TogglePictureInPicture,
+        ) {
+            page.actions.push(spec);
+        }
+
+        let mut history = Resource::new("browser.history", "browser.history", "History");
+        if let Some(spec) = operation(
+            "show",
+            "Show history",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::History,
+            },
+        ) {
+            history.actions.push(spec);
+        }
+        if let Some(spec) = operation(
+            "clear",
+            "Clear browsing history",
+            OperationKind::Effect,
+            BrowserOperation::ClearHistory,
+        ) {
+            history.actions.push(if self.history.is_empty() {
+                spec.unavailable("already_empty", "Browsing history is already empty")
+            } else {
+                spec.destructive()
+            });
+        }
+        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
+            let title = if entry.title.trim().is_empty() {
+                entry.url.as_str()
+            } else {
+                entry.title.as_str()
+            };
+            let mut child = Resource::new(
+                resource_id("history", &entry.url),
+                "browser.history-entry",
+                title,
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open page",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            history.children.push(child);
+        }
+
+        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        if let Some(spec) = operation(
+            "show",
+            "Show bookmarks",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Bookmarks,
+            },
+        ) {
+            bookmarks.actions.push(spec);
+        }
+        for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
+            let mut child = Resource::new(
+                bookmark_resource_id(&entry.url),
+                "browser.bookmark",
+                entry.title.clone(),
+            );
+            if let Some(spec) = operation(
+                "open",
+                "Open bookmark",
+                OperationKind::Effect,
+                BrowserOperation::Navigate {
+                    url: entry.url.clone(),
+                },
+            ) {
+                child
+                    .actions
+                    .push(spec.with_contract(navigation_contract()));
+            }
+            if let Ok(spec) = ActionSpec::immediate(
+                "remove",
+                "Remove bookmark",
+                BROWSER_ACTION_TYPE,
+                &BrowserAction::RemoveBookmark {
+                    url: entry.url.clone(),
+                    observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
+                },
+            ) {
+                child.actions.push(spec.destructive());
+            }
+            bookmarks.children.push(child);
+        }
+
+        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
+        if let Some(spec) = operation(
+            "show",
+            "Show downloads",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Downloads,
+            },
+        ) {
+            downloads.actions.push(spec);
+        }
+        let mut extensions =
+            Resource::new("browser.extensions", "browser.extensions", "Extensions");
+        if let Some(spec) = operation(
+            "show",
+            "Show extensions",
+            OperationKind::View,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Extensions,
+            },
+        ) {
+            extensions.actions.push(spec);
+        }
+        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+        if let Some(spec) = operation(
+            "show",
+            "Show browser settings",
+            OperationKind::View,
+            BrowserOperation::ShowSettings,
+        ) {
+            settings.actions.push(spec);
+        }
+        if let Some(spec) = operation(
+            "clear-site-data",
+            "Clear cookies and site data",
+            OperationKind::Effect,
+            BrowserOperation::ClearWebsiteData,
+        ) {
+            settings.actions.push(spec.destructive());
+        }
+        for (id, label, operation) in [
+            ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
+            (
+                "set-clear-on-exit",
+                "Set clear data on exit",
+                "set-clear-on-exit",
+            ),
+        ] {
+            settings.actions.push(
+                ActionSpec::typed(
+                    id,
+                    label,
+                    "enabled",
+                    ui::qos_actions::ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        "enabled",
+                        ParamType::Boolean,
+                        "Whether the setting is enabled",
+                    )],
+                    move |args: &ActionArgs| {
+                        let action = if operation == "set-adblock" {
+                            BrowserAction::SetAdblock {
+                                enabled: args.boolean("enabled").unwrap_or(false),
+                            }
+                        } else {
+                            BrowserAction::SetClearOnExit {
+                                enabled: args.boolean("enabled").unwrap_or(false),
+                            }
+                        };
+                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                            EncodedAction {
+                                type_id: BROWSER_ACTION_TYPE.into(),
+                                payload: Vec::new(),
+                            }
+                        })
+                    },
+                )
+                .reversible(),
+            );
+        }
+        for (id, label, parameter, operation) in [
+            ("set-homepage", "Set homepage", "url", "homepage"),
+            (
+                "set-search-engine",
+                "Set search engine template",
+                "template",
+                "search-engine",
+            ),
+        ] {
+            settings.actions.push(
+                ActionSpec::typed(
+                    id,
+                    label,
+                    parameter,
+                    ui::qos_actions::ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        parameter,
+                        ParamType::Text,
+                        parameter,
+                    )],
+                    move |args: &ActionArgs| {
+                        let action = if operation == "homepage" {
+                            BrowserAction::SetHomepage {
+                                url: args.text(parameter).unwrap_or_default().into(),
+                            }
+                        } else {
+                            BrowserAction::SetSearchEngine {
+                                template: args.text(parameter).unwrap_or_default().into(),
+                            }
+                        };
+                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                            EncodedAction {
+                                type_id: BROWSER_ACTION_TYPE.into(),
+                                payload: Vec::new(),
+                            }
+                        })
+                    },
+                )
+                .reversible(),
+            );
+        }
+
+        let mut browser = Resource::new("browser", "browser.application", "Browser");
+        if let Some(spec) = operation(
+            "show-page",
+            "Show current page",
+            OperationKind::View,
+            BrowserOperation::ShowPage,
+        ) {
+            browser.actions.push(spec);
+        }
+        browser.children = vec![page, history, bookmarks, downloads, extensions, settings];
+        vec![browser]
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 
     fn invoke_resource_operation(
@@ -1145,18 +2276,30 @@ impl Widget for BrowserWidget {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
+        _doc: &AutoCommit,
+        _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
             return Ok(None);
         }
+        let operation = decode_browser_operation(payload)?;
+        let is_navigation = matches!(
+            &operation,
+            BrowserOperation::Back
+                | BrowserOperation::Forward
+                | BrowserOperation::Reload
+                | BrowserOperation::Navigate { .. }
+        );
+        if !is_navigation {
+            self.perform_browser_operation(operation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::qos_actions::ActionOutput::default(),
+            )));
+        }
         if self.resource_navigation_invocation.is_some() {
             return Err("another browser navigation is already running".into());
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
+        self.perform_browser_operation(operation);
         self.resource_navigation_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
@@ -1219,15 +2362,71 @@ impl Widget for BrowserWidget {
         }
         if Self::take_flag(state, path, SETTINGS_FLAG) {
             self.show_settings = !self.show_settings;
+            self.show_library = false;
             self.structure_dirty = true;
             self.suggestions.clear();
         }
-        if Self::take_flag(state, path, PIP_FLAG) && !self.show_settings {
+        if Self::take_flag(state, path, LIBRARY_FLAG) {
+            self.show_library = !self.show_library;
+            self.show_settings = false;
+            self.structure_dirty = true;
+            self.suggestions.clear();
+        }
+        for (flag, section) in [
+            (LIBRARY_HISTORY_FLAG, LibrarySection::History),
+            (LIBRARY_BOOKMARKS_FLAG, LibrarySection::Bookmarks),
+            (LIBRARY_DOWNLOADS_FLAG, LibrarySection::Downloads),
+            (LIBRARY_EXTENSIONS_FLAG, LibrarySection::Extensions),
+        ] {
+            if Self::take_flag(state, path, flag) {
+                self.library_section = section;
+                self.structure_dirty = true;
+            }
+        }
+        let history_open = self
+            .history
+            .entries()
+            .iter()
+            .rev()
+            .take(HISTORY_OPEN_FLAGS.len())
+            .enumerate()
+            .find_map(|(index, entry)| {
+                let flag = HISTORY_OPEN_FLAGS.get(index)?;
+                Self::take_flag(state, path, flag).then(|| entry.url.clone())
+            });
+        if let Some(url) = history_open {
+            self.perform_browser_operation(BrowserOperation::Navigate { url });
+        }
+        let bookmark_operation = self
+            .bookmarks
+            .entries()
+            .iter()
+            .take(BOOKMARK_OPEN_FLAGS.len())
+            .enumerate()
+            .find_map(|(index, entry)| {
+                let flag = BOOKMARK_OPEN_FLAGS.get(index)?;
+                if Self::take_flag(state, path, flag) {
+                    Some(BrowserOperation::Navigate {
+                        url: entry.url.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+        if let Some(operation) = bookmark_operation {
+            self.perform_browser_operation(operation);
+        }
+        if Self::take_flag(state, path, "browser.library.history.clear") {
+            self.perform_browser_operation(BrowserOperation::ClearHistory);
+        }
+        if Self::take_flag(state, path, PIP_FLAG) && !self.show_settings && !self.show_library {
             self.begin_pip_probe();
         }
 
         self.apply_settings_intents(state, path);
-        self.update_suggestions(state, path);
+        self.publish_settings_if_dirty(state, path);
+        self.sync_bookmarks(state, path);
+        self.sync_search_and_suggestions(state, path);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
@@ -1275,6 +2474,11 @@ impl Widget for BrowserWidget {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        let compact = self.rect.width() < 600.0;
+        if compact != self.compact_chrome {
+            self.compact_chrome = compact;
+            self.structure_dirty = true;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&child_node) = children.first()
@@ -1343,7 +2547,11 @@ impl Widget for BrowserWidget {
         self.pip_select_area_rect = Rect::ZERO;
         if let Some(feedback) = &self.pip_feedback {
             let elapsed = feedback.started.elapsed();
-            let mut alpha = (elapsed.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0);
+            let mut alpha = if self.motion_reduced {
+                1.0
+            } else {
+                (elapsed.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0)
+            };
             if feedback.kind == PipFeedbackKind::NoVideo && !feedback_hovered {
                 let remaining = PIP_FEEDBACK_LIFETIME.saturating_sub(elapsed);
                 alpha =
@@ -1351,11 +2559,10 @@ impl Widget for BrowserWidget {
             }
             if let Some(anchor) = self.pip_button_rect() {
                 let has_actions = feedback.kind == PipFeedbackKind::NoVideo;
-                let desired_width: f64 = if has_actions { 354.0 } else { 326.0 };
-                let width = desired_width.min((self.rect.width() - 24.0).max(220.0));
-                let x1 = (anchor.x1 + 2.0).min(self.rect.x1 - 12.0);
-                let height = if has_actions { 112.0 } else { 64.0 };
-                let rect = Rect::new(x1 - width, anchor.y1 + 8.0, x1, anchor.y1 + 8.0 + height);
+                let Some(rect) = Self::pip_feedback_rect_for_anchor(self.rect, anchor, has_actions)
+                else {
+                    return;
+                };
                 self.pip_feedback_rect = rect;
                 let card = match feedback.kind {
                     PipFeedbackKind::Finding => {
@@ -1385,6 +2592,12 @@ impl Widget for BrowserWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if self.motion_reduced {
+            return self
+                .composed
+                .as_ref()
+                .is_some_and(|composed| composed.needs_animation_frame());
+        }
         let feedback_animates = self.pip_feedback.as_ref().is_some_and(|feedback| {
             feedback.started.elapsed() < PIP_FEEDBACK_FADE
                 || (feedback.kind == PipFeedbackKind::NoVideo
@@ -1404,6 +2617,13 @@ impl Widget for BrowserWidget {
                 .composed
                 .as_mut()
                 .is_some_and(|c| c.take_structure_dirty())
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        if let Some(composed) = &mut self.composed {
+            composed.set_motion_reduced(reduced);
+        }
     }
 
     fn take_floating_surface_request(
@@ -1497,6 +2717,16 @@ impl Widget for BrowserWidget {
             }
         }
 
+        // Conventional browser navigation keys. These must be handled before
+        // forwarding into the page: an embedded site should not be able to
+        // steal the browser's own history controls. The queued invocation is
+        // the same canonical action the toolbar exposes to history, agents,
+        // and collaboration.
+        if self.handle_browser_shortcut(event, *modifiers) {
+            *handled = true;
+            return;
+        }
+
         // The suggestion dropdown gets first crack at input while it's up
         // (address bar focused): arrow keys move the selection, Enter/click
         // pick a suggestion, Escape dismisses — ahead of the text field.
@@ -1517,8 +2747,7 @@ impl Widget for BrowserWidget {
                 self.suggestions.clear();
                 self.last_query = None;
                 ui::put_text_diffed(state, path, URL_PATH, &entry.url);
-                self.engine
-                    .send(WebViewCommand::Navigate(normalise_url(&entry.url)));
+                self.queue_navigate(entry.url);
                 *handled = true;
                 return;
             }
@@ -1572,6 +2801,14 @@ impl Widget for BrowserWidget {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
             .collect()
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_controls.pop_front().or_else(|| {
+            self.composed
+                .as_mut()
+                .and_then(|composed| composed.take_control_invocation())
+        })
     }
 
     fn name(&self) -> &'static str {
@@ -1664,6 +2901,71 @@ mod tests {
         assert_eq!(
             BrowserWidget::read_url(&state, &root).as_deref(),
             Some(DEFAULT_URL)
+        );
+    }
+
+    #[test]
+    fn narrow_chrome_keeps_a_nonzero_page_viewport() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_set_viewport_width(390);
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        widget.sync(&mut state, &root);
+        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        widget.sync(&mut state, &root);
+        let layout_root = tree
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(390.0),
+                        height: Dimension::length(844.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_nodes = nodes.clone();
+        tree.compute_layout_with_measure(
+            layout_root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(390.0),
+                height: taffy::AvailableSpace::Definite(844.0),
+            },
+            |known, available, node, _, _| {
+                measure_nodes
+                    .get(&node)
+                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut text)
+                    })
+            },
+        )
+        .unwrap();
+        widget.apply_layout(&tree, child, Point::ORIGIN);
+        let viewport = widget.find_rect("browser.surface").unwrap();
+        assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
+        assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+    }
+
+    #[test]
+    fn narrow_pip_feedback_is_clamped_inside_viewport_safe_bounds() {
+        let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+        // Compact chrome has no dedicated PiP button; its semantic fallback
+        // anchor is close enough to the trailing edge that trailing-only
+        // alignment used to put the left side of this card offscreen.
+        let anchor = Rect::new(278.0, 12.0, 322.0, 52.0);
+        let card = BrowserWidget::pip_feedback_rect_for_anchor(viewport, anchor, true).unwrap();
+        assert!(card.x0 >= viewport.x0 + 12.0);
+        assert!(card.x1 <= viewport.x1 - 12.0);
+        assert!(card.y0 >= viewport.y0 + 12.0);
+        assert!(card.y1 <= viewport.y1 - 12.0);
+        assert!(
+            (card.width() - 354.0).abs() < f64::EPSILON,
+            "the full action card still fits"
         );
     }
 
@@ -1904,8 +3206,8 @@ mod tests {
         w.pip_feedback = Some(PipFeedback {
             kind: PipFeedbackKind::NoVideo,
             started: std::time::Instant::now()
-                - PIP_FEEDBACK_LIFETIME
-                - std::time::Duration::from_secs(1),
+                .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now),
         });
         w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
         w.cursor = w.pip_feedback_rect.center();
@@ -1933,8 +3235,7 @@ mod tests {
 
     #[test]
     fn active_pip_closes_when_its_semantic_element_disappears() {
-        let engine = TestEngine::new();
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
         let (mut state, root) = synced(&mut w);
         w.active_pip = true;
         w.active_pip_element = Some(MediaElementInfo {
@@ -2010,7 +3311,29 @@ mod tests {
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
         let (mut doc, root) = synced(&mut w);
         let resources = Widget::resources(&w, &doc);
-        let page = &resources[0];
+        assert_eq!(resources[0].id.0, "browser");
+        for expected in [
+            "browser.page",
+            "browser.history",
+            "browser.bookmarks",
+            "browser.downloads",
+            "browser.extensions",
+            "browser.settings",
+        ] {
+            assert!(
+                resources[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.0 == expected)
+            );
+        }
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == "browser.page")
+            .unwrap();
+        let bookmark = page.actions.iter().find(|a| a.id == "bookmark").unwrap();
+        assert_eq!(bookmark.kind, OperationKind::Document);
         let back = page.actions.iter().find(|a| a.id == "back").unwrap();
         assert!(!back.contract.availability.is_available());
         let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
@@ -2020,6 +3343,20 @@ mod tests {
             ui::qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(navigate.contract.result, ui::qos_actions::ResultSpec::None);
+        let settings = resources[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == "browser.settings")
+            .unwrap();
+        assert_eq!(
+            settings
+                .actions
+                .iter()
+                .find(|a| a.id == "set-adblock")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
         let mut args = serde_json::Map::new();
         args.insert("url".into(), serde_json::json!("qos.example"));
         let encoded = navigate.build_json(&args).unwrap();
@@ -2042,6 +3379,59 @@ mod tests {
             w.poll_resource_operation(invocation, false, &doc, &root),
             Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
         ));
+    }
+
+    #[test]
+    fn bookmark_row_controls_use_unique_normalized_action_identities() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        w.debug_show_library("bookmarks");
+        assert!(w.bookmarks.add("https://legacy.example", "Legacy bookmark"));
+        let (mut doc, root) = synced(&mut w);
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+
+        let expected = [
+            bookmark_resource_id("https://www.rust-lang.org/learn"),
+            bookmark_resource_id("https://developer.mozilla.org/"),
+            bookmark_resource_id("https://legacy.example"),
+        ];
+        let controls = w
+            .control_action_bindings()
+            .into_iter()
+            .filter_map(|binding| match binding.kind {
+                ui::widget::ControlBindingKind::Action(address) if address.action == "remove" => {
+                    Some((binding.control_id, address))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(controls.len(), expected.len());
+        assert_eq!(
+            controls
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            controls.len(),
+            "each row needs a durable, unique semantic key"
+        );
+        for resource_id in expected {
+            assert!(controls.iter().any(|(control_id, address)| {
+                control_id == &format!("{resource_id}.remove") && address.resource == resource_id
+            }));
+        }
+
+        let mut semantic = ui::a11y_tree::SemanticTree::new();
+        semantic.refresh(&w, &node_map, None, &[]);
+        assert!(
+            semantic.duplicate_ids().is_empty(),
+            "bookmark controls must not collapse in the retained a11y tree"
+        );
+
+        // The composed tree is not otherwise synchronized in this layout-only
+        // regression test; keep the document borrow explicitly live.
+        w.sync(&mut doc, &root);
     }
 
     #[test]

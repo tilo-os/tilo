@@ -19,8 +19,10 @@
 //! * **Action** — the clip *metadata*: its source reference, in/out window,
 //!   track and timeline position, plus grade / opacity / volume / fades /
 //!   transition; track add/rename/mute/delete/reorder; project settings.
-//! * **Not an action (presentation)** — the playhead / scrub, zoom, selection,
-//!   which panel is open, play/pause transport. Nothing to replicate.
+//! * **View operation (presentation)** — reveal a track, clip, marker or media
+//!   resource. These are brokered and agent-drivable but never touch the CRDT,
+//!   replicate, or enter undo history. Scrub, zoom and transport remain local
+//!   implementation details rather than document actions.
 //! * **Not an action (external)** — media decode, thumbnail / waveform
 //!   generation, GPU render, export/encode, FUSE byte hydration. The clip
 //!   metadata is the action; the *pixels* are produced outside the document.
@@ -40,9 +42,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec,
+    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
+    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::VideoDoc;
@@ -56,14 +58,108 @@ use crate::param::{Interp, Param};
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
 pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
 
+pub fn track_resource_id(id: Uuid) -> String {
+    format!("video.track:{id}")
+}
+
+pub fn clip_resource_id(id: Uuid) -> String {
+    format!("video.clip:{id}")
+}
+
+pub fn marker_resource_id(id: Uuid) -> String {
+    format!("video.marker:{id}")
+}
+
+pub fn media_resource_id(id: Uuid) -> String {
+    format!("video.media:{id}")
+}
+
+pub fn reveal_track_address(id: Uuid) -> ActionAddress {
+    ActionAddress::new(track_resource_id(id), "open")
+}
+
+pub fn reveal_clip_address(id: Uuid) -> ActionAddress {
+    ActionAddress::new(clip_resource_id(id), "open")
+}
+
+pub fn reveal_marker_address(id: Uuid) -> ActionAddress {
+    ActionAddress::new(marker_resource_id(id), "open")
+}
+
+pub fn reveal_media_address(id: Uuid) -> ActionAddress {
+    ActionAddress::new(media_resource_id(id), "open")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VideoEditorOperation {
-    ImportMedia { path: Option<String> },
-    OpenProject { path: Option<String> },
-    SaveProject { path: Option<String> },
-    SaveProjectAs { path: Option<String> },
-    Export { path: Option<String> },
+    RevealTrack {
+        track: String,
+    },
+    RevealClip {
+        clip: String,
+    },
+    RevealMarker {
+        marker: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip: Option<String>,
+    },
+    RevealMedia {
+        media: String,
+    },
+    ImportMedia {
+        path: Option<String>,
+    },
+    OpenProject {
+        path: Option<String>,
+    },
+    SaveProject {
+        path: Option<String>,
+    },
+    SaveProjectAs {
+        path: Option<String>,
+    },
+    Export {
+        path: Option<String>,
+    },
     CancelExport,
+}
+
+pub fn operation_kind(operation: &VideoEditorOperation) -> OperationKind {
+    match operation {
+        VideoEditorOperation::RevealTrack { .. }
+        | VideoEditorOperation::RevealClip { .. }
+        | VideoEditorOperation::RevealMarker { .. }
+        | VideoEditorOperation::RevealMedia { .. } => OperationKind::View,
+        VideoEditorOperation::ImportMedia { .. }
+        | VideoEditorOperation::OpenProject { .. }
+        | VideoEditorOperation::SaveProject { .. }
+        | VideoEditorOperation::SaveProjectAs { .. }
+        | VideoEditorOperation::Export { .. }
+        | VideoEditorOperation::CancelExport => OperationKind::Effect,
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the passed enum is a serde-derived local value, so ActionSpec encoding is infallible by construction"
+)]
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    value: VideoEditorOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, VIDEO_EDITOR_OPERATION_TYPE, &value)
+        .expect("VideoEditorOperation is always serializable");
+    match value {
+        VideoEditorOperation::RevealTrack { .. }
+        | VideoEditorOperation::RevealClip { .. }
+        | VideoEditorOperation::RevealMarker { .. }
+        | VideoEditorOperation::RevealMedia { .. } => spec
+            .with_contract(ActionContract::view())
+            .retry_policy(RetryPolicy::Idempotent),
+        _ => spec,
+    }
 }
 
 pub fn decode_operation(
@@ -634,6 +730,10 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`VideoEditorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns the
 /// editor's actions into replayable envelopes.
+#[allow(
+    clippy::expect_used,
+    reason = "the serde-derived action is encoded immediately after construction and has no fallible fields"
+)]
 pub fn encode(action: &VideoEditorAction) -> EncodedAction {
     EncodedAction::encode(VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("VideoEditorAction is always serializable")
@@ -755,6 +855,10 @@ pub struct VideoResourceCtx {
     pub mix: crate::audio::MixSnapshot,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the serde-derived document action is the value just supplied to the immediate action builder"
+)]
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("encode video-editor action")
@@ -845,9 +949,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
         .split(',')
         .filter_map(|p| p.trim().parse::<f64>().ok())
         .collect();
-    match parts.len() {
-        3 => Some([parts[0], parts[1], parts[2], 1.0]),
-        4 => Some([parts[0], parts[1], parts[2], parts[3]]),
+    match parts.as_slice() {
+        [red, green, blue] => Some([*red, *green, *blue, 1.0]),
+        [red, green, blue, alpha] => Some([*red, *green, *blue, *alpha]),
         _ => None,
     }
 }
@@ -855,6 +959,12 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
 /// document-mutating operation exported as an action.
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
+)]
 pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
@@ -903,47 +1013,43 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             .returns(ResultSpec::Job),
         );
     }
-    if let Ok(spec) = ActionSpec::operation(
+    // The action's identity, parameters, and job contract do not disappear
+    // when this build lacks an encoder. Consumers can still discover the
+    // canonical operation and explain its availability consistently; only
+    // invocation is refused until an encoder-capable build is present.
+    let export = ActionSpec::typed_operation(
         "export",
         "Export video",
+        "path (omit to use the system picker)",
         OperationKind::Effect,
         VIDEO_EDITOR_OPERATION_TYPE,
-        &VideoEditorOperation::Export { path: None },
-    ) {
-        root = root.with_action(if crate::export::unavailable_reason().is_some() {
-            spec.unavailable(
-                "export_unavailable",
-                "Video export is unavailable on this system",
-            )
-        } else {
-            ActionSpec::typed_operation(
-                "export",
-                "Export video",
-                "path (omit to use the system picker)",
-                OperationKind::Effect,
+        vec![ActionParam::optional_owned(
+            "path",
+            ParamType::Text,
+            "Direct export path",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
                 VIDEO_EDITOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct export path",
-                )],
-                |args: &ActionArgs| {
-                    EncodedAction::encode_operation(
-                        VIDEO_EDITOR_OPERATION_TYPE,
-                        &VideoEditorOperation::Export {
-                            path: args
-                                .text("path")
-                                .filter(|p| !p.trim().is_empty())
-                                .map(str::to_string),
-                        },
-                    )
-                    .expect("export operation serializes")
+                &VideoEditorOperation::Export {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string),
                 },
             )
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job)
-        });
-    }
+            .expect("export operation serializes")
+        },
+    )
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
+    root = root.with_action(match crate::export::unavailable_reason() {
+        Some(_) => export.unavailable(
+            "export_unavailable",
+            "Video export is unavailable on this system",
+        ),
+        None => export,
+    });
     if let Ok(spec) = ActionSpec::operation(
         "cancel-export",
         "Cancel export",
@@ -1237,6 +1343,28 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         ));
     }
 
+    // Project markers are first-class navigable resources. Their marker id,
+    // rather than a captured timestamp, keeps a search row attached to the
+    // marker when a collaborator changes its time before activation.
+    for marker in &p.markers {
+        root = root.with_child(
+            Resource::new(
+                marker_resource_id(marker.id),
+                "video.marker",
+                marker.name.clone(),
+            )
+            .with_action(operation(
+                "open",
+                "Reveal marker",
+                OperationKind::View,
+                VideoEditorOperation::RevealMarker {
+                    marker: marker.id.to_string(),
+                    clip: None,
+                },
+            )),
+        );
+    }
+
     // Project-level: add a fresh empty track of either kind (index = current
     // max of that kind + 1) — the same whole-track write the timeline's
     // add-track buttons dispatch.
@@ -1274,11 +1402,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
     for track in p.display_tracks() {
         let tid = track.id;
-        let mut tr = Resource::new(
-            format!("video.track:{tid}"),
-            "video.track",
-            track.name.clone(),
-        );
+        let mut tr = Resource::new(track_resource_id(tid), "video.track", track.name.clone())
+            .with_action(operation(
+                "open",
+                "Reveal track",
+                OperationKind::View,
+                VideoEditorOperation::RevealTrack {
+                    track: tid.to_string(),
+                },
+            ));
 
         // Track-level: rename, toggle mute (deterministic flip against the
         // snapshot), delete (with its clips).
@@ -1384,7 +1516,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             let label = p
                 .media(clip.media)
                 .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
-            let mut cr = Resource::new(format!("video.clip:{cid}"), "video.clip", label);
+            let mut cr =
+                Resource::new(clip_resource_id(cid), "video.clip", label).with_action(operation(
+                    "open",
+                    "Reveal clip",
+                    OperationKind::View,
+                    VideoEditorOperation::RevealClip {
+                        clip: cid.to_string(),
+                    },
+                ));
 
             // Every clip linked to this one. A clip that is not linked is a
             // group of one, so every operation below is written against the
@@ -2150,6 +2290,25 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 },
             ));
 
+            for marker in &clip.markers {
+                cr = cr.with_child(
+                    Resource::new(
+                        marker_resource_id(marker.id),
+                        "video.marker",
+                        marker.name.clone(),
+                    )
+                    .with_action(operation(
+                        "open",
+                        "Reveal marker",
+                        OperationKind::View,
+                        VideoEditorOperation::RevealMarker {
+                            marker: marker.id.to_string(),
+                            clip: Some(cid.to_string()),
+                        },
+                    )),
+                );
+            }
+
             tr = tr.with_child(cr);
         }
         root = root.with_child(tr);
@@ -2162,7 +2321,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     bin_media.sort_by(|a, b| a.name.cmp(&b.name));
     for m in bin_media {
         let mid = m.id;
-        let mut mr = Resource::new(format!("video.media:{mid}"), "video.media", m.name.clone());
+        let mut mr = Resource::new(media_resource_id(mid), "video.media", m.name.clone())
+            .with_action(operation(
+                "open",
+                "Reveal media",
+                OperationKind::View,
+                VideoEditorOperation::RevealMedia {
+                    media: mid.to_string(),
+                },
+            ));
         let rename_snap = m.clone();
         if let Some(text) = m.text.clone() {
             let base = m.clone();

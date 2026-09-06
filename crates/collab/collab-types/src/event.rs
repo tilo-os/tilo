@@ -85,15 +85,6 @@ pub enum ChannelEvent {
         /// Detached signature by `signed_by`.
         signature: Signature,
     },
-    /// Transfer channel ownership to a different identity, signed by the current owner.
-    OwnershipTransfer {
-        /// The incoming owner's public key.
-        new_owner: Ed25519PublicKey,
-        /// Signer of this transfer — must equal the current `Channel::owner`.
-        signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
-        signature: Signature,
-    },
     /// Change the channel's display name. Signed by the owner.
     Rename {
         /// New display name.
@@ -116,9 +107,10 @@ pub enum ChannelEvent {
     /// A new member was admitted to the channel's MLS group.
     ///
     /// Carries the MLS `Welcome` message (TLS-serialised by
-    /// `channel_crypto`) so a rejoining peer can replay the governance log +
-    /// the matching Welcome to reconstruct membership. The broker stores
-    /// both the event log and the per-recipient Welcome on disk.
+    /// `channel_crypto`) for delivery to the joining endpoint. A production
+    /// broker must durably store both the event and its targeted Welcome
+    /// before reporting admission complete. Replaying a Welcome alone cannot
+    /// reconstruct a lost endpoint key package or group secret.
     ///
     /// `welcome` bytes are opaque to the validator — only the recipient
     /// (whose `KeyPackage` the Welcome references) can decrypt them. The
@@ -140,9 +132,9 @@ pub enum ChannelEvent {
     /// advance their epoch (removal produces a commit, not a Welcome). Shape
     /// mirrors [`MemberAdded`] so the broker code path stays symmetric.
     ///
-    /// **Not implemented end-to-end**: `channel_crypto::ChannelGroup::remove_member`
-    /// is a documented `todo!()`; this variant exists so the wire format can
-    /// land ahead of removal support without a later breaking change.
+    /// `channel_crypto::ChannelGroup::remove_member` produces these commit
+    /// bytes. The authoritative broker must durably append and fan them out
+    /// before reporting the governance change as complete.
     MemberRemoved {
         /// TLS-serialised MLS commit bytes advancing the survivors' epoch,
         /// opaque outside the group.
@@ -183,11 +175,6 @@ impl ChannelEvent {
                 signed_by,
                 signature: _,
             } => attestation_revoked_signing_bytes(attestation, signed_by),
-            ChannelEvent::OwnershipTransfer {
-                new_owner,
-                signed_by,
-                signature: _,
-            } => ownership_transfer_signing_bytes(new_owner, signed_by),
             ChannelEvent::Rename {
                 new_name,
                 signed_by,
@@ -219,7 +206,6 @@ impl ChannelEvent {
             ChannelEvent::Genesis { owner, .. } => *owner,
             ChannelEvent::AttestationIssued(ra) => ra.attestation.issued_by,
             ChannelEvent::AttestationRevoked { signed_by, .. }
-            | ChannelEvent::OwnershipTransfer { signed_by, .. }
             | ChannelEvent::Rename { signed_by, .. }
             | ChannelEvent::SettingsUpdate { signed_by, .. }
             | ChannelEvent::MemberAdded { signed_by, .. }
@@ -232,7 +218,6 @@ impl ChannelEvent {
         match self {
             ChannelEvent::Genesis { signature, .. }
             | ChannelEvent::AttestationRevoked { signature, .. }
-            | ChannelEvent::OwnershipTransfer { signature, .. }
             | ChannelEvent::Rename { signature, .. }
             | ChannelEvent::SettingsUpdate { signature, .. }
             | ChannelEvent::MemberAdded { signature, .. }
@@ -303,24 +288,6 @@ fn attestation_revoked_signing_bytes(
     canonical_bytes(&View {
         tag: 2,
         attestation,
-        signed_by,
-    })
-}
-
-/// `OwnershipTransfer`'s signing view (tag 3).
-fn ownership_transfer_signing_bytes(
-    new_owner: &Ed25519PublicKey,
-    signed_by: &Ed25519PublicKey,
-) -> Result<Vec<u8>, CanonicalError> {
-    #[derive(Serialize)]
-    struct View<'a> {
-        tag: u8,
-        new_owner: &'a Ed25519PublicKey,
-        signed_by: &'a Ed25519PublicKey,
-    }
-    canonical_bytes(&View {
-        tag: 3,
-        new_owner,
         signed_by,
     })
 }

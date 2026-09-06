@@ -4,7 +4,8 @@
 //! host paths.  Consequently symlinks cannot escape the workspace namespace.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use iroh_blobs::Hash;
@@ -15,16 +16,21 @@ use runtime_fs::storage::{
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
+use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
 use crate::namespace::NodeKind;
-use crate::{ContentStore, Hydrator, Namespace};
+use crate::{FileHistoryStore, Hydrator, Namespace};
 
 #[derive(Clone)]
 pub struct StorageAuthority {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    store: Arc<ContentStore>,
     dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
-    pinned: Arc<RwLock<HashSet<String>>>,
+    /// Settings shares the same durable authority as FUSE.  In particular,
+    /// it never treats a daemon-lifetime hydration source as durability.
+    availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
+    eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
+    history: Option<Arc<FileHistoryStore>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
 }
@@ -93,7 +99,6 @@ async fn write_async_frame<T: Serialize + Sync>(
 #[derive(Clone)]
 struct FileBlobs {
     state: SyncedFileState,
-    blobs: Vec<Hash>,
 }
 
 /// A live file as seen through the namespace, before residency is looked up.
@@ -103,38 +108,33 @@ struct LogicalFile {
     path: String,
     logical_bytes: u64,
     hash: Option<Hash>,
+    record_id: collab_types::FileRecordId,
     mtime: u64,
 }
 
 impl StorageAuthority {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the constructor explicitly names the independent durable services which Settings must share with FUSE"
+    )]
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
-        store: Arc<ContentStore>,
         dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+        availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
+        eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
+        history: Option<Arc<FileHistoryStore>>,
         workspace: impl Into<String>,
     ) -> Self {
         Self {
             namespace,
             hydrator,
-            store,
             dirty,
-            pinned: Arc::new(RwLock::new(HashSet::new())),
+            availability,
+            eviction_queue,
+            history,
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
-        }
-    }
-
-    pub fn set_pinned(&self, identity: impl Into<String>, pinned: bool) {
-        let identity = identity.into();
-        let mut pins = self
-            .pinned
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pinned {
-            pins.insert(identity);
-        } else {
-            pins.remove(&identity);
         }
     }
 
@@ -153,12 +153,14 @@ impl StorageAuthority {
                 }
                 let inode = ns.inode_for_node(&identity)?;
                 let path = ns.path_for(inode)?;
+                let record_id = ns.record_id_for(inode)?;
                 Some(LogicalFile {
                     identity,
                     inode,
                     path,
                     logical_bytes: entry.size,
                     hash: entry.hash,
+                    record_id,
                     mtime: entry.mtime,
                 })
             })
@@ -171,9 +173,9 @@ impl StorageAuthority {
     async fn file_blobs(
         &self,
         file: LogicalFile,
-        online: bool,
         dirty: &HashSet<u64>,
-        pinned: &HashSet<String>,
+        records: &[RecordAvailability],
+        plans: &HashMap<collab_types::FileRecordId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
             identity,
@@ -181,10 +183,12 @@ impl StorageAuthority {
             path,
             logical_bytes,
             hash,
+            record_id,
             mtime,
         } = file;
         let is_dirty = dirty.contains(&inode);
-        let is_pinned = pinned.contains(&identity);
+        let record = records.iter().find(|record| record.record_id == record_id);
+        let is_pinned = effective_pinned(records, record_id);
         let Some(hash) = hash else {
             return FileBlobs {
                 state: SyncedFileState {
@@ -203,18 +207,23 @@ impl StorageAuthority {
                     remotely_durable: false,
                     reclaimable_bytes: 0,
                 },
-                blobs: Vec::new(),
             };
         };
         let residence = self.hydrator.residency(hash).await;
-        let reclaimable = eligible(Eligibility {
-            online,
-            bytes: residence.hydrated_bytes,
-            dirty: is_dirty,
-            pinned: is_pinned,
-            in_flight: residence.in_flight,
-            durable: residence.remotely_durable,
-        });
+        // A signed `ReplicaAckV1` persisted in AvailabilityRegistry is the
+        // only durability proof Settings may project. Hydrator peer/source
+        // state is intentionally only transport telemetry and resets at exit.
+        let durable = record.is_some_and(has_fresh_signed_ack);
+        let in_flight =
+            residence.in_flight || record.is_some_and(|record| record.transfer.phase.is_active());
+        let reclaimable = if !is_dirty && !is_pinned && !in_flight && durable {
+            plans
+                .get(&record_id)
+                .and_then(Option::as_ref)
+                .map_or(0, |plan| plan.reclaimable_bytes)
+        } else {
+            0
+        };
         FileBlobs {
             state: SyncedFileState {
                 workspace: self.workspace.clone(),
@@ -228,15 +237,10 @@ impl StorageAuthority {
                 remote_only: residence.remote_only,
                 dirty: is_dirty,
                 pinned: is_pinned,
-                in_flight: residence.in_flight,
-                remotely_durable: residence.remotely_durable,
-                reclaimable_bytes: if reclaimable {
-                    residence.hydrated_bytes
-                } else {
-                    0
-                },
+                in_flight,
+                remotely_durable: durable,
+                reclaimable_bytes: reclaimable,
             },
-            blobs: residence.blobs,
         }
     }
 
@@ -250,17 +254,36 @@ impl StorageAuthority {
             .keys()
             .copied()
             .collect::<HashSet<_>>();
-        let pinned = self
-            .pinned
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let records = self
+            .availability
+            .as_ref()
+            .map_or_else(Vec::new, |registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .records()
+                    .cloned()
+                    .collect()
+            });
+        // One captured registry generation and one superset history catalog
+        // serve every row. A failed/changed catalog yields no reclaimable UI
+        // rows rather than re-planning files independently.
+        // Only rows that can plausibly be allowed enter the expensive exact
+        // payload catalog.  The coordinator still adds every resident, pinned,
+        // and retained root needed to prove shared-chunk safety.
+        let target_ids = snapshot_candidate_ids(&logical, &dirty, &records, now_ms());
+        let plans = match self.coordinator() {
+            Ok(coordinator) => coordinator
+                .batch_safe_plans(&target_ids)
+                .await
+                .unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
 
         let mut details = Vec::with_capacity(logical.len());
         for file in logical {
-            details.push(self.file_blobs(file, online, &dirty, &pinned).await);
+            details.push(self.file_blobs(file, &dirty, &records, &plans).await);
         }
-        zero_out_shared_blob_reclaim(&mut details);
 
         let files = details.into_iter().map(|f| f.state).collect::<Vec<_>>();
         SyncStorageSnapshot {
@@ -273,165 +296,173 @@ impl StorageAuthority {
 
     /// # Errors
     ///
-    /// Returns an error if the mount is offline, a selected file's version can't be parsed,
-    /// the workspace changed underneath the selection during revalidation, or eviction fails
-    /// against the underlying store.
+    /// Safe eviction uses the durable, exact-version record plane.  It can
+    /// queue while offline only when a fresh persisted signed receipt already
+    /// proves an eligible replica; it never promotes a live Hydrator peer to
+    /// durability and never directly deletes a blob.
     pub async fn evict(&self, selected: Vec<EvictionSelection>) -> Result<EvictionReport> {
         let _exclusive = self.eviction.lock().await;
-        if self.hydrator.known_peers().is_empty() {
-            return Err(anyhow!("offline: local synced content was not changed"));
-        }
-        let snapshot = self.snapshot().await;
         let mut report = EvictionReport::default();
-        let mut selected_blobs = HashSet::new();
-        let mut accepted = Vec::new();
-
         for request in selected {
-            let Some(file) = snapshot
-                .files
-                .iter()
-                .find(|file| matches_selection(file, &request))
+            let Some(file) = self
+                .logical_files()
+                .into_iter()
+                .find(|file| file.identity == request.identity && file.inode == request.inode)
             else {
                 report
                     .skipped
                     .push(format!("{} changed since preview", request.identity));
                 continue;
             };
-            if file.reclaimable_bytes == 0 {
-                report.skipped.push(format!(
-                    "{} is no longer safely reclaimable",
-                    file.logical_path
-                ));
+            if file
+                .hash
+                .map(|hash| hex::encode(hash.as_bytes()))
+                .as_deref()
+                != Some(&request.version)
+            {
+                report
+                    .skipped
+                    .push(format!("{} changed since preview", file.path));
                 continue;
             }
-            let hash = parse_hash(&file.version)?;
-            let residence = self.hydrator.residency(hash).await;
-            let Some(peer) = residence.remote_source.clone() else {
-                report.skipped.push(format!(
-                    "{} has no single verified remote source",
-                    file.logical_path
-                ));
-                continue;
-            };
-            // Verify every component just before eviction.  Content addressing
-            // makes this a version proof, not merely a peer liveness ping.
-            let mut verified = true;
-            for blob in &residence.blobs {
-                if self
-                    .hydrator
-                    .verify_remote_copy(*blob, peer.clone())
-                    .await
-                    .is_err()
-                {
-                    verified = false;
-                    break;
-                }
-            }
-            if !verified {
-                report.skipped.push(format!(
-                    "{} could not be verified remotely",
-                    file.logical_path
-                ));
-                continue;
-            }
-            selected_blobs.extend(residence.blobs);
-            accepted.push(file.clone());
-        }
-
-        // Final identity/inode/version/dirty revalidation after network I/O.
-        for file in &accepted {
-            let current = {
-                let ns = self
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                ns.entry_for_node(&file.identity)
-                    .and_then(|entry| entry.hash)
-            };
             let still_dirty = self
                 .dirty
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains_key(&file.inode);
-            let still_pinned = self
-                .pinned
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&file.identity);
-            if current.map(|h| hex::encode(h.as_bytes())).as_deref() != Some(&file.version)
-                || still_dirty
-                || still_pinned
-            {
-                return Err(anyhow!(
-                    "workspace changed during revalidation; nothing was evicted"
-                ));
+            if still_dirty {
+                report
+                    .skipped
+                    .push(format!("{} has unsaved changes", file.path));
+                continue;
             }
-        }
-        self.store.evict_blobs(&selected_blobs).await?;
-        for file in &accepted {
-            let current = self.hydrator.residency(parse_hash(&file.version)?).await;
-            report.freed_bytes = report.freed_bytes.saturating_add(
-                file.reclaimable_bytes
-                    .saturating_sub(current.hydrated_bytes),
-            );
-            if current.hydrated_bytes == 0 {
-                report.evicted_files = report.evicted_files.saturating_add(1);
+            let Some(expected_hash) = file.hash else {
+                report
+                    .skipped
+                    .push(format!("{} changed since preview", file.path));
+                continue;
+            };
+            match self
+                .enqueue_canonical_eviction(
+                    file.record_id,
+                    expected_hash,
+                    file.identity.clone(),
+                    file.inode,
+                )
+                .await
+            {
+                Ok((request_id, plan)) => {
+                    if self.observe_once(file.record_id, request_id).await? {
+                        report.evicted_files = report.evicted_files.saturating_add(1);
+                        report.freed_bytes =
+                            report.freed_bytes.saturating_add(plan.reclaimable_bytes);
+                    } else {
+                        report.queued_files = report.queued_files.saturating_add(1);
+                        self.spawn_observer(file.record_id, request_id);
+                    }
+                }
+                Err(error) => report.skipped.push(format!("{}: {error}", file.path)),
             }
         }
         Ok(report)
     }
-}
 
-/// Eviction-eligibility inputs, grouped so the call site names each flag
-/// rather than passing an easily-transposed run of `bool`s.
-#[derive(Clone, Copy)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each field is an independent, named eligibility condition; that's exactly what \
-              this struct exists to make transposition-proof at the call site instead of a run \
-              of positional bool params (see the doc comment above)"
-)]
-struct Eligibility {
-    online: bool,
-    bytes: u64,
-    dirty: bool,
-    pinned: bool,
-    in_flight: bool,
-    durable: bool,
-}
+    #[allow(
+        clippy::await_holding_lock,
+        clippy::significant_drop_tightening,
+        reason = "the availability lock intentionally spans plan revalidation and GC handoff so a pin, receipt, or version cannot race destructive authorization"
+    )]
+    async fn enqueue_canonical_eviction(
+        &self,
+        record_id: collab_types::FileRecordId,
+        expected_hash: Hash,
+        identity: String,
+        inode: u64,
+    ) -> Result<(EvictionRequestId, EvictionPlan)> {
+        let namespace = Arc::clone(&self.namespace);
+        let dirty = Arc::clone(&self.dirty);
+        let store = Arc::clone(&self.hydrator.store);
+        let runtime = self.hydrator.runtime_handle.clone();
+        self.coordinator()?
+            .prepare_with_handoff(
+                record_id,
+                crate::eviction::EvictionMode::Safe,
+                None,
+                Some(expected_hash),
+                move |plan, existing_request, queue, registry, catalog, now_ms| {
+                    // `write` establishes dirtiness before it can publish a
+                    // replacement namespace revision. Holding both guards
+                    // therefore prevents either local or remote mutation from
+                    // slipping between token validation and backend GC.
+                    let dirty = dirty
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut namespace = namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    validate_live_eviction_token(
+                        &mut namespace,
+                        &dirty,
+                        &identity,
+                        inode,
+                        record_id,
+                        expected_hash,
+                    )?;
+                    let request_id = match existing_request {
+                        Some(request_id) => request_id,
+                        None => queue.enqueue(plan, now_ms)?.id,
+                    };
+                    tokio::task::block_in_place(|| {
+                        runtime.block_on(store.release_eviction_to_backend_gc(
+                            queue,
+                            request_id,
+                            registry,
+                            catalog,
+                            now_ms,
+                            crate::availability::EvictionRequirements::default(),
+                        ))
+                    })?;
+                    Ok(request_id)
+                },
+            )
+            .await
+    }
 
-fn eligible(e: Eligibility) -> bool {
-    e.online && e.bytes > 0 && !e.dirty && !e.pinned && !e.in_flight && e.durable
-}
+    async fn observe_once(
+        &self,
+        record_id: collab_types::FileRecordId,
+        request_id: EvictionRequestId,
+    ) -> Result<bool> {
+        self.coordinator()?
+            .observe_once(record_id, request_id)
+            .await
+    }
 
-/// A chunk used by any other logical file must remain local. Being
-/// conservative here avoids misleading per-file reclaim estimates.
-fn zero_out_shared_blob_reclaim(details: &mut [FileBlobs]) {
-    let mut refs = HashMap::<Hash, usize>::new();
-    for file in details.iter() {
-        let mut seen = HashSet::new();
-        for hash in file.blobs.iter().copied() {
-            if seen.insert(hash) {
-                let count = refs.entry(hash).or_default();
-                *count = count.saturating_add(1);
-            }
+    fn spawn_observer(&self, record_id: collab_types::FileRecordId, request_id: EvictionRequestId) {
+        if let Ok(coordinator) = self.coordinator() {
+            coordinator.spawn_observer(record_id, request_id);
         }
     }
-    for file in details.iter_mut() {
-        if file
-            .blobs
-            .iter()
-            .any(|hash| refs.get(hash).copied().unwrap_or(0) > 1)
-        {
-            file.state.reclaimable_bytes = 0;
-        }
-    }
-}
 
-fn matches_selection(file: &SyncedFileState, request: &EvictionSelection) -> bool {
-    file.identity == request.identity
-        && file.inode == request.inode
-        && file.version == request.version
+    fn coordinator(&self) -> Result<EvictionCoordinator> {
+        Ok(EvictionCoordinator::new(
+            Arc::clone(&self.hydrator),
+            self.availability
+                .as_ref()
+                .ok_or_else(|| anyhow!("durable availability registry is unavailable"))?
+                .clone(),
+            self.eviction_queue
+                .as_ref()
+                .ok_or_else(|| anyhow!("durable eviction queue is unavailable"))?
+                .clone(),
+            Some(
+                self.history
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("durable version history is unavailable"))?
+                    .clone(),
+            ),
+        ))
+    }
 }
 
 fn app_from_path(path: &str) -> Option<String> {
@@ -442,12 +473,111 @@ fn app_from_path(path: &str) -> Option<String> {
     }
 }
 
-fn parse_hash(hex_hash: &str) -> Result<Hash> {
-    let raw = hex::decode(hex_hash)?;
-    let array: [u8; 32] = raw
+fn effective_pinned(records: &[RecordAvailability], record_id: collab_types::FileRecordId) -> bool {
+    let mut current = Some(record_id);
+    let mut remaining = records.len().saturating_add(1);
+    while let Some(record_id) = current {
+        if remaining == 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(1);
+        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+            // Missing ancestry is invalid durable state and must never become
+            // a Settings-side permission to release local data.
+            return true;
+        };
+        if record.policy == AvailabilityPolicy::Pinned {
+            return true;
+        }
+        current = record.parent;
+    }
+    false
+}
+
+fn has_fresh_signed_ack(record: &RecordAvailability) -> bool {
+    has_fresh_signed_ack_at(record, now_ms())
+}
+
+fn has_fresh_signed_ack_at(record: &RecordAvailability, now: u64) -> bool {
+    let requirements = crate::availability::EvictionRequirements::default();
+    let Some(version) = record.current_version else {
+        return false;
+    };
+    record.replicas.acknowledged_version == Some(version)
+        && record.freshness.replicas_observed_at_ms.is_some_and(|at| {
+            at <= now && now.saturating_sub(at) <= requirements.maximum_replica_age_ms
+        })
+        && u32::try_from(
+            record
+                .replica_observations
+                .iter()
+                .filter(|receipt| {
+                    receipt.version_id == version
+                        && receipt.issued_at_ms <= now
+                        && receipt.expires_at_ms >= now
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+            >= requirements.minimum_durable
+}
+
+fn snapshot_candidate_ids(
+    logical: &[LogicalFile],
+    dirty: &HashSet<u64>,
+    records: &[RecordAvailability],
+    now: u64,
+) -> Vec<collab_types::FileRecordId> {
+    logical
+        .iter()
+        .filter(|file| {
+            file.hash.is_some()
+                && !dirty.contains(&file.inode)
+                && records
+                    .iter()
+                    .find(|record| record.record_id == file.record_id)
+                    .is_some_and(|record| {
+                        !record.transfer.phase.is_active()
+                            && !effective_pinned(records, file.record_id)
+                            && has_fresh_signed_ack_at(record, now)
+                    })
+        })
+        .map(|file| file.record_id)
+        .collect()
+}
+
+/// Verify the live namespace token at the destructive authorization boundary,
+/// after all catalog I/O.  Availability/history can lag namespace CRDT
+/// application, so neither is a substitute for this check.
+fn validate_live_eviction_token(
+    namespace: &mut Namespace,
+    dirty: &HashMap<u64, Vec<u8>>,
+    identity: &str,
+    inode: u64,
+    record_id: collab_types::FileRecordId,
+    expected_hash: Hash,
+) -> Result<()> {
+    if dirty.contains_key(&inode) {
+        anyhow::bail!("workspace changed during eviction authorization");
+    }
+    let matches = namespace.inode_for_node(identity) == Some(inode)
+        && namespace.record_id_for(inode) == Some(record_id)
+        && namespace
+            .entry_for_node(identity)
+            .is_some_and(|entry| entry.hash == Some(expected_hash));
+    if !matches {
+        anyhow::bail!("workspace changed during eviction authorization");
+    }
+    Ok(())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
         .try_into()
-        .map_err(|_| anyhow!("invalid content version"))?;
-    Ok(Hash::from(array))
+        .unwrap_or(u64::MAX)
 }
 
 fn aggregate<'a>(
@@ -479,39 +609,7 @@ fn aggregate<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dirty_pinned_inflight_and_offline_are_never_reclaimable() {
-        let base = || Eligibility {
-            online: true,
-            bytes: 42,
-            dirty: false,
-            pinned: false,
-            in_flight: false,
-            durable: true,
-        };
-        assert!(eligible(base()));
-        assert!(!eligible(Eligibility {
-            online: false,
-            ..base()
-        }));
-        assert!(!eligible(Eligibility {
-            dirty: true,
-            ..base()
-        }));
-        assert!(!eligible(Eligibility {
-            pinned: true,
-            ..base()
-        }));
-        assert!(!eligible(Eligibility {
-            in_flight: true,
-            ..base()
-        }));
-        assert!(!eligible(Eligibility {
-            durable: false,
-            ..base()
-        }));
-    }
+    use crate::namespace::ROOT_INO;
 
     #[test]
     fn only_explicit_app_namespaces_are_attributed() {
@@ -524,7 +622,16 @@ mod tests {
     }
 
     #[test]
-    fn preview_identity_inode_and_version_are_all_race_tokens() {
+    fn broken_or_cyclic_policy_ancestry_is_pinned_fail_closed() {
+        let record = collab_types::FileRecordId::new();
+        let missing_parent = collab_types::FileRecordId::new();
+        let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
+        row.parent = Some(missing_parent);
+        assert!(effective_pinned(&[row], record));
+    }
+
+    #[test]
+    fn snapshot_selection_carries_all_race_tokens() {
         let file = SyncedFileState {
             workspace: "work".into(),
             app: None,
@@ -541,15 +648,137 @@ mod tests {
             remotely_durable: true,
             reclaimable_bytes: 1,
         };
-        let mut request = EvictionSelection::from(&file);
-        assert!(matches_selection(&file, &request));
-        request.version = "version-b".into();
-        assert!(!matches_selection(&file, &request));
-        request.version = file.version.clone();
-        request.inode += 1;
-        assert!(!matches_selection(&file, &request));
-        request.inode = file.inode;
-        request.identity = "replacement-node".into();
-        assert!(!matches_selection(&file, &request));
+        let selection = EvictionSelection::from(&file);
+        assert_eq!(selection.identity, file.identity);
+        assert_eq!(selection.inode, file.inode);
+        assert_eq!(selection.version, file.version);
+    }
+
+    #[test]
+    fn final_live_token_rejects_a_namespace_or_dirty_change() {
+        let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
+        let dirty = Arc::new(Mutex::new(HashMap::new()));
+        let expected = Hash::from([7; 32]);
+        let inode = namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
+            .unwrap();
+        let (identity, record_id) = {
+            let namespace = namespace.lock().unwrap();
+            (
+                namespace.id_for_ino(inode).unwrap().to_owned(),
+                namespace.record_id_for(inode).unwrap(),
+            )
+        };
+        assert!(
+            validate_live_eviction_token(
+                &mut namespace.lock().unwrap(),
+                &dirty.lock().unwrap(),
+                &identity,
+                inode,
+                record_id,
+                expected,
+            )
+            .is_ok()
+        );
+
+        let replacement = Hash::from([8; 32]);
+        assert!(
+            namespace
+                .lock()
+                .unwrap()
+                .set_content(inode, Some(&replacement), 1, 2)
+        );
+        assert!(
+            validate_live_eviction_token(
+                &mut namespace.lock().unwrap(),
+                &dirty.lock().unwrap(),
+                &identity,
+                inode,
+                record_id,
+                expected,
+            )
+            .is_err()
+        );
+
+        assert!(
+            namespace
+                .lock()
+                .unwrap()
+                .set_content(inode, Some(&expected), 1, 3)
+        );
+        dirty.lock().unwrap().insert(inode, Vec::new());
+        assert!(
+            validate_live_eviction_token(
+                &mut namespace.lock().unwrap(),
+                &dirty.lock().unwrap(),
+                &identity,
+                inode,
+                record_id,
+                expected,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn live_authorization_lease_blocks_mutation_after_validation() {
+        let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
+        let dirty = Arc::new(Mutex::new(HashMap::new()));
+        let expected = Hash::from([9; 32]);
+        let inode = namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
+            .unwrap();
+        let (identity, record_id) = {
+            let namespace = namespace.lock().unwrap();
+            (
+                namespace.id_for_ino(inode).unwrap().to_owned(),
+                namespace.record_id_for(inode).unwrap(),
+            )
+        };
+
+        // This is the exact lease held by `prepare_with_handoff` while it
+        // persists the request and performs backend tag release.
+        let dirty_lease = dirty.lock().unwrap();
+        let mut namespace_lease = namespace.lock().unwrap();
+        assert!(
+            validate_live_eviction_token(
+                &mut namespace_lease,
+                &dirty_lease,
+                &identity,
+                inode,
+                record_id,
+                expected,
+            )
+            .is_ok()
+        );
+        assert!(namespace.try_lock().is_err());
+        assert!(dirty.try_lock().is_err());
+        drop(namespace_lease);
+        drop(dirty_lease);
+        assert!(namespace.try_lock().is_ok());
+        assert!(dirty.try_lock().is_ok());
+    }
+
+    #[test]
+    fn snapshot_candidates_skip_rows_that_cannot_be_reclaimed() {
+        let record_id = collab_types::FileRecordId::new();
+        let logical = vec![LogicalFile {
+            identity: "candidate".into(),
+            inode: 7,
+            path: "/candidate".into(),
+            logical_bytes: 1,
+            hash: Some(Hash::from([1; 32])),
+            record_id,
+            mtime: 0,
+        }];
+        let mut dirty = HashSet::new();
+        dirty.insert(7);
+        let mut record = RecordAvailability::new(record_id, crate::availability::RecordKind::File);
+        record.current_version = Some(collab_types::FileVersionId::new());
+        assert!(snapshot_candidate_ids(&logical, &dirty, &[record], now_ms()).is_empty());
     }
 }

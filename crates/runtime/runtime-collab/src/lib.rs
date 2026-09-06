@@ -65,6 +65,103 @@ pub mod collab_capnp {
 
 use capnp_rpc::rpc_twoparty_capnp;
 
+/// Opaque capability naming MLS state held by the shell's vault provider.
+/// Bytes are useful only while registered in that provider; this type carries
+/// neither a key nor a filesystem path.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct MlsVaultHandle([u8; 32]);
+
+impl MlsVaultHandle {
+    /// Wrap a freshly random identifier issued by a trusted broker/vault.
+    /// Possession alone is insufficient: the receiving provider must have the
+    /// identifier in its capability registry.
+    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Opaque handle for one vault-registered MLS key package.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct MlsKeyPackageHandle([u8; 32]);
+
+impl MlsKeyPackageHandle {
+    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Opaque broker receipt proving an encrypted snapshot reached durable
+/// document history. It resolves to a digest only in the issuing broker.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct MlsSnapshotReceipt([u8; 32]);
+
+impl MlsSnapshotReceipt {
+    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Broker-internal MLS membership command. This is deliberately not exposed
+/// as a `CollabService` RPC: applications never submit governance commands.
+/// The shell's authenticated workspace authority constructs it from live
+/// membership state and vault-issued handles.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MlsAuthorityTransaction {
+    pub idempotency_key: [u8; 32],
+    pub channel: [u8; 16],
+    pub workspace: String,
+    pub expected_membership_revision: u64,
+    pub vault: MlsVaultHandle,
+    pub action: MlsAuthorityAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum MlsAuthorityAction {
+    Admit {
+        recipient: [u8; 32],
+        role: MlsWorkspaceRole,
+        key_package: MlsKeyPackageHandle,
+    },
+    Remove {
+        recipient: [u8; 32],
+        leaf_index: u32,
+    },
+    EnableEncryption {
+        snapshot: MlsSnapshotReceipt,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MlsWorkspaceRole {
+    Admin,
+    Editor,
+    Commenter,
+    Viewer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {
     Direct,
@@ -600,9 +697,7 @@ impl ChannelHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the update cannot be serialized, the
-    /// broker connection is unavailable, or the connection drops during the
-    /// call.
+    /// Returns [`NotAvailable`] when serialization or the broker call fails.
     pub async fn report_task_run(
         &self,
         run_id: u64,
@@ -625,12 +720,11 @@ impl ChannelHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable, the
-    /// connection drops during the call, or the broker returns malformed
-    /// invocation data.
+    /// Returns [`NotAvailable`] if the broker call fails or its update is not
+    /// valid UTF-8.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the fields mirror the broker RPC and are independently meaningful"
+        reason = "the arguments mirror the fixed Cap'n Proto task-action method"
     )]
     pub async fn invoke_task_action(
         &self,
@@ -724,6 +818,32 @@ impl ChannelHandle {
             let mut b = req.get();
             b.set_id(id);
             b.set_update_json(update_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Record a terminal local-UI effect in shared workspace activity.
+    /// The broker validates that the address is a currently published Effect
+    /// and reduces the update to a redacted receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or refuses the receipt as unauthorised or
+    /// malformed.
+    pub async fn record_local_effect(
+        &self,
+        resource: &str,
+        action: &str,
+        update_json: &str,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.record_local_effect_request();
+        {
+            let mut builder = req.get();
+            builder.set_resource(resource);
+            builder.set_action(action);
+            builder.set_update_json(update_json);
         }
         req.send().promise.await?;
         Ok(())
@@ -1324,8 +1444,8 @@ impl TaskRunStream {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the broker connection drops or the broker
-    /// returns a malformed task envelope.
+    /// Returns [`NotAvailable`] if the stream fails or the received envelope
+    /// is malformed.
     pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         let json = reply
@@ -1497,6 +1617,29 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish an invocation-scoped semantic interaction. The broker derives
+    /// the actor from this authenticated handle; the JSON carries only the
+    /// versioned action/target lifecycle from `qos_actions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_interaction(
+        &self,
+        key_bytes: &[u8],
+        interaction_json: &str,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_interaction_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_interaction_json(interaction_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -1577,6 +1720,10 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
+    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
+    /// caller-controlled payload.
+    InteractionJson(String),
     Arrived,
     Left,
 }
@@ -1654,6 +1801,14 @@ fn decode_presence_payload(
                 .filter(|target| !target.is_empty())
                 .map(str::to_owned),
         },
+        W::InteractionJson(value) => PresencePayload::InteractionJson(
+            value?
+                .to_str()
+                .map_err(|error| {
+                    capnp::Error::failed(format!("invalid interaction utf8: {error}"))
+                })?
+                .to_owned(),
+        ),
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })

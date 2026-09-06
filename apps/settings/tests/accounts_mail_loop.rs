@@ -24,11 +24,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 
-use settings::panes::accounts::{
-    ADD_MAIL_KEY, AccountsPane, FORM_EMAIL_KEY, FORM_NAME_KEY, FORM_PASSWORD_KEY, FORM_SAVE_KEY,
-    FORM_USER_KEY,
-};
+use settings::panes::accounts::{ADD_MAIL_KEY, AccountsPane};
 use ui::widget::Widget;
+
+struct AcceptAccount;
+
+impl settings::account_probe::AccountTester for AcceptAccount {
+    fn test(
+        &self,
+        _account: &accounts::Account,
+        _secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        Ok("signed in".into())
+    }
+}
 
 /// A process-unique temp config root so this test never collides with a real
 /// `~/.config/qos` or a parallel run.
@@ -65,7 +74,7 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     );
 
     // Drive the real Settings pane exactly as the UI would.
-    let mut pane = AccountsPane::new();
+    let mut pane = AccountsPane::new().with_account_tester(std::sync::Arc::new(AcceptAccount));
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
 
@@ -75,15 +84,19 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     assert!(pane.form_open(), "Add opens the inline form");
 
     // 2) Fill the form (a Gmail address so IMAP/SMTP autofill kicks in).
-    let _ = doc.put(&root, FORM_NAME_KEY, "Ada Personal");
-    let _ = doc.put(&root, FORM_EMAIL_KEY, "ada@gmail.com");
-    let _ = doc.put(&root, FORM_USER_KEY, "");
-    let _ = doc.put(&root, FORM_PASSWORD_KEY, "s3cret-app-password");
+    pane.set_form_fields_for_test("Ada Personal", "ada@gmail.com", "", "");
+    pane.set_form_password_for_test("s3cret-app-password");
 
     // 3) Click "Save" → the pane builds the account, autofills the servers,
     //    persists it to the shared store, and seals the password in the vault.
-    let _ = doc.put(&root, FORM_SAVE_KEY, true);
-    pane.sync(&mut doc, &root);
+    pane.submit_form_for_test();
+    for _ in 0..100 {
+        pane.sync(&mut doc, &root);
+        if !pane.form_open() {
+            break;
+        }
+        std::thread::yield_now();
+    }
     assert!(!pane.form_open(), "a successful save closes the form");
 
     // ---- Now read it back the way MAIL does, through Mail's own loader. ----

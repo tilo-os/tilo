@@ -16,29 +16,30 @@
 //!
 //! Liking a video / comment is [`ExecutionLocus::ClientLocal`]; adding to the
 //! shared queue and posting a reply are [`ExecutionLocus::ServerPreferred`]
-//! (a host serializes the shared list / moderates the reply), falling back to
-//! local execution when no host is reachable.
+//! (a host serializes the shared list / moderates the reply); they are refused
+//! when no authoritative host is reachable.
 //!
-//! **Why no `ui::ActionHost`:** that wrapper hoists the *app-owned* dispatch path
-//! — a `perform_action` that brackets an undo boundary, encodes a typed action,
-//! and pushes it through a local transport. Tube has none of that. Its
-//! collaborative `TubeAction`s are dispatched only through the shared Ctrl+K
-//! `ui::ActionPalette`, which decodes each `ActionSpec` and applies it through
-//! `qos_actions::LocalTransport` + the registry — already the framework path.
-//! Tube's on-screen affordances mutate the in-memory model directly, so there is
-//! no hand-rolled dispatch boilerplate for `ActionHost` to replace; embedding it
-//! would only add an unused field.
+//! On-screen collaborative mutations use Tube's embedded [`ui::ActionHost`]
+//! with the same encoded actions published here. View/effect operations are
+//! decoded by the widget's resource-operation door, so Ctrl+K, agents and
+//! replay do not need app-specific callbacks.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, RetryPolicy,
 };
 
+use crate::action::SettingFlag;
 use crate::model::{Route, TubeModel};
+
+const MAX_RESOURCE_ENTITIES: usize = 100;
+const MAX_RESOURCE_COMMENTS: usize = 50;
+const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Registry `type_id` for every Tube action.
 pub const TUBE_ACTION_TYPE: &str = "tube.action";
@@ -48,8 +49,162 @@ pub const TUBE_OPERATION_TYPE: &str = "tube.operation";
 pub enum TubeOperation {
     TogglePlayback,
     Share { video_id: String },
+    Navigate { route: Route },
+    OpenVideo { video_id: String },
+    OpenChannel { channel_id: String },
+    OpenPlaylist { playlist_id: String },
+    PairDevice { invite: String },
+    SyncDevices,
+    ApproveDevice { peer_id: String },
+    RevokeDevice { peer_id: String },
 }
 
+pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
+    match operation {
+        TubeOperation::Share { .. }
+        | TubeOperation::PairDevice { .. }
+        | TubeOperation::SyncDevices
+        | TubeOperation::ApproveDevice { .. }
+        | TubeOperation::RevokeDevice { .. } => OperationKind::Effect,
+        TubeOperation::TogglePlayback
+        | TubeOperation::Navigate { .. }
+        | TubeOperation::OpenVideo { .. }
+        | TubeOperation::OpenChannel { .. }
+        | TubeOperation::OpenPlaylist { .. } => OperationKind::View,
+    }
+}
+
+/// Process-local device resources. Pairing invites are explicit `Secret`
+/// parameters, so agents can drive the operation while hosts redact the value
+/// from logs, history, and confirmation copy. Private key material is absent.
+pub fn provide_device_resources(view: &crate::sync::SyncView) -> Resource {
+    let unavailable = matches!(view.status, crate::sync::SyncStatus::Unavailable);
+    let unavailable_reason = if view.summary.trim().is_empty() {
+        crate::sync::capability().summary.to_string()
+    } else {
+        view.summary.clone()
+    };
+    let mut root = Resource::new(
+        "tube.device-sync",
+        "tube.device-sync",
+        if unavailable {
+            "Grayjay device sync (unavailable)"
+        } else {
+            "Grayjay device sync"
+        },
+    );
+    // Runtime/built-in capability failure is availability, not merely
+    // explanatory text. Keep stable operations in the resource tree so agents
+    // and history can report *why* they cannot run instead of mistaking a
+    // missing action for a missing integration.
+    if unavailable {
+        return unavailable_device_resource_actions(root, &unavailable_reason);
+    }
+    root = root.with_action(device_pair_action());
+
+    let has_active_peer = view.peers.iter().any(crate::sync::PeerRecord::is_active);
+    let mut root_actions = Vec::new();
+    if has_active_peer {
+        root_actions.push((
+            "sync",
+            "Sync approved devices now",
+            TubeOperation::SyncDevices,
+        ));
+    }
+    for (id, label, operation) in root_actions {
+        if let Some(mut spec) = view_spec(id, label, &operation) {
+            spec = spec.retry_policy(if id == "sync" {
+                RetryPolicy::Idempotent
+            } else {
+                RetryPolicy::AtMostOnce
+            });
+            root = root.with_action(spec);
+        }
+    }
+    for peer in &view.peers {
+        if peer.revoked_at.is_some() {
+            continue;
+        }
+        let mut resource = Resource::new(
+            format!("tube.device:{}", peer.id),
+            "tube.device",
+            peer.name.clone(),
+        );
+        if peer.pending_approval {
+            if let Some(spec) = view_spec(
+                "approve",
+                "Approve device",
+                &TubeOperation::ApproveDevice {
+                    peer_id: peer.id.clone(),
+                },
+            ) {
+                resource =
+                    resource.with_action(spec.privileged().retry_policy(RetryPolicy::Idempotent));
+            }
+        } else if let Some(spec) = view_spec(
+            "revoke",
+            "Revoke device access",
+            &TubeOperation::RevokeDevice {
+                peer_id: peer.id.clone(),
+            },
+        ) {
+            resource =
+                resource.with_action(spec.destructive().retry_policy(RetryPolicy::Idempotent));
+        }
+        root = root.with_child(resource);
+    }
+    root
+}
+
+fn device_pair_action() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "pair",
+        "Pair using invite",
+        "Paste a Grayjay pairing invite",
+        OperationKind::Effect,
+        TUBE_OPERATION_TYPE,
+        vec![
+            ActionParam::required(
+                "invite",
+                ParamType::Secret,
+                "Grayjay pairing invite; redacted from logs and history",
+            )
+            .with_schema(serde_json::json!({ "minLength": 1, "maxLength": 16384 })),
+        ],
+        |args| {
+            let operation = TubeOperation::PairDevice {
+                invite: args.text("invite").unwrap_or_default().to_string(),
+            };
+            EncodedAction {
+                type_id: TUBE_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).unwrap_or_default(),
+            }
+        },
+    )
+    .privileged()
+    .retry_policy(RetryPolicy::AtMostOnce)
+}
+
+fn unavailable_device_resource_actions(mut root: Resource, reason: &str) -> Resource {
+    root = root.with_action(device_pair_action().unavailable("grayjay_sync_unavailable", reason));
+    if let Some(sync) = view_spec(
+        "sync",
+        "Sync approved devices now",
+        &TubeOperation::SyncDevices,
+    ) {
+        root = root.with_action(
+            sync.retry_policy(RetryPolicy::Idempotent)
+                .unavailable("grayjay_sync_unavailable", reason),
+        );
+    }
+    root
+}
+
+/// Decode an operation received from the resource/action host.
+///
+/// # Errors
+///
+/// Returns an error when a payload for Tube's operation type is not valid JSON.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TubeOperation>, String> {
     if type_id != TUBE_OPERATION_TYPE {
         return Ok(None);
@@ -68,7 +223,7 @@ fn legacy_comment_key(video_id: &str, index: usize) -> String {
 /// id, so hash all immutable source fields with an explicitly fixed FNV-1a
 /// algorithm rather than addressing a row by its current list position.
 fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for field in [
         video_id,
         comment.author.as_str(),
@@ -78,7 +233,7 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
     ] {
         for byte in field.bytes().chain(std::iter::once(0xff)) {
             hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
     format!("{video_id}#{hash:016x}")
@@ -89,9 +244,44 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TubeAction {
     /// Set the local "liked" flag for a video.
-    LikeVideo { video_id: String },
+    LikeVideo {
+        video_id: String,
+    },
+    /// Set the state resolved by the authoring surface. Retains the legacy
+    /// toggle variant above so recorded envelopes remain replayable.
+    SetVideoLiked {
+        video_id: String,
+        liked: bool,
+    },
     /// Append a video to the shared watch queue.
-    AddToQueue { video_id: String },
+    AddToQueue {
+        video_id: String,
+    },
+    ToggleSubscription {
+        channel_id: String,
+    },
+    /// Set the state resolved by the authoring surface. Retains the legacy
+    /// toggle variant above so recorded envelopes remain replayable.
+    SetSubscription {
+        channel_id: String,
+        subscribed: bool,
+    },
+    SetSetting {
+        setting: SettingFlag,
+        enabled: bool,
+    },
+    /// Advance the preferred playback quality through Tube's visible quality
+    /// selector. Keeping this as one document action means the settings row,
+    /// Ctrl+K and an agent all use the same deterministic transition.
+    CyclePreferredQuality,
+    /// Set one `SponsorBlock` category's handling mode. The target mode is
+    /// embedded instead of inferred from the document so the visible control,
+    /// a replay and an agent all make the same transition (including Filler,
+    /// whose default is Off rather than Auto-skip).
+    SetSponsorCategory {
+        category: crate::model::Category,
+        mode: crate::model::SkipMode,
+    },
     /// Like a comment (addressed by its video + ordered index).
     LikeComment {
         video_id: String,
@@ -135,17 +325,65 @@ impl Action for TubeAction {
         let tube = tube_map(doc)?;
         match self {
             TubeAction::LikeVideo { video_id } => {
-                let likes = child_map(doc, &tube, "likes")?;
-                let liked = doc
-                    .get(&likes, video_id.as_str())?
+                let likes_map = child_map(doc, &tube, "likes")?;
+                let is_liked = doc
+                    .get(&likes_map, video_id.as_str())?
                     .and_then(|(value, _)| value.to_bool())
                     .unwrap_or(false);
-                doc.put(&likes, video_id.as_str(), ScalarValue::Boolean(!liked))?;
+                doc.put(
+                    &likes_map,
+                    video_id.as_str(),
+                    ScalarValue::Boolean(!is_liked),
+                )?;
+            }
+            TubeAction::SetVideoLiked { video_id, liked } => {
+                let likes_map = child_map(doc, &tube, "likes")?;
+                doc.put(&likes_map, video_id.as_str(), ScalarValue::Boolean(*liked))?;
             }
             TubeAction::AddToQueue { video_id } => {
                 let queue = child_list(doc, &tube, "queue")?;
                 let len = doc.length(&queue);
                 doc.insert(&queue, len, ScalarValue::Str(video_id.as_str().into()))?;
+            }
+            TubeAction::ToggleSubscription { channel_id } => {
+                let subscriptions = child_map(doc, &tube, "subscriptions")?;
+                let subscribed = doc
+                    .get(&subscriptions, channel_id.as_str())?
+                    .and_then(|(value, _)| value.to_bool())
+                    .unwrap_or(false);
+                doc.put(
+                    &subscriptions,
+                    channel_id.as_str(),
+                    ScalarValue::Boolean(!subscribed),
+                )?;
+            }
+            TubeAction::SetSubscription {
+                channel_id,
+                subscribed,
+            } => {
+                let subscriptions = child_map(doc, &tube, "subscriptions")?;
+                doc.put(
+                    &subscriptions,
+                    channel_id.as_str(),
+                    ScalarValue::Boolean(*subscribed),
+                )?;
+            }
+            TubeAction::SetSetting { setting, enabled } => {
+                let settings = child_map(doc, &tube, "settings")?;
+                let key = match setting {
+                    SettingFlag::SponsorBlock => "sponsorblock",
+                    SettingFlag::DeArrow => "dearrow",
+                    SettingFlag::DeArrowTitles => "dearrow_titles",
+                    SettingFlag::DeArrowThumbnails => "dearrow_thumbnails",
+                    SettingFlag::ReturnDislike => "return_dislike",
+                    SettingFlag::Autoplay => "autoplay",
+                    SettingFlag::ShowComments => "show_comments",
+                };
+                doc.put(&settings, key, ScalarValue::Boolean(*enabled))?;
+            }
+            TubeAction::CyclePreferredQuality => apply_cycle_preferred_quality(doc, &tube)?,
+            TubeAction::SetSponsorCategory { category, mode } => {
+                apply_sponsor_category(doc, &tube, *category, *mode)?;
             }
             TubeAction::LikeComment {
                 video_id,
@@ -187,11 +425,59 @@ impl Action for TubeAction {
                 ExecutionLocus::ServerPreferred
             }
             // Personal, replicable state.
-            TubeAction::LikeVideo { .. } | TubeAction::LikeComment { .. } => {
-                ExecutionLocus::ClientLocal
-            }
+            TubeAction::LikeVideo { .. }
+            | TubeAction::SetVideoLiked { .. }
+            | TubeAction::LikeComment { .. }
+            | TubeAction::ToggleSubscription { .. }
+            | TubeAction::SetSubscription { .. }
+            | TubeAction::SetSetting { .. }
+            | TubeAction::CyclePreferredQuality
+            | TubeAction::SetSponsorCategory { .. } => ExecutionLocus::ClientLocal,
         }
     }
+}
+
+fn apply_cycle_preferred_quality(doc: &mut Doc, tube: &ObjId) -> Result<(), ActionError> {
+    let settings = child_map(doc, tube, "settings")?;
+    let current = doc
+        .get(&settings, "preferred_quality")?
+        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "1080p".to_string());
+    let index = QUALITY_OPTIONS
+        .iter()
+        .position(|quality| *quality == current)
+        .unwrap_or(0);
+    let next = QUALITY_OPTIONS
+        .get((index + 1) % QUALITY_OPTIONS.len())
+        .copied()
+        .unwrap_or("1080p");
+    doc.put(
+        &settings,
+        "preferred_quality",
+        ScalarValue::Str(next.into()),
+    )?;
+    Ok(())
+}
+
+fn apply_sponsor_category(
+    doc: &mut Doc,
+    tube: &ObjId,
+    category: crate::model::Category,
+    mode: crate::model::SkipMode,
+) -> Result<(), ActionError> {
+    let settings = child_map(doc, tube, "settings")?;
+    let categories = child_map(doc, &settings, "sponsor_categories")?;
+    let stored = match mode {
+        crate::model::SkipMode::Skip => "skip",
+        crate::model::SkipMode::Show => "show",
+        crate::model::SkipMode::Disabled => "disabled",
+    };
+    doc.put(
+        &categories,
+        category.api_key(),
+        ScalarValue::Str(stored.into()),
+    )?;
+    Ok(())
 }
 
 /// Register Tube's action decoder so the palette (and remote replay) can
@@ -235,125 +521,336 @@ fn comment_label(author: &str, text: &str) -> String {
     }
 }
 
-/// Build the resource tree Tube currently has open: on the watch page, the
-/// playing video (like / add-to-queue) with its comments as nested resources
-/// (like / reply). Off the watch page, nothing is "open", so no rows.
-pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
-    let Route::Watch(video_id) = &model.route else {
-        return Vec::new();
-    };
-    let Some(video) = model.video(video_id) else {
-        return Vec::new();
-    };
+fn view_spec(id: &str, label: &str, operation: &TubeOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(
+        id,
+        label,
+        operation_kind(operation),
+        TUBE_OPERATION_TYPE,
+        operation,
+    )
+    .ok()
+}
 
-    let mut root = Resource::new(
+fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> Option<Resource> {
+    let video = model.video(video_id)?;
+    let mut resource = Resource::new(
         format!("tube.video:{video_id}"),
         "tube.video",
         video.title.clone(),
     );
-
-    root = root.with_action(
-        immediate_spec(
-            "like",
-            "Like video",
-            &TubeAction::LikeVideo {
-                video_id: video_id.clone(),
-            },
-        )
-        .with_description("Toggle the like on this video")
-        .reversible(),
-    );
-    for (id, label, kind, operation) in [
-        (
-            "play-pause",
-            "Play or pause",
-            OperationKind::View,
-            TubeOperation::TogglePlayback,
-        ),
-        (
-            "share",
-            "Copy share link",
-            OperationKind::Effect,
-            TubeOperation::Share {
-                video_id: video_id.clone(),
-            },
-        ),
-    ] {
-        if let Ok(spec) = ActionSpec::operation(id, label, kind, TUBE_OPERATION_TYPE, &operation) {
-            let spec = if id == "share" {
-                spec.with_contract(ActionContract {
-                    retry: RetryPolicy::Idempotent,
-                    tags: vec!["clipboard".into(), "sharing".into()],
-                    ..ActionContract::default()
-                })
-            } else {
-                spec
-            };
-            root = root.with_action(spec);
-        }
+    if let Some(open) = view_spec(
+        "open",
+        "Open video",
+        &TubeOperation::OpenVideo {
+            video_id: video_id.to_string(),
+        },
+    ) {
+        resource = resource.with_action(open);
     }
-    root = root.with_action(
-        immediate_spec(
-            "queue",
-            "Add to queue",
-            &TubeAction::AddToQueue {
-                video_id: video_id.clone(),
-            },
-        )
-        .with_description("Append to the shared watch queue")
-        .with_contract(ActionContract {
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Immediate,
-            ..ActionContract::default()
-        })
-        .reversible(),
-    );
-
-    for (index, comment) in video.comments.iter().enumerate() {
-        let comment_id = comment_key(video_id, comment);
-        let vid = video_id.clone();
-        let vid2 = video_id.clone();
-        let child = Resource::new(
-            format!("tube.comment:{comment_id}"),
-            "tube.comment",
-            comment_label(&comment.author, &comment.text),
-        )
+    resource = resource
         .with_action(
             immediate_spec(
                 "like",
-                "Like comment",
-                &TubeAction::LikeComment {
-                    video_id: vid.clone(),
-                    index,
-                    comment_id: comment_id.clone(),
+                "Like video",
+                &TubeAction::SetVideoLiked {
+                    video_id: video_id.to_string(),
+                    liked: !model.is_liked(video_id),
+                },
+            )
+            .with_description("Set the like state for this video")
+            .reversible(),
+        )
+        .with_action(
+            immediate_spec(
+                "queue",
+                "Add to queue",
+                &TubeAction::AddToQueue {
+                    video_id: video_id.to_string(),
+                },
+            )
+            .with_description("Append to the shared watch queue")
+            .with_contract(ActionContract {
+                retry: RetryPolicy::AtMostOnce,
+                execution: ExecutionMode::Immediate,
+                ..ActionContract::default()
+            })
+            .reversible(),
+        );
+    if let Some(share) = view_spec(
+        "share",
+        "Copy share link",
+        &TubeOperation::Share {
+            video_id: video_id.to_string(),
+        },
+    ) {
+        resource = resource.with_action(share.with_contract(ActionContract {
+            retry: RetryPolicy::Idempotent,
+            tags: vec!["clipboard".into(), "sharing".into()],
+            ..ActionContract::default()
+        }));
+    }
+    if include_comments {
+        resource = add_comment_resources(resource, video_id, &video.comments);
+    }
+    Some(resource)
+}
+
+fn add_comment_resources(
+    mut parent: Resource,
+    video_id: &str,
+    comments: &[crate::model::Comment],
+) -> Resource {
+    for (index, comment) in comments.iter().take(MAX_RESOURCE_COMMENTS).enumerate() {
+        parent = parent.with_child(comment_resource(video_id, index, comment));
+    }
+    parent
+}
+
+fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Comment) -> Resource {
+    let comment_id = comment_key(video_id, comment);
+    let reply_comment_id = comment_id.clone();
+    let like_video_id = video_id.to_string();
+    let reply_video_id = like_video_id.clone();
+    Resource::new(
+        format!("tube.comment:{comment_id}"),
+        "tube.comment",
+        comment_label(&comment.author, &comment.text),
+    )
+    .with_action(
+        immediate_spec(
+            "like",
+            "Like comment",
+            &TubeAction::LikeComment {
+                video_id: like_video_id,
+                index,
+                comment_id,
+            },
+        )
+        .reversible(),
+    )
+    .with_action(ActionSpec::prompted(
+        "reply",
+        "Reply to comment",
+        "Reply",
+        "your reply…",
+        ExecutionLocus::ServerPreferred,
+        move |text: &str| {
+            encode(&TubeAction::ReplyToComment {
+                video_id: reply_video_id.clone(),
+                index,
+                comment_id: reply_comment_id.clone(),
+                text: text.to_string(),
+            })
+        },
+    ))
+}
+
+/// Publish one stable app root with bounded, hierarchical library and current
+/// view resources. Search/history/agents can therefore navigate Tube even when
+/// the watch page is not open, without materialising an unbounded catalogue.
+pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
+    let mut app = Resource::new("tube.app", "tube.application", "Tube");
+    // Current context is deliberately first: bounded palettes surface what the
+    // user is looking at before the broader known library.
+    if let Route::Watch(id) = &model.route
+        && let Some(mut current) = video_resource(model, id, true)
+    {
+        current.id.0 = format!("tube.current:{id}");
+        if let Some(play) = view_spec(
+            "play-pause",
+            "Play or pause",
+            &TubeOperation::TogglePlayback,
+        ) {
+            current = current.with_action(play);
+        }
+        app = app.with_child(current);
+    }
+    app = app
+        .with_child(navigation_resource())
+        .with_child(library_resource(model))
+        .with_child(settings_resource(model));
+    vec![app]
+}
+
+fn navigation_resource() -> Resource {
+    let mut navigation = Resource::new("tube.navigation", "tube.navigation", "Navigate");
+    for (id, label, route) in [
+        ("home", "Open Home", Route::Home),
+        ("trending", "Open Trending", Route::Trending),
+        ("subscriptions", "Open subscriptions", Route::Subscriptions),
+        ("history", "Open watch history", Route::History),
+        ("settings", "Open settings", Route::Settings),
+    ] {
+        if let Some(spec) = view_spec(id, label, &TubeOperation::Navigate { route }) {
+            navigation = navigation.with_action(spec);
+        }
+    }
+
+    navigation
+}
+
+fn library_resource(model: &TubeModel) -> Resource {
+    let mut library = Resource::new("tube.library", "tube.library", "Known library");
+    for video in model.videos.iter().take(MAX_RESOURCE_ENTITIES) {
+        if let Some(resource) = video_resource(
+            model,
+            &video.id,
+            matches!(&model.route, Route::Watch(id) if id == &video.id),
+        ) {
+            library = library.with_child(resource);
+        }
+    }
+    let mut creators = Resource::new("tube.creators", "tube.collection", "Creators");
+    for channel in model.channels.iter().take(MAX_RESOURCE_ENTITIES) {
+        let mut resource = Resource::new(
+            format!("tube.channel:{}", channel.id),
+            "tube.channel",
+            channel.name.clone(),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open creator",
+            &TubeOperation::OpenChannel {
+                channel_id: channel.id.clone(),
+            },
+        ) {
+            resource = resource.with_action(open);
+        }
+        resource = resource.with_action(
+            immediate_spec(
+                "subscribe",
+                "Subscribe or unsubscribe",
+                &TubeAction::SetSubscription {
+                    channel_id: channel.id.clone(),
+                    subscribed: !model.is_subscribed(&channel.id),
                 },
             )
             .reversible(),
-        )
-        .with_action(ActionSpec::prompted(
-            "reply",
-            "Reply to comment",
-            "Reply",
-            "your reply…",
-            ExecutionLocus::ServerPreferred,
-            move |text: &str| {
-                encode(&TubeAction::ReplyToComment {
-                    video_id: vid2.clone(),
-                    index,
-                    comment_id: comment_id.clone(),
-                    text: text.to_string(),
-                })
-            },
-        ));
-        root = root.with_child(child);
+        );
+        creators = creators.with_child(resource);
     }
+    let mut playlists = Resource::new("tube.playlists", "tube.collection", "Playlists");
+    for playlist in model.playlists.iter().take(MAX_RESOURCE_ENTITIES) {
+        let mut resource = Resource::new(
+            format!("tube.playlist:{}", playlist.id),
+            "tube.playlist",
+            playlist.title.clone(),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open playlist",
+            &TubeOperation::OpenPlaylist {
+                playlist_id: playlist.id.clone(),
+            },
+        ) {
+            resource = resource.with_action(open);
+        }
+        playlists = playlists.with_child(resource);
+    }
+    library = library.with_child(creators).with_child(playlists);
+    library
+}
 
-    vec![root]
+fn settings_resource(model: &TubeModel) -> Resource {
+    let mut settings = Resource::new("tube.settings", "tube.settings", "Playback settings");
+    for (id, label, setting, enabled) in [
+        (
+            "autoplay",
+            "Toggle autoplay",
+            SettingFlag::Autoplay,
+            model.settings.autoplay,
+        ),
+        (
+            "comments",
+            "Toggle comments",
+            SettingFlag::ShowComments,
+            model.settings.show_comments,
+        ),
+        (
+            "sponsorblock",
+            "Toggle SponsorBlock",
+            SettingFlag::SponsorBlock,
+            model.settings.sponsorblock_enabled,
+        ),
+        (
+            "dearrow",
+            "Toggle DeArrow",
+            SettingFlag::DeArrow,
+            model.settings.dearrow_enabled,
+        ),
+        (
+            "dislikes",
+            "Toggle dislike counts",
+            SettingFlag::ReturnDislike,
+            model.settings.return_dislike_enabled,
+        ),
+    ] {
+        settings = settings.with_action(
+            immediate_spec(
+                id,
+                label,
+                &TubeAction::SetSetting {
+                    setting,
+                    enabled: !enabled,
+                },
+            )
+            .reversible(),
+        );
+    }
+    let quality = Resource::new(
+        "tube.setting:preferred-quality",
+        "tube.setting",
+        format!("Preferred quality: {}", model.settings.preferred_quality),
+    )
+    .with_action(
+        immediate_spec(
+            "cycle",
+            "Cycle preferred quality",
+            &TubeAction::CyclePreferredQuality,
+        )
+        .reversible(),
+    );
+    settings = settings.with_child(quality);
+    for category in crate::model::Category::ALL {
+        let stored = model
+            .settings
+            .categories
+            .get(category.api_key())
+            .copied()
+            .unwrap_or(crate::model::SkipMode::Skip);
+        let resource = Resource::new(
+            format!("tube.setting:sponsor-category:{}", category.api_key()),
+            "tube.setting",
+            format!("SponsorBlock {}: {}", category.label(), stored.label()),
+        )
+        .with_action(
+            immediate_spec(
+                "cycle",
+                format!("Cycle {} handling", category.label()).as_str(),
+                &TubeAction::SetSponsorCategory {
+                    category,
+                    mode: stored.next(),
+                },
+            )
+            .reversible(),
+        );
+        settings = settings.with_child(resource);
+    }
+    settings
 }
 
 impl ResourceProvider for crate::app::TubeApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(self.model_ref())
+        let mut resources = provide_resources(self.model_ref());
+        if let Some(app) = resources.first_mut() {
+            #[cfg(feature = "grayjay-sync")]
+            let device = provide_device_resources(self.device_sync_view());
+            #[cfg(not(feature = "grayjay-sync"))]
+            let device = provide_device_resources(&crate::sync::SyncView::default());
+            app.children.push(device);
+        }
+        resources
     }
 }
 
@@ -413,6 +910,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resource_projection_is_bounded_for_large_catalogues() {
+        let mut model = crate::sample::model();
+        let seed = model.videos[0].clone();
+        model.videos = (0..250)
+            .map(|index| {
+                let mut video = seed.clone();
+                video.id = format!("video-{index}");
+                video.title = format!("Video {index}");
+                video
+            })
+            .collect();
+        let resources = provide_resources(&model);
+        let library = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.library")
+            .expect("library resource");
+        let projected_videos = library
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "tube.video")
+            .count();
+        assert_eq!(projected_videos, MAX_RESOURCE_ENTITIES);
+    }
+
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
@@ -429,8 +952,13 @@ mod tests {
 
         // The hook `ui::App::collect_resources` calls each frame.
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one open video resource");
-        let video = &resources[0];
+        assert_eq!(resources.len(), 1, "one stable Tube application root");
+        assert_eq!(resources[0].kind, "tube.application");
+        let video = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0.starts_with("tube.current:"))
+            .expect("the current video is projected beside the bounded library");
         assert_eq!(video.kind, "tube.video");
         let video_actions: Vec<&str> = video.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(video_actions.contains(&"like"), "video exports like");
@@ -490,6 +1018,19 @@ mod tests {
         v.to_bool()
     }
 
+    fn read_str(doc: &AutoCommit, map: &str, key: &str) -> Option<String> {
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::Map), sub) = doc.get(&tube, map).ok()?? else {
+            return None;
+        };
+        doc.get(&sub, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+    }
+
     /// Select a palette row by a substring of its label, then activate it (the
     /// same path Enter takes) and dispatch — returns the dispatch outcome.
     fn run_row(
@@ -534,11 +1075,102 @@ mod tests {
         assert_eq!(tx.replicated.len(), 1, "replicated once");
     }
 
-    /// The `ServerPreferred` "Add to queue" action, with a local (no-host)
-    /// transport, falls back to a local apply and mutates the shared queue —
-    /// proving the locus plumbing runs on the real app path.
     #[test]
-    fn executing_add_to_queue_falls_back_local_and_mutates() {
+    fn playback_setting_resources_write_the_same_document_state_as_visible_controls() {
+        let app = TubeApp::new();
+        let mut doc = AutoCommit::new();
+        let resources = Widget::resources(&app, &doc);
+        let settings = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.settings")
+            .expect("settings resource");
+        assert!(settings.children.iter().any(|resource| {
+            resource.id.0 == "tube.setting:preferred-quality"
+                && resource.actions.iter().any(|action| action.id == "cycle")
+        }));
+        assert!(settings.children.iter().any(|resource| {
+            resource.id.0 == "tube.setting:sponsor-category:sponsor"
+                && resource.actions.iter().any(|action| action.id == "cycle")
+        }));
+
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.open();
+        palette.set_query("cycle preferred quality");
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|label| label.contains("Cycle preferred quality")),
+            "settings action appears in Ctrl+K: {:?}",
+            palette.result_labels()
+        );
+        let mut tx = LocalTransport::new();
+        let quality = run_row(
+            &mut palette,
+            &mut doc,
+            &registry(),
+            &mut tx,
+            "Cycle preferred quality",
+        );
+        assert!(matches!(quality, qos_actions::Dispatched::AppliedLocal(_)));
+        assert_eq!(
+            read_str(&doc, "settings", "preferred_quality").as_deref(),
+            Some("720p")
+        );
+
+        palette.open();
+        palette.set_query("cycle sponsor handling");
+        let category = run_row(
+            &mut palette,
+            &mut doc,
+            &registry(),
+            &mut tx,
+            "Cycle Sponsor handling",
+        );
+        assert!(matches!(category, qos_actions::Dispatched::AppliedLocal(_)));
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
+            panic!("tube root exists");
+        };
+        let (Value::Object(ObjType::Map), settings) = doc.get(&tube, "settings").unwrap().unwrap()
+        else {
+            panic!("settings map exists");
+        };
+        let (Value::Object(ObjType::Map), categories) =
+            doc.get(&settings, "sponsor_categories").unwrap().unwrap()
+        else {
+            panic!("category map exists");
+        };
+        assert_eq!(
+            doc.get(&categories, "sponsor").unwrap().unwrap().0.to_str(),
+            Some("show"),
+        );
+    }
+
+    #[test]
+    fn unavailable_sync_keeps_discoverable_unavailable_effects() {
+        let app = TubeApp::new();
+        let doc = AutoCommit::new();
+        let resources = Widget::resources(&app, &doc);
+        let device = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.device-sync")
+            .expect("sync capability is discoverable to agents in every build");
+        assert!(device.label.contains("unavailable"));
+        assert!(
+            device
+                .actions
+                .iter()
+                .all(|action| !action.contract.availability.is_available())
+        );
+    }
+
+    /// The host-authoritative "Add to queue" action fails closed when no host
+    /// transport is installed.
+    #[test]
+    fn executing_add_to_queue_refuses_without_host() {
         let (app, vid, _) = watching();
         let mut doc = AutoCommit::new();
         let resources = Widget::resources(&app, &doc);
@@ -547,23 +1179,84 @@ mod tests {
         palette.open();
 
         let mut tx = LocalTransport::new();
-        let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Add to queue");
+        let idx = palette
+            .result_labels()
+            .iter()
+            .position(|label| label.contains("Add to queue"))
+            .expect("queue action is published");
+        palette.set_cursor(idx);
+        palette.activate_selected();
+        let error = palette
+            .take_dispatch(&mut doc, &registry(), &mut tx)
+            .expect("the selected action attempted dispatch")
+            .unwrap_err();
+        assert!(matches!(error, qos_actions::ActionError::Refused(_)));
+        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
+        let _ = vid;
+    }
+
+    #[cfg(feature = "grayjay-sync")]
+    #[test]
+    fn device_lifecycle_resources_are_effects_with_confirmation() {
+        let view = crate::sync::SyncView {
+            status: crate::sync::SyncStatus::Ready,
+            summary: "ready".into(),
+            device_public_key: Some("our-public-key".into()),
+            peers: vec![crate::sync::PeerRecord {
+                id: "peer-public-key".into(),
+                name: "Phone".into(),
+                descriptor: crate::sync::PeerDescriptor {
+                    public_key: "peer-public-key".into(),
+                    addresses: vec!["127.0.0.1".into()],
+                    port: 12315,
+                },
+                approved_at: 1,
+                pending_approval: false,
+                revoked_at: None,
+                last_sync_at: None,
+                last_error: None,
+            }],
+        };
+        let resource = provide_device_resources(&view);
+        let pair = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "pair")
+            .expect("pair is published");
+        assert_eq!(pair.kind, OperationKind::Effect);
+        assert!(!matches!(
+            pair.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ));
+        let revoke = resource.children[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "revoke")
+            .expect("revoke is published");
+        assert_eq!(revoke.kind, OperationKind::Effect);
+        assert_eq!(revoke.contract.retry, RetryPolicy::Idempotent);
+        assert!(!matches!(
+            revoke.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ));
+        assert_eq!(pair.params()[0].ty, ParamType::Secret);
+    }
+
+    #[test]
+    fn unavailable_device_backend_keeps_stable_unavailable_effects() {
+        let resource = provide_device_resources(&crate::sync::SyncView::default());
+        let pair = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "pair")
+            .expect("pair remains discoverable to agents");
+        assert!(!pair.contract.availability.is_available());
         assert!(
-            matches!(d, qos_actions::Dispatched::AppliedLocalFallback(_)),
-            "ServerPreferred fell back to local without a host"
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "sync" && !action.contract.availability.is_available())
         );
-        // The queue list carries the video id.
-        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
-            panic!("tube map");
-        };
-        let (Value::Object(ObjType::List), queue) = doc.get(&tube, "queue").unwrap().unwrap()
-        else {
-            panic!("queue list");
-        };
-        assert_eq!(doc.length(&queue), 1);
-        assert_eq!(
-            doc.get(&queue, 0).unwrap().unwrap().0.to_str(),
-            Some(vid.as_str())
-        );
+        assert!(resource.children.is_empty());
     }
 }

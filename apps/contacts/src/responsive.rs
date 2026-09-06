@@ -101,7 +101,12 @@ impl PushNav {
 
     /// Advance the slide animation toward its target. Returns `true` while
     /// still animating, so the host can request another frame.
-    pub fn tick(&mut self) -> bool {
+    pub fn tick(&mut self, reduce_motion: bool) -> bool {
+        if reduce_motion {
+            self.flap.snap(self.pane == Pane::Detail);
+            self.last_tick = Instant::now();
+            return false;
+        }
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
@@ -168,5 +173,20 @@ mod tests {
         nav.show_detail();
         nav.snap(Pane::Detail);
         assert!(!nav.is_animating(), "snap leaves nothing to animate");
+    }
+
+    #[test]
+    fn reduced_motion_lands_on_the_target_without_requesting_frames() {
+        let mut nav = PushNav::default();
+        nav.show_detail();
+        assert!(nav.is_animating());
+        assert!(!nav.tick(true));
+        assert_eq!(nav.slide(), 1.0);
+        assert!(!nav.is_animating());
+
+        nav.show_list();
+        assert!(!nav.tick(true));
+        assert_eq!(nav.slide(), 0.0);
+        assert!(!nav.is_animating());
     }
 }

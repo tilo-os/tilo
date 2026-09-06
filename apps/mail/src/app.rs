@@ -42,6 +42,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
@@ -192,6 +193,11 @@ pub struct MailApp {
     awaiting_engine: bool,
     resource_refresh_invocation: Option<qos_actions::InvocationId>,
     resource_refresh_result: Option<qos_actions::InvocationUpdate>,
+    /// A normal resource/action open first changes the local view through the
+    /// view operation door, then the next mutable sync records the same read
+    /// action as a direct row open. The separate explicit inspection operation
+    /// intentionally never fills this slot.
+    pending_reveal_read: Option<MessageId>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -285,6 +291,7 @@ impl MailApp {
             awaiting_engine: false,
             resource_refresh_invocation: None,
             resource_refresh_result: None,
+            pending_reveal_read: None,
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -307,6 +314,24 @@ impl MailApp {
     pub fn prime_detail_shot(&mut self) {
         self.nav.show_detail();
         self.nav.snap();
+        self.dirty = true;
+    }
+
+    /// Open an unread sample message through the same explicit read-state
+    /// neutral path that agents and Ctrl+K use, so visual review covers the
+    /// persistent preview indicator rather than relying only on a unit test.
+    pub fn prime_preview_shot(&mut self) {
+        let id = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .find_map(|message| (!message.read).then_some(message.id));
+        if let Some(id) = id {
+            self.shared.borrow_mut().reveal_message(id, true);
+            self.process_intents();
+        }
         self.dirty = true;
     }
 
@@ -354,6 +379,41 @@ impl MailApp {
             self.shared.borrow_mut().select_message(&mut doc, id);
             self.process_intents();
         }
+        self.dirty = true;
+    }
+
+    /// A configured mailbox before any messages have arrived.
+    pub fn prime_empty_shot(&mut self) {
+        let mut st = self.shared.borrow_mut();
+        let account = st.mailbox.account.clone();
+        st.mailbox = crate::model::Mailbox::new(account);
+        st.selected = None;
+        st.folder = Folder::Inbox;
+        st.dirty = true;
+        drop(st);
+        self.dirty = true;
+    }
+
+    /// A real in-flight sync indication over cached mail.
+    pub fn prime_loading_shot(&mut self) {
+        self.awaiting_engine = true;
+        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
+        self.dirty = true;
+    }
+
+    /// Cached mail remains usable while connectivity is unavailable.
+    pub fn prime_offline_shot(&mut self) {
+        self.shared.borrow_mut().status = Some("You’re offline · Showing downloaded mail".into());
+        self.dirty = true;
+    }
+
+    /// A recoverable account error: the configuration stays open and editable.
+    pub fn prime_error_shot(&mut self) {
+        self.prime_setup_add_shot();
+        self.setup_error = Some(
+            "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
+                .into(),
+        );
         self.dirty = true;
     }
 
@@ -1115,9 +1175,8 @@ impl MailApp {
             return;
         }
         if provider.client_id().is_none() {
-            let env = provider.client_id_env();
-            self.shared.borrow_mut().status = Some(format!(
-                "Set {env} to complete {} sign-in",
+            self.setup_error = Some(format!(
+                "{} sign-in isn’t available here yet. Choose Password to continue with an app password.",
                 provider.label()
             ));
             self.dirty = true;
@@ -1507,10 +1566,6 @@ impl MailApp {
     /// whether a draft is in progress. Everything is read from state the document
     /// already holds; nothing is fabricated. See [`crate::actions`].
     pub(crate) fn mail_resource_ctx(&self, doc: &AutoCommit) -> crate::actions::MailResourceCtx {
-        // Cap the enumerated messages so an enormous folder can't build an
-        // enormous resource tree every frame; the palette is fuzzy-searched, and
-        // the open folder is the "open" scope the model intends.
-        const MAX_MESSAGES: usize = 200;
         let st = self.shared.borrow();
         let mailbox_label = {
             let cfg = st.accounts.active_config();
@@ -1521,17 +1576,41 @@ impl MailApp {
             }
         };
         let current_folder = st.folder;
+        let accounts = st
+            .accounts
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| {
+                (
+                    index,
+                    account.label().to_string(),
+                    st.accounts.active == index,
+                )
+            })
+            .collect();
         let messages = st
             .mailbox
-            .messages_in(current_folder)
-            .into_iter()
-            .take(MAX_MESSAGES)
+            .order
+            .iter()
+            .filter_map(|id| st.mailbox.messages.get(id))
             .map(|m| crate::actions::MessageRow {
                 id: m.id.to_string(),
                 subject: m.subject.clone(),
+                thread_subject: m.thread_subject(),
+                folder: m.folder,
                 read: m.read,
                 starred: m.starred,
                 labels: m.labels.clone(),
+                attachments: m
+                    .attachments
+                    .iter()
+                    .map(|attachment| crate::actions::AttachmentRow {
+                        filename: attachment.filename.clone(),
+                        size: attachment.size,
+                        downloadable: attachment.is_downloadable(),
+                    })
+                    .collect(),
             })
             .collect();
         let custom_folders = MailDoc::list_folders(doc);
@@ -1541,6 +1620,7 @@ impl MailApp {
         crate::actions::MailResourceCtx {
             mailbox_label,
             current_folder,
+            accounts,
             messages,
             custom_folders,
             has_draft,
@@ -1910,7 +1990,9 @@ impl MailApp {
                 None,
                 TextWeight::Semibold,
             );
-            // Note whether a registered client id is provisioned.
+            // Deployment details never belong in an account form. If this
+            // installation has no OAuth client, explain the usable alternative
+            // in user language and leave the Password choice directly above.
             let has_client = self
                 .setup_provider
                 .and_then(super::oauth::OAuthProvider::client_id)
@@ -1918,11 +2000,7 @@ impl MailApp {
             let note = if has_client {
                 "Opens your browser to authorize (OAuth2 + PKCE).".to_string()
             } else {
-                let env = self.setup_provider.map_or(
-                    "QOS_MAIL_*_CLIENT_ID",
-                    super::oauth::OAuthProvider::client_id_env,
-                );
-                format!("Set {env} to enable sign-in.")
+                "Not available in this installation · Password sign-in is available.".to_string()
             };
             tr.draw_text(
                 scene,
@@ -2137,38 +2215,31 @@ impl MailApp {
     fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let st = self.shared.borrow();
         let Some(msg) = &st.status else { return };
-        let c = &theme.tokens.colors;
-        let (w, _) = tr.measure(msg, 12.5, None);
-        let toast = Rect::new(
-            self.rect.x1 - f64::from(w) - 64.0,
-            self.rect.y1 - 52.0,
-            self.rect.x1 - 24.0,
-            self.rect.y1 - 16.0,
-        );
-        fill_round(scene, t, toast, 10.0, c.neutral[2]);
-        stroke_round(
+        let lower = msg.to_ascii_lowercase();
+        let kind = if lower.contains("failed")
+            || lower.contains("couldn’t")
+            || lower.contains("couldn't")
+            || lower.contains("error")
+        {
+            ToastKind::Error
+        } else if lower.contains("offline") || lower.contains("isn't available") {
+            ToastKind::Warning
+        } else if lower.contains("sync")
+            || lower.contains("connecting")
+            || lower.contains("opening")
+        {
+            ToastKind::Info
+        } else {
+            ToastKind::Success
+        };
+        paint_transient(
             scene,
             t,
-            toast,
-            10.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
-        tr.draw_text(
-            scene,
-            "\u{2713}",
-            13.0,
-            c.semantic.success,
-            t * Affine::translate((toast.x0 + 12.0, toast.y0 + 11.0)),
-            None,
-        );
-        tr.draw_text(
-            scene,
-            msg,
-            12.5,
-            c.text_primary,
-            t * Affine::translate((toast.x0 + 32.0, toast.y0 + 11.0)),
-            None,
+            tr,
+            theme,
+            self.rect,
+            ToastAnchor::BottomRight,
+            &ToastCard::new(msg, kind),
         );
     }
 
@@ -2494,6 +2565,18 @@ impl Widget for MailApp {
             }
             self.shared.borrow_mut().seeded = true;
         }
+        if let Some(id) = self.pending_reveal_read.take() {
+            let unread = self
+                .shared
+                .borrow()
+                .mailbox
+                .get(id)
+                .is_some_and(|message| !message.read);
+            if unread {
+                self.shared.borrow_mut().set_read(state, id, true);
+                self.process_intents();
+            }
+        }
         // Live app: advance the wall clock (relative timestamps + the periodic
         // refresh cadence read it) and fire a periodic refresh when due. The
         // sample/`--shots` path pins `now_min`, so this only runs live.
@@ -2512,27 +2595,115 @@ impl Widget for MailApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
-            return Ok(false);
-        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match operation {
-            crate::actions::MailOperation::RefreshCurrentFolder => {
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MailOperation::RefreshCurrentFolder,
+            ) => {
                 if self.engine.is_none() {
                     return Err("no connected mail account is available".into());
                 }
                 self.refresh_active_folder();
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MailOperation::RevealFolder { folder },
+            ) => {
+                let Some(folder) = Folder::from_key(&folder) else {
+                    return Err("folder no longer exists".into());
+                };
+                self.shared.borrow_mut().reveal_folder(folder);
+                self.process_intents();
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MailOperation::RevealAccount { index },
+            ) => {
+                if index >= self.shared.borrow().accounts.accounts.len() {
+                    return Err("account no longer exists".into());
+                }
+                let mut st = self.shared.borrow_mut();
+                st.accounts.set_active(index);
+                st.reveal_folder(Folder::Inbox);
+                drop(st);
+                self.process_intents();
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MailOperation::RevealMessage { id },
+            ) => {
+                let id = id
+                    .parse::<crate::model::MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().reveal_message(id, false) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.pending_reveal_read = Some(id);
+                self.process_intents();
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MailOperation::InspectMessage { id },
+            ) => {
+                let id = id
+                    .parse::<crate::model::MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().reveal_message(id, true) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.shared.borrow_mut().status =
+                    Some("Previewing without changing this message’s read state".into());
+                self.process_intents();
+            }
+            (qos_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
+                let draft = MailDoc::load_draft(doc);
+                self.compose.open_with_draft(&draft);
+                self.editing_draft = None;
+                self.dirty = true;
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MailOperation::SaveAttachment { message_id, index },
+            ) => {
+                let id = message_id
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                let attachment = self
+                    .shared
+                    .borrow()
+                    .mailbox
+                    .get(id)
+                    .and_then(|message| message.attachments.get(index))
+                    .cloned()
+                    .ok_or("attachment is no longer loaded")?;
+                if !attachment.is_downloadable() {
+                    return Err("attachment content is not downloaded yet".into());
+                }
+                let path = crate::util::save_download(&attachment.filename, &attachment.content)
+                    .map_err(|error| format!("couldn’t save {}: {error}", attachment.filename))?;
+                self.shared.borrow_mut().status = Some(format!(
+                    "Saved {} to {}",
+                    attachment.filename,
+                    path.display()
+                ));
+                self.dirty = true;
+            }
+            _ => return Ok(false),
         }
         Ok(true)
     }
@@ -2550,6 +2721,18 @@ impl Widget for MailApp {
             || type_id != crate::actions::MAIL_OPERATION_TYPE
         {
             return Ok(None);
+        }
+        let operation = crate::actions::decode_operation(type_id, payload)?;
+        if matches!(
+            operation,
+            Some(crate::actions::MailOperation::SaveAttachment { .. })
+        ) {
+            if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+                return Ok(None);
+            }
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )));
         }
         if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
             return Err("a mail operation is already running".into());
@@ -2599,25 +2782,6 @@ impl Widget for MailApp {
         vec![Box::new(crate::search_provider::MailSearchProvider::new(
             &self.shared.borrow().mailbox,
         ))]
-    }
-
-    /// Open the message a chosen palette row identifies: switch to its folder,
-    /// select it (which marks it read + shows the detail pane), then pump the
-    /// resulting navigation intent. Selection is app-local presentation.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        let Some(id) = crate::search_provider::MailSearchProvider::parse_action_id(action_id)
-        else {
-            return;
-        };
-        let folder = self.shared.borrow().mailbox.get(id).map(|m| m.folder);
-        if let Some(folder) = folder {
-            {
-                let mut st = self.shared.borrow_mut();
-                st.select_folder(doc, folder);
-                st.select_message(doc, id);
-            }
-            self.process_intents();
-        }
     }
 
     fn build_layout(
@@ -2909,29 +3073,74 @@ impl Widget for MailApp {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
         if self.compose.open {
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Compose email")
-                    .with_description("Email composer")
-                    .with_state(AccessState::new().modal(true))
-                    .with_children(vec![
-                        AccessNode::new(Role::Button)
-                            .with_name("Send")
-                            .with_action_target("mail.compose:send")
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name("Save draft")
-                            .with_action_target("mail.compose:save")
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name("Discard")
-                            .with_action_target("mail.compose:discard")
-                            .with_state(AccessState::new().focusable(true)),
-                    ]),
-            );
+            return Some(self.compose.accessibility_node());
         }
         if self.setup_open {
-            let mut controls = vec![
+            let labels = [
+                "Display name",
+                "Email address",
+                "Username",
+                "Password",
+                "IMAP server",
+                "IMAP port",
+                "SMTP server",
+                "SMTP port",
+            ];
+            let mut controls: Vec<_> = labels
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    self.setup_auth == crate::model::AuthMethod::Password || *index != 3
+                })
+                .filter_map(|(index, label)| {
+                    let input = self.setup_inputs.get(index)?;
+                    let mut node = AccessNode::new(Role::TextInput)
+                        .with_name(*label)
+                        .with_action_target(format!("mail.setup:field:{index}"))
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.setup_focus == Some(index),
+                            protected: index == 3,
+                            ..Default::default()
+                        });
+                    if index != 3 {
+                        node = node.with_value(input.value());
+                    }
+                    if let Some(rect) = self.overlay_hits.iter().find_map(|(rect, hit)| {
+                        matches!(hit, OverlayHit::SetupField(i) if *i == index).then_some(*rect)
+                    }) {
+                        node = node.with_bounds(rect);
+                    }
+                    Some(node)
+                })
+                .collect();
+            controls.extend([
+                AccessNode::new(Role::RadioButton)
+                    .with_name("Password sign-in")
+                    .with_action_target("mail.setup:auth-password")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.setup_auth == crate::model::AuthMethod::Password),
+                    ),
+                AccessNode::new(Role::RadioButton)
+                    .with_name("OAuth sign-in")
+                    .with_action_target("mail.setup:auth-oauth")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.setup_auth == crate::model::AuthMethod::OAuth),
+                    ),
+            ]);
+            if self.setup_auth == crate::model::AuthMethod::OAuth {
+                controls.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Sign in with provider")
+                        .with_action_target("mail.setup:oauth-sign-in")
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            controls.extend(vec![
                 AccessNode::new(Role::ToggleButton)
                     .with_name("IMAP TLS")
                     .with_action_target("mail.setup:imap-tls")
@@ -2956,7 +3165,7 @@ impl Widget for MailApp {
                     .with_name("Cancel")
                     .with_action_target("mail.setup:cancel")
                     .with_state(AccessState::new().focusable(true)),
-            ];
+            ]);
             if self.setup_editing.is_some() {
                 controls.push(
                     AccessNode::new(Role::Button)
@@ -2968,6 +3177,7 @@ impl Widget for MailApp {
             return Some(
                 AccessNode::new(Role::Dialog)
                     .with_name("Mail account setup")
+                    .with_bounds(self.overlay_panel_rect())
                     .with_state(AccessState::new().modal(true))
                     .with_children(controls),
             );
@@ -3115,9 +3325,14 @@ impl Widget for MailApp {
                     AccessNode::new(Role::Document)
                         .with_name(format!("Reading: {}", current.subject))
                         .with_description(format!(
-                            "Current message from {}; {message_count} message{} in this conversation",
+                            "Current message from {}; {message_count} message{} in this conversation{}",
                             current.from.display(),
-                            if message_count == 1 { "" } else { "s" }
+                            if message_count == 1 { "" } else { "s" },
+                            if st.inspection == Some(current.id) {
+                                "; previewing without changing its read state"
+                            } else {
+                                ""
+                            },
                         ))
                         .with_children({
                             let mut reader_children = vec![
@@ -3174,6 +3389,10 @@ impl Widget for MailApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "semantic targets stay centralized so keyboard and assistive-technology paths cannot drift from visible controls"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3184,18 +3403,18 @@ impl Widget for MailApp {
         use ui::a11y::Action;
 
         if let Some(control) = target.strip_prefix("mail.compose:") {
-            if !self.compose.open || !matches!(action, Action::Activate) {
+            if !self.compose.open {
                 return false;
             }
-            match control {
-                "send" => self.send_compose(state),
-                "save" => self.save_compose_draft(state),
-                "discard" => {
-                    self.compose.close();
+            match self.compose.perform_semantic_action(control, action) {
+                Some(ComposeAction::Send) => self.send_compose(state),
+                Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
+                Some(ComposeAction::Close) => {
                     self.persist_compose_format(state);
                     self.dirty = true;
                 }
-                _ => return false,
+                Some(ComposeAction::None) => {}
+                None => return false,
             }
             return true;
         }
@@ -3203,7 +3422,36 @@ impl Widget for MailApp {
             if !self.setup_open {
                 return false;
             }
+            if let Some(raw) = control.strip_prefix("field:") {
+                let Ok(index) = raw.parse::<usize>() else {
+                    return false;
+                };
+                if index >= self.setup_inputs.len()
+                    || (index == 3 && self.setup_auth != crate::model::AuthMethod::Password)
+                {
+                    return false;
+                }
+                match action {
+                    Action::Focus | Action::Activate => self.focus_setup(Some(index)),
+                    Action::SetValue(value) => {
+                        self.set_setup_input(index, value);
+                        if index == 1 {
+                            self.maybe_autofill();
+                        }
+                    }
+                    _ => return false,
+                }
+                self.dirty = true;
+                return true;
+            }
             match (control, action) {
+                ("auth-password", Action::Activate | Action::ToggleCheck) => {
+                    self.setup_auth = crate::model::AuthMethod::Password;
+                }
+                ("auth-oauth", Action::Activate | Action::ToggleCheck) => {
+                    self.setup_auth = crate::model::AuthMethod::OAuth;
+                }
+                ("oauth-sign-in", Action::Activate) => self.start_oauth(),
                 ("imap-tls", Action::Activate | Action::ToggleCheck) => {
                     self.setup_imap_tls = !self.setup_imap_tls;
                     self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
@@ -3254,19 +3502,20 @@ impl Widget for MailApp {
                 return false;
             };
             let mut st = self.shared.borrow_mut();
-            if account_index >= st.accounts.accounts.len() {
+            let Some(account) = st.accounts.accounts.get(account_index) else {
                 return false;
-            }
+            };
+            let collapsed = account.collapsed;
             match action {
                 Action::Activate => {
                     st.set_active_account(state, account_index);
                     st.select_folder(state, Folder::Inbox);
                     st.push_intent(Intent::CloseDrawer);
                 }
-                Action::Expand if st.accounts.accounts[account_index].collapsed => {
+                Action::Expand if collapsed => {
                     st.toggle_account_collapsed(account_index);
                 }
-                Action::Collapse if !st.accounts.accounts[account_index].collapsed => {
+                Action::Collapse if !collapsed => {
                     st.toggle_account_collapsed(account_index);
                 }
                 _ => return false,
@@ -3553,11 +3802,6 @@ impl MailApp {
                 self.dirty = true;
                 *handled = true;
             }
-            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
-                // Manual refresh: fetch the current folder from the server now.
-                self.refresh_active_folder();
-                *handled = true;
-            }
             Key::Named(NamedKey::F5) => {
                 self.refresh_active_folder();
                 *handled = true;
@@ -3593,6 +3837,19 @@ impl MailApp {
                     self.shared
                         .borrow_mut()
                         .apply_message_action(state, id, CtxAction::ToggleStar);
+                    *handled = true;
+                }
+            }
+            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
+                if let Some(id) = selected {
+                    self.shared.borrow_mut().push_intent(Intent::Reply(id));
+                    self.process_intents();
+                    *handled = true;
+                }
+            }
+            Key::Character(ch) if ch.eq_ignore_ascii_case("u") => {
+                if let Some(id) = selected {
+                    self.shared.borrow_mut().set_read(state, id, false);
                     *handled = true;
                 }
             }
@@ -3909,6 +4166,13 @@ mod tests {
         app.compose.open_blank();
         let compose = app.accessibility().expect("compose dialog semantics");
         assert_eq!(compose.role, A11yRole::Dialog);
+        assert!(compose.children.iter().any(|node| {
+            node.role == A11yRole::TextInput && node.name.as_deref() == Some("To")
+        }));
+        assert!(compose.children.iter().any(|node| {
+            node.role == A11yRole::MultilineTextInput
+                && node.name.as_deref() == Some("Message body")
+        }));
         assert!(app.perform_semantic_action(
             "mail.compose:discard",
             &Action::Activate,
@@ -3923,6 +4187,11 @@ mod tests {
         app.open_setup_edit(None);
         let setup = app.accessibility().expect("setup dialog semantics");
         assert_eq!(setup.role, A11yRole::Dialog);
+        assert!(setup.children.iter().any(|node| {
+            node.role == A11yRole::TextInput
+                && node.name.as_deref() == Some("Email address")
+                && node.action_target.as_deref() == Some("mail.setup:field:1")
+        }));
         assert!(app.perform_semantic_action(
             "mail.setup:cancel",
             &Action::Activate,
@@ -4009,6 +4278,104 @@ mod tests {
         assert!(
             fresh.get(id).unwrap().read,
             "read flag persisted to the CRDT"
+        );
+    }
+
+    #[test]
+    fn resource_open_marks_message_read_through_the_document_action() {
+        let (mut app, mut doc) = app();
+        let id = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .find(|message| !message.read)
+            .map(|message| message.id)
+            .expect("sample contains an unread message");
+        let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
+            id: id.to_string(),
+        })
+        .unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(
+            !app.shared.borrow().mailbox.get(id).unwrap().read,
+            "the immutable view-operation boundary does not forge a document edit"
+        );
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.shared.borrow().mailbox.get(id).unwrap().read,
+            "the next mutable sync applies normal read semantics"
+        );
+        assert!(
+            app.take_committed_action().is_some(),
+            "mark-read remains a replayable collaborative action"
+        );
+    }
+
+    #[test]
+    fn explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact() {
+        let (mut app, mut doc) = app();
+        let id = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .find(|message| !message.read)
+            .map(|message| message.id)
+            .expect("sample contains an unread message");
+        let payload = serde_json::to_vec(&crate::actions::MailOperation::InspectMessage {
+            id: id.to_string(),
+        })
+        .unwrap();
+        let heads_before_preview = doc.get_heads();
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.selected_message(), Some(id));
+        assert!(
+            !app.shared.borrow().mailbox.get(id).unwrap().read,
+            "preview is read-state neutral before sync"
+        );
+        assert_eq!(doc.get_heads(), heads_before_preview);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            !app.shared.borrow().mailbox.get(id).unwrap().read,
+            "unlike Open message, explicit preview never queues mark-read"
+        );
+        assert!(
+            app.take_committed_action().is_none(),
+            "a read-state-neutral preview creates no collaborative action"
+        );
+        let semantics = app.accessibility().expect("reader accessibility");
+        let reader = semantics
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Document)
+            .expect("reader document");
+        assert!(
+            reader
+                .description
+                .as_deref()
+                .is_some_and(|text| text.contains("without changing its read state")),
+            "assistive technology receives the same explicit preview distinction"
         );
     }
 
@@ -4408,6 +4775,30 @@ mod tests {
             before + 1,
             "'e' archived the selection"
         );
+        assert!(app.take_committed_action().is_some());
+    }
+
+    #[test]
+    fn reader_shortcuts_reply_star_and_mark_unread_through_visible_paths() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().selected.expect("selected message");
+
+        assert!(dispatch(&mut app, &char_key("r"), &mut doc));
+        assert!(app.compose.open, "R opens the visible reply composer");
+        app.compose.close();
+
+        let was_starred = app.shared.borrow().mailbox.get(id).unwrap().starred;
+        assert!(dispatch(&mut app, &char_key("s"), &mut doc));
+        assert_eq!(
+            app.shared.borrow().mailbox.get(id).unwrap().starred,
+            !was_starred
+        );
+        assert!(app.take_committed_action().is_some());
+
+        assert!(dispatch(&mut app, &char_key("u"), &mut doc));
+        assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
+        assert!(app.take_committed_action().is_some());
     }
 
     #[test]
@@ -4434,6 +4825,7 @@ mod tests {
             before + 1,
             "Delete moved the selection to Trash"
         );
+        assert!(app.take_committed_action().is_some());
     }
 
     // ---- first-run onboarding --------------------------------------------

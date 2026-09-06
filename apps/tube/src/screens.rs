@@ -4,6 +4,8 @@
 //! no per-screen state: navigation rebuilds the whole tree from the model,
 //! so these functions are pure views.
 
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
@@ -163,6 +165,7 @@ fn pill(
             border,
         })
         .on_click(bus, action)
+        .accessible_name(label)
 }
 
 /// A non-interactive stat pill (leading icon + label) — the outlined-pill look
@@ -183,6 +186,7 @@ fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
 
 /// A small icon-only round button.
 fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Flex {
+    let label = action.accessible_label();
     Flex::row()
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
@@ -191,6 +195,7 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Fl
         .surface(subtle_surface(theme))
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, action)
+        .accessible_name(label)
 }
 
 /// The hamburger in the top bar. Toggles the navigation rail — a no-op-looking
@@ -211,6 +216,7 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         })
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, Action::ToggleSidebar)
+        .accessible_name("Show or hide navigation")
 }
 
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
@@ -295,6 +301,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
+        .accessible_name(format!("Open video: {}", v.display_title(dearrow)))
         .push(thumb)
         .push(
             Flex::row()
@@ -326,6 +333,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
             border: None,
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
+        .accessible_name(format!("Open video: {}", v.display_title(dearrow)))
         .push(
             Flex::col().w(Len::Px(160.0)).push(
                 Thumbnail::new(&v.seed, v.duration)
@@ -498,6 +506,7 @@ fn nav_item(
         .surface(surface)
         .hover_surface(hover)
         .on_click(bus, Action::Navigate(route))
+        .accessible_name(label)
         .push(icon(kind, 22.0, fg))
         .push(text_c(label, 11.0, fg))
 }
@@ -588,6 +597,7 @@ fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
         })
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, Action::Back)
+        .accessible_name("Go back")
 }
 
 pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool) -> Flex {
@@ -728,6 +738,7 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
             border: None,
         })
         .on_click(bus, action)
+        .accessible_name(label)
         .push(text_c(label, 13.0, fg))
 }
 
@@ -745,6 +756,12 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
     let body = if model.videos.is_empty() {
         if model.feed_loading {
             skeleton_grid(theme, 12)
+        } else if model.data_source.label.to_lowercase().contains("offline") {
+            empty_state(
+                theme,
+                "You're offline",
+                "Reconnect, then search or return Home to load videos. Your subscriptions and watch history remain available.",
+            )
         } else {
             empty_state(
                 theme,
@@ -766,7 +783,12 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, Icon::Flame, "Trending", ""))
+            .push(section_header(
+                theme,
+                Icon::Home,
+                "Home",
+                "Recent and popular",
+            ))
             .push(body),
     )
 }
@@ -809,6 +831,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
                         border: None,
                     })
                     .on_click(bus, Action::OpenChannel(ch.id.clone()))
+                    .accessible_name(format!("Open creator: {}", ch.name))
                     .push(channel_avatar(imgs, model, &ch.id, &ch.name, 56.0))
                     .push(text_c(&ch.name, 11.5, theme.text_primary)),
             );
@@ -955,6 +978,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
             border: None,
         })
         .on_click(bus, Action::OpenPlaylist(p.id.clone()))
+        .accessible_name(format!("Open playlist: {}", p.title))
         .push(stack)
         .push(
             Flex::row()
@@ -995,6 +1019,7 @@ fn creator_card(
             border: None,
         })
         .on_click(bus, Action::OpenChannel(c.id.clone()))
+        .accessible_name(format!("Open creator: {}", c.name))
         .push(channel_avatar(imgs, model, &c.id, &c.name, 56.0))
         .push(
             Flex::col()
@@ -1426,6 +1451,7 @@ pub fn watch(
                             border: None,
                         })
                         .on_click(bus, Action::SkipSegment(s.end))
+                        .accessible_name(format!("Skip {}", s.category.label()))
                         .push(text_c(
                             format!("Skip {}", s.category.label()),
                             13.0,
@@ -1531,6 +1557,7 @@ pub fn watch(
                 .grow(1.0)
                 .gap(2.0)
                 .on_click(bus, Action::OpenChannel(v.channel_id.clone()))
+                .accessible_name(format!("Open creator: {}", v.channel_name))
                 .push(text(&v.channel_name, 15.0))
                 .push_if(
                     model
@@ -1661,6 +1688,10 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             bus,
             Action::SetQuality(model.settings.preferred_quality.clone()),
         )
+        .accessible_name(format!(
+            "Playback quality, currently {}",
+            model.settings.preferred_quality
+        ))
         .push(text_c(
             &model.settings.preferred_quality,
             12.5,
@@ -1851,6 +1882,7 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
             border,
         })
         .on_click(bus, Action::ToggleCategory(cat))
+        .accessible_name(format!("{}: {}", cat.label(), mode.label()))
         .push(text_c(mode.label(), 12.5, fg))
 }
 
@@ -1861,9 +1893,57 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
               must hold in mind"
 )]
 pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
-    let s = &model.settings;
+    settings_impl(model, theme, bus, None, None)
+}
 
-    let playback = settings_card(
+/// Settings with the process-local Grayjay device surface. The pairing input
+/// is explicitly external memory, so invite codes never enter Automerge or
+/// collaboration history.
+pub fn settings_with_sync(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    sync: &crate::sync::SyncView,
+    pairing_input: Arc<Mutex<String>>,
+) -> Scrollable {
+    settings_impl(model, theme, bus, Some(sync), Some(pairing_input))
+}
+
+fn settings_impl(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    sync: Option<&crate::sync::SyncView>,
+    pairing_input: Option<Arc<Mutex<String>>>,
+) -> Scrollable {
+    let playback = playback_settings_card(model, theme, bus);
+    let sponsorblock = sponsorblock_settings_card(model, theme, bus);
+    let dearrow = dearrow_settings_card(model, theme, bus);
+    let device_sync = device_sync_card(theme, bus, sync, pairing_input);
+
+    // Explicit spacers between sections: the scroll wrapper lays out as a block,
+    // which ignores flex `gap`, so without these the cards would touch.
+    scroll(
+        Flex::col()
+            .fill_w()
+            .max_w(820.0)
+            .pad(24.0)
+            .push(section_header(theme, Icon::Settings, "Settings", ""))
+            .push(vspace(18.0))
+            .push(playback)
+            .push(vspace(16.0))
+            .push(sponsorblock)
+            .push(vspace(16.0))
+            .push(dearrow)
+            .push(vspace(16.0))
+            .push(device_sync)
+            .push(vspace(24.0)),
+    )
+}
+
+fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    settings_card(
         theme,
         "Playback",
         vec![
@@ -1910,60 +1990,64 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                 quality_menu(model, theme, bus),
             ),
         ],
-    );
+    )
+}
 
-    let sponsorblock = {
-        let mut rows = vec![setting_row(
-            theme,
-            "Enable SponsorBlock",
-            "Use community segment data to mark and skip parts of videos.",
-            Switch::new(
-                s.sponsorblock_enabled,
-                bus,
-                Action::ToggleSetting(SettingFlag::SponsorBlock),
-            )
-            .id("switch_sponsorblock")
-            .accessible_name("Enable SponsorBlock"),
-        )];
-        for cat in Category::ALL {
-            let (r, g, b) = cat.rgb();
-            let label = Flex::row()
-                .gap(10.0)
-                .align(Align::Center)
-                .grow(1.0)
-                .push(Flex::row().fixed(14.0, 14.0).surface(Surface {
-                    fill: Some(Color::from_rgb8(r, g, b)),
-                    radius: 4.0,
-                    border: None,
-                }))
-                .push(
-                    Flex::col()
-                        .grow(1.0)
-                        .gap(2.0)
-                        .push(text(cat.label(), 14.0))
-                        .push(dim(theme, cat.blurb(), 12.0)),
-                );
-            // The stored per-category mode (not the master-gated one) so the
-            // selector shows the user's choice even when SponsorBlock is off.
-            let stored = s
-                .categories
-                .get(cat.api_key())
-                .copied()
-                .unwrap_or(SkipMode::Skip);
-            rows.push(
-                Flex::row()
-                    .fill_w()
-                    .gap(16.0)
-                    .pad_xy(0.0, 8.0)
-                    .align(Align::Center)
-                    .push(label)
-                    .push(mode_pill(theme, bus, cat, stored)),
+fn sponsorblock_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    let mut rows = vec![setting_row(
+        theme,
+        "Enable SponsorBlock",
+        "Use community segment data to mark and skip parts of videos.",
+        Switch::new(
+            s.sponsorblock_enabled,
+            bus,
+            Action::ToggleSetting(SettingFlag::SponsorBlock),
+        )
+        .id("switch_sponsorblock")
+        .accessible_name("Enable SponsorBlock"),
+    )];
+    for cat in Category::ALL {
+        let (r, g, b) = cat.rgb();
+        let label = Flex::row()
+            .gap(10.0)
+            .align(Align::Center)
+            .grow(1.0)
+            .push(Flex::row().fixed(14.0, 14.0).surface(Surface {
+                fill: Some(Color::from_rgb8(r, g, b)),
+                radius: 4.0,
+                border: None,
+            }))
+            .push(
+                Flex::col()
+                    .grow(1.0)
+                    .gap(2.0)
+                    .push(text(cat.label(), 14.0))
+                    .push(dim(theme, cat.blurb(), 12.0)),
             );
-        }
-        settings_card(theme, "SponsorBlock", rows)
-    };
+        // The stored per-category mode (not the master-gated one) so the
+        // selector shows the user's choice even when SponsorBlock is off.
+        let stored = s
+            .categories
+            .get(cat.api_key())
+            .copied()
+            .unwrap_or(SkipMode::Skip);
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .gap(16.0)
+                .pad_xy(0.0, 8.0)
+                .align(Align::Center)
+                .push(label)
+                .push(mode_pill(theme, bus, cat, stored)),
+        );
+    }
+    settings_card(theme, "SponsorBlock", rows)
+}
 
-    let dearrow = settings_card(
+fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let s = &model.settings;
+    settings_card(
         theme,
         "DeArrow",
         vec![
@@ -2010,24 +2094,325 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                 s.dearrow_enabled,
             ),
         ],
-    );
+    )
+}
 
-    // Explicit spacers between sections: the scroll wrapper lays out as a block,
-    // which ignores flex `gap`, so without these the cards would touch.
-    scroll(
+fn device_action(
+    theme: &Theme,
+    bus: &ActionBus,
+    id: &str,
+    label: &str,
+    action: Action,
+    danger: bool,
+) -> Flex {
+    let danger_color = theme.tokens.colors.semantic.danger;
+    let foreground = if danger {
+        danger_color
+    } else {
+        theme.text_primary
+    };
+    Flex::row()
+        .id(id)
+        .pad_xy(13.0, 8.0)
+        .justify(Justify::Center)
+        .align(Align::Center)
+        .surface(Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: f64::from(theme.tokens.radii.full),
+            border: Some((
+                1.0,
+                if danger {
+                    danger_color
+                } else {
+                    theme.border_standard
+                },
+            )),
+        })
+        .hover_surface(hover_pill_surface(theme))
+        .on_click(bus, action)
+        .accessible_name(label)
+        .push(text_c(label, 12.5, foreground))
+}
+
+fn device_sync_card(
+    theme: &Theme,
+    bus: &ActionBus,
+    sync: Option<&crate::sync::SyncView>,
+    pairing_input: Option<Arc<Mutex<String>>>,
+) -> Flex {
+    let capability = crate::sync::capability();
+    let summary = sync.map_or(capability.summary, |state| state.summary.as_str());
+    let status = sync.map_or("Unavailable", |state| match state.status {
+        crate::sync::SyncStatus::Unavailable => "Unavailable",
+        #[cfg(feature = "grayjay-sync")]
+        crate::sync::SyncStatus::Ready => "Ready",
+        #[cfg(feature = "grayjay-sync")]
+        crate::sync::SyncStatus::Pairing => "Pairing…",
+        #[cfg(feature = "grayjay-sync")]
+        crate::sync::SyncStatus::Syncing => "Syncing…",
+        #[cfg(feature = "grayjay-sync")]
+        crate::sync::SyncStatus::Error => "Needs attention",
+    });
+    let mut rows = vec![device_sync_header(theme, summary, status)];
+
+    if let (Some(state), Some(input)) = (sync, pairing_input) {
+        if matches!(state.status, crate::sync::SyncStatus::Unavailable) {
+            rows.push(device_sync_unavailable(theme));
+            return settings_card(theme, "Device sync", rows);
+        }
+        add_device_identity_and_pairing(&mut rows, theme, bus, state, input);
+        add_pending_devices(&mut rows, theme, bus, state);
+        add_active_devices(&mut rows, theme, bus, state);
+    } else if !capability.available {
+        // Builds intentionally compiled without the Noise transport must be
+        // explicit: a bare "Unavailable" badge looks like a transient outage
+        // and invites users to hunt for a pairing button that cannot exist.
+        rows.push(device_sync_not_included(theme));
+    }
+    settings_card(theme, "Device sync", rows)
+}
+
+fn device_sync_header(theme: &Theme, summary: &str, status: &str) -> Flex {
+    Flex::row()
+        .fill_w()
+        .gap(14.0)
+        .align(Align::Center)
+        .push(
+            Flex::row()
+                .fixed(42.0, 42.0)
+                .justify(Justify::Center)
+                .align(Align::Center)
+                .surface(Surface {
+                    fill: Some(theme.bg_active),
+                    radius: 12.0,
+                    border: None,
+                })
+                .push(icon(Icon::Wifi, 20.0, theme.accent_primary)),
+        )
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(3.0)
+                .push(text("Grayjay devices", 15.0))
+                .push(dim(theme, summary, 12.0)),
+        )
+        .push(
+            Flex::row()
+                .pad_xy(10.0, 6.0)
+                .surface(Surface {
+                    fill: Some(subtle_fill(theme)),
+                    radius: f64::from(theme.tokens.radii.full),
+                    border: Some((1.0, theme.border_standard)),
+                })
+                .push(text_c(status, 12.0, theme.text_dim)),
+        )
+}
+
+fn device_sync_unavailable(theme: &Theme) -> Flex {
+    Flex::row()
+        .fill_w()
+        .pad(16.0)
+        .surface(subtle_surface(theme))
+        .push(dim(
+            theme,
+            "Encrypted device sync is unavailable on this desktop. Ensure the desktop secret broker is available and unlocked, then reopen Tube.",
+            12.5,
+        ))
+}
+
+fn device_sync_not_included(theme: &Theme) -> Flex {
+    Flex::row()
+        .fill_w()
+        .pad(16.0)
+        .surface(subtle_surface(theme))
+        .push(dim(
+            theme,
+            "This Tube build does not include Grayjay device sync. Install a build with device sync support to pair or synchronize devices.",
+            12.5,
+        ))
+}
+
+fn add_device_identity_and_pairing(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+    input: Arc<Mutex<String>>,
+) {
+    if let Some(public_key) = &state.device_public_key {
+        let fingerprint = public_key.chars().take(18).collect::<String>();
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .gap(10.0)
+                .align(Align::Center)
+                .push(icon(Icon::Shield, 16.0, theme.status_success))
+                .push(dim(
+                    theme,
+                    format!("This device · {fingerprint}… · key held by desktop secret broker"),
+                    12.0,
+                )),
+        );
+    }
+    rows.push(
         Flex::col()
             .fill_w()
-            .max_w(820.0)
-            .pad(24.0)
-            .push(section_header(theme, Icon::Settings, "Settings", ""))
-            .push(vspace(18.0))
-            .push(playback)
-            .push(vspace(16.0))
-            .push(sponsorblock)
-            .push(vspace(16.0))
-            .push(dearrow)
-            .push(vspace(24.0)),
-    )
+            .gap(8.0)
+            .push(text("Pair a device", 14.0))
+            .push(dim(
+                theme,
+                "In Grayjay, open Sync → Add device, then paste its invite here.",
+                12.0,
+            ))
+            .push(
+                TextInput::local()
+                    .with_id("grayjay_pairing_invite")
+                    .with_external_buffer(input)
+                    .with_placeholder("grayjay:// pairing invite")
+                    .with_accessible_name("Grayjay pairing invite")
+                    .with_enter_submits(true),
+            )
+            .push(device_action(
+                theme,
+                bus,
+                "grayjay_pair",
+                "Pair device",
+                Action::PairDevice,
+                false,
+            )),
+    );
+}
+
+fn add_pending_devices(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+) {
+    for peer in state
+        .peers
+        .iter()
+        .filter(|peer| peer.pending_approval && peer.revoked_at.is_none())
+    {
+        rows.push(pending_device_row(theme, bus, peer));
+    }
+}
+
+fn pending_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRecord) -> Flex {
+    Flex::row()
+        .fill_w()
+        .gap(12.0)
+        .align(Align::Center)
+        .pad(12.0)
+        .surface(Surface {
+            fill: Some(theme.bg_active),
+            radius: 12.0,
+            border: Some((1.0, theme.border_focus)),
+        })
+        .push(icon(Icon::Shield, 19.0, theme.accent_primary))
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(2.0)
+                .push(text("Confirm this device", 13.5))
+                .push(dim(
+                    theme,
+                    format!("Fingerprint {} · verify it on Grayjay", peer.short_id()),
+                    11.5,
+                )),
+        )
+        .push(device_action(
+            theme,
+            bus,
+            &format!("grayjay_approve_{}", peer.short_id()),
+            "Approve",
+            Action::ApproveDevice(peer.id.clone()),
+            false,
+        ))
+}
+
+fn add_active_devices(
+    rows: &mut Vec<Flex>,
+    theme: &Theme,
+    bus: &ActionBus,
+    state: &crate::sync::SyncView,
+) {
+    let active = state
+        .peers
+        .iter()
+        .filter(|peer| peer.is_active())
+        .collect::<Vec<_>>();
+    if active.is_empty() {
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .pad(16.0)
+                .surface(subtle_surface(theme))
+                .push(dim(
+                    theme,
+                    "No approved devices yet. Pairing requires confirmation on both devices.",
+                    12.5,
+                )),
+        );
+    } else {
+        rows.push(
+            Flex::row()
+                .fill_w()
+                .align(Align::Center)
+                .push(text("Approved devices", 14.0))
+                .push(spring())
+                .push(device_action(
+                    theme,
+                    bus,
+                    "grayjay_sync_now",
+                    "Sync now",
+                    Action::SyncDevices,
+                    false,
+                )),
+        );
+        for peer in active {
+            rows.push(active_device_row(theme, bus, peer));
+        }
+    }
+}
+
+fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRecord) -> Flex {
+    let detail = peer.last_error.as_ref().map_or_else(
+        || {
+            peer.last_sync_at
+                .map_or_else(|| "Not synced yet".into(), relative_sync_time)
+        },
+        |error| format!("Could not sync · {error}"),
+    );
+    Flex::row()
+        .fill_w()
+        .gap(12.0)
+        .align(Align::Center)
+        .pad(12.0)
+        .surface(subtle_surface(theme))
+        .push(icon(Icon::Monitor, 19.0, theme.text_dim))
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(2.0)
+                .push(text(&peer.name, 13.5))
+                .push(dim(theme, format!("{} · {detail}", peer.short_id()), 11.5)),
+        )
+        .push(device_action(
+            theme,
+            bus,
+            &format!("grayjay_revoke_{}", peer.short_id()),
+            "Revoke",
+            Action::RevokeDevice(peer.id.clone()),
+            true,
+        ))
+}
+
+fn relative_sync_time(time: i64) -> String {
+    let current = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
+    format!("Last synced {}", ui::format::relative(current - time))
 }
 
 // ---------------------------------------------------------------------------
@@ -2065,6 +2450,7 @@ fn palette_row(
             border: None,
         })
         .on_click(bus, Action::ActivateHit(hit.deep_link.clone()))
+        .accessible_name(format!("Open search result: {}", hit.title))
         .push(
             Flex::row()
                 .fixed(34.0, 34.0)
@@ -2164,6 +2550,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
         // Swallow clicks on the card chrome so they don't reach the scrim and
         // close the palette. `OpenPalette` is idempotent (already open).
         .on_click(bus, Action::OpenPalette)
+        .accessible_name("Action search dialog")
         .push(field)
         .push(divider(theme))
         .push(list);
@@ -2183,6 +2570,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
                 border: None,
             })
             .on_click(bus, Action::ClosePalette)
+            .accessible_name("Close action search")
             .push(card),
     )
 }

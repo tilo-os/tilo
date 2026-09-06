@@ -354,6 +354,40 @@ impl Widget for FileTree {
         Some("file_tree")
     }
 
+    /// This is a custom-painted explorer, so publish the actual visible file
+    /// hierarchy instead of leaving assistive technology with an opaque pane.
+    /// Keys derive from stable project-node ids: expanding a folder cannot make
+    /// an AT reference to one file silently move to a different row.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let rows = self
+            .row_meta
+            .iter()
+            .map(|meta| {
+                let state = if meta.is_folder {
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.active == Some(meta.id))
+                        .expanded(meta.expanded)
+                } else {
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.active == Some(meta.id))
+                };
+                AccessNode::new(Role::TreeItem)
+                    .with_name(meta.name.clone())
+                    .with_hashed_key(format!("code-editor-tree:{}", meta.id))
+                    .with_level(meta.depth + 1)
+                    .with_state(state)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Tree)
+                .with_name(format!("{} files", self.project_name))
+                .with_children(rows),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
