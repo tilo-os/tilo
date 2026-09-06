@@ -24,8 +24,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use qos_actions::{
-    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, LocalTransport,
-    apply_local, dispatch, replay,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport, apply_local, dispatch,
+    replay,
 };
 use serde::{Deserialize, Serialize};
 
@@ -90,16 +90,6 @@ impl Action for Counter {
             }
         }
         Ok(())
-    }
-
-    fn locus(&self) -> ExecutionLocus {
-        match self {
-            Counter::Append { .. } => ExecutionLocus::ClientLocal,
-            Counter::Put { .. }
-            | Counter::Noop
-            | Counter::EmptySplice
-            | Counter::WriteThenError => ExecutionLocus::ClientLocal,
-        }
     }
 }
 
