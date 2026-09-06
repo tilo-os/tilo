@@ -7,6 +7,7 @@
 use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::quick_settings::{PowerProfile, QsLevel};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::drag::{DragController, ListMetrics};
@@ -170,7 +171,14 @@ impl QuickSettingsRoot {
         );
         let _ = self
             .edit_drag
-            .pointer_moved(Point::new(start.x, start.y + 76.0), &metrics);
+            // Stop part-way through the destination slot rather than exactly
+            // centred on it. That exposes the same lifted ghost, insertion
+            // rail and sibling reflow a person sees while dragging, instead
+            // of making a visual regression scene resemble mere focus.
+            .pointer_moved(
+                Point::new(start.x, start.y + metrics.pitch() + self.scaled(8.)),
+                &metrics,
+            );
     }
 
     fn visible_controls(&self, state: &QuickSettingsState) -> Vec<QuickSettingsControl> {
@@ -1378,8 +1386,40 @@ impl QuickSettingsRoot {
             &metrics,
         ) {
             // The floating item retains its identity, not merely a coloured
-            // insertion hole. This gives pointer/touch DnD a stable object
-            // to follow and leaves the reflowed gap unambiguous.
+            // insertion hole. A small physical shadow and a restrained
+            // accent wash make it read as an object lifted above the list,
+            // not a keyboard-focus outline that happened to move.
+            // Offset the presentation very slightly from the pointer's
+            // exact hit geometry. Otherwise a slow vertical drag can land
+            // exactly on a row and look indistinguishable from focus even
+            // with a border. The controller and drop calculation retain the
+            // unmodified ghost rectangle above.
+            let destination_top = self
+                .edit_drag
+                .insertion()
+                .map(|index| metrics.slot_lead(index) + self.scaled(4.));
+            let ghost_y0 = destination_top.map_or(ghost.y0 - self.scaled(6.), |top| {
+                (ghost.y0 - self.scaled(6.)).max(top)
+            });
+            let ghost = Rect::new(
+                ghost.x0 + self.scaled(6.),
+                ghost_y0,
+                ghost.x1 - self.scaled(6.),
+                ghost_y0 + metrics.item_extent,
+            );
+            let shadow = Rect::new(
+                ghost.x0 + self.scaled(3.),
+                ghost.y0 + self.scaled(6.),
+                ghost.x1 + self.scaled(3.),
+                ghost.y1 + self.scaled(6.),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.base.with_alpha_factor(0.86),
+                None,
+                &RoundedRect::from_rect(shadow, self.scaled(10.)),
+            );
             Button::paint(
                 scene,
                 transform,
@@ -1388,6 +1428,28 @@ impl QuickSettingsRoot {
                 &ButtonFace::new(ghost, "")
                     .focused(true)
                     .accessible_name("Quick Settings control being reordered"),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.20),
+                None,
+                &RoundedRect::from_rect(ghost, self.scaled(10.)),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(
+                        ghost.x0,
+                        ghost.y0 + self.scaled(10.),
+                        ghost.x0 + self.scaled(4.),
+                        ghost.y1 - self.scaled(10.),
+                    ),
+                    self.scaled(1.5),
+                ),
             );
             if let Some(control) = self.edit_drag.dragged_id().copied() {
                 for x in [ghost.x0 + self.scaled(15.), ghost.x0 + self.scaled(21.)] {
@@ -1445,6 +1507,31 @@ impl QuickSettingsRoot {
                     ghost_face.icon(ui::icons::Icon::X)
                 };
                 Button::paint(scene, transform, text, theme, &ghost_face);
+            }
+            if let Some(insertion) = self.edit_drag.insertion().filter(|index| *index > 0) {
+                // A drop seam is a second, independent cue: the lifted
+                // item follows the pointer while this rail states exactly
+                // where release will persist it. The rail belongs in the
+                // measured inter-row gap, never on the ghost or its label;
+                // anchoring it to the target's leading edge caused a
+                // large-text regression where it crossed the action button.
+                let y = metrics.slot_lead(insertion) - metrics.gap / 2.0;
+                let rail_half = (metrics.gap * 0.22).clamp(1.0, 2.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(
+                        Rect::new(
+                            self.panel.x0 + self.scaled(Self::PAD + 8.),
+                            y - rail_half,
+                            self.panel.x1 - self.scaled(Self::PAD + 8.),
+                            y + rail_half,
+                        ),
+                        rail_half,
+                    ),
+                );
             }
         }
         let reset = self.edit_reset(state);
