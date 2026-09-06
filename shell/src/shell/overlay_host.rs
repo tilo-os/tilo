@@ -6944,7 +6944,7 @@ impl ShellOverlayHost {
             .shortcut_guide_focus
             .and_then(|focus| controls.iter().position(|candidate| *candidate == focus));
         let next = match (current, backwards) {
-            (Some(0), true) | (None, true) => controls.len().saturating_sub(1),
+            (Some(0) | None, true) => controls.len().saturating_sub(1),
             (Some(index), true) => index.saturating_sub(1),
             (Some(index), false) => (index + 1) % controls.len(),
             (None, false) => 0,
