@@ -8,6 +8,7 @@
 //! ├── "ui"      (Map)  selected folder / view mode / search query / selection
 //! ├── "flags"   (Map)  per-message mutable state, keyed by message-id string
 //! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
+//! ├── "messages" (Map)  externally-ingested message ids `{ present: Bool }`
 //! ├── "account" (Map)  IMAP/SMTP connection settings (the setup form)
 //! └── "draft"   (Map)  the message currently being composed
 //! ```
@@ -190,6 +191,7 @@ impl MailDoc {
 
     /// Mirror a message's mutable flags into the CRDT.
     pub fn store_flags(doc: &mut AutoCommit, msg: &Message) {
+        Self::register_message(doc, &msg.id.to_string());
         let flags = Self::flags_map(doc);
         let key = msg.id.to_string();
         let entry = Self::map(doc, &flags, &key);
@@ -201,6 +203,18 @@ impl MailDoc {
     /// Overlay any persisted flags from the CRDT onto an in-memory mailbox.
     /// The corpus is the source of truth for content; the CRDT wins on flags.
     pub fn apply_flags(doc: &AutoCommit, mb: &mut Mailbox) {
+        // A permanent delete is a replicated tombstone. Remove only ids with
+        // that explicit marker; a document from before the registry schema may
+        // legitimately have flags but no `messages` map at all.
+        let purged: Vec<_> = mb
+            .messages
+            .keys()
+            .copied()
+            .filter(|id| Self::is_message_purged(doc, &id.to_string()))
+            .collect();
+        for id in purged {
+            mb.purge(id);
+        }
         let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
             return;
         };
@@ -306,6 +320,62 @@ impl MailDoc {
                 let _ = doc.delete(&d, key);
             }
         }
+    }
+
+    // ---- known message registry -----------------------------------------
+    //
+    // The corpus itself remains outside Automerge, but its stable identifiers
+    // are recorded when Mail ingests it. A later resource action can therefore
+    // refuse an id that was purged or was never materialised rather than
+    // silently creating an orphan `flags/<id>` map. Ingestion is external state
+    // reconciliation; every user mutation below still goes through MailAction.
+
+    fn messages_map(doc: &mut AutoCommit) -> ObjId {
+        Self::map(doc, &ROOT, "messages")
+    }
+
+    /// Register a message id obtained from the external corpus as an eligible
+    /// action target. This is idempotent and deliberately not an action:
+    /// downloading mail is external ingestion, not a collaborative edit.
+    pub fn register_message(doc: &mut AutoCommit, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        let messages = Self::messages_map(doc);
+        let entry = Self::map(doc, &messages, id);
+        ui::doc::put_if_changed(doc, &entry, "present", true);
+    }
+
+    /// Whether an id is currently a valid, materialised message target.
+    /// Explicit tombstones fail closed. A legacy flags entry remains accepted
+    /// so documents created before this registry was introduced retain their
+    /// existing action history rather than becoming read-only after upgrade.
+    pub fn is_present_message(doc: &AutoCommit, id: &str) -> bool {
+        if let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages")
+            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id)
+        {
+            return Self::read_bool(doc, &entry, "present").unwrap_or(false);
+        }
+        Self::flag_entry_ref(doc, id).is_some()
+    }
+
+    /// Record a permanent local purge. Unlike a missing registry entry this is
+    /// an explicit tombstone, so a delayed action can never resurrect flags.
+    pub fn mark_message_purged(doc: &mut AutoCommit, id: &str) {
+        let messages = Self::messages_map(doc);
+        let entry = Self::map(doc, &messages, id);
+        ui::doc::put_if_changed(doc, &entry, "present", false);
+    }
+
+    /// Whether the document carries an explicit purge tombstone for `id`.
+    fn is_message_purged(doc: &AutoCommit, id: &str) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
+            return false;
+        };
+        Self::read_bool(doc, &entry, "present") == Some(false)
     }
 
     // ---- granular per-message flag writers (the action apply path) ----
@@ -549,6 +619,21 @@ mod tests {
         MailDoc::apply_flags(&doc, &mut mb3);
         assert_eq!(mb3.get(id).unwrap().starred, starred);
         assert!(mb3.get(id).unwrap().read);
+    }
+
+    #[test]
+    fn purge_tombstone_removes_the_hydrated_copy_on_peer_sync() {
+        let mut doc = AutoCommit::new();
+        let mut mailbox = sample_mailbox();
+        let id = *mailbox.messages.keys().next().expect("sample message");
+        MailDoc::store_flags(&mut doc, mailbox.get(id).expect("message"));
+        MailDoc::mark_message_purged(&mut doc, &id.to_string());
+
+        MailDoc::apply_flags(&doc, &mut mailbox);
+        assert!(
+            mailbox.get(id).is_none(),
+            "a peer converges by dropping the tombstoned hydrated message"
+        );
     }
 
     #[test]

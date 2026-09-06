@@ -17,7 +17,7 @@ use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
 use crate::actions::{
-    MAIL_ACTION_TYPE, MailAction, move_action, save_draft_action, set_read_action,
+    MAIL_ACTION_TYPE, MailAction, move_action, purge_action, save_draft_action, set_read_action,
     set_starred_action,
 };
 use crate::doc::MailDoc;
@@ -225,6 +225,16 @@ impl MailState {
         );
     }
 
+    /// Ensure an action target discovered in the already-loaded external
+    /// corpus has an eligibility record before emitting its action. Normal UI
+    /// flow seeds these records during sync; this tiny idempotent bridge also
+    /// covers a just-hydrated message acted on before the next frame.
+    fn register_loaded_target(&self, doc: &mut AutoCommit, id: MessageId) {
+        if self.mailbox.get(id).is_some() {
+            MailDoc::register_message(doc, &id.to_string());
+        }
+    }
+
     /// Persist the in-progress draft as an action (undo boundary + replay + the
     /// same [`MailAction`] the palette's draft actions use). The visible Drafts
     /// message is materialised separately by the app.
@@ -344,6 +354,20 @@ impl MailState {
         }));
     }
 
+    /// Ask the live backend to permanently remove exactly this server message.
+    /// The source snapshot is retained because the local corpus is removed
+    /// immediately and the engine still needs its mailbox and Message-ID.
+    fn sync_purge_to_server(&mut self, source: Message) {
+        let account = self.accounts.active_config();
+        if account.email.is_empty() {
+            return;
+        }
+        self.push_intent(Intent::Engine(EngineRequest::Purge {
+            account,
+            message: Box::new(source),
+        }));
+    }
+
     pub fn set_active_account(&mut self, doc: &mut AutoCommit, idx: usize) {
         self.accounts.set_active(idx);
         MailDoc::set_active_account(doc, self.accounts.active);
@@ -454,6 +478,7 @@ impl MailState {
         if self.mailbox.get(id).is_none() {
             return;
         }
+        self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
         self.dispatch_action(doc, &set_read_action(vec![id.to_string()], read));
         self.sync_flag_to_server(id);
@@ -465,6 +490,7 @@ impl MailState {
         let Some(target) = self.mailbox.get(id).map(|m| !m.starred) else {
             return;
         };
+        self.register_loaded_target(doc, id);
         self.mailbox.toggle_star(id);
         self.dispatch_action(doc, &set_starred_action(vec![id.to_string()], target));
         self.sync_flag_to_server(id);
@@ -476,6 +502,7 @@ impl MailState {
         let Some(source) = self.mailbox.get(id).cloned() else {
             return;
         };
+        self.register_loaded_target(doc, id);
         self.mailbox.move_to(id, folder);
         self.dispatch_action(doc, &move_action(vec![id.to_string()], folder));
         self.sync_move_to_server(source, folder);
@@ -505,15 +532,24 @@ impl MailState {
                 // Snapshot the source before the local move so a live UID MOVE
                 // can find it in its origin mailbox.
                 let source = self.mailbox.get(id).cloned();
-                // Move to Trash, or purge if it was already there. The move is a
-                // replayable action; a purge drops the in-memory corpus copy only
-                // (message content never lived in the CRDT), so it is not one.
+                // Move to Trash, or purge if it was already there. Both are
+                // replayable actions; the live server effect remains a separate
+                // request carrying the pre-mutation message locator.
+                let purging = source
+                    .as_ref()
+                    .is_some_and(|message| message.folder == Folder::Trash);
+                self.register_loaded_target(doc, id);
                 self.mailbox.delete(id);
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
                     self.dispatch_action(doc, &move_action(vec![id.to_string()], to));
                     if let Some(src) = source {
                         self.sync_move_to_server(src, to);
+                    }
+                } else if purging {
+                    self.dispatch_action(doc, &purge_action(vec![id.to_string()]));
+                    if let Some(src) = source {
+                        self.sync_purge_to_server(src);
                     }
                 }
                 self.after_remove(doc, was_selected);
@@ -647,6 +683,22 @@ mod tests {
                 to: Folder::Junk,
                 ..
             })
+        )));
+    }
+
+    #[test]
+    fn permanent_delete_emits_an_exact_server_purge() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        st.apply_message_action(&mut doc, id, CtxAction::Delete);
+        st.take_intents();
+
+        st.apply_message_action(&mut doc, id, CtxAction::Delete);
+        let intents = st.take_intents();
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Engine(EngineRequest::Purge { message, .. }) if message.id == id
         )));
     }
 
