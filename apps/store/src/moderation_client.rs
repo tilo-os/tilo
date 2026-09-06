@@ -144,6 +144,11 @@ fn validate_submission_projection(
 /// Fetch a complete transparency proof, anchor it in the current owner-signed
 /// registry snapshot, authorize every reviewer/publisher event and derive the
 /// case status locally. No mutable server projection is trusted.
+///
+/// # Errors
+///
+/// Returns an error when the case id is malformed, the registry snapshot or
+/// transparency log cannot be fetched, or the signed proof is inconsistent.
 pub fn fetch_verified_case(
     registry: &RegistryConfig,
     case_id: &str,
