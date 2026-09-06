@@ -142,8 +142,6 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // takes, then open the strip.
         let (mut state, mut wp) = build_concrete(file)?;
         seed_revisions(&mut state, &mut wp)?;
-        // Pin the floating status readout visible so the shot captures it.
-        wp.arm_status_bubble_for_shots();
         render_shot(state, Box::new(wp), (1000, 700), out)?;
         return Ok(());
     }
@@ -162,7 +160,6 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     if args.has("--error") {
         wp.stage_error_for_shot();
     }
-    wp.arm_status_bubble_for_shots();
     render_shot(
         state,
         Box::new(wp),
@@ -173,6 +170,26 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
+    // A blank headless document has not been through its first draw yet. Bind it
+    // before opening the qdoc containers, just as the interactive widget does
+    // at the start of that draw. Otherwise the review scenario attempts to read
+    // an uninitialised root record and cannot seed a representative comment.
+    wp.sync(&mut state.doc, &state.root);
+    let containers = qdoc::model::open(&state.doc, &state.root)?;
+    let has_reviewable_text = qdoc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .any(|id| {
+            qdoc::model::block_text(&state.doc, &containers, &id)
+                .is_some_and(|text| !text.is_empty())
+        });
+    if !has_reviewable_text {
+        // A fresh document has no paragraph until its first edit. Seed the
+        // reviewable content through the real editing model, rather than making
+        // the screenshot renderer special-case a fake annotation card.
+        wp.model_mut()
+            .insert_str(&mut state.doc, "Quarterly planning summary");
+        wp.sync(&mut state.doc, &state.root);
+    }
     let containers = qdoc::model::open(&state.doc, &state.root)?;
     let Some(block) = qdoc::model::blocks_in_order(&state.doc, &containers)
         .into_iter()
