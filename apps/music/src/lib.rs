@@ -108,20 +108,27 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Recognised scenarios (combine with `QOS_MUSIC_VIEW` to pick the screen):
 /// `sidebar`/`collapsed` — nav sidebar open/collapsed; `context` — track
 /// context menu open; `new-playlist` — inline create-playlist prompt open;
-/// `search-focus` — search pill focused, empty query; `skeleton` — Home in
-/// its loading state; `nowplaying` — a bundled track playing; `queue` — the
-/// Queue view with sample tracks trailing it; `lyrics` — synced-lyrics view;
-/// `downloading` — a few rows mid-download; `search-tabs`/`search-songs`/
-/// `search-artists` — search results filtered to that tab; `artist-page`/
-/// `album-page` — the detail page for a bundled item.
+/// `empty` — a genuinely empty library's Home state; `search-focus` — search
+/// pill focused, empty query; `skeleton` — Home in its loading state;
+/// `nowplaying` — a bundled track playing; `queue` — the Queue view with
+/// sample tracks trailing it; `lyrics` — synced-lyrics view; `downloading` —
+/// a few rows mid-download; `search-tabs`/`search-songs`/`search-artists` —
+/// search results filtered to that tab; `artist-page`/`album-page` — the
+/// detail page for a bundled item; `error` — a failed live detail request with
+/// its honest recovery state; `membership-open` — a playlist-membership Ctrl+K
+/// result after its safe canonical Open action is activated.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     // Hermetic: a headless shot never spawns a worker or fetches covers, so the
     // frame is deterministic and offline (bundled sample + placeholder tiles).
     app.set_offline_for_shot();
-    // A screenshot needs real content, so the shot path (unlike the live app)
-    // seeds the bundled sample catalog.
-    app.seed_sample_library();
+    // Most screenshots need real content, so they use the bundled catalog.
+    // `empty` deliberately stays unseeded to capture the real first-run state
+    // (no songs, albums, artists, or playlists) rather than an empty search
+    // field over fabricated content.
+    if scenario != "empty" {
+        app.seed_sample_library();
+    }
     match scenario {
         "sidebar" => app.snap_sidebar(true),
         "collapsed" => app.snap_sidebar(false),
@@ -138,6 +145,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "search-artists" => app.snap_search_results(app::SearchTab::Artists),
         "artist-page" => app.snap_artist_page(),
         "album-page" => app.snap_album_page(),
+        "error" => app.snap_error_page(),
+        "membership-open" => app.snap_membership_open(),
         _ => {}
     }
     Box::new(app)
