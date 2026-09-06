@@ -3,7 +3,8 @@
 //! from many providers on an even footing.
 
 use crate::icons::Icon;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, RwLock};
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
 /// [`SearchProvider::search`] entry point. Interactive callers use
@@ -11,9 +12,11 @@ use std::collections::HashSet;
 /// accidentally materialising an entire library.
 pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 256;
 
-/// Default maximum number of records copied into an in-memory provider
-/// snapshot. Providers with a real indexed backend may use a different,
-/// explicitly reviewed bound.
+/// Legacy snapshot-size constant.
+///
+/// This is retained for source compatibility only. A durable namespace must
+/// never use it to truncate discovery. Prefer [`SearchCatalog`], which keeps a
+/// complete incrementally-maintained index and bounds work per query page.
 pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
 /// Default maximum number of full records an indexed provider should verify
 /// for one interactive query. The index may contain the complete corpus; this
@@ -24,9 +27,10 @@ use std::borrow::Borrow;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
-/// The complete supplied corpus is retained. Normalisation and 1/2/3-scalar
-/// suffixes are built once, so an interactive query finds the exact matching
-/// suffix range without scanning or speculatively verifying full records.
+/// The complete supplied corpus is retained. Normalisation and Unicode
+/// 1/2/3-gram posting lists are built once. Unlike a suffix array, this stores
+/// only a constant number of postings per input scalar rather than retaining
+/// and comparing every suffix.
 /// Providers keep
 /// ownership of their domain records and use the returned stable snapshot
 /// offsets to materialise typed [`SearchResult`]s.
@@ -37,7 +41,7 @@ use std::borrow::Borrow;
 #[derive(Clone, Debug, Default)]
 pub struct SearchTextIndex {
     texts: Vec<String>,
-    suffixes: Vec<(usize, usize)>,
+    postings: HashMap<String, BTreeSet<usize>>,
 }
 
 impl SearchTextIndex {
@@ -50,23 +54,14 @@ impl SearchTextIndex {
             .into_iter()
             .map(|text| normalize_search_text(text.as_ref()))
             .collect();
-        let mut suffixes: Vec<_> = texts
-            .iter()
-            .enumerate()
-            .flat_map(|(record_id, text)| {
-                text.char_indices()
-                    .map(move |(byte_offset, _)| (record_id, byte_offset))
-            })
-            .collect();
-        suffixes.sort_unstable_by(|&(left_id, left_offset), &(right_id, right_offset)| {
-            indexed_suffix(&texts, left_id, left_offset).cmp(indexed_suffix(
-                &texts,
-                right_id,
-                right_offset,
-            ))
-        });
+        let mut postings: HashMap<String, BTreeSet<usize>> = HashMap::new();
+        for (record_id, text) in texts.iter().enumerate() {
+            for gram in index_grams(text) {
+                postings.entry(gram).or_default().insert(record_id);
+            }
+        }
 
-        Self { texts, suffixes }
+        Self { texts, postings }
     }
 
     /// Number of complete records represented by this snapshot.
@@ -94,18 +89,23 @@ impl SearchTextIndex {
             return (0..self.texts.len()).take(budget).collect();
         }
 
-        let first = self.suffixes.partition_point(|&(record_id, byte_offset)| {
-            indexed_suffix(&self.texts, record_id, byte_offset) < query.as_str()
-        });
-        let mut seen = HashSet::new();
-        self.suffixes
-            .get(first..)
-            .unwrap_or_default()
+        let grams = search_grams(&query);
+        let Some(candidates) = rarest_posting(&self.postings, &grams) else {
+            return Vec::new();
+        };
+        candidates
             .iter()
-            .take_while(|&&(record_id, byte_offset)| {
-                indexed_suffix(&self.texts, record_id, byte_offset).starts_with(&query)
+            .copied()
+            .filter(|record_id| {
+                grams.iter().all(|gram| {
+                    self.postings
+                        .get(gram)
+                        .is_some_and(|posting| posting.contains(record_id))
+                }) && self
+                    .texts
+                    .get(*record_id)
+                    .is_some_and(|text| text.contains(&query))
             })
-            .filter_map(|&(record_id, _)| seen.insert(record_id).then_some(record_id))
             .take(budget)
             .collect()
     }
@@ -118,17 +118,388 @@ impl SearchTextIndex {
     }
 }
 
-fn indexed_suffix(texts: &[String], record_id: usize, byte_offset: usize) -> &str {
-    texts
-        .get(record_id)
-        .and_then(|text| text.get(byte_offset..))
-        .unwrap_or_default()
+fn search_grams(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let width = chars.len().min(3);
+    let mut grams = BTreeSet::new();
+    for window in chars.windows(width) {
+        grams.insert(window.iter().collect());
+    }
+    grams.into_iter().collect()
+}
+
+fn index_grams(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut grams = BTreeSet::new();
+    for width in 1..=chars.len().min(3) {
+        for window in chars.windows(width) {
+            grams.insert(window.iter().collect());
+        }
+    }
+    grams.into_iter().collect()
+}
+
+fn rarest_posting<'a, K: Ord>(
+    postings: &'a HashMap<String, BTreeSet<K>>,
+    grams: &[String],
+) -> Option<&'a BTreeSet<K>> {
+    let mut rarest: Option<&BTreeSet<K>> = None;
+    for gram in grams {
+        let posting = postings.get(gram)?;
+        if rarest.is_none_or(|current| posting.len() < current.len()) {
+            rarest = Some(posting);
+        }
+    }
+    rarest
 }
 
 /// Apply the shared case-folding convention used by [`SearchTextIndex`].
 #[must_use]
 pub fn normalize_search_text(text: &str) -> String {
     text.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// Opaque continuation for a bounded [`SearchCatalog`] query.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchCursor {
+    after_resource_id: Option<String>,
+    after_browse_ordinal: Option<u64>,
+    generation: u64,
+    normalized_query: String,
+}
+
+/// One bounded page returned by [`SearchCatalog::query_page`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchPage {
+    pub results: Vec<SearchResult>,
+    /// Pass this back to `query_page` to continue. `None` means exhausted.
+    pub next: Option<SearchCursor>,
+    /// Number of candidate records whose complete text was inspected.
+    pub inspected: usize,
+}
+
+/// Cheap diagnostics used by contract and performance tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchCatalogStats {
+    pub records: usize,
+    pub normalized_scalars: usize,
+    pub postings: usize,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchCatalogError {
+    EmptyResourceId,
+    NonCanonicalResult,
+    ResourceAddressMismatch,
+}
+
+impl std::fmt::Display for SearchCatalogError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyResourceId => formatter.write_str("search resource id is empty"),
+            Self::NonCanonicalResult => {
+                formatter.write_str("durable search results require a canonical action address")
+            }
+            Self::ResourceAddressMismatch => formatter.write_str(
+                "search result action must address the same stable resource id as the index row",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SearchCatalogError {}
+
+#[derive(Clone, Debug)]
+struct CatalogEntry {
+    normalized: String,
+    grams: Vec<String>,
+    result: SearchResult,
+    browse_ordinal: u64,
+}
+
+#[derive(Debug, Default)]
+struct SearchCatalogInner {
+    entries: BTreeMap<Arc<str>, CatalogEntry>,
+    browse_order: BTreeMap<u64, Arc<str>>,
+    postings: HashMap<String, BTreeSet<Arc<str>>>,
+    normalized_scalars: usize,
+    posting_count: usize,
+    generation: u64,
+    next_browse_ordinal: u64,
+}
+
+/// A complete, incremental search catalogue keyed by canonical resource id.
+///
+/// Cloning a catalogue is O(1), so a widget can retain one instance and return
+/// a cheap provider handle whenever Ctrl+K opens. Mutations update only the
+/// changed record's posting lists. Queries are explicitly paged by both result
+/// count and candidate-inspection budget; result objects are cloned only for
+/// exact matches in the requested page.
+///
+/// The index uses Unicode 1/2/3-gram postings plus exact verification. A unique
+/// item remains directly findable even in a corpus larger than 100,000 rows;
+/// broad or adversarial queries can continue through `SearchCursor` pages
+/// without blocking one UI turn on the whole corpus.
+#[derive(Clone, Debug)]
+pub struct SearchCatalog {
+    name: Arc<str>,
+    inner: Arc<RwLock<SearchCatalogInner>>,
+}
+
+impl SearchCatalog {
+    #[must_use]
+    pub fn new(name: impl Into<Arc<str>>) -> Self {
+        Self {
+            name: name.into(),
+            inner: Arc::new(RwLock::new(SearchCatalogInner::default())),
+        }
+    }
+
+    /// Insert or replace one durable resource. `searchable_text` may combine
+    /// title, metadata and body; `result` is materialised only after an exact
+    /// query match.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SearchCatalogError`] when the stable id is empty, the result
+    /// is legacy/opaque, or its canonical action addresses another resource.
+    pub fn upsert(
+        &self,
+        resource_id: impl Into<String>,
+        searchable_text: impl AsRef<str>,
+        result: SearchResult,
+    ) -> Result<(), SearchCatalogError> {
+        let resource_id = resource_id.into();
+        if resource_id.is_empty() {
+            return Err(SearchCatalogError::EmptyResourceId);
+        }
+        let Some(address) = result.action_address() else {
+            return Err(SearchCatalogError::NonCanonicalResult);
+        };
+        if address.resource != resource_id {
+            return Err(SearchCatalogError::ResourceAddressMismatch);
+        }
+        let resource_id: Arc<str> = resource_id.into();
+        let normalized = normalize_search_text(searchable_text.as_ref());
+        let grams = index_grams(&normalized);
+        let scalar_count = normalized.chars().count();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner
+            .entries
+            .get(resource_id.as_ref())
+            .is_some_and(|entry| entry.normalized == normalized && entry.result == result)
+        {
+            return Ok(());
+        }
+        let browse_ordinal = if let Some(previous) = inner.entries.remove(resource_id.as_ref()) {
+            let ordinal = previous.browse_ordinal;
+            remove_postings(&mut inner, resource_id.as_ref(), &previous);
+            ordinal
+        } else {
+            let ordinal = inner.next_browse_ordinal;
+            inner.next_browse_ordinal = inner.next_browse_ordinal.wrapping_add(1);
+            inner.browse_order.insert(ordinal, Arc::clone(&resource_id));
+            ordinal
+        };
+        for gram in &grams {
+            if inner
+                .postings
+                .entry(gram.clone())
+                .or_default()
+                .insert(Arc::clone(&resource_id))
+            {
+                inner.posting_count = inner.posting_count.saturating_add(1);
+            }
+        }
+        inner.normalized_scalars = inner.normalized_scalars.saturating_add(scalar_count);
+        inner.entries.insert(
+            resource_id,
+            CatalogEntry {
+                normalized,
+                grams,
+                result,
+                browse_ordinal,
+            },
+        );
+        inner.generation = inner.generation.wrapping_add(1);
+        drop(inner);
+        Ok(())
+    }
+
+    /// Remove one resource and all of its postings. Returns whether it existed.
+    pub fn remove(&self, resource_id: &str) -> bool {
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(previous) = inner.entries.remove(resource_id) else {
+            return false;
+        };
+        inner.browse_order.remove(&previous.browse_ordinal);
+        remove_postings(&mut inner, resource_id, &previous);
+        inner.generation = inner.generation.wrapping_add(1);
+        drop(inner);
+        true
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> SearchCatalogStats {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stats = SearchCatalogStats {
+            records: inner.entries.len(),
+            normalized_scalars: inner.normalized_scalars,
+            postings: inner.posting_count,
+            generation: inner.generation,
+        };
+        drop(inner);
+        stats
+    }
+
+    /// Query one deterministic page. Both budgets are hard ceilings. Continue
+    /// with the returned cursor from an idle task/worker when `next` is set.
+    #[must_use]
+    pub fn query_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        if work_budget == 0 || result_limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let query = normalize_search_text(query);
+        let grams = search_grams(&query);
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = inner.generation;
+        let candidates = if query.is_empty() {
+            CandidateRows::Browse(&inner.browse_order)
+        } else if let Some(posting) = rarest_posting(&inner.postings, &grams) {
+            CandidateRows::Posting(posting)
+        } else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        // A catalogue edit between pages invalidates ordering/candidate-set
+        // assumptions. Restarting may repeat rows but can never skip a newly
+        // inserted or edited resource.
+        let after = cursor
+            .filter(|cursor| cursor.generation == generation && cursor.normalized_query == query)
+            .and_then(|cursor| cursor.after_resource_id.as_deref());
+        let after_browse_ordinal = cursor
+            .filter(|cursor| cursor.generation == generation && cursor.normalized_query == query)
+            .and_then(|cursor| cursor.after_browse_ordinal);
+        let mut results = Vec::new();
+        let mut inspected = 0usize;
+        let mut last_id = None;
+        let mut last_browse_ordinal = None;
+        let mut stopped = false;
+        for (browse_ordinal, resource_id) in candidates.ids_after(after, after_browse_ordinal) {
+            if inspected == work_budget || results.len() == result_limit {
+                stopped = true;
+                break;
+            }
+            inspected = inspected.saturating_add(1);
+            last_id = Some(resource_id.to_string());
+            last_browse_ordinal = browse_ordinal;
+            let Some(entry) = inner.entries.get(resource_id) else {
+                continue;
+            };
+            let exact = query.is_empty()
+                || (grams.iter().all(|gram| {
+                    inner
+                        .postings
+                        .get(gram)
+                        .is_some_and(|posting| posting.contains(resource_id))
+                }) && entry.normalized.contains(&query));
+            if exact {
+                results.push(entry.result.clone());
+            }
+        }
+        let next = stopped.then_some(SearchCursor {
+            after_resource_id: last_id,
+            after_browse_ordinal: last_browse_ordinal,
+            generation,
+            normalized_query: query,
+        });
+        drop(inner);
+        SearchPage {
+            results,
+            next,
+            inspected,
+        }
+    }
+}
+
+enum CandidateRows<'a> {
+    Browse(&'a BTreeMap<u64, Arc<str>>),
+    Posting(&'a BTreeSet<Arc<str>>),
+}
+
+impl CandidateRows<'_> {
+    fn ids_after<'a>(
+        &'a self,
+        after: Option<&'a str>,
+        after_browse_ordinal: Option<u64>,
+    ) -> Box<dyn Iterator<Item = (Option<u64>, &'a Arc<str>)> + 'a> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        match self {
+            Self::Browse(entries) => match after_browse_ordinal {
+                Some(after) => Box::new(
+                    entries
+                        .range((Excluded(after), Unbounded))
+                        .map(|(ordinal, id)| (Some(*ordinal), id)),
+                ),
+                None => Box::new(entries.iter().map(|(ordinal, id)| (Some(*ordinal), id))),
+            },
+            Self::Posting(posting) => match after {
+                Some(after) => Box::new(
+                    posting
+                        .range::<str, _>((Excluded(after), Unbounded))
+                        .map(|id| (None, id)),
+                ),
+                None => Box::new(posting.iter().map(|id| (None, id))),
+            },
+        }
+    }
+}
+
+fn remove_postings(inner: &mut SearchCatalogInner, resource_id: &str, entry: &CatalogEntry) {
+    inner.normalized_scalars = inner
+        .normalized_scalars
+        .saturating_sub(entry.normalized.chars().count());
+    for gram in &entry.grams {
+        let mut empty = false;
+        if let Some(posting) = inner.postings.get_mut(gram) {
+            if posting.remove(resource_id) {
+                inner.posting_count = inner.posting_count.saturating_sub(1);
+            }
+            empty = posting.is_empty();
+        }
+        if empty {
+            inner.postings.remove(gram);
+        }
+    }
 }
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
@@ -277,10 +648,69 @@ pub trait SearchProvider {
         hits
     }
 
+    /// Return one bounded continuation page for an interactive search.
+    ///
+    /// Providers backed by a durable namespace should override this method so
+    /// callers can eventually reach every exact match without scanning the
+    /// whole corpus on the UI thread. Tiny legacy providers remain a single
+    /// page: a non-empty cursor therefore means they are exhausted.
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        if cursor.is_some() || work_budget == 0 || result_limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let limit = work_budget.min(result_limit);
+        let results = self.search_limited(query, limit);
+        SearchPage {
+            inspected: results.len(),
+            results,
+            next: None,
+        }
+    }
+
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
     fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<qos_actions::Resource> {
         None
+    }
+}
+
+impl SearchProvider for SearchCatalog {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.query_page(
+            query,
+            None,
+            DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
+        .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.query_page(query, cursor, work_budget, result_limit)
     }
 }
 
@@ -489,6 +919,117 @@ mod tests {
         assert_eq!(
             index.matching_ids("abcd", DEFAULT_SEARCH_CANDIDATE_LIMIT),
             vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
+        );
+    }
+
+    fn catalog_hit(resource_id: &str, title: impl Into<String>) -> SearchResult {
+        SearchResult::for_action("Documents", title, ActionAddress::new(resource_id, "open"))
+    }
+
+    #[test]
+    fn incremental_catalog_finds_unique_resource_beyond_one_hundred_thousand() {
+        let catalog = SearchCatalog::new("Documents");
+        for index in 0..100_001 {
+            let id = format!("document:{index:06}");
+            let text = if index == 100_000 {
+                "row cobalt-orchid-needle"
+            } else {
+                "row"
+            };
+            catalog
+                .upsert(&id, text, catalog_hit(&id, format!("Document {index}")))
+                .unwrap();
+        }
+
+        let page = catalog.query_page("cobalt-orchid-needle", None, 8, 8);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(
+            page.results[0].action_address(),
+            Some(ActionAddress::new("document:100000", "open"))
+        );
+        assert_eq!(page.inspected, 1, "the rare posting avoids a corpus scan");
+        let stats = catalog.stats();
+        assert_eq!(stats.records, 100_001);
+        assert!(
+            stats.postings <= stats.normalized_scalars.saturating_mul(3),
+            "posting storage stays linear: {stats:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_edits_and_deletes_only_change_incremental_generation() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+            .unwrap();
+        let seeded = catalog.stats();
+        catalog
+            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+            .unwrap();
+        assert_eq!(
+            catalog.stats(),
+            seeded,
+            "idempotent sync does no index work"
+        );
+        let provider = catalog.clone();
+        catalog
+            .upsert("document:a", "new phrase", catalog_hit("document:a", "A"))
+            .unwrap();
+        assert!(provider.search_limited("old", 4).is_empty());
+        assert_eq!(provider.search_limited("new", 4).len(), 1);
+        assert_eq!(catalog.stats().generation, seeded.generation + 1);
+        assert!(catalog.remove("document:a"));
+        assert!(provider.search_limited("new", 4).is_empty());
+        assert_eq!(catalog.stats().records, 0);
+    }
+
+    #[test]
+    fn adversarial_exact_verification_can_continue_in_fixed_work_pages() {
+        let catalog = SearchCatalog::new("Documents");
+        for index in 0..1_000 {
+            let id = format!("document:a{index:04}");
+            catalog
+                .upsert(&id, "abcXbcd", catalog_hit(&id, "False candidate"))
+                .unwrap();
+        }
+        catalog
+            .upsert(
+                "document:z-target",
+                "the exact abcd resource",
+                catalog_hit("document:z-target", "Target"),
+            )
+            .unwrap();
+
+        let mut cursor = None;
+        let mut found = Vec::new();
+        let mut pages = 0;
+        loop {
+            let page = catalog.query_page("abcd", cursor.as_ref(), 31, 4);
+            assert!(page.inspected <= 31);
+            pages += 1;
+            found.extend(page.results);
+            let Some(next) = page.next else { break };
+            cursor = Some(next);
+        }
+        assert!(pages > 1);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "Target");
+    }
+
+    #[test]
+    fn catalogue_rejects_legacy_or_mismatched_activation() {
+        let catalog = SearchCatalog::new("Documents");
+        assert_eq!(
+            catalog.upsert(
+                "document:a",
+                "A",
+                SearchResult::new("Documents", "A", "legacy-open")
+            ),
+            Err(SearchCatalogError::NonCanonicalResult)
+        );
+        assert_eq!(
+            catalog.upsert("document:a", "A", catalog_hit("document:different", "A")),
+            Err(SearchCatalogError::ResourceAddressMismatch)
         );
     }
 }
