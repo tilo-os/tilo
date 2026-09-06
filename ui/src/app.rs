@@ -5413,6 +5413,23 @@ impl AppHandler {
         }
         let app = &mut self.app;
 
+        // Continue one bounded provider page per frame. Re-querying resets the
+        // palette generation/cursors, so stale work cannot leak into a newer
+        // query. A follow-up redraw is requested only while more pages exist.
+        let (search_pending, search_announcement) =
+            app.action_palette
+                .as_mut()
+                .map_or((false, None), |palette| {
+                    let progress = palette.advance_search_page();
+                    (progress.pending, palette.take_search_announcement())
+                });
+        needs_followup_redraw |= search_pending;
+        if let (Some(reader), Some(announcement)) =
+            (app.screen_reader.as_mut(), search_announcement)
+        {
+            reader.announce(announcement, tts::Priority::Notification, false);
+        }
+
         // `recv()` is the backpressure boundary — capacity-2 means
         // at most one frame of overlap (main building N+1 while
         // worker presents N).

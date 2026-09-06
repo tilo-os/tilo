@@ -63,6 +63,21 @@ SEARCH_PROVIDER_IMPL = re.compile(
 # corpus is intrinsically tiny and inheriting the unbounded fallback is safe.
 SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 
+# Temporary, explicit migration inventory for providers that still discard a
+# durable tail before querying it. New entries are not permitted silently: use
+# ui::search::SearchCatalog and delete the corresponding item when migrated.
+# The value names the retained-model work still required, making this debt
+# visible in review without keeping the repository permanently red.
+TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
+    "apps/chat/src/search_provider.rs": "retain one incremental catalogue for messages, people, rooms and attachments",
+    "apps/feeds/src/search_provider.rs": "incrementally index all feed entries by stable entry resource id",
+    "apps/video_editor/src/search_provider.rs": "incrementally index project tracks, clips, markers, captions and effects",
+    "apps/weather/src/search_provider.rs": "retain the complete saved-location catalogue",
+}
+TRUNCATING_SEARCH = re.compile(
+    r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"
+)
+
 # These do not prove that a callback is wrong. They make the current, reviewed
 # amount of bypass-shaped code a hard ceiling, so new work must use the shared
 # action route or deliberately update the auditable baseline in review.
@@ -365,9 +380,21 @@ def audit_search_provider_limits(
 ) -> set[str]:
     """Require every app provider to own its query/materialisation budget."""
     found: set[str] = set()
+    truncating_paths: set[str] = set()
     for source, raw in sources:
         code = rust_code_only(raw)
         relative = source.relative_to(root).as_posix()
+        if TRUNCATING_SEARCH.search(code):
+            truncating_paths.add(relative)
+            if relative not in TRUNCATING_SEARCH_REMEDIATION:
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, TRUNCATING_SEARCH.search(code).start()),
+                        "durable SearchProvider truncates its corpus before querying; "
+                        "use the shared incremental SearchCatalog so late resources remain findable",
+                    )
+                )
         for match in SEARCH_PROVIDER_IMPL.finditer(code):
             provider = match.group(1)
             key = f"{relative}::{provider}"
@@ -393,6 +420,24 @@ def audit_search_provider_limits(
                     line_number(raw, match.start()),
                     "app SearchProvider inherits the unbounded search_limited fallback; "
                     "override it and stop scanning/materialising at the caller budget",
+                )
+            )
+    if root.resolve() == ROOT.resolve():
+        app_prefixes = {
+            "/".join(source.relative_to(root).as_posix().split("/")[:2]) + "/"
+            for source, _ in sources
+        }
+        scoped_remediation = {
+            relative
+            for relative in TRUNCATING_SEARCH_REMEDIATION
+            if any(relative.startswith(prefix) for prefix in app_prefixes)
+        }
+        for relative in sorted(scoped_remediation - truncating_paths):
+            violations.append(
+                Violation(
+                    root / relative,
+                    1,
+                    f"stale truncating-search remediation `{relative}`; remove the inventory entry",
                 )
             )
     return found
