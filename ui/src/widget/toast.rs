@@ -721,13 +721,34 @@ fn paint_card_text(
     let text_height = (text_bottom - rect.y0).max(0.0);
     let mut ty = rect.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);
 
+    // `paint_card` deliberately owns a fixed-height notification surface.
+    // Wrapping an untrusted summary/body into that surface makes the title
+    // paint over the body (and can push the close affordance into the text).
+    // Elide each line against the *actual* width left by the close button;
+    // long diagnostics belong in the structured log, not in chrome.
+    let caption = has_caption.then(|| {
+        text_renderer.elide_to_width_weighted(
+            &card.caption.to_uppercase(),
+            caption_size,
+            width_avail,
+            TextWeight::Semibold,
+        )
+    });
+    let title = text_renderer.elide_to_width_weighted(
+        card.title,
+        title_size,
+        width_avail,
+        TextWeight::Semibold,
+    );
+    let body = has_body.then(|| text_renderer.elide_to_width(card.body, body_size, width_avail));
+
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
 
     if has_caption {
         text_renderer.draw_text_weighted(
             scene,
-            &card.caption.to_uppercase(),
+            caption.as_deref().unwrap_or_default(),
             caption_size,
             dim,
             transform.pre_translate(Vec2::new(text_x, ty)),
@@ -738,7 +759,7 @@ fn paint_card_text(
     }
     text_renderer.draw_text_weighted(
         scene,
-        card.title,
+        &title,
         title_size,
         primary,
         transform.pre_translate(Vec2::new(text_x, ty)),
@@ -749,7 +770,7 @@ fn paint_card_text(
     if has_body {
         text_renderer.draw_text(
             scene,
-            card.body,
+            body.as_deref().unwrap_or_default(),
             body_size,
             dim,
             transform.pre_translate(Vec2::new(text_x, ty)),
