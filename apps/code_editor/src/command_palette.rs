@@ -233,7 +233,7 @@ impl CommandPalette {
                         row = row.keybinding(key);
                     }
                 }
-                _ => {}
+                PaletteKind::File(_) => {}
             }
             rows.push(row);
         }
