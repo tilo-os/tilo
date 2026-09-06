@@ -22,6 +22,7 @@ fi
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
+"$repo_root/dist/rpm/test-signing-contract.sh"
 
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot
