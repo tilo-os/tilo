@@ -5,8 +5,9 @@
 //! provide.
 //!
 //! Text is the source of truth in the CRDT: the widget is bound to a single
-//! Automerge `Text` object (the active buffer). Every edit splices into that
-//! Text, so edits are collaborative and undoable. The widget keeps only render
+//! Automerge `Text` object (the active buffer). Every edit is first emitted as
+//! an action request; the app dispatcher is the only code that splices that
+//! Text. The widget keeps only render
 //! caches: the split-into-lines view of the buffer, the per-line highlight
 //! spans, and the caret/selection positions (which are ephemeral per-peer
 //! state, restored across undo via `get_state`/`set_state`).
@@ -30,15 +31,23 @@ use ui::theme::Theme;
 use ui::widget::{EmptyState, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
-use crate::doc::EditorDoc;
 use crate::highlight::{Highlighter, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
+
+/// A pre-mutation request emitted by the editor surface.  Keeping the complete
+/// before/after snapshots here lets the app derive the compact action payload
+/// at the dispatch boundary, while the view itself remains a CRDT reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingTextEdit {
+    pub base: String,
+    pub next: String,
+}
 
 /// A language-server request the editor wants the app to make on its behalf,
 /// carrying the primary caret's position implicitly (the app reads it). Set by
@@ -190,6 +199,12 @@ pub struct EditorView {
     /// Rising-edge flag set when the zero-state's action pill is clicked; the
     /// app drains it and opens the file picker.
     empty_action: bool,
+    /// Compact recovery affordance shown only after horizontal scrolling. It
+    /// makes the current offset explicit and returns to column zero on click;
+    /// Home provides the matching keyboard path.
+    horizontal_scroll_reset_rect: Rect,
+    /// One optimistic UI edit awaiting the app's authoritative action dispatch.
+    pending_text_edit: Option<PendingTextEdit>,
 }
 
 impl EditorView {
@@ -222,7 +237,22 @@ impl EditorView {
             find_current: None,
             empty_action_rect: Rect::ZERO,
             empty_action: false,
+            horizontal_scroll_reset_rect: Rect::ZERO,
+            pending_text_edit: None,
         }
+    }
+
+    /// Drain the one coalesced edit requested by UI primitives this event.
+    pub fn take_text_edit(&mut self) -> Option<PendingTextEdit> {
+        self.pending_text_edit.take()
+    }
+
+    /// Reconcile an optimistic view after an action refusal.
+    pub fn reconcile_from_doc(&mut self, doc: &AutoCommit) {
+        self.pending_text_edit = None;
+        self.sync_from_doc(doc);
+        self.clamp_carets();
+        self.scroll_to_caret();
     }
 
     /// Drain the rising-edge "Open File" click from the zero-state, if any.
@@ -518,7 +548,7 @@ impl EditorView {
         }
     }
 
-    /// Cut: copy the primary selection, then delete it through the CRDT.
+    /// Cut: copy the primary selection, then request its action-owned delete.
     fn cut_selection(&mut self, doc: &mut AutoCommit) {
         if let Some(t) = self.selected_text() {
             clipboard_copy(&t);
@@ -590,7 +620,7 @@ impl EditorView {
     }
 
     /// Accept the highlighted completion: replace the identifier prefix under
-    /// the caret with the item's insert text, splicing through the CRDT.
+    /// the caret with the item's insert text through the action path.
     fn accept_completion(&mut self, doc: &mut AutoCommit) {
         if !self.completion_active() {
             return;
@@ -700,28 +730,63 @@ impl EditorView {
         self.dirty = true;
     }
 
-    // ---- editing primitives (all route through the CRDT) ----
+    // ---- editing primitives (all request an action before CRDT mutation) ----
+
+    /// Replace a character range in a local, ephemeral string.  This is only
+    /// used to prepare an action request; it never touches Automerge.
+    fn splice_local(text: &mut String, start: usize, delete: usize, insert: &str) {
+        let chars = text.chars().count();
+        let start = start.min(chars);
+        let end = start.saturating_add(delete).min(chars);
+        let byte_at = |n: usize| {
+            text.char_indices()
+                .nth(n)
+                .map_or_else(|| text.len(), |(byte, _)| byte)
+        };
+        let start_byte = byte_at(start);
+        let end_byte = byte_at(end);
+        text.replace_range(start_byte..end_byte, insert);
+    }
+
+    /// Optimistically rebuild the render cache and coalesce the requested
+    /// change. The caller is responsible for dispatching it; a refusal calls
+    /// `reconcile_from_doc` and puts this cache back on the real document.
+    fn request_text_edit(&mut self, next: &str) {
+        if next == self.cached_text {
+            return;
+        }
+        let base = self
+            .pending_text_edit
+            .as_ref()
+            .map_or_else(|| self.cached_text.clone(), |edit| edit.base.clone());
+        self.pending_text_edit = Some(PendingTextEdit {
+            base,
+            next: next.to_string(),
+        });
+        self.rebuild(next);
+    }
 
     /// Insert a string at the primary caret (replacing any selection),
-    /// splicing into the CRDT. Updates the caret. For simplicity multi-caret
+    /// requesting one compact action-owned replacement. Updates the caret. For simplicity multi-caret
     /// inserts apply the same text at each caret, processed bottom-up so
     /// earlier indices stay valid.
-    fn insert(&mut self, doc: &mut AutoCommit, s: &str) {
-        let Some(text) = self.text_obj.clone() else {
+    fn insert(&mut self, _doc: &mut AutoCommit, s: &str) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
+        let mut next = self.cached_text.clone();
         // Process carets bottom-to-top so a splice doesn't shift the indices
         // of carets we haven't handled yet.
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
         order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, _) in order {
-            self.apply_insert_at(doc, &text, i, s);
+            self.apply_insert_at(&mut next, i, s);
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
         self.scroll_to_caret();
     }
 
-    fn apply_insert_at(&mut self, doc: &mut AutoCommit, text: &ObjId, i: usize, s: &str) {
+    fn apply_insert_at(&mut self, next: &mut String, i: usize, s: &str) {
         let Some(caret) = self.carets.get(i).copied() else {
             return;
         };
@@ -729,7 +794,7 @@ impl EditorView {
         let start = if let Some((sel_s, sel_e)) = caret.selection() {
             let s_idx = self.char_index(sel_s.0, sel_s.1);
             let e_idx = self.char_index(sel_e.0, sel_e.1);
-            EditorDoc::splice(doc, text, s_idx, e_idx - s_idx, "");
+            Self::splice_local(next, s_idx, e_idx - s_idx, "");
             if let Some(c) = self.carets.get_mut(i) {
                 c.anchor = None;
             }
@@ -738,7 +803,7 @@ impl EditorView {
             (caret.line, caret.col)
         };
         let idx = self.char_index(start.0, start.1);
-        EditorDoc::splice(doc, text, idx, 0, s);
+        Self::splice_local(next, idx, 0, s);
         // Recompute caret position after the inserted text.
         let inserted_lines = s.split('\n').count();
         let Some(c) = self.carets.get_mut(i) else {
@@ -754,17 +819,18 @@ impl EditorView {
 
     /// Backspace at every caret. With a selection, deletes it; otherwise
     /// removes the char before the caret (or joins with the previous line).
-    fn backspace(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    fn backspace(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
+        let mut next = self.cached_text.clone();
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
         order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
                 let e_idx = self.char_index(e.0, e.1);
-                EditorDoc::splice(doc, &text, s_idx, e_idx - s_idx, "");
+                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
                 if let Some(c) = self.carets.get_mut(i) {
                     *c = Caret::at(s.0, s.1);
                 }
@@ -773,7 +839,7 @@ impl EditorView {
                 if idx == 0 {
                     continue;
                 }
-                EditorDoc::splice(doc, &text, idx - 1, 1, "");
+                Self::splice_local(&mut next, idx - 1, 1, "");
                 // Position recomputed after sync from the new flat text; we
                 // estimate here and clamp later.
                 if caret.col > 0 {
@@ -791,22 +857,23 @@ impl EditorView {
                 }
             }
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
         self.scroll_to_caret();
     }
 
     /// Forward-delete at every caret.
-    fn delete_forward(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    fn delete_forward(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
+        let mut next = self.cached_text.clone();
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
         order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
                 let e_idx = self.char_index(e.0, e.1);
-                EditorDoc::splice(doc, &text, s_idx, e_idx - s_idx, "");
+                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
                 if let Some(c) = self.carets.get_mut(i) {
                     *c = Caret::at(s.0, s.1);
                 }
@@ -816,10 +883,10 @@ impl EditorView {
                 if idx >= total {
                     continue;
                 }
-                EditorDoc::splice(doc, &text, idx, 1, "");
+                Self::splice_local(&mut next, idx, 1, "");
             }
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
     }
 
     /// Re-read the buffer from the CRDT and rebuild caches. Called after every
@@ -979,7 +1046,7 @@ impl EditorView {
         self.insert(doc, &spaces);
     }
 
-    // ---- line operations (all route through the CRDT) ----
+    // ---- line operations (all request action-owned CRDT edits) ----
 
     /// The inclusive `[first, last]` line range the primary caret covers. A
     /// selection that ends exactly at column 0 of a line does not pull that
@@ -1021,10 +1088,10 @@ impl EditorView {
     /// `focus_copy` the caret rides down onto the new copy (copy-down); without
     /// it the caret stays on the original (copy-up). Bound to Shift+Alt+Down /
     /// Shift+Alt+Up.
-    pub fn duplicate_lines(&mut self, doc: &mut AutoCommit, focus_copy: bool) {
-        let Some(text) = self.text_obj.clone() else {
+    pub fn duplicate_lines(&mut self, _doc: &mut AutoCommit, focus_copy: bool) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let (a, b) = self.primary_line_range();
         let block: String = self
             .lines
@@ -1032,8 +1099,9 @@ impl EditorView {
             .map(|s| s.join("\n"))
             .unwrap_or_default();
         let end_of_b = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
-        EditorDoc::splice(doc, &text, end_of_b, 0, &format!("\n{block}"));
-        self.sync_from_doc(doc);
+        let mut next = self.cached_text.clone();
+        Self::splice_local(&mut next, end_of_b, 0, &format!("\n{block}"));
+        self.request_text_edit(&next);
         if focus_copy {
             self.shift_primary_lines((b - a + 1) as isize);
         } else {
@@ -1042,11 +1110,11 @@ impl EditorView {
     }
 
     /// Move the caret's line(s) up or down by one, swapping with the neighbour.
-    /// A single CRDT splice, so it undoes as one step. Bound to Alt+Up/Alt+Down.
-    pub fn move_lines(&mut self, doc: &mut AutoCommit, up: bool) {
-        let Some(text) = self.text_obj.clone() else {
+    /// One action-owned replacement, so it undoes as one step. Bound to Alt+Up/Alt+Down.
+    pub fn move_lines(&mut self, _doc: &mut AutoCommit, up: bool) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let (a, b) = self.primary_line_range();
         let block: String = self
             .lines
@@ -1063,8 +1131,9 @@ impl EditorView {
             let from = self.line_start_index(a - 1);
             let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
             // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
-            EditorDoc::splice(doc, &text, from, to - from, &format!("{block}\n{prev}"));
-            self.sync_from_doc(doc);
+            let mut next = self.cached_text.clone();
+            Self::splice_local(&mut next, from, to - from, &format!("{block}\n{prev}"));
+            self.request_text_edit(&next);
             self.shift_primary_lines(-1);
         } else {
             if b + 1 >= self.lines.len() {
@@ -1079,18 +1148,19 @@ impl EditorView {
                 self.lines.get(b + 1).map_or(0, |l| l.chars().count()),
             );
             // Region is "{block}\n{next}" → swap to "{next}\n{block}".
-            EditorDoc::splice(doc, &text, from, to - from, &format!("{next}\n{block}"));
-            self.sync_from_doc(doc);
+            let mut updated = self.cached_text.clone();
+            Self::splice_local(&mut updated, from, to - from, &format!("{next}\n{block}"));
+            self.request_text_edit(&updated);
             self.shift_primary_lines(1);
         }
     }
 
     /// Delete the caret's line(s) entirely, landing the caret at the start of
     /// what follows. Bound to Ctrl+Shift+K.
-    pub fn delete_lines(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    pub fn delete_lines(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let (a, b) = self.primary_line_range();
         let (from, to) = if b + 1 < self.lines.len() {
             // Take the block and its trailing newline so the line vanishes.
@@ -1111,8 +1181,9 @@ impl EditorView {
                 self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count())),
             )
         };
-        EditorDoc::splice(doc, &text, from, to - from, "");
-        self.sync_from_doc(doc);
+        let mut next = self.cached_text.clone();
+        Self::splice_local(&mut next, from, to - from, "");
+        self.request_text_edit(&next);
         let target = a.min(self.lines.len().saturating_sub(1));
         self.carets = vec![Caret::at(target, 0)];
         self.clamp_carets();
@@ -1123,10 +1194,10 @@ impl EditorView {
     /// the range is already commented, uncomment; otherwise comment them all
     /// (at the range's shallowest indent, so the comment markers line up).
     /// No-op for languages without a line comment. Bound to Ctrl+/.
-    pub fn toggle_line_comment(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    pub fn toggle_line_comment(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let Some(token) = self.language.line_comment() else {
             return;
         };
@@ -1153,6 +1224,7 @@ impl EditorView {
             .min()
             .unwrap_or(0);
         // Splice bottom-up so earlier line indices stay valid.
+        let mut next = self.cached_text.clone();
         for &l in non_blank.iter().rev() {
             let Some(line) = self.lines.get(l) else {
                 continue;
@@ -1169,14 +1241,14 @@ impl EditorView {
                         remove += 1;
                     }
                     let at = self.char_index(l, lead);
-                    EditorDoc::splice(doc, &text, at, remove, "");
+                    Self::splice_local(&mut next, at, remove, "");
                 }
             } else {
                 let at = self.char_index(l, indent);
-                EditorDoc::splice(doc, &text, at, 0, &format!("{token} "));
+                Self::splice_local(&mut next, at, 0, &format!("{token} "));
             }
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
         self.clamp_carets();
         self.scroll_to_caret();
     }
@@ -1184,30 +1256,32 @@ impl EditorView {
     /// Indent every line the selection spans by one indent unit. Falls back to
     /// a plain tab-at-caret when the selection is empty or single-line (handled
     /// by the caller). Bound to Tab with a multi-line selection.
-    pub fn indent_selection(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    pub fn indent_selection(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let (a, b) = self.primary_line_range();
         let pad = " ".repeat(self.indent_width);
+        let mut next = self.cached_text.clone();
         for l in (a..=b).rev() {
             if self.lines.get(l).is_none_or(String::is_empty) {
                 continue;
             }
             let at = self.line_start_index(l);
-            EditorDoc::splice(doc, &text, at, 0, &pad);
+            Self::splice_local(&mut next, at, 0, &pad);
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
         self.clamp_carets();
     }
 
     /// Outdent every line the selection spans by up to one indent unit. Bound
     /// to Shift+Tab.
-    pub fn outdent_selection(&mut self, doc: &mut AutoCommit) {
-        let Some(text) = self.text_obj.clone() else {
+    pub fn outdent_selection(&mut self, _doc: &mut AutoCommit) {
+        if self.text_obj.is_none() {
             return;
-        };
+        }
         let (a, b) = self.primary_line_range();
+        let mut next = self.cached_text.clone();
         for l in (a..=b).rev() {
             let Some(line) = self.lines.get(l) else {
                 continue;
@@ -1223,10 +1297,10 @@ impl EditorView {
             };
             if remove > 0 {
                 let at = self.line_start_index(l);
-                EditorDoc::splice(doc, &text, at, remove, "");
+                Self::splice_local(&mut next, at, remove, "");
             }
         }
-        self.sync_from_doc(doc);
+        self.request_text_edit(&next);
         self.clamp_carets();
     }
 
@@ -1423,6 +1497,17 @@ impl EditorView {
         primary_line: usize,
     ) {
         let c = &theme.tokens.colors;
+        // Horizontal editor scrolling moves source text, never the gutter.
+        // Vello text does not implicitly inherit a clipping rect, so without
+        // this explicit layer negative-x text painted back through line
+        // numbers on a narrow window. Keep the line-number pass outside it
+        // and clip every source span to the content pane.
+        let code_clip = Rect::new(
+            self.rect.x0 + gutter_w,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
         for vi in 0..n_visible {
             let line_idx = first_line + vi;
             let Some(line) = self.lines.get(line_idx) else {
@@ -1455,6 +1540,13 @@ impl EditorView {
             );
 
             // The highlighted code text, span by span.
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &code_clip,
+            );
             let empty: Vec<Span> = Vec::new();
             let spans = self.spans.get(line_idx).unwrap_or(&empty);
             let base_x = code_x0 - self.scroll_x;
@@ -1508,6 +1600,7 @@ impl EditorView {
                     );
                 }
             }
+            scene.pop_layer();
         }
     }
 
@@ -1707,7 +1800,13 @@ impl EditorView {
                 false,
                 true,
             );
-            if let Some(detail) = &item.detail {
+            // Details are useful on a desktop but compete directly with the
+            // completion label on a narrow editor. Never let a wrapped detail
+            // spill into its neighbouring row: hide it below the readable
+            // threshold, otherwise draw one fitted line.
+            if self.rect.width() >= 640.0
+                && let Some(detail) = &item.detail
+            {
                 let (lw, _) = text_renderer.measure_styled(
                     &item.label,
                     FONT_SIZE,
@@ -1716,13 +1815,15 @@ impl EditorView {
                     false,
                     true,
                 );
+                let available = width - 40.0 - f64::from(lw);
+                let detail = fit_completion_detail(text_renderer, detail, available);
                 text_renderer.draw_text_styled(
                     scene,
-                    detail,
+                    &detail,
                     FONT_SIZE - 1.0,
                     c.text_dim,
                     transform * Affine::translate((px + 34.0 + f64::from(lw), ry + 3.5)),
-                    Some((width - 40.0 - f64::from(lw)) as f32),
+                    None,
                     TextWeight::Regular,
                     false,
                     true,
@@ -1790,6 +1891,44 @@ impl EditorView {
                 Some((width - 20.0) as f32),
             );
         }
+    }
+}
+
+/// Fit completion metadata into exactly one row. Text renderer bounds may
+/// wrap a long type signature; completion rows intentionally never do.
+fn fit_completion_detail(text_renderer: &mut TextRenderer, detail: &str, max_width: f64) -> String {
+    let fits = |text: &str, renderer: &mut TextRenderer| {
+        renderer
+            .measure_styled(
+                text,
+                FONT_SIZE - 1.0,
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            )
+            .0
+            <= max_width as f32
+    };
+    if max_width <= 0.0 || !fits(detail, text_renderer) {
+        let mut fitted = String::new();
+        for ch in detail.chars() {
+            let mut candidate = fitted.clone();
+            candidate.push(ch);
+            candidate.push('\u{2026}');
+            if !fits(&candidate, text_renderer) {
+                break;
+            }
+            fitted.push(ch);
+        }
+        if fitted.is_empty() {
+            String::new()
+        } else {
+            fitted.push('\u{2026}');
+            fitted
+        }
+    } else {
+        detail.to_string()
     }
 }
 
@@ -2150,6 +2289,45 @@ impl EditorView {
             }
         }
     }
+
+    fn draw_horizontal_scroll_recovery(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        code_x0: f64,
+    ) {
+        self.horizontal_scroll_reset_rect = Rect::ZERO;
+        if self.scroll_x <= 1.0 {
+            return;
+        }
+        let rect = Rect::new(
+            code_x0 + 6.0,
+            self.rect.y1 - 25.0,
+            (code_x0 + 122.0).min(self.rect.x1 - 4.0),
+            self.rect.y1 - 5.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(rect, 5.0),
+        );
+        text_renderer.draw_text_styled(
+            scene,
+            "← Line start (Home)",
+            10.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((rect.x0 + 6.0, rect.y0 + 4.0)),
+            None,
+            TextWeight::Medium,
+            false,
+            true,
+        );
+        self.horizontal_scroll_reset_rect = rect;
+    }
 }
 
 impl Widget for EditorView {
@@ -2266,6 +2444,7 @@ impl Widget for EditorView {
         self.draw_carets(
             scene, transform, theme, first_line, n_visible, code_x0, gutter_w,
         );
+        self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
 
         // Right border separating from any side panel.
         let border = Line::new(
@@ -2346,6 +2525,15 @@ impl Widget for EditorView {
         }
         let mods = modifiers.state();
         match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.horizontal_scroll_reset_rect.contains(self.last_cursor) => {
+                self.scroll_x = 0.0;
+                self.dirty = true;
+                *handled = true;
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -2495,7 +2683,7 @@ impl EditorView {
         self.word_move(forward, extend);
     }
 
-    /// Test hook: cut the primary selection through the CRDT.
+    /// Test hook: cut the primary selection through the action request path.
     #[cfg(test)]
     pub fn cut_for_test(&mut self, doc: &mut AutoCommit) {
         self.cut_selection(doc);
@@ -2520,7 +2708,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_text_splices_into_crdt() {
+    fn insert_text_requests_an_action_owned_edit() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
         ev.insert_for_test(&mut doc, "X");
@@ -2855,7 +3043,7 @@ mod tests {
 
     #[test]
     fn ctrl_x_cuts_selection_through_crdt() {
-        // Cut deletes the selected range via the CRDT (clipboard write is a
+        // Cut requests deletion of the selected range (clipboard write is a
         // silent no-op in the headless test env, so we assert on the buffer).
         let (mut ev, mut doc) = geom_editor("hello world");
         ev.set_caret_for_test(0, 0);
