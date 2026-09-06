@@ -16,7 +16,7 @@
 //! * Structured `N` and `ADR` component splitting on unescaped `;`.
 //! * `BDAY` in both `YYYY-MM-DD` (3.0) and `YYYYMMDD` (4.0) shapes.
 
-use crate::model::{Address, Birthday, Contact, Labeled};
+use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled};
 use uuid::Uuid;
 
 /// The vCard version to emit. Affects the `VERSION` line, `BDAY`
@@ -116,7 +116,7 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         lines.push(format!("NOTE:{}", esc(&c.notes)));
     }
     if !c.groups.is_empty() {
-        let cats: Vec<String> = c.groups.iter().map(|g| esc(g)).collect();
+        let cats: Vec<String> = c.groups.iter().map(|group| esc(&group.value)).collect();
         lines.push(format!("CATEGORIES:{}", cats.join(",")));
     }
 
@@ -383,6 +383,7 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
             // ADR = PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY
             let g = |i: usize| comps.get(i).map(|s| unescape(s)).unwrap_or_default();
             let addr = Address {
+                id: Uuid::new_v4(),
                 label: collect_types(&desc),
                 street: g(2),
                 city: g(3),
@@ -401,7 +402,7 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
             for cat in split_unescaped(value, ',') {
                 let cat = unescape(&cat).trim().to_string();
                 if !cat.is_empty() {
-                    c.groups.push(cat);
+                    c.groups.push(GroupEntry::new(cat));
                 }
             }
         }
@@ -477,6 +478,7 @@ mod tests {
             phones: vec![Labeled::new("mobile", "+44 20 7946 0101")],
             emails: vec![Labeled::new("work", "ada@example.com")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
@@ -484,7 +486,7 @@ mod tests {
                 postal: "SW1Y 4LE".into(),
                 country: "UK".into(),
             }],
-            groups: vec!["Work".into(), "Favorites".into()],
+            groups: vec![GroupEntry::new("Work"), GroupEntry::new("Favorites")],
             favorite: true,
         }
     }
@@ -515,7 +517,13 @@ mod tests {
         assert_eq!(r.emails[0].value, "ada@example.com");
         assert_eq!(r.addresses[0].city, "London");
         assert_eq!(r.addresses[0].postal, "SW1Y 4LE");
-        assert_eq!(r.groups, vec!["Work".to_string(), "Favorites".to_string()]);
+        assert_eq!(
+            r.groups
+                .iter()
+                .map(|group| group.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Work", "Favorites"]
+        );
         // Escaped punctuation + newline survives the round trip.
         assert_eq!(r.notes, "Note: with, punctuation; and a\nnewline");
     }
