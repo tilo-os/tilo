@@ -22,7 +22,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, Value};
 
-use crate::model::{Edits, OpenImage};
+use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 
 /// The bytes of the picture `open` names, from wherever this machine has them.
 ///
@@ -73,6 +73,9 @@ impl PhotosDoc {
         if Self::get_str(doc, "edits").is_none() {
             Self::write_json(doc, "edits", &Edits::default());
         }
+        if Self::get_str(doc, "library").is_none() {
+            Self::write_json(doc, "library", &PhotoLibrary::default());
+        }
     }
 
     /// The photograph currently open, if any.
@@ -94,6 +97,12 @@ impl PhotosDoc {
     pub fn set_image(doc: &mut AutoCommit, image: Option<&OpenImage>) {
         Self::write_json(doc, "image", &image.cloned());
         Self::write_json(doc, "edits", &Edits::default());
+        if let Some(image) = image {
+            let mut library = Self::library(doc);
+            if library.add_photo(LibraryPhoto::from_image(image.clone())) {
+                Self::set_library(doc, &library);
+            }
+        }
     }
 
     /// The edits in force.
@@ -111,6 +120,20 @@ impl PhotosDoc {
     /// Replace the edits in force.
     pub fn set_edits(doc: &mut AutoCommit, edits: &Edits) {
         Self::write_json(doc, "edits", edits);
+    }
+
+    /// Complete durable library metadata. The collection is small JSON only;
+    /// photographs stay out of Automerge in the content store.
+    pub fn library(doc: &AutoCommit) -> PhotoLibrary {
+        Self::conflicting::<PhotoLibrary>(doc, "library")
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
+
+    /// Atomically replace the validated library projection.
+    pub fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
+        Self::write_json(doc, "library", library);
     }
 
     // -- scalar helpers ----------------------------------------------------

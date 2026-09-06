@@ -598,7 +598,7 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
         "enumeration mutated the document"
     );
 
-    assert_eq!(resources.len(), 1);
+    assert_eq!(resources.len(), 2, "active photograph plus durable library");
     assert_eq!(resources[0].label, "harbour.png");
     // The size is legible from titles alone — no display needed.
     assert_eq!(resources[0].children[0].label, "400 x 200 pixels");
@@ -843,7 +843,7 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
         let items = hz.app.toolbar_item_rects();
         assert_eq!(
             items.len(),
-            7,
+            8,
             "{w}x{h}: the toolbar lost a control entirely"
         );
 

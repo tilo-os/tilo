@@ -51,6 +51,9 @@ mod tests {
     fn every_key_the_app_uses_resolves() {
         for key in [
             "photos-open",
+            "photos-library",
+            "photos-library-empty-title",
+            "photos-library-empty-body",
             "photos-open-title",
             "photos-filter-images",
             "photos-rotate-left",
