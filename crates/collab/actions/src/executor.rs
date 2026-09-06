@@ -211,7 +211,23 @@ pub fn replay(
     registry: &ActionRegistry,
 ) -> Result<(), ActionError> {
     let action = registry.decode(&env.action)?;
-    apply_under_envelope(doc, action.as_ref(), env)
+    let base_heads = env.base_change_hashes();
+    if doc.get_heads() == base_heads {
+        return apply_under_envelope(doc, action.as_ref(), env);
+    }
+
+    // The live replica may already contain concurrent work made after the
+    // envelope's authoring point. Applying directly to that newer state makes
+    // an action's reads (guards, list positions, expected values, and so on)
+    // order-dependent and can produce a different change from the origin.
+    // Recreate the action on the exact recorded base, under the envelope's
+    // pinned actor/time, then merge that content-addressed change into live.
+    // `fork_at` fails closed when the dependencies have not arrived yet; the
+    // transport can retry once it has the missing base changes.
+    let mut replay_base = doc.fork_at(&base_heads)?;
+    apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
+    doc.merge(&mut replay_base)?;
+    Ok(())
 }
 
 /// A host's answer to a `ServerPreferred` submission.
