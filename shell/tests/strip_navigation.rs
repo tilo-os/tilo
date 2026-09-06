@@ -832,6 +832,8 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         .and_then(|group| group.close_rect_for_tests(opened))
         .expect("opened tab exposes a pointer close target after resync");
     h.click(close.center());
+    // Consume the normal revision before the next pointer target is read.
+    let _ = h.host.take_structure_dirty();
     h.tick();
     assert!(
         h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
