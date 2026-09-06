@@ -28,6 +28,8 @@ use super::paint::{
 use crate::compositor::backend::OutputId;
 use vello::{FineDamageRect, Scene};
 
+use super::outputs::DrmOutputKey;
+
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = 64;
 
@@ -55,7 +57,7 @@ impl Card {
     /// `dev_t` of the underlying `cardN` node for stable per-connector `OutputId`s; best-effort (`0` on `fstat` failure — connector id still disambiguates).
     fn dev_id(&self) -> u64 {
         match smithay::reexports::rustix::fs::fstat(&self.0) {
-            Ok(st) => st.st_rdev,
+            Ok(st) => device_id_from_dev_t(st.st_rdev),
             Err(e) => {
                 tracing::debug!("DRM scanout: fstat for dev_id failed: {e}");
                 0
@@ -64,13 +66,68 @@ impl Card {
     }
 }
 
-/// The loop thread's own handle on the primary card (held by the session-owning thread, not the
+/// Convert the kernel's `dev_t` into the identifier used by the DRM output
+/// registry and card map. Smithay's `UdevEvent::{Added, Removed}` carries this
+/// exact `dev_t`, while `fstat(card_fd).st_rdev` supplies the value for an
+/// already-open [`CardHandle`]. Keeping the conversion here makes those two
+/// independently-produced identities deliberately identical.
+pub(crate) fn device_id_from_dev_t(device: libc::dev_t) -> u64 {
+    u64::try_from(device).unwrap_or_default()
+}
+
+fn valid_config_identity(identity: &str) -> bool {
+    !identity.is_empty()
+        && identity
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'.' | b'-' | b'_'))
+}
+
+/// The last component of `/sys/class/drm/cardN/device` is normally a PCI BDF
+/// (and a stable physical USB/platform address for non-PCI devices). It is a
+/// stronger fallback than the kernel-assigned `dev_t` when DRM lacks a bus id,
+/// and can be queried before opening a re-enumerated card node through libseat.
+pub(crate) fn physical_card_identity(card_path: &Path) -> Option<String> {
+    let node = card_path.file_name()?.to_str()?;
+    let canonical =
+        std::fs::canonicalize(Path::new("/sys/class/drm").join(node).join("device")).ok()?;
+    let component = canonical.file_name()?.to_str()?;
+    let identity = format!("sysfs-{component}");
+    valid_config_identity(&identity).then_some(identity)
+}
+
+fn same_physical_card_identity(existing: Option<&str>, candidate: Option<&str>) -> bool {
+    matches!((existing, candidate), (Some(existing), Some(candidate)) if existing == candidate)
+}
+
+/// `dev_t` is the final fallback only: it identifies one active attachment,
+/// but is not promised to survive a reboot or eGPU re-enumeration.
+fn config_identity(
+    drm_bus_id: Option<String>,
+    sysfs_identity: Option<String>,
+    device_id: u64,
+) -> String {
+    drm_bus_id
+        .filter(|identity| valid_config_identity(identity))
+        .or(sysfs_identity)
+        .unwrap_or_else(|| format!("drm-dev-{device_id}"))
+}
+
+/// The loop thread's own handle on one KMS card (held by the session-owning thread, not the
 /// render thread): drops/retakes DRM master across a VT switch — releasing here releases for the
-/// scanouts too, since every dup shares one open file description — and builds scanouts for new connectors on hotplug. Must outlive the scanouts; libseat refuses a second open of an already-open node.
+/// scanouts on this card too, since every dup shares one open file description — and builds
+/// scanouts for new connectors on hotplug. The runtime retains one handle per usable card; each
+/// must outlive its scanouts because libseat refuses a second open of an already-open node.
 pub struct CardHandle {
     card: Card,
     device_id: u64,
     card_path: PathBuf,
+    /// Stable DRM bus id captured from the open card. It is used to qualify
+    /// a connector only when another card exposes that same connector label.
+    config_identity: String,
+    /// Sysfs identity retained separately from the persistence key, so a
+    /// future `cardN` path can be recognised as this physical GPU before a
+    /// second libseat open is attempted.
+    physical_identity: Option<String>,
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
@@ -78,9 +135,60 @@ pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
     pub mode: Mode,
+    /// The live KMS mode table. Configuration is selected only after the
+    /// runtime has compared connectors on every card.
+    modes: Vec<Mode>,
+    /// Raw KMS connector label, e.g. `HDMI-A-1`.
     pub connector_name: String,
+    /// Collision-resolved persisted configuration key. It is raw when the
+    /// label is unique, and card-qualified only when it collides.
+    pub config_key: String,
+    /// Disabled connectors remain in capability snapshots but are not
+    /// brought up for scanout.
+    pub enabled: bool,
     /// Physical panel size in millimetres, when the connector reports one. `None` for virtual connectors, which report 0×0.
     pub physical_mm: Option<(u32, u32)>,
+}
+
+/// A connector before the whole-seat topology resolves its persisted key.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectorKeyCandidate<'a> {
+    pub key: DrmOutputKey,
+    pub connector_name: &'a str,
+    pub card_identity: &'a str,
+}
+
+/// Keep legacy connector keys for labels which have always been unique, but
+/// qualify duplicates with the physical DRM card's bus id. Once a user has
+/// saved a qualified key, retain it while that physical connector is briefly
+/// unique after a peer unplug; otherwise its confirmed mode/layout would be
+/// lost until the peer returns. An old raw key never applies to two cards at
+/// once. If a driver exposes neither a DRM bus id nor a usable sysfs device
+/// path, its `dev_t` qualifier is unique only for this session and cannot
+/// promise cross-boot persistence.
+pub(crate) fn resolve_connector_config_keys<'a>(
+    candidates: impl IntoIterator<Item = ConnectorKeyCandidate<'a>>,
+    config: &settings_store::hardware::DisplayConfig,
+) -> BTreeMap<DrmOutputKey, String> {
+    let candidates: Vec<_> = candidates.into_iter().collect();
+    let mut label_counts = BTreeMap::<&str, usize>::new();
+    for candidate in &candidates {
+        *label_counts.entry(candidate.connector_name).or_default() += 1;
+    }
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let qualified = format!("{}/{}", candidate.card_identity, candidate.connector_name);
+            let key = if label_counts[candidate.connector_name] == 1
+                && config.output_for(&qualified).is_none()
+            {
+                candidate.connector_name.to_owned()
+            } else {
+                qualified
+            };
+            (candidate.key, key)
+        })
+        .collect()
 }
 
 impl CardHandle {
@@ -94,16 +202,62 @@ impl CardHandle {
     pub fn open<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = DrmScanout::open_card(session, card_path)?;
         let device_id = card.dev_id();
+        let drm_bus_id = card
+            .get_bus_id()
+            .ok()
+            .and_then(|id| id.into_string().ok())
+            .filter(|id| valid_config_identity(id));
+        let physical_identity = physical_card_identity(card_path);
+        let config_identity = config_identity(drm_bus_id, physical_identity.clone(), device_id);
         Ok(Self {
             card,
             device_id,
             card_path: card_path.to_path_buf(),
+            config_identity,
+            physical_identity,
         })
     }
 
-    /// `dev_t` of the underlying node — the device half of an output's stable identity.
+    /// `dev_t` of the underlying node — the device half of an output's stable
+    /// identity. This is normalized through [`device_id_from_dev_t`], the
+    /// same conversion the udev add/remove path uses.
     pub fn device_id(&self) -> u64 {
         self.device_id
+    }
+
+    /// The libseat-opened `cardN` path.  Used to deduplicate a udev `Added`
+    /// edge before attempting a second open of the same node.
+    pub fn path(&self) -> &Path {
+        &self.card_path
+    }
+
+    /// Return the exact fd that [`Self::open`] obtained from [`Session::open`].
+    ///
+    /// A normal `OwnedFd` drop is not enough for libseat: its session keeps a
+    /// `libseat::Device` keyed by this raw fd until [`Session::close`] is
+    /// called.  The udev removal path consumes a handle through this method
+    /// only after every presenter/cursor duplicate has been dropped.
+    pub(crate) fn into_session_fd(self) -> OwnedFd {
+        self.card.0
+    }
+
+    /// Persistent card portion of a collision-resolved output key.
+    pub fn config_identity(&self) -> &str {
+        &self.config_identity
+    }
+
+    /// Whether a prospective udev node is this physical card. A new `cardN`
+    /// path and dev_t can still resolve to the same canonical sysfs device.
+    pub fn same_physical_node(&self, path: &Path) -> bool {
+        self.card_path == path
+            || same_physical_card_identity(
+                self.physical_identity.as_deref(),
+                physical_card_identity(path).as_deref(),
+            )
+    }
+
+    pub fn physical_identity(&self) -> Option<&str> {
+        self.physical_identity.as_deref()
     }
 
     /// Give up DRM master. Called before a VT switch completes: the incoming session cannot modeset until we have.
@@ -155,30 +309,42 @@ impl CardHandle {
             if lower_name.contains("writeback") || lower_name.contains("virtual") {
                 continue;
             }
-            let output_config = settings_store::hardware::DisplayConfig::load_effective();
-            if output_config
-                .outputs
-                .get(&connector_name)
-                .is_some_and(|c| !c.enabled)
-            {
-                continue;
-            }
-            let requested = output_config
-                .outputs
-                .get(&connector_name)
-                .and_then(|c| c.mode);
-            let Some(mode) = pick_configured_mode(info.modes(), requested) else {
+            let Some(mode) = pick_configured_mode(info.modes(), None) else {
                 continue;
             };
             out.push(ConnectorSnapshot {
                 connector_id: u32::from(ch),
                 handle: ch,
                 mode,
+                modes: info.modes().to_vec(),
+                config_key: connector_name.clone(),
                 connector_name,
+                enabled: true,
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
             });
         }
         out
+    }
+
+    /// Apply the key selected for the complete multi-card topology.  This
+    /// intentionally does not discard disabled connectors: Settings must
+    /// still learn that they are present and may be turned back on.
+    pub fn apply_output_config(
+        snapshot: &mut ConnectorSnapshot,
+        config_key: String,
+        config: &settings_store::hardware::DisplayConfig,
+    ) {
+        let output_config = config.output_for(&config_key);
+        snapshot.enabled = !output_config.is_some_and(|output| !output.enabled);
+        snapshot.mode = pick_configured_mode(
+            &snapshot.modes,
+            output_config.and_then(|output| output.mode),
+        )
+        .or_else(|| pick_configured_mode(&snapshot.modes, None))
+        // `connected` has already rejected an empty KMS mode table; retaining
+        // the old value here is defensive rather than inventing a mode.
+        .unwrap_or(snapshot.mode);
+        snapshot.config_key = config_key;
     }
 
     /// Describe every physically connected sink using the live KMS mode
@@ -188,34 +354,21 @@ impl CardHandle {
     /// compositor capability.
     pub fn display_capabilities(
         &self,
+        connectors: &[ConnectorSnapshot],
         profiles: &BTreeMap<String, String>,
     ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
         use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
 
-        let Ok(resources) = self.card.resource_handles() else {
-            return Vec::new();
-        };
-        let config = settings_store::hardware::DisplayConfig::load_effective();
         let card_name = self
             .card_path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("card0");
         let mut outputs = Vec::new();
-        for &handle in resources.connectors() {
-            let Ok(info) = self.card.get_connector(handle, true) else {
-                continue;
-            };
-            if info.state() != connector::State::Connected {
-                continue;
-            }
-            let connector = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let lower_name = connector.to_ascii_lowercase();
-            if lower_name.contains("writeback") || lower_name.contains("virtual") {
-                continue;
-            }
-            let modes: Vec<OutputMode> = info
-                .modes()
+        for snapshot in connectors {
+            let connector = &snapshot.connector_name;
+            let modes: Vec<OutputMode> = snapshot
+                .modes
                 .iter()
                 .map(|mode| {
                     let (width, height) = mode.size();
@@ -226,15 +379,11 @@ impl CardHandle {
                     }
                 })
                 .collect();
-            let requested = config.outputs.get(&connector).and_then(|cfg| cfg.mode);
-            let Some(current) = pick_configured_mode(info.modes(), requested) else {
-                continue;
-            };
-            let (width, height) = current.size();
+            let (width, height) = snapshot.mode.size();
             let current_mode = OutputMode {
                 width: u32::from(width),
                 height: u32::from(height),
-                refresh_mhz: mode_refresh_mhz(&current),
+                refresh_mhz: mode_refresh_mhz(&snapshot.mode),
             };
             let sysfs = Path::new("/sys/class/drm").join(format!("{card_name}-{connector}"));
             let sink_hdr = std::fs::read(sysfs.join("edid")).ok().is_some_and(|edid| {
@@ -254,7 +403,11 @@ impl CardHandle {
                 upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
             outputs.push(DisplayOutputSnapshot {
                 descriptor: OutputDescriptor {
-                    connector,
+                    // The configuration key becomes card-qualified only for
+                    // a duplicate raw connector label. Settings receives the
+                    // raw label separately for presentation.
+                    connector: snapshot.config_key.clone(),
+                    connector_label: connector.clone(),
                     modes,
                     // This backend currently presents XRGB8888 dumb buffers
                     // and does not set HDR_OUTPUT_METADATA / Colorspace.
@@ -309,6 +462,7 @@ impl CardHandle {
                 device_id: self.device_id,
                 connector_id: snapshot.connector_id,
                 connector_name: snapshot.connector_name.clone(),
+                config_key: snapshot.config_key.clone(),
                 physical_mm: snapshot.physical_mm,
                 crtc,
                 scanout,
@@ -325,9 +479,15 @@ impl CardHandle {
 
     /// Bring up every connected connector (startup path); hotplug uses [`Self::bring_up`] per connector instead so already-live displays aren't re-modeset (a visible flash).
     pub fn bring_up_all(&self) -> Vec<ScanoutBuild> {
+        let config = settings_store::hardware::DisplayConfig::load_effective();
         let mut used: Vec<crtc::Handle> = Vec::new();
         let mut builds = Vec::new();
-        for snapshot in self.connected() {
+        for mut snapshot in self.connected() {
+            let config_key = snapshot.connector_name.clone();
+            Self::apply_output_config(&mut snapshot, config_key, &config);
+            if !snapshot.enabled {
+                continue;
+            }
             if let Some(b) = self.bring_up(&snapshot, &used) {
                 used.push(b.crtc);
                 builds.push(b);
@@ -631,7 +791,7 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
     })
 }
 
-/// Holds the primary card open as master and owns the scanout buffers.
+/// Holds one card fd as master and owns one output's scanout buffers.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is independent hardware/fallback state (flip in flight, pageflip vs dirtyfb, dirtyfb support, hw cursor active); combining them into an enum would obscure which combinations are actually reachable without changing behaviour, and is out of scope for a lint pass"
@@ -689,7 +849,9 @@ impl DrmScanout {
         self.xrgb_damage_requested && self.xrgb_scanout_epoch.is_some()
     }
 
-    /// Open `card_path` and become DRM master; split from [`Self::new`] so [`open_all_scanouts`] opens once and dups the fd per connector (libseat refuses a second open).
+    /// Open `card_path` and become DRM master; split from [`Self::new`] so a
+    /// [`CardHandle`] can open once and dup the fd per connector (libseat
+    /// refuses a second open).
     fn open_card<S: Session>(session: &mut S, card_path: &Path) -> Result<Card, String> {
         use smithay::backend::session::AsErrno;
         let fd = session
@@ -718,7 +880,8 @@ impl DrmScanout {
     }
 
     /// Single-output convenience: opens `card_path`, picks the first connected connector + mode +
-    /// crtc, and brings it up. Returns `Err`, never panics; the runtime uses [`open_all_scanouts`] instead, sharing [`Self::from_card`].
+    /// crtc, and brings it up. Returns `Err`, never panics; the runtime uses
+    /// [`CardHandle::bring_up_all`] instead, sharing [`Self::from_card`].
     ///
     /// # Errors
     ///
@@ -757,7 +920,9 @@ impl DrmScanout {
     }
 
     /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and set up the hardware
-    /// cursor — the bring-up tail shared by [`Self::new`] and [`open_all_scanouts`]. `card` is an independent fd on the single path, a dup on the multi path.
+    /// cursor — the bring-up tail shared by [`Self::new`] and
+    /// [`CardHandle::bring_up_all`]. `card` is an independent fd on the
+    /// single path, a dup on the multi-output path.
     fn from_card(
         card: Card,
         connector: connector::Handle,
@@ -1395,6 +1560,8 @@ pub struct ScanoutBuild {
     pub connector_id: u32,
     /// Stable DRM connector name (`eDP-1`, `HDMI-A-1`) used by Settings.
     pub connector_name: String,
+    /// Collision-resolved persisted settings key for this physical connector.
+    pub config_key: String,
     /// Physical panel size in mm, when reported — the one input to scale derivation that resolution alone cannot supply (see [`super::scale`]).
     pub physical_mm: Option<(u32, u32)>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
@@ -1407,11 +1574,13 @@ pub struct ScanoutBuild {
 /// each on a distinct crtc sharing a dup of the single card fd — required since libseat refuses a
 /// second `open` of an already-open node, and it means every crtc's flip completions arrive on one
 /// event stream, drained once and routed by crtc. A connector with no free crtc/mode is logged and
-/// skipped; `Err` only when nothing came up. Primary card only — secondary-GPU connectors need their own fd and GPU-to-GPU buffer handling.
+/// skipped; `Err` only when nothing came up. The runtime normally retains the [`CardHandle`]
+/// itself and calls [`CardHandle::bring_up_all`] for every seat GPU; this helper remains a
+/// convenience for callers that need a complete one-card transaction.
 ///
 /// # Errors
 ///
-/// Returns `Err` if the primary card itself can't be opened, or if every connected connector
+/// Returns `Err` if the card itself can't be opened, or if every connected connector
 /// failed to come up (each connector's own modeset failure is logged and skipped rather than
 /// propagated — this only errors when *none* came up).
 pub fn open_all_scanouts<S: Session>(
@@ -1655,6 +1824,167 @@ fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_and_udev_share_the_same_dev_t_identity() {
+        // UdevEvent carries libc::dev_t and Card::dev_id reads
+        // fstat(card_fd).st_rdev, also libc::dev_t.  This conversion is the
+        // one used by both paths before looking in `DrmDispatchState::cards`.
+        let dev_t: libc::dev_t = 0x10203;
+        assert_eq!(device_id_from_dev_t(dev_t), 0x10203);
+    }
+
+    #[test]
+    fn card_config_identity_prefers_bus_then_stable_sysfs_before_dev_t() {
+        assert_eq!(
+            config_identity(
+                Some("pci:0000:03:00.0".into()),
+                Some("sysfs-0000:01:00.0".into()),
+                77,
+            ),
+            "pci:0000:03:00.0"
+        );
+        assert_eq!(
+            config_identity(None, Some("sysfs-0000:01:00.0".into()), 77),
+            "sysfs-0000:01:00.0"
+        );
+        assert_eq!(
+            config_identity(None, None, 77),
+            "drm-dev-77",
+            "the final dev_t fallback is intentionally session-local"
+        );
+    }
+
+    #[test]
+    fn card0_to_card1_reenumeration_matches_the_same_physical_gpu_before_open() {
+        // `dev_t` and card-node names are attachment identifiers; an eGPU
+        // may get both a new one during removal. The canonical sysfs identity
+        // remains the pre-open guard that prevents a second libseat lease.
+        let old_node = "/dev/dri/card0";
+        let new_node = "/dev/dri/card1";
+        assert_ne!(old_node, new_node);
+        let old_dev_t = 226_u64;
+        let new_dev_t = 227_u64;
+        assert_ne!(old_dev_t, new_dev_t);
+        assert!(same_physical_card_identity(
+            Some("sysfs-0000:03:00.0"),
+            Some("sysfs-0000:03:00.0")
+        ));
+        assert!(!same_physical_card_identity(
+            Some("sysfs-0000:03:00.0"),
+            Some("sysfs-0000:04:00.0")
+        ));
+    }
+
+    #[test]
+    fn duplicate_connector_labels_become_card_qualified_but_unique_stay_legacy() {
+        let first = DrmOutputKey {
+            device: 10,
+            connector: 7,
+        };
+        let second = DrmOutputKey {
+            device: 11,
+            connector: 7,
+        };
+        let panel = DrmOutputKey {
+            device: 10,
+            connector: 8,
+        };
+        let keys = resolve_connector_config_keys(
+            [
+                ConnectorKeyCandidate {
+                    key: first,
+                    connector_name: "HDMI-A-1",
+                    card_identity: "pci:0000:01:00.0",
+                },
+                ConnectorKeyCandidate {
+                    key: second,
+                    connector_name: "HDMI-A-1",
+                    card_identity: "pci:0000:03:00.0",
+                },
+                ConnectorKeyCandidate {
+                    key: panel,
+                    connector_name: "eDP-1",
+                    card_identity: "pci:0000:01:00.0",
+                },
+            ],
+            &settings_store::hardware::DisplayConfig::default(),
+        );
+        assert_eq!(
+            keys[&first], "pci:0000:01:00.0/HDMI-A-1",
+            "first duplicate must not retain an ambiguous legacy key"
+        );
+        assert_eq!(keys[&second], "pci:0000:03:00.0/HDMI-A-1");
+        assert_eq!(
+            keys[&panel], "eDP-1",
+            "single-GPU and unique-connector configs stay unchanged"
+        );
+    }
+
+    #[test]
+    fn qualified_connector_config_survives_duplicate_peer_unplug_and_replug() {
+        use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
+
+        let first = DrmOutputKey {
+            device: 10,
+            connector: 7,
+        };
+        let second = DrmOutputKey {
+            device: 11,
+            connector: 7,
+        };
+        let first_key = "pci:0000:01:00.0/HDMI-A-1";
+        let second_key = "pci:0000:03:00.0/HDMI-A-1";
+        let first_intent = OutputConfig {
+            enabled: false,
+            primary: true,
+            x: 320,
+            y: 180,
+            scale: 1.5,
+            mode: Some(OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 120_000,
+            }),
+            mirror_of: Some(second_key.into()),
+            ..Default::default()
+        };
+        let mut config = DisplayConfig::default();
+        config
+            .outputs
+            .insert(first_key.into(), first_intent.clone());
+        config
+            .outputs
+            .insert(second_key.into(), OutputConfig::default());
+        let first_candidate = ConnectorKeyCandidate {
+            key: first,
+            connector_name: "HDMI-A-1",
+            card_identity: "pci:0000:01:00.0",
+        };
+        let second_candidate = ConnectorKeyCandidate {
+            key: second,
+            connector_name: "HDMI-A-1",
+            card_identity: "pci:0000:03:00.0",
+        };
+
+        let collided = resolve_connector_config_keys([first_candidate, second_candidate], &config);
+        assert_eq!(collided[&first], first_key);
+        assert_eq!(collided[&second], second_key);
+
+        // With only the first connector still attached, retaining its saved
+        // qualified key is what keeps all of its confirmed intent intact.
+        let unplugged = resolve_connector_config_keys([first_candidate], &config);
+        assert_eq!(unplugged[&first], first_key);
+        assert_eq!(
+            config.output_for(&unplugged[&first]),
+            Some(&first_intent),
+            "enabled/mode/scale/position/mirror intent must remain addressable"
+        );
+
+        let replugged = resolve_connector_config_keys([first_candidate, second_candidate], &config);
+        assert_eq!(replugged[&first], first_key);
+        assert_eq!(replugged[&second], second_key);
+    }
 
     #[test]
     fn cursor_bitmap_writes_opaque_and_transparent_pixels() {
