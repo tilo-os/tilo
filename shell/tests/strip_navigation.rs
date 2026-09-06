@@ -809,6 +809,31 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         tree.flush_to_disk();
     }
 
+    // Open through the production file-drop entry point, then close its
+    // freshly-spliced tab through the actual pointer hit target. This is the
+    // first half of the complete desktop session below: open → close →
+    // reorder → revision → reconstruct, rather than independent probes.
+    let opened = h
+        .chrome
+        .borrow_mut()
+        .handle_file_drop(std::path::Path::new("/tmp/layout-session.ts"))
+        .expect("file-drop open resolves to an app tab");
+    h.tick();
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(opened))
+        .expect("opened tab exposes a pointer close target after resync");
+    h.click(close.center());
+    h.tick();
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|tab| tab.id != opened),
+        "the opened tab is durably removed before the rest of the session"
+    );
+
     let first = h.tabs[0][0];
     let close = h
         .host

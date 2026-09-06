@@ -3223,6 +3223,16 @@ impl ShellOverlayHost {
                         any_change = true;
                     }
                 }
+                // A row can already contain every group while its order no
+                // longer matches the document (for example, an Automerge
+                // revision from another device reorders two existing
+                // windows). Splicing alone misses that case and leaves the
+                // screen disagreeing with the durable layout until restart.
+                for (idx, group) in strip.window_groups.iter().enumerate() {
+                    if row.reorder_group_by_id(group.id, idx) {
+                        any_change = true;
+                    }
+                }
                 // Reconcile tabs inside groups that already exist — the
                 // group-level splice above only fires for whole new
                 // groups, so a tab adopted into an existing one (an
@@ -3273,6 +3283,23 @@ impl ShellOverlayHost {
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
                         if live.detach_tab(*stale).is_some() {
                             tab_tiles.remove(stale);
+                            any_change = true;
+                        }
+                    }
+                    // As with groups, a replicated tab reorder changes no
+                    // membership and therefore needs an explicit ordering
+                    // pass. `WindowGroup::reorder_tab` moves its matching
+                    // host at the same time, preserving the pill/content
+                    // identity invariant.
+                    for (idx, tab) in g.tabs.iter().enumerate() {
+                        let Some(from) = live
+                            .tabs()
+                            .iter()
+                            .position(|live_tab| live_tab.id == tab.id)
+                        else {
+                            continue;
+                        };
+                        if live.reorder_tab(from, idx) {
                             any_change = true;
                         }
                     }
@@ -4674,10 +4701,36 @@ impl ShellOverlayHost {
                   last use, and the block already ends right there"
     )]
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
-        self.focus_window_widget(strip, group, tab);
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        // Both the durable tree and the live row have to still address the
+        // target. A rail/keyboard event can race a close in either
+        // direction: before resync the widget still has the old tab, and
+        // after resync an event can still carry its old id. Do not stamp an
+        // absent address into the persistent focus pointers in either case.
+        let tree_has_target = {
+            let state = chrome.borrow();
+            state
+                .tree()
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .find(|candidate| candidate.id == strip)
+                })
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                })
+                .is_some_and(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+        };
+        if !tree_has_target || !self.focus_window_widget(strip, group, tab) {
+            return false;
+        }
         let mut changed = false;
         {
             let st = chrome.borrow_mut();
@@ -11960,7 +12013,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.overlay_flags().shortcut_help {
+        if self.shortcut_help_button_is_suppressed() {
             return;
         }
         let rect = self.shortcut_help_button_rect();
@@ -11990,6 +12043,33 @@ impl ShellOverlayHost {
             None,
             TextWeight::Semibold,
         );
+    }
+
+    /// The shortcut-guide affordance is persistent chrome, not modal
+    /// content. Keep it behind every temporary shell-owned surface: drawing
+    /// it later would let its label overlap a popover at small sizes or large
+    /// text, and would make it appear actionable while that surface owns
+    /// input.
+    fn shortcut_help_button_is_suppressed(&self) -> bool {
+        let flags = self.overlay_flags();
+        self.onboarding.is_some()
+            || flags.shortcut_help
+            || flags.desktop_tour
+            || flags.overview
+            || flags.quick_settings
+            || flags.ws_settings
+            || flags.collaborators
+            || flags.room_activity
+            || flags.projection
+            || flags.capture
+            || self.palette_visible
+            || self.palette_transition.is_visible(Instant::now())
+            || self.qs_transition.is_visible(Instant::now())
+            || self.power_menu.is_open()
+            || self.workspace_settings_overlay.member_sheet_is_open()
+            || self.file_picker_overlay.widget().is_some()
+            || self.peer_sync_overlay.visible()
+            || self.portal_dialogs.view().is_some()
     }
 
     #[allow(
@@ -15826,6 +15906,46 @@ mod palette_dispatch_tests {
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
             &chord
         ));
+    }
+
+    #[test]
+    fn persistent_shortcut_hint_is_suppressed_by_modal_and_popover_surfaces() {
+        let (mut host, chrome) = host_with_chrome();
+        assert!(
+            !host.shortcut_help_button_is_suppressed(),
+            "the desktop affordance is visible with no transient shell surface"
+        );
+
+        chrome.borrow_mut().overlays.quick_settings = true;
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint across a popover"
+        );
+        chrome.borrow_mut().overlays.quick_settings = false;
+        host.qs_transition = ui::Transition::open();
+        host.qs_transition.set_open(
+            false,
+            Duration::from_millis(QS_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "a closing popover keeps the hint hidden until its last fading frame"
+        );
+        host.qs_transition = ui::Transition::closed();
+
+        host.palette_visible = true;
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint above a modal palette"
+        );
+        host.palette_visible = false;
+
+        host.power_menu.open();
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint above a session-action sheet"
+        );
     }
 
     #[test]
@@ -19757,7 +19877,7 @@ mod resync_strips_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
+        AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
         WorkspaceTree,
     };
@@ -19913,6 +20033,323 @@ mod resync_strips_tests {
         assert!(
             host.group_at_for_tests(strip_id, 2).is_none(),
             "removed group dropped from row"
+        );
+    }
+
+    #[test]
+    fn resync_reorders_existing_groups_and_tabs_after_a_document_revision() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let strip = tree
+            .workspaces
+            .first_mut()
+            .and_then(|workspace| {
+                workspace
+                    .strips
+                    .iter_mut()
+                    .find(|strip| strip.id == strip_id)
+            })
+            .expect("seed strip");
+        let first = strip
+            .window_groups
+            .iter_mut()
+            .find(|group| group.id == first_group)
+            .expect("seed group");
+        first.tabs.extend([
+            Tab {
+                id: 2,
+                title: "Second".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Browser,
+                    label: "second".into(),
+                },
+            },
+            Tab {
+                id: 3,
+                title: "Third".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: "third".into(),
+                },
+            },
+        ]);
+        strip.window_groups.push(make_stub_group(201, "Other-A"));
+        strip.window_groups.push(make_stub_group(202, "Other-B"));
+        tree.seed_doc_from_cache();
+
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert_eq!(
+            host.group_row_mut_for_tests(strip_id)
+                .expect("live row")
+                .group_ids(),
+            vec![first_group, 201, 202],
+            "precondition: boot row follows the seed order"
+        );
+
+        // This models a later peer/document revision: all ids are still
+        // present, so the old membership-only resync would have been a
+        // no-op and continued painting the previous topology.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            assert!(tree.reorder_group_within_strip(strip_id, 202, 0));
+            assert!(tree.reorder_tab_within_group(first_group, 2, 0));
+            drop(tree);
+            st.bump();
+        }
+        assert!(
+            host.take_structure_dirty(),
+            "document order change must dirty the live structure"
+        );
+
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("live row after revision");
+        assert_eq!(
+            row.group_ids(),
+            vec![202, first_group, 201],
+            "existing groups follow the replicated strip order without a restart"
+        );
+        let first = row
+            .groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("reordered group still mounted");
+        assert_eq!(
+            first.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![3, 1, 2],
+            "tab pills and their hosts follow the replicated order together"
+        );
+        assert_eq!(
+            first.tile_kind_labels_for_tests(),
+            vec!["Terminal", "Settings", "Browser"],
+            "the content hosts moved with their matching tab pills"
+        );
+        assert_eq!(
+            first.active_tab_id(),
+            1,
+            "a reordering revision must preserve this device's selected tab"
+        );
+
+        // Exercise the reverse direction too. A local drag already moves
+        // the widget before committing the tree; this is the later
+        // replicated/restart path where the tree has to move it back.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            assert!(tree.reorder_group_within_strip(strip_id, 202, 2));
+            assert!(tree.reorder_tab_within_group(first_group, 0, 2));
+            drop(tree);
+            st.bump();
+        }
+        assert!(
+            host.take_structure_dirty(),
+            "reverse document order change must also dirty the live structure"
+        );
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("live row after reverse revision");
+        assert_eq!(row.group_ids(), vec![first_group, 201, 202]);
+        let first = row
+            .groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("restored group still mounted");
+        assert_eq!(
+            first.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(first.active_tab_id(), 1);
+
+        // The result has to be durable, not just a live widget permutation.
+        chrome.borrow().tree().flush_to_disk();
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("reordered layout survives a process restart");
+        let strip = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .expect("persisted strip");
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![first_group, 201, 202]
+        );
+        let first = strip
+            .window_groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("persisted first group");
+        assert_eq!(
+            first.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn stale_focus_target_cannot_write_a_removed_tab_into_the_tree() {
+        let (tree, strip_id, group_id) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(
+            !host.focus_window_on_strip(strip_id, group_id, 99),
+            "a target absent from the live row is stale, not a focus change"
+        );
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let group = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .expect("seed group remains");
+        assert_eq!(
+            group.active_tab, 1,
+            "stale keyboard/rail focus cannot leave durable state pointing at a deleted tab"
+        );
+        assert_eq!(
+            tree.active_group_for(strip_id),
+            Some(group_id),
+            "stale focus must not dislodge the selected group either"
+        );
+
+        // The inverse race is just as important: a close may be durable
+        // before the next widget resync, leaving the old tab momentarily
+        // mounted. Its stale click/chord must still be rejected by the tree.
+        {
+            let state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            tree.workspaces[0].strips[0].window_groups.clear();
+            tree.active_group.remove(&strip_id);
+        }
+        assert!(
+            !host.focus_window_on_strip(strip_id, group_id, 1),
+            "a tab left live during close cannot recreate durable selection"
+        );
+        let state = chrome.borrow();
+        assert_eq!(
+            state.tree().active_group_for(strip_id),
+            None,
+            "a missing group remains unselected until the resync drops its widget"
+        );
+    }
+
+    #[test]
+    fn accepted_room_reorder_resyncs_existing_remote_groups_and_tabs() {
+        const HOST_SALT: u16 = 0x2222;
+        const PEER_SALT: u16 = 0x3333;
+        let remote_id = |counter| (u64::from(PEER_SALT) << 48) | counter;
+
+        let mut local = WorkspaceTree::bootstrap_demo();
+        local.set_salt_override(HOST_SALT);
+        let local_workspace = local.active;
+        let room = local.room_of(local_workspace).expect("local room");
+        local.adopt_ownerless_workspaces(&"owner".to_string());
+
+        let mut peer = WorkspaceTree::bootstrap_demo();
+        peer.set_salt_override(PEER_SALT);
+        let peer_workspace = peer.active;
+        assert!(peer.set_room(peer_workspace, room));
+        // The fixed ids below model windows this peer owns in the shared
+        // room. They predate this process's global allocator, so make the
+        // fixture publish them instead of treating them as pre-join tabs.
+        peer.room_share_floor.remove(&room);
+        // Matching governance makes this a legitimate member layout
+        // update, not a rejected attempt to replace the room owner.
+        peer.adopt_ownerless_workspaces(&"owner".to_string());
+        let remote_strip = StripId::from(remote_id(1));
+        let remote_group = remote_id(2);
+        let tab = |id, title: &str, kind| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::Stub {
+                kind,
+                label: title.into(),
+            },
+        };
+        peer.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == peer_workspace)
+            .expect("peer workspace")
+            .strips = vec![Strip {
+            id: remote_strip,
+            name: "Remote".into(),
+            window_groups: vec![
+                StateGroup {
+                    id: remote_group,
+                    tabs: vec![
+                        tab(remote_id(10), "A", AppKind::Other("Remote".into())),
+                        tab(remote_id(11), "B", AppKind::Browser),
+                        tab(remote_id(12), "C", AppKind::Terminal),
+                    ],
+                    active_tab: remote_id(10),
+                    width: StateWidth::Normal,
+                    maximized: false,
+                },
+                make_stub_group(remote_id(3), "Remote-B"),
+                make_stub_group(remote_id(4), "Remote-C"),
+            ],
+        }];
+
+        let seed = peer
+            .export_room_changes_since(room, &[])
+            .expect("peer room changes");
+        assert!(
+            local
+                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
+                .expect("legitimate remote layout merges"),
+            "initial remote layout is accepted"
+        );
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&local);
+        let peer_base = peer.room_heads(room);
+        assert!(peer.reorder_group_within_strip(remote_strip, remote_id(4), 0));
+        assert!(peer.reorder_tab_within_group(remote_group, 2, 0));
+        let delta = peer
+            .export_room_changes_since(room, &peer_base)
+            .expect("reorder room delta");
+        {
+            let mut state = chrome.borrow_mut();
+            assert!(
+                state
+                    .tree_mut()
+                    .apply_room_changes(room, &delta, &PeerOrigin::hub(1))
+                    .expect("accepted reorder delta"),
+                "room merger reports the remote reorder"
+            );
+            assert!(
+                !state
+                    .tree_mut()
+                    .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
+                    .expect("an already-superseded room snapshot parses"),
+                "a stale room snapshot cannot undo the newer accepted reorder"
+            );
+            state.bump();
+        }
+        assert!(host.take_structure_dirty());
+        let row = host
+            .group_row_mut_for_tests(remote_strip)
+            .expect("remote strip remains live");
+        assert_eq!(
+            row.group_ids(),
+            vec![remote_id(4), remote_group, remote_id(3)]
+        );
+        let group = row
+            .groups
+            .iter()
+            .find(|group| group.id == remote_group)
+            .expect("remote tab group remains live");
+        assert_eq!(
+            group.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![remote_id(12), remote_id(10), remote_id(11)]
+        );
+        assert_eq!(group.active_tab_id(), remote_id(10));
+        assert_eq!(
+            group.tile_kind_labels_for_tests(),
+            vec!["Terminal", "Settings", "Browser"]
         );
     }
 

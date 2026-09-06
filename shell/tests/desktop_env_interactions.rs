@@ -411,6 +411,14 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
 fn group_drag_reorders_strip_window_groups_in_tree() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let state_dir = tempfile::tempdir().expect("state directory");
+    let state_path = state_dir.path().join("state.json");
+    {
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+    }
     let layout = lay_out_host(&mut host);
 
     {
@@ -451,6 +459,29 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
         vec![200, 300, 100],
         "the dragged group must move to the dropped slot in the persisted tree; \
          neighbours shift to fill the vacated slot",
+    );
+    drop(tree);
+    drop(st);
+
+    // The one-shot must be consumed: a second frame may not author a
+    // duplicate reorder transaction or alter the already-persisted order.
+    let heads_after_first = chrome.borrow_mut().tree_mut().current_heads();
+    host.tick_pending_group_reorder_harvest_for_tests();
+    assert_eq!(
+        chrome.borrow_mut().tree_mut().current_heads(),
+        heads_after_first,
+        "one pointer drag commits exactly one durable reorder"
+    );
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("pointer reorder writes a reconstructable layout");
+    assert_eq!(
+        restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>(),
+        vec![200, 300, 100],
+        "restart retains the pointer-drag order"
     );
 }
 
