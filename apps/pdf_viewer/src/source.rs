@@ -44,6 +44,7 @@ use anyhow::{Context, anyhow};
 use pdfium_render::prelude::*;
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
+use crate::doc::{ImportedPage, PagePlanEntry};
 use crate::model::{
     AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature, SignatureInk,
 };
@@ -140,6 +141,7 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
 struct Source {
     doc: PdfDocument<'static>,
     page_sizes: Vec<(f64, f64)>,
+    content_hash: Option<String>,
 }
 
 /// A displayed page: which loaded [`Source`] it comes from and the page index
@@ -157,7 +159,11 @@ pub struct Rasterizer {
     /// Loaded pdfium documents; index 0 is the original file.
     sources: Vec<Source>,
     /// The ordered, editable list of displayed pages.
-    plan: Vec<PageSlot>,
+    plan: Vec<Option<PageSlot>>,
+    /// Dimensions supplied by the durable plan for a not-yet-downloaded page.
+    /// This lets UI layout remain stable while `blobstore::get()` asks peers.
+    pending_sizes: Vec<Option<(f64, f64)>>,
+    pending_hashes: Vec<Option<String>>,
     /// Rendered bitmaps keyed by (source, source-page, target-width bucket).
     cache: HashMap<(usize, usize, u32), PenikoImage>,
     /// Per-source-page extracted text layer, filled lazily on first request.
@@ -198,6 +204,55 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 }
 
 impl Rasterizer {
+    const MAX_IMPORT_PAGES: usize = 512;
+
+    /// Validate an import before it is offered to the content store or turned
+    /// into an action. This is deliberately separate from materialisation: it
+    /// never mutates the live page plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes are neither a readable PDF nor a
+    /// decodable image, or when a PDF exceeds the bounded page limit.
+    pub fn inspect_import(&self, bytes: &[u8]) -> anyhow::Result<(String, Vec<(f64, f64)>)> {
+        if bytes.starts_with(b"%PDF-") {
+            // Count before allocating a per-page descriptor/action vector.
+            // Import must not turn an adversarial thousand-page PDF into a
+            // large action just to discover it exceeds the product limit.
+            let doc = self
+                .pdfium
+                .load_pdf_from_byte_vec(bytes.to_vec(), None)
+                .map_err(|_| anyhow!("the file is not a readable PDF"))?;
+            let pages = doc.pages();
+            if usize::from(pages.len()) > Self::MAX_IMPORT_PAGES {
+                return Err(anyhow!(
+                    "the PDF exceeds the {}-page import limit",
+                    Self::MAX_IMPORT_PAGES
+                ));
+            }
+            let mut sizes = Vec::with_capacity(usize::from(pages.len()));
+            for index in 0..pages.len() {
+                let rect = pages
+                    .page_size(index)
+                    .map_err(|_| anyhow!("reading PDF page size"))?;
+                sizes.push((
+                    f64::from(rect.width().value),
+                    f64::from(rect.height().value),
+                ));
+            }
+            return (!sizes.is_empty())
+                .then_some(("pdf".to_string(), sizes))
+                .ok_or_else(|| anyhow!("the PDF has no pages"));
+        }
+        let image =
+            image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
+        let width = f64::from(image.width().max(1));
+        let height = f64::from(image.height().max(1));
+        Ok((
+            "image".to_string(),
+            vec![(612.0, (612.0 * height / width).clamp(72.0, 3000.0))],
+        ))
+    }
     fn load_source(pdfium: &'static Pdfium, bytes: Vec<u8>) -> Option<Source> {
         let t = Instant::now();
         let doc = pdfium.load_pdf_from_byte_vec(bytes, None).ok()?;
@@ -225,19 +280,26 @@ impl Rasterizer {
         if page_sizes.is_empty() {
             return None;
         }
-        Some(Source { doc, page_sizes })
+        Some(Source {
+            doc,
+            page_sizes,
+            content_hash: None,
+        })
     }
 
     fn open(bytes: Vec<u8>) -> Option<Self> {
         let pdfium = shared_pdfium()?;
         let source = Self::load_source(pdfium, bytes)?;
+        let source_len = source.page_sizes.len();
         let plan = (0..source.page_sizes.len())
-            .map(|page| PageSlot { source: 0, page })
+            .map(|page| Some(PageSlot { source: 0, page }))
             .collect();
         Some(Rasterizer {
             pdfium,
             sources: vec![source],
             plan,
+            pending_sizes: vec![None; source_len],
+            pending_hashes: vec![None; source_len],
             cache: HashMap::new(),
             text_cache: HashMap::new(),
         })
@@ -248,16 +310,107 @@ impl Rasterizer {
         self.plan.len()
     }
 
+    /// Hydrate a content-addressed imported source on demand. A miss is not an
+    /// error: qdoc asks the room and the next sync/render retries lazily.
+    fn imported_source(&mut self, imported: &ImportedPage) -> Option<usize> {
+        if let Some(index) = self
+            .sources
+            .iter()
+            .position(|source| source.content_hash.as_deref() == Some(&imported.hash))
+        {
+            return Some(index);
+        }
+        let bytes = qdoc::blobstore::get(&imported.hash)?;
+        if !qdoc::blobstore::verify(&imported.hash, &bytes) {
+            return None;
+        }
+        let mut source = if imported.kind == "pdf" {
+            Self::load_source(self.pdfium, bytes)?
+        } else {
+            Self::image_source(self.pdfium, &bytes).ok()?
+        };
+        source.content_hash = Some(imported.hash.clone());
+        let index = self.sources.len();
+        self.sources.push(source);
+        Some(index)
+    }
+
+    /// Materialise a shared plan. Imported payloads may be unavailable on this
+    /// peer; their occurrence remains in `plan` as `None` rather than being
+    /// silently replaced by an original page.
+    pub fn reconcile_page_plan(&mut self, entries: &[PagePlanEntry]) -> bool {
+        let source_len = self
+            .sources
+            .first()
+            .map_or(0, |source| source.page_sizes.len());
+        if entries.is_empty()
+            || entries.iter().any(|entry| {
+                entry.imported.is_none()
+                    && (entry.source_page == 0 || entry.source_page > source_len)
+            })
+        {
+            return false;
+        }
+        self.pending_sizes = entries
+            .iter()
+            .map(|entry| {
+                entry.imported.as_ref().map(|p| {
+                    (
+                        f64::from(p.width_milli) / 1000.0,
+                        f64::from(p.height_milli) / 1000.0,
+                    )
+                })
+            })
+            .collect();
+        self.pending_hashes = entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .imported
+                    .as_ref()
+                    .map(|imported| imported.hash.clone())
+            })
+            .collect();
+        self.plan = entries
+            .iter()
+            .map(|entry| match &entry.imported {
+                None => Some(PageSlot {
+                    source: 0,
+                    page: entry.source_page - 1,
+                }),
+                Some(imported) => self.imported_source(imported).and_then(|source| {
+                    let page = imported.page.checked_sub(1)?;
+                    (page < self.sources.get(source)?.page_sizes.len())
+                        .then_some(PageSlot { source, page })
+                }),
+            })
+            .collect();
+        true
+    }
+
     /// The source [`Source`] and source-page index backing displayed page
     /// `display_idx`.
     fn slot(&self, display_idx: usize) -> Option<PageSlot> {
-        self.plan.get(display_idx).copied()
+        self.plan.get(display_idx).copied().flatten()
+    }
+
+    /// `None` for a normal/original page; otherwise the truthful transfer
+    /// state for an imported occurrence whose bytes have not materialised yet.
+    pub fn page_blob_state(&self, display_idx: usize) -> Option<qdoc::blobstore::BlobState> {
+        self.slot(display_idx).is_none().then(|| {
+            self.pending_hashes
+                .get(display_idx)
+                .and_then(Option::as_deref)
+                .map(qdoc::blobstore::state)
+        })?
     }
 
     pub fn first_page_size(&self) -> (f64, f64) {
         self.plan
             .first()
-            .and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
+            .and_then(|s| {
+                s.and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
+            })
             .unwrap_or((612.0, 792.0))
     }
 
@@ -265,6 +418,7 @@ impl Rasterizer {
     pub fn page_size(&self, display_idx: usize) -> (f64, f64) {
         self.slot(display_idx)
             .and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
+            .or_else(|| self.pending_sizes.get(display_idx).copied().flatten())
             .unwrap_or_else(|| self.first_page_size())
     }
 
@@ -284,13 +438,19 @@ impl Rasterizer {
             return;
         }
         let slot = self.plan.remove(from);
+        let size = self.pending_sizes.remove(from);
+        let hash = self.pending_hashes.remove(from);
         self.plan.insert(to, slot);
+        self.pending_sizes.insert(to, size);
+        self.pending_hashes.insert(to, hash);
     }
 
     /// Remove displayed page `idx`. Keeps at least one page.
     pub fn delete_page(&mut self, idx: usize) {
         if self.plan.len() > 1 && idx < self.plan.len() {
             self.plan.remove(idx);
+            self.pending_sizes.remove(idx);
+            self.pending_hashes.remove(idx);
         }
     }
 
@@ -298,7 +458,11 @@ impl Rasterizer {
     /// duplicate points at the same source page (cheap; shares the render cache).
     pub fn duplicate_page(&mut self, idx: usize) {
         if let Some(slot) = self.slot(idx) {
-            self.plan.insert(idx + 1, slot);
+            self.plan.insert(idx + 1, Some(slot));
+            self.pending_sizes
+                .insert(idx + 1, self.pending_sizes.get(idx).copied().flatten());
+            self.pending_hashes
+                .insert(idx + 1, self.pending_hashes.get(idx).cloned().flatten());
         }
     }
 
@@ -319,11 +483,13 @@ impl Rasterizer {
         for page in 0..n {
             self.plan.insert(
                 at + page,
-                PageSlot {
+                Some(PageSlot {
                     source: src_idx,
                     page,
-                },
+                }),
             );
+            self.pending_sizes.insert(at + page, None);
+            self.pending_hashes.insert(at + page, None);
         }
         Ok(n)
     }
@@ -338,6 +504,23 @@ impl Rasterizer {
     /// pdfium fails to create the backing single-page document or place the
     /// image object on it.
     pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
+        let source = Self::image_source(self.pdfium, bytes)?;
+        let src_idx = self.sources.len();
+        self.sources.push(source);
+        let at = at.min(self.plan.len());
+        self.plan.insert(
+            at,
+            Some(PageSlot {
+                source: src_idx,
+                page: 0,
+            }),
+        );
+        self.pending_sizes.insert(at, None);
+        self.pending_hashes.insert(at, None);
+        Ok(())
+    }
+
+    fn image_source(pdfium: &'static Pdfium, bytes: &[u8]) -> anyhow::Result<Source> {
         let img = image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
         let (iw, ih) = (
             f64::from(img.width().max(1)),
@@ -346,8 +529,7 @@ impl Rasterizer {
         // A page 612pt wide (US-Letter width) with the image's aspect ratio.
         let pw = 612.0f64;
         let ph = (pw * ih / iw).clamp(72.0, 3000.0);
-        let mut doc = self
-            .pdfium
+        let mut doc = pdfium
             .create_new_pdf()
             .map_err(|e| anyhow!("creating the image page document: {e:?}"))?;
         {
@@ -369,20 +551,11 @@ impl Rasterizer {
                 .map_err(|e| anyhow!("placing the image on the page: {e:?}"))?;
             let _ = page.regenerate_content();
         }
-        let src_idx = self.sources.len();
-        self.sources.push(Source {
+        Ok(Source {
             doc,
             page_sizes: vec![(pw, ph)],
-        });
-        let at = at.min(self.plan.len());
-        self.plan.insert(
-            at,
-            PageSlot {
-                source: src_idx,
-                page: 0,
-            },
-        );
-        Ok(())
+            content_hash: None,
+        })
     }
 
     fn metadata(&self) -> (String, String, String) {
@@ -627,6 +800,8 @@ impl Rasterizer {
         // Copy every planned page, in order, from its source document. This is
         // what makes reorder / delete / duplicate / import persist on save.
         for (dest, slot) in self.plan.iter().enumerate() {
+            let slot = slot
+                .ok_or_else(|| anyhow!("page {} is still awaiting imported content", dest + 1))?;
             let src = self
                 .sources
                 .get(slot.source)
