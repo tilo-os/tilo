@@ -211,6 +211,28 @@ struct PinnedCandidate {
     path: String,
 }
 
+#[derive(Clone)]
+struct RecordIndexCursor {
+    revision: String,
+    /// Private source state captured when the cursor was issued.  It is never
+    /// serialized: the public revision is the ACL-filtered projection below.
+    source_revision: String,
+    acl_revision: u64,
+    offset: usize,
+}
+
+/// Retained, authority-specific catalogue.  Building this projection is a
+/// mutation/mount-time operation; serving a v3 page is only a bounded slice
+/// of it.  In particular, no v3 request walks denied namespace rows.
+#[derive(Clone)]
+struct AclVisibleRecordIndex {
+    source_revision: String,
+    acl_revision: u64,
+    revision: String,
+    records: Vec<crate::syncstate::RecordIndexEntryV1>,
+    by_id: HashMap<collab_types::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
+}
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -226,6 +248,9 @@ pub struct QuickFS {
     /// Cached serialized form of each document inode, keyed by the doc's heads,
     /// so a multi-chunk read exports once (and getattr's size stays current).
     doc_exports: Mutex<DocExports>,
+    record_index_cursors: Mutex<HashMap<String, RecordIndexCursor>>,
+    record_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
+    acl_visible_record_index: Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
     /// Rich facts extracted only while current-version bytes are already local.
     /// Replicated peers consume these facts without hydrating the payload.
     rich_metadata: Mutex<
@@ -302,6 +327,9 @@ impl QuickFS {
             open_file_handles: Mutex::new(HashMap::new()),
             next_file_handle: AtomicU64::new(1),
             doc_exports: Mutex::new(HashMap::new()),
+            record_index_cursors: Mutex::new(HashMap::new()),
+            record_index_initial_cursors: Mutex::new(HashMap::new()),
+            acl_visible_record_index: Arc::new(Mutex::new(None)),
             rich_metadata: Mutex::new(HashMap::new()),
             enforcement: None,
             thumbs: None,
@@ -487,7 +515,50 @@ impl QuickFS {
     #[must_use]
     pub fn with_sync(mut self, sync: Arc<SyncHandle>) -> Self {
         self.sync = Some(sync);
+        self.start_record_index_sync_worker();
         self
+    }
+
+    fn start_record_index_sync_worker(&self) {
+        let (Some(sync), Some(enforcement)) = (&self.sync, self.enforcement.clone()) else {
+            return;
+        };
+        self.start_record_index_refresh_worker(
+            sync.subscribe_record_index_generation(),
+            enforcement,
+        );
+    }
+
+    fn start_record_index_acl_worker(&self) {
+        let Some((acl, identity)) = self.enforcement.clone() else {
+            return;
+        };
+        self.start_record_index_refresh_worker(acl.subscribe_revision(), (acl, identity));
+    }
+
+    fn start_record_index_refresh_worker(
+        &self,
+        mut generations: tokio::sync::watch::Receiver<u64>,
+        enforcement: (AclHandle, crate::acl::IdentityKey),
+    ) {
+        let namespace = Arc::clone(&self.namespace);
+        let retained = Arc::downgrade(&self.acl_visible_record_index);
+        drop(self.hydrator.runtime_handle.spawn(async move {
+            while generations.changed().await.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                while generations.has_changed().unwrap_or(false) {
+                    let _ = generations.borrow_and_update();
+                }
+                let Some(retained) = retained.upgrade() else {
+                    break;
+                };
+                QuickFS::refresh_acl_visible_record_index_into(
+                    &namespace,
+                    Some(&enforcement),
+                    &retained,
+                );
+            }
+        }));
     }
 
     /// Attach a host-side thumbnail provider (cache under `dir`). The mount then
@@ -1050,37 +1121,172 @@ impl QuickFS {
         history.projection(record_id)?.to_xattr_bytes().ok()
     }
 
-    #[allow(clippy::significant_drop_tightening)]
+    /// The namespace owns the record/path index.  This method only fingerprints
+    /// its current CRDT heads plus live ACL generation; it does not enumerate
+    /// records.  Domain and length framing prevent ambiguous concatenation
+    /// from producing an equivalent cursor generation.
+    fn record_catalog_revision(&self) -> String {
+        let namespace = self.ns();
+        let acl_revision = self
+            .enforcement
+            .as_ref()
+            .map_or(0, |(acl, _)| acl.revision());
+        Self::record_catalog_revision_from_index(namespace.indexed_record_revision(), acl_revision)
+    }
+
+    fn record_catalog_revision_from_index(index_revision: &str, acl_revision: u64) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"qos.fs.record-index.v2.revision\\0");
+        let index_revision = index_revision.as_bytes();
+        hasher.update(&(index_revision.len() as u64).to_be_bytes());
+        hasher.update(index_revision);
+        hasher.update(b"acl-revision\\0");
+        hasher.update(&acl_revision.to_be_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    /// Return a retained projection by cheap shared reference. xattr serving
+    /// deliberately never rebuilds this view: a remote replay that has not
+    /// yet delivered its refresh notification is transiently unavailable
+    /// rather than turning a manifest/page request into a corpus walk.
+    fn acl_visible_record_index(&self) -> Option<Arc<AclVisibleRecordIndex>> {
+        let source_revision = self.record_catalog_revision();
+        let acl_revision = self
+            .enforcement
+            .as_ref()
+            .map_or(0, |(acl, _)| acl.revision());
+        self.acl_visible_record_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|index| {
+                index.source_revision == source_revision && index.acl_revision == acl_revision
+            })
+            .cloned()
+    }
+
+    /// Rebuild the retained authority view under one coherent Namespace lock.
+    /// Call only from mount/mutation/sync notification paths, never from an
+    /// xattr request.  This is allowed to visit the catalogue once because it
+    /// replaces an immutable snapshot used by all subsequent bounded pages.
+    fn refresh_acl_visible_record_index(&self) {
+        Self::refresh_acl_visible_record_index_into(
+            &self.namespace,
+            self.enforcement.as_ref(),
+            &self.acl_visible_record_index,
+        );
+    }
+
+    fn refresh_acl_visible_record_index_into(
+        namespace: &Arc<Mutex<Namespace>>,
+        enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
+        retained: &Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
+    ) {
+        let acl_revision = enforcement.map_or(0, |(acl, _)| acl.revision());
+        let mut records = Vec::new();
+        let source_revision = {
+            let namespace = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut offset = 0;
+            loop {
+                let candidates = namespace
+                    .indexed_record_page(offset, crate::syncstate::RECORD_INDEX_PAGE_ENTRIES);
+                if candidates.is_empty() {
+                    break;
+                }
+                offset = offset.saturating_add(candidates.len());
+                records.extend(candidates.into_iter().filter_map(|entry| {
+                    enforcement
+                        .is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
+                        .then_some(crate::syncstate::RecordIndexEntryV1 {
+                            record_id: entry.record_id,
+                            path: entry.path,
+                            is_dir: entry.is_dir,
+                        })
+                }));
+            }
+            Self::record_catalog_revision_from_index(
+                namespace.indexed_record_revision(),
+                acl_revision,
+            )
+        };
+
+        // The public generation binds exactly the data this authority can
+        // observe (and its ACL generation), with unambiguous field framing.
+        // Hidden namespace edits cannot perturb it.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"qos.fs.record-index.v3.visible-catalogue\\0");
+        hasher.update(&acl_revision.to_be_bytes());
+        hasher.update(&(records.len() as u64).to_be_bytes());
+        for record in &records {
+            hasher.update(record.record_id.0.as_bytes());
+            hasher.update(&(record.path.len() as u64).to_be_bytes());
+            hasher.update(record.path.as_bytes());
+            hasher.update(&[u8::from(record.is_dir)]);
+        }
+        let revision = hasher.finalize().to_hex().to_string();
+        let by_id = records
+            .iter()
+            .cloned()
+            .map(|record| (record.record_id, record))
+            .collect();
+        let index = Arc::new(AclVisibleRecordIndex {
+            source_revision: source_revision.clone(),
+            acl_revision,
+            revision,
+            records,
+            by_id,
+        });
+        // Do not publish a coherent-but-old snapshot if a concurrent mutation
+        // landed after releasing the namespace lock above. Its notification
+        // will build the next generation; serving mixed state is never okay.
+        let current_source = {
+            let namespace = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self::record_catalog_revision_from_index(
+                namespace.indexed_record_revision(),
+                acl_revision,
+            )
+        };
+        if current_source != source_revision {
+            return;
+        }
+        let mut retained = retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *retained = Some(index);
+    }
+
+    /// Legacy v1 projection retained for older Files clients. New clients use
+    /// the revisioned page protocol below and therefore never lose late rows.
     fn record_index_projection(&self) -> Option<Vec<u8>> {
         use crate::syncstate::{
             MAX_RECORD_INDEX_ENTRIES, MAX_RECORD_INDEX_XATTR_BYTES,
-            RECORD_INDEX_PROJECTION_VERSION, RecordIndexEntryV1, RecordIndexProjectionV1,
+            RECORD_INDEX_PROJECTION_VERSION, RecordIndexProjectionV1,
         };
-        let namespace = self.ns();
-        let mut candidates = namespace
-            .live_node_ids()
-            .into_iter()
-            .filter_map(|id| {
-                let record_id = namespace.record_id_for_id(&id)?;
-                let path = namespace.path_for_id(&id)?;
-                let is_dir = namespace.node_is_dir(&id)?;
-                self.in_view(&path).then_some(RecordIndexEntryV1 {
-                    record_id,
-                    path,
-                    is_dir,
-                })
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|entry| entry.record_id);
-        candidates.dedup_by_key(|entry| entry.record_id);
+        // v1 is intentionally only the first bounded source window. It never
+        // walks past that window to discover an ACL-visible tail.
+        let candidates = self.ns().indexed_record_page(0, MAX_RECORD_INDEX_ENTRIES);
 
         let mut projection = RecordIndexProjectionV1 {
             schema_version: RECORD_INDEX_PROJECTION_VERSION,
-            truncated: candidates.len() > MAX_RECORD_INDEX_ENTRIES,
+            truncated: self.ns().indexed_record_count() > MAX_RECORD_INDEX_ENTRIES,
             records: Vec::new(),
         };
-        for entry in candidates.into_iter().take(MAX_RECORD_INDEX_ENTRIES) {
-            projection.records.push(entry);
+        for entry in candidates {
+            if !self.in_view(&entry.path) {
+                projection.truncated = true;
+                continue;
+            }
+            projection
+                .records
+                .push(crate::syncstate::RecordIndexEntryV1 {
+                    record_id: entry.record_id,
+                    path: entry.path,
+                    is_dir: entry.is_dir,
+                });
             let Ok(bytes) = serde_json::to_vec(&projection) else {
                 return None;
             };
@@ -1093,6 +1299,176 @@ impl QuickFS {
         projection.validate().ok()?;
         let bytes = serde_json::to_vec(&projection).ok()?;
         (bytes.len() <= MAX_RECORD_INDEX_XATTR_BYTES).then_some(bytes)
+    }
+
+    fn record_index_manifest_v2(&self) -> Option<Vec<u8>> {
+        let revision = self.record_catalog_revision();
+        let records = self.ns().indexed_record_count();
+        let manifest = crate::syncstate::RecordIndexManifestV2 {
+            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+            revision,
+            // This is a bounded-cursor ceiling, not an ACL-visible count.
+            // Pages apply ACL filtering locally and may be empty; publishing a
+            // visible count would require an unbounded denied-row scan.
+            records,
+            page_entries: crate::syncstate::RECORD_INDEX_PAGE_ENTRIES,
+        };
+        manifest.validate().ok()?;
+        serde_json::to_vec(&manifest).ok()
+    }
+
+    fn record_index_page_v2(&self, revision: &str, offset: usize) -> Option<Vec<u8>> {
+        (self.record_catalog_revision() == revision).then_some(())?;
+        let page_entries = crate::syncstate::RECORD_INDEX_PAGE_ENTRIES;
+        let namespace = self.ns();
+        let records = namespace.indexed_record_count();
+        if offset > records || !offset.is_multiple_of(page_entries) {
+            return None;
+        }
+        let end = offset.saturating_add(page_entries).min(records);
+        let candidates = namespace.indexed_record_page(offset, page_entries);
+        drop(namespace);
+        let page = crate::syncstate::RecordIndexPageV2 {
+            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+            revision: revision.to_string(),
+            offset,
+            next_offset: (end < records).then_some(end),
+            records: candidates
+                .into_iter()
+                .filter(|entry| self.in_view(&entry.path))
+                .map(|entry| crate::syncstate::RecordIndexEntryV1 {
+                    record_id: entry.record_id,
+                    path: entry.path,
+                    is_dir: entry.is_dir,
+                })
+                .collect(),
+        };
+        page.validate().ok()?;
+        let bytes = serde_json::to_vec(&page).ok()?;
+        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+    }
+
+    fn record_index_cursor(
+        &self,
+        revision: String,
+        source_revision: String,
+        acl_revision: u64,
+        offset: usize,
+    ) -> String {
+        let cursor = uuid::Uuid::new_v4().to_string();
+        let mut cursors = self
+            .record_index_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cursors.len() >= 1024
+            && let Some(evicted) = cursors.keys().next().cloned()
+        {
+            cursors.remove(&evicted);
+        }
+        cursors.insert(
+            cursor.clone(),
+            RecordIndexCursor {
+                revision,
+                source_revision,
+                acl_revision,
+                offset,
+            },
+        );
+        cursor
+    }
+
+    fn record_index_manifest_v3(&self) -> Option<Vec<u8>> {
+        let index = self.acl_visible_record_index()?;
+        // Initial issuance is stable for an unchanged authority view.  A
+        // hidden source change keeps both the public revision and this opaque
+        // token stable, so polling cannot correlate hidden activity.
+        let key = (index.revision.clone(), String::new(), index.acl_revision);
+        let initial_cursor = {
+            let initials = self
+                .record_index_initial_cursors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            initials.get(&key).cloned()
+        }
+        .unwrap_or_else(|| {
+            let cursor = self.record_index_cursor(
+                index.revision.clone(),
+                index.source_revision.clone(),
+                index.acl_revision,
+                0,
+            );
+            let mut initials = self
+                .record_index_initial_cursors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if initials.len() >= 128
+                && let Some(evicted) = initials.keys().next().cloned()
+            {
+                initials.remove(&evicted);
+            }
+            initials.insert(key, cursor.clone());
+            cursor
+        });
+        let manifest = crate::syncstate::RecordIndexManifestV3 {
+            schema_version: 3,
+            initial_cursor,
+            revision: index.revision.clone(),
+            page_entries: crate::syncstate::RECORD_INDEX_PAGE_ENTRIES,
+        };
+        manifest.validate().ok()?;
+        serde_json::to_vec(&manifest).ok()
+    }
+
+    fn record_index_page_v3(&self, revision: &str, cursor: &str) -> Option<Vec<u8>> {
+        let (source_revision, acl_revision, offset) = self
+            .record_index_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(cursor)
+            .filter(|state| state.revision == revision)
+            .map(|state| {
+                (
+                    state.source_revision.clone(),
+                    state.acl_revision,
+                    state.offset,
+                )
+            })?;
+        let index = self.acl_visible_record_index()?;
+        // A changed visible projection (or any ACL replacement) fails closed.
+        // The private source revision is retained in the token state but a
+        // hidden-only source update intentionally leaves an equivalent view
+        // traversable under the same public capability.
+        (index.revision == revision && index.acl_revision == acl_revision).then_some(())?;
+        let records = index.records.len();
+        let end = offset
+            .saturating_add(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES)
+            .min(records);
+        let candidates = index.records.get(offset..end)?.to_vec();
+        let next_cursor = (end < records).then(|| {
+            self.record_index_cursor(revision.to_string(), source_revision, acl_revision, end)
+        });
+        let page = crate::syncstate::RecordIndexPageV3 {
+            schema_version: 3,
+            revision: revision.to_string(),
+            next_cursor,
+            records: candidates,
+        };
+        page.validate().ok()?;
+        let bytes = serde_json::to_vec(&page).ok()?;
+        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
+    }
+
+    fn record_index_by_id_v2(&self, record_id: collab_types::FileRecordId) -> Option<Vec<u8>> {
+        let index = self.acl_visible_record_index()?;
+        let entry = index.by_id.get(&record_id)?.clone();
+        let projection = crate::syncstate::RecordIndexExactV2 {
+            schema_version: crate::syncstate::RECORD_INDEX_V2_VERSION,
+            revision: index.revision.clone(),
+            record: entry,
+        };
+        projection.validate().ok()?;
+        let bytes = serde_json::to_vec(&projection).ok()?;
+        (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
     fn restore_version(
@@ -2520,6 +2896,14 @@ impl QuickFS {
         identity: crate::acl::IdentityKey,
     ) -> Self {
         self.enforcement = Some((acl.into(), identity));
+        // Subscribe before the initial snapshot. A live ACL/sync mutation in
+        // between these operations then has a receiver to wake, rather than
+        // becoming an initial watch value that no `.changed()` can observe.
+        self.start_record_index_acl_worker();
+        self.start_record_index_sync_worker();
+        // Build the authority view once when the mount is bound. Thereafter
+        // ordinary v3 manifest/page requests use only this retained snapshot.
+        self.refresh_acl_visible_record_index();
         self
     }
 
@@ -2744,6 +3128,13 @@ impl QuickFS {
     }
 
     fn publish(&self, delta: Vec<u8>) {
+        if self.enforcement.is_some() {
+            // Local structural changes have already updated Namespace's
+            // incremental record index. Refresh the retained ACL projection
+            // before advertising the mutation, so a completed pager's next
+            // poll observes a visible addition without a request-time scan.
+            self.refresh_acl_visible_record_index();
+        }
         if let Some(sync) = &self.sync {
             sync.broadcast_delta(delta);
         }
@@ -4711,8 +5102,90 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_XATTR) {
+        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_V2_XATTR) {
             if ino.0 != crate::namespace::ROOT_INO {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            // Raw-offset v2 is safe only where all records are observable.
+            // ACL-constrained mounts use v3's private opaque continuations.
+            if self.enforcement.is_some() {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            match self.record_index_manifest_v2() {
+                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
+            return;
+        }
+        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_V3_XATTR) {
+            if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_none() {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            match self.record_index_manifest_v3() {
+                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
+            return;
+        }
+        if let Some((revision, cursor)) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("user.qos.record-index.v3."))
+            .and_then(|page| page.split_once('.'))
+        {
+            if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_none() {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            match self.record_index_page_v3(revision, cursor) {
+                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
+            return;
+        }
+        if let Some(record_id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(crate::syncstate::RECORD_INDEX_BY_ID_XATTR_PREFIX))
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .map(collab_types::FileRecordId)
+        {
+            if ino.0 != crate::namespace::ROOT_INO {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            match self.record_index_by_id_v2(record_id) {
+                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
+            return;
+        }
+        if let Some((revision, offset)) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("user.qos.record-index.v2."))
+            .and_then(|page| page.rsplit_once('.'))
+            .and_then(|(revision, offset)| {
+                offset
+                    .parse::<usize>()
+                    .ok()
+                    .map(|offset| (revision, offset))
+            })
+        {
+            if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_some() {
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            }
+            match self.record_index_page_v2(revision, offset) {
+                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                // A changed namespace makes the old revision intentionally
+                // absent; clients restart from the fresh manifest.
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
+            return;
+        }
+        if name.to_str() == Some(crate::syncstate::RECORD_INDEX_XATTR) {
+            if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_some() {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
@@ -4827,6 +5300,8 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
         if ino.0 == crate::namespace::ROOT_INO {
+            buf.extend_from_slice(crate::syncstate::RECORD_INDEX_V2_XATTR.as_bytes());
+            buf.push(0);
             buf.extend_from_slice(crate::syncstate::RECORD_INDEX_XATTR.as_bytes());
             buf.push(0);
         }
@@ -6017,6 +6492,365 @@ mod predictive_tests {
                 .iter()
                 .all(|entry| entry.record_id != hidden_record),
             "a record outside the mount's ACL-filtered view cannot enter search metadata"
+        );
+    }
+
+    #[allow(
+        clippy::range_plus_one,
+        clippy::needless_borrows_for_generic_args,
+        clippy::significant_drop_tightening
+    )]
+    #[tokio::test]
+    async fn record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions() {
+        let (namespace, fs) = fixture().await;
+        {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for index in 0..crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1 {
+                let byte = u8::try_from(index).expect("fixture index fits in one byte");
+                ns.create_file(
+                    ROOT_INO,
+                    &format!("late-{index}.txt"),
+                    Some(&Hash::from([byte; 32])),
+                    index as u64,
+                    index as u64,
+                )
+                .unwrap();
+            }
+        }
+        let manifest: crate::syncstate::RecordIndexManifestV2 =
+            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(
+            manifest.records,
+            crate::syncstate::RECORD_INDEX_PAGE_ENTRIES + 1
+        );
+        let first: crate::syncstate::RecordIndexPageV2 =
+            serde_json::from_slice(&fs.record_index_page_v2(&manifest.revision, 0).unwrap())
+                .unwrap();
+        let second_offset = first.next_offset.expect("continuation page");
+        let second: crate::syncstate::RecordIndexPageV2 = serde_json::from_slice(
+            &fs.record_index_page_v2(&manifest.revision, second_offset)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert!(
+            fs.record_index_projection().is_some_and(
+                |legacy| legacy.len() <= crate::syncstate::MAX_RECORD_INDEX_XATTR_BYTES
+            )
+        );
+
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(ROOT_INO, "new.txt", None, 1, 1)
+            .unwrap();
+        assert!(
+            fs.record_index_page_v2(&manifest.revision, 0).is_none(),
+            "a namespace revision invalidates a page cursor rather than mixing rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_catalog_v2_refuses_pages_after_a_live_acl_generation_change() {
+        const ME: [u8; 32] = [0xA3; 32];
+        let (namespace, fs) = fixture().await;
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(ROOT_INO, "visible.txt", Some(&Hash::from([3; 32])), 3, 1)
+            .unwrap();
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/visible.txt");
+        let handle = AclHandle::new(policy.clone());
+        let fs = fs.with_acl(handle.clone(), ME);
+        let before: crate::syncstate::RecordIndexManifestV2 =
+            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+
+        handle.replace(policy);
+        let after: crate::syncstate::RecordIndexManifestV2 =
+            serde_json::from_slice(&fs.record_index_manifest_v2().unwrap()).unwrap();
+        assert_ne!(before.revision, after.revision);
+        assert!(
+            fs.record_index_page_v2(&before.revision, 0).is_none(),
+            "a page issued under the old ACL generation cannot be replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_catalog_v3_hides_denied_corpus_and_stably_reaches_visible_rows() {
+        const ME: [u8; 32] = [0xA4; 32];
+        let (namespace, fs) = fixture().await;
+        let visible_record = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A deliberately large denied prefix must not change either the
+            // public manifest shape or the work of the visible page.
+            for index in 0..(crate::syncstate::RECORD_INDEX_PAGE_ENTRIES * 2) {
+                ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
+                    .unwrap();
+            }
+            let ino = ns.create_file(ROOT_INO, "visible.txt", None, 0, 1).unwrap();
+            ns.record_id_for(ino).unwrap()
+        };
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/visible.txt");
+        let fs = fs.with_acl(AclHandle::new(policy), ME);
+
+        let before = fs.record_index_manifest_v3().unwrap();
+        let manifest: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&before).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.initial_cursor.len(), 36);
+        let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first.records.len(), 1);
+        assert_eq!(first.records[0].record_id, visible_record);
+        assert!(first.next_cursor.is_none());
+        assert!(
+            fs.record_index_page_v3(&manifest.revision, "00000000-0000-0000-0000-000000000000")
+                .is_none()
+        );
+
+        // This would have leaked through a raw count, offset, source
+        // revision, or freshly-issued initial token.  It is indistinguishable
+        // to the restricted authority.
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
+            .unwrap();
+        fs.refresh_acl_visible_record_index();
+        assert_eq!(fs.record_index_manifest_v3().unwrap(), before);
+        assert!(
+            fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn record_catalog_v3_visible_change_resets_and_acl_revoke_fails_closed() {
+        const ME: [u8; 32] = [0xA5; 32];
+        let (namespace, fs) = fixture().await;
+        let first_record = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
+            ns.record_id_for(ino).unwrap()
+        };
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/");
+        let handle = AclHandle::new(policy.clone());
+        let fs = fs.with_acl(handle.clone(), ME);
+        let before: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+        assert!(fs.record_index_by_id_v2(first_record).is_some());
+
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(ROOT_INO, "second.txt", None, 0, 1)
+            .unwrap();
+        fs.refresh_acl_visible_record_index();
+        let after: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+        assert_ne!(before.revision, after.revision);
+        assert!(
+            fs.record_index_page_v3(&before.revision, &before.initial_cursor)
+                .is_none()
+        );
+
+        handle.replace(WorkspaceAcl::new());
+        let mut revoked = None;
+        for _ in 0..64 {
+            revoked = fs.record_index_manifest_v3();
+            if revoked.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let revoked: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&revoked.unwrap()).unwrap();
+        assert_ne!(after.revision, revoked.revision);
+        assert!(
+            fs.record_index_page_v3(&after.revision, &after.initial_cursor)
+                .is_none()
+        );
+        assert!(fs.record_index_by_id_v2(first_record).is_none());
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    #[tokio::test]
+    async fn record_catalog_v3_pages_a_large_visible_view_without_source_rescans() {
+        const ME: [u8; 32] = [0xA6; 32];
+        let (namespace, fs) = fixture().await;
+        {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for index in 0..=crate::syncstate::RECORD_INDEX_PAGE_ENTRIES {
+                ns.create_projected_file(
+                    ROOT_INO,
+                    format!("visible-{index:04}"),
+                    collab_types::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
+                    None,
+                    0,
+                    1,
+                )
+                .unwrap();
+            }
+        }
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/");
+        let fs = fs.with_acl(policy, ME);
+        let manifest: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+        let rebuilds = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_index_rebuild_count();
+        let page_reads = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_index_page_read_count();
+        let first: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            first.records.len(),
+            crate::syncstate::RECORD_INDEX_PAGE_ENTRIES
+        );
+        let second: crate::syncstate::RecordIndexPageV3 = serde_json::from_slice(
+            &fs.record_index_page_v3(&manifest.revision, first.next_cursor.as_deref().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert!(second.next_cursor.is_none());
+        assert!(
+            fs.record_index_by_id_v2(first.records[0].record_id)
+                .is_some()
+        );
+        assert_eq!(
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_rebuild_count(),
+            rebuilds,
+            "serving v3 continuations must not rebuild or walk the Automerge corpus"
+        );
+        assert_eq!(
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_index_page_read_count(),
+            page_reads,
+            "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_catalog_v3_refreshes_coalesced_remote_generations_off_request_path() {
+        const ME: [u8; 32] = [0xA7; 32];
+        let (namespace, fs) = fixture().await;
+        let visible_dir = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_dir(ROOT_INO, "visible", 1)
+            .unwrap();
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(visible_dir, "initial.txt", None, 0, 1)
+            .unwrap();
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/visible");
+        let sync = crate::sync::SyncHandle::test_handle();
+        let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+        let before: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
+        let page_reads = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_index_page_read_count();
+
+        // A denied remote mutation rebuilds privately but has no public
+        // generation/token effect. Several notifications coalesce to the
+        // latest watch value, not one traversal per received delta.
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
+            .unwrap();
+        for _ in 0..16 {
+            sync.notify_record_index_changed();
+        }
+        let mut hidden = None;
+        for _ in 0..64 {
+            hidden = fs.record_index_manifest_v3();
+            if hidden.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(hidden.unwrap(), serde_json::to_vec(&before).unwrap());
+        let after_hidden_reads = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_index_page_read_count();
+        assert!(
+            after_hidden_reads.saturating_sub(page_reads) <= 2,
+            "a burst must coalesce before rebuilding the retained view"
+        );
+
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .create_file(visible_dir, "remote.txt", None, 0, 1)
+            .unwrap();
+        let mut updated = None;
+        sync.notify_record_index_changed();
+        for _ in 0..64 {
+            updated = fs.record_index_manifest_v3();
+            if updated
+                .as_ref()
+                .is_some_and(|bytes| bytes != &serde_json::to_vec(&before).unwrap())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let updated: crate::syncstate::RecordIndexManifestV3 =
+            serde_json::from_slice(&updated.unwrap()).unwrap();
+        assert_ne!(updated.revision, before.revision);
+    }
+
+    #[tokio::test]
+    async fn record_catalog_v3_sync_worker_does_not_keep_dropped_mount_alive() {
+        const ME: [u8; 32] = [0xA8; 32];
+        let (_namespace, fs) = fixture().await;
+        let sync = crate::sync::SyncHandle::test_handle();
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/");
+        let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+        let weak = Arc::downgrade(&fs.acl_visible_record_index);
+        drop(fs);
+        sync.notify_record_index_changed();
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "the sync subscriber must use a weak cache reference and exit after unmount"
         );
     }
 }
