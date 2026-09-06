@@ -1,13 +1,10 @@
 //! Applications provider: apps you can open, launchable from the palette.
 //!
-//! Typing an app's name into Ctrl+K offers `Open <App>`, launched through
-//! [`crate::shell::launcher`]. This provider also offers apps the configured
-//! registries describe but do not have installed (see
-//! [`crate::shell::catalogue`]), with the same wording, subtitle, and
-//! activation as an installed app — nothing distinguishes them, because
-//! nothing different is happening from the user's side. A fetch-requiring
-//! open raises a standing "loading" notice rather than naming the fetch —
-//! the user asked to open an app, not to acquire one.
+//! Typing an installed app's name into Ctrl+K offers `Open <App>`, launched
+//! through [`crate::shell::launcher`]. Registry apps that are not installed
+//! intentionally take a different, safe route: the palette opens the Store's
+//! stable detail URI. The Store then shows provenance and offers the current
+//! revalidated install action; palette activation never downloads software.
 
 use std::rc::Rc;
 
@@ -26,6 +23,7 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// enough to break a tie without dragging a better match below a worse one
 /// (every band in [`match_score`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
+const STORE_PACKAGE_ID: &str = "dev.qos.store";
 
 /// Product-owned ordering for the empty Applications palette. Search queries
 /// continue to rank purely by match quality; this only prevents a fresh system
@@ -256,16 +254,15 @@ impl ApplicationsProvider {
             .collect()
     }
 
-    /// Score not-yet-installed apps and build their rows. Deliberately
-    /// mirrors [`Self::results_for`] field-for-field, so a row can't reveal
-    /// which list it came from. `installed` keeps an app from being offered
-    /// twice between an install finishing and the catalogue refetching.
+    /// Score not-yet-installed apps and build Store-detail rows. `installed`
+    /// keeps an app from being offered twice between an install finishing and the
+    /// catalogue refetching.
     pub(crate) fn catalogue_results_for(
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
         installed: &[String],
-        open_target: OpenTarget,
+        _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
@@ -288,20 +285,24 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            // Identical to the installed subtitle, field for field.
             let detail = catalogue_app_detail(needle, &app);
-            let subtitle = format!("{} · {detail}", open_target.result_hint());
+            let trust = if app.trust.trim().is_empty() {
+                "Registry verification pending".to_string()
+            } else {
+                app.trust.clone()
+            };
+            let subtitle = format!("App Store · {trust} · {detail}");
             out.push(SearchResult {
                 kind: ResourceKind::Application,
                 provider_id: self.id().to_string(),
-                id: app.package_id.clone(),
-                title: format!("Open {}", app.display_name),
+                id: format!("app:{}", app.package_id),
+                title: format!("View {} in App Store", app.display_name),
                 subtitle: Some(subtitle),
                 score: presentation_score(needle, &app.package_id, score)
                     .saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                    // Captured now, not re-read at launch: the window may be
-                    // a minute away and the user's selection can change.
+                    // Captured now, not re-read after the Store is launched:
+                    // the palette selection names this exact stable package.
                     let context = {
                         let st = chrome.borrow();
                         let tree = st.tree();
@@ -320,7 +321,7 @@ impl ApplicationsProvider {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open {display_name}"),
+                                format!("Couldn't open App Store for {display_name}"),
                                 launcher::LaunchError::NoWorkspace.user_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
@@ -332,34 +333,29 @@ impl ApplicationsProvider {
                         // the same failure, rather than success reported for an
                         // app that was never started.
                         return Err(ActionError::Refused(format!(
-                            "Couldn't open {display_name}: {}",
+                            "Couldn't open App Store for {display_name}: {}",
                             launcher::LaunchError::NoWorkspace.user_message()
                         )));
                     };
-                    // The palette closes the instant this returns, so this
-                    // notice is what stands between the user and an
-                    // apparently dead Enter key while the fetch runs.
-                    let notice = {
-                        let mut st = chrome.borrow_mut();
-                        let id = st.push_notification_full(
-                            Notification::new(
-                                format!("Opening {display_name}"),
-                                "Loading…".to_string(),
-                            )
-                            .with_app_name("Applications")
-                            .with_dismiss_after(std::time::Duration::from_secs(120)),
-                        );
-                        st.bump();
-                        id
-                    };
-                    catalogue::note_pending_notice(&package_id, notice);
-                    catalogue::install_and_launch(
-                        package_id.clone(),
-                        display_name.clone(),
-                        room,
-                        capabilities,
-                    );
-                    Ok(())
+                    let uri = store_detail_uri(&package_id)?;
+                    launcher::launch_uri_in_room(STORE_PACKAGE_ID, room, capabilities, &uri)
+                        .map(|_| ())
+                        .map_err(|error| {
+                            let message = error.user_message();
+                            let mut state = chrome.borrow_mut();
+                            state.push_notification_full(
+                                Notification::new(
+                                    format!("Couldn't open App Store for {display_name}"),
+                                    message.clone(),
+                                )
+                                .with_severity(NotificationSeverity::Error)
+                                .with_app_name("Applications"),
+                            );
+                            state.bump();
+                            ActionError::Refused(format!(
+                                "Couldn't open App Store for {display_name}: {message}"
+                            ))
+                        })
                 }),
                 on_invoke: None,
                 params: Vec::new(),
@@ -368,6 +364,20 @@ impl ApplicationsProvider {
         }
         out
     }
+}
+
+fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
+    if package_id.is_empty()
+        || package_id.len() > 255
+        || package_id
+            .chars()
+            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
+    {
+        return Err(ActionError::Refused(
+            "The catalogue entry has an invalid stable package identity".into(),
+        ));
+    }
+    Ok(format!("qos-store:app/{package_id}"))
 }
 
 /// The package id of the file manager qOS ships as a system app.
@@ -724,7 +734,7 @@ mod tests {
         );
         assert_eq!(
             by_description.first().map(|row| row.id.as_str()),
-            Some("dev.qos.ledger")
+            Some("app:dev.qos.ledger")
         );
 
         let across_fields = p.catalogue_results_for(
@@ -735,7 +745,7 @@ mod tests {
         );
         assert_eq!(
             across_fields.first().map(|row| row.id.as_str()),
-            Some("dev.qos.ledger")
+            Some("app:dev.qos.ledger")
         );
     }
 
@@ -961,11 +971,8 @@ mod tests {
         );
     }
 
-    // Apps not installed here yet: a fetched app's row must be
-    // indistinguishable from an installed one — asserted on exact strings.
-
     #[test]
-    fn an_uninstalled_app_offers_an_ordinary_open_row() {
+    fn an_uninstalled_app_opens_its_canonical_store_detail() {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "she",
@@ -975,11 +982,17 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "the offered app must match: {out:?}");
         assert_eq!(
-            out[0].title, "Open Sheets",
-            "an app the machine has to fetch is still just opened"
+            out[0].title, "View Sheets in App Store",
+            "palette activation must present a reviewable Store detail, not install"
         );
-        assert_eq!(out[0].id, "dev.qos.sheets");
+        assert_eq!(out[0].id, "app:dev.qos.sheets");
         assert_eq!(out[0].kind, ResourceKind::Application);
+        assert!(
+            out[0].subtitle.as_deref().is_some_and(
+                |subtitle| subtitle.contains("App Store") && subtitle.contains("verified")
+            ),
+            "the palette must disclose the review surface and trust claim"
+        );
         assert_eq!(
             out[0].provider_id, "applications",
             "one provider means one group header — a second would be a \
@@ -987,9 +1000,8 @@ mod tests {
         );
     }
 
-    /// Nothing in the user-visible strings may hint at installing.
     #[test]
-    fn nothing_in_an_uninstalled_row_says_install() {
+    fn palette_result_never_installs_and_store_uri_is_stable() {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "",
@@ -1007,39 +1019,29 @@ mod tests {
                  an app: {visible:?}"
             );
         }
+        assert_eq!(
+            store_detail_uri("dev.qos.sheets").unwrap(),
+            "qos-store:app/dev.qos.sheets"
+        );
+        assert!(store_detail_uri("dev.qos.sheets?install=true").is_err());
     }
 
-    /// Byte-for-byte the same subtitle an installed app with the same
-    /// metadata would produce.
     #[test]
-    fn an_uninstalled_row_has_the_same_subtitle_as_an_installed_one() {
+    fn uninstalled_rows_are_explicit_about_the_store_review_surface() {
         let p = ApplicationsProvider::new();
-        let installed = p.results_for(
-            "",
-            vec![app_in("dev.qos.sheets", "Sheets", Some("Office"))],
-            OpenTarget::Beside,
-        );
         let available = p.catalogue_results_for(
             "",
             vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
             &[],
             OpenTarget::Beside,
         );
-        assert_eq!(installed[0].title, available[0].title);
-        assert_eq!(
-            installed[0].subtitle, available[0].subtitle,
-            "the two rows have to be indistinguishable"
+        assert!(available[0].title.contains("App Store"));
+        assert!(
+            available[0]
+                .subtitle
+                .as_deref()
+                .is_some_and(|subtitle| subtitle.contains("verified"))
         );
-
-        // With no category declared, the subtitle falls back to id + version.
-        let installed = p.results_for("", vec![app("dev.qos.plain", "Plain")], OpenTarget::Beside);
-        let available = p.catalogue_results_for(
-            "",
-            vec![offered("dev.qos.plain", "Plain", None)],
-            &[],
-            OpenTarget::Beside,
-        );
-        assert_eq!(installed[0].subtitle, available[0].subtitle);
     }
 
     #[test]
@@ -1144,7 +1146,7 @@ mod tests {
             .notifications()
             .last()
             .expect("activation must never be silent");
-        assert_eq!(n.title, "Couldn't open Sheets");
+        assert_eq!(n.title, "Couldn't open App Store for Sheets");
         assert_eq!(n.severity, NotificationSeverity::Error);
         assert_eq!(
             n.body,
@@ -1154,53 +1156,33 @@ mod tests {
         );
     }
 
-    /// Must put something on screen on that frame, before the work starts —
-    /// the wait is seconds, and silence reads as a dead keystroke.
     #[test]
-    fn activating_an_app_that_has_to_load_says_so_immediately() {
+    fn shell_query_includes_an_uninstalled_app_as_a_store_detail_row() {
         let p = ApplicationsProvider::new();
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
-        let c = ChromeState::new_with_handle(handle);
-        let mut doc = AutoCommit::new();
-        let out = p.catalogue_results_for(
-            "sheets",
-            vec![offered("dev.qos.sheets", "Sheets", None)],
-            &[],
-            OpenTarget::Beside,
-        );
-        let row = out.first().expect("a row for the offered app");
-        assert!(c.borrow().notifications().is_empty());
-
-        let _ = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
-
-        let st = c.borrow();
-        let n = st
-            .notifications()
-            .first()
-            .expect("activation must never be silent");
-        assert_eq!(n.title, "Opening Sheets");
+        crate::shell::catalogue::seed_for_test(vec![offered(
+            "dev.qos.uninstalled-sheets",
+            "Sheets",
+            Some("Office"),
+        )]);
+        let c = chrome_rc();
+        let state = c.borrow();
+        let doc = AutoCommit::new();
+        let results = p.query(SearchContext {
+            needle: "sheets",
+            wanted: &[ResourceKind::Application],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let row = results
+            .iter()
+            .find(|row| row.id == "app:dev.qos.uninstalled-sheets")
+            .expect("Win+K finds the uninstalled stable app identity");
+        assert_eq!(row.title, "View Sheets in App Store");
         assert!(
-            n.dismiss_after >= std::time::Duration::from_secs(30),
-            "the indication has to outlast the wait it is covering, not \
-             flash and leave the user watching nothing"
-        );
-
-        // Must not name the mechanism — the user asked to open an app, not
-        // to acquire one.
-        let visible = format!("{} {}", n.title, n.body).to_lowercase();
-        for word in ["install", "download", "fetch", "registry"] {
-            assert!(
-                !visible.contains(word),
-                "{word:?} must not appear in what the user reads while \
-                 waiting for an app to open: {:?} / {:?}",
-                n.title,
-                n.body
-            );
-        }
-        assert!(
-            n.body.to_lowercase().contains("load"),
-            "the one thing to say is that it is loading: {:?}",
-            n.body
+            row.subtitle
+                .as_deref()
+                .is_some_and(|text| text.contains("verified"))
         );
     }
 
