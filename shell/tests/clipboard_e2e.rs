@@ -88,6 +88,10 @@ struct Compositor {
     /// The privileged socket — what a clipboard manager gets.
     privileged_socket: PathBuf,
     control_socket: PathBuf,
+    /// The durable tree used by this fixture.  Keeping it explicit lets a
+    /// lifecycle test restart the actual compositor process against the same
+    /// isolated desktop, rather than merely deserialising a second model.
+    state_path: PathBuf,
     /// Everything the compositor wrote to stderr, so a failure can quote the
     /// compositor's own account of what it did rather than only the client's.
     log: Arc<Mutex<Vec<String>>>,
@@ -189,6 +193,7 @@ impl Compositor {
             wayland_socket: runtime_dir.join(&found["public"]),
             privileged_socket: runtime_dir.join(&found["privileged"]),
             control_socket: PathBuf::from(&found["control"]),
+            state_path,
             runtime_dir,
             log: Arc::clone(&log),
         };
@@ -203,6 +208,32 @@ impl Compositor {
             this.privileged_socket.display()
         );
         this
+    }
+
+    /// Kill and relaunch the native headless compositor on its existing
+    /// isolated XDG tree.  This is deliberately a process restart: reading
+    /// `state.json` in the test process would not prove native startup and its
+    /// first-frame reconciliation keep a closed foreign surface absent.
+    fn restart_headless(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+
+        let identity_root = self.runtime_dir.join("identity-root");
+        let mut child = Self::spawn_compositor(
+            None,
+            self.size,
+            &self.runtime_dir,
+            &self.control_socket,
+            &self.state_path,
+            &identity_root,
+            false,
+        );
+        let rx = Self::drain_log_pipes(&mut child, &self.log);
+        let found = Self::wait_for_sockets(&rx, &mut child, &self.log);
+        self.wayland_socket = self.runtime_dir.join(&found["public"]);
+        self.privileged_socket = self.runtime_dir.join(&found["privileged"]);
+        self.control_socket = PathBuf::from(&found["control"]);
+        self.child = child;
     }
 
     /// Give this desktop fixture an already-completed identity ceremony.
@@ -395,6 +426,34 @@ impl Compositor {
             .unwrap_or_else(|e| panic!("control response was not JSON ({e}): {response:?}"))
     }
 
+    /// The native compositor's current durable tree, exposed by the
+    /// test-control endpoint rather than reached through this test's model.
+    fn workspace_tree(&self) -> serde_json::Value {
+        self.control(&serde_json::json!({"op": "state_dump"}))
+            .get("state")
+            .and_then(|state| state.get("workspace_tree"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state dump omitted workspace_tree"))
+    }
+
+    fn key(&self, key: &str) {
+        let response = self.control(&serde_json::json!({"op": "key", "key": key}));
+        assert!(
+            response.get("ok").is_some(),
+            "key {key:?} failed: {response:?}"
+        );
+    }
+
+    fn modifiers(&self, ctrl: bool, shift: bool, alt: bool, logo: bool) {
+        let response = self.control(&serde_json::json!({
+            "op": "modifiers", "ctrl": ctrl, "shift": shift, "alt": alt, "logo": logo,
+        }));
+        assert!(
+            response.get("ok").is_some(),
+            "modifier update failed: {response:?}"
+        );
+    }
+
     fn chrome_copy(&self, text: &str, primary: bool) {
         let resp = self.control(&serde_json::json!({
             "op": "clipboard_copy", "text": text, "primary": primary,
@@ -527,6 +586,72 @@ fn window_group_count(tree: &serde_json::Value) -> usize {
     count
 }
 
+/// Foreign clients are keyed by the compositor-global surface id, never by
+/// app-id. This deliberately returns every surface for an app so a two-window
+/// application cannot pass lifecycle coverage by folding its windows into one
+/// tab. The low protocol-id bits may legitimately match across connections.
+fn foreign_surface_ids(tree: &serde_json::Value, app_id: &str) -> Vec<u64> {
+    let mut ids = Vec::new();
+    walk_json(tree, &mut |value| {
+        let Some(foreign) = value.get("Foreign") else {
+            return;
+        };
+        if foreign.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id)
+            && let Some(id) = foreign
+                .get("surface_id")
+                .and_then(serde_json::Value::as_u64)
+        {
+            ids.push(id);
+        }
+    });
+    ids.sort_unstable();
+    ids
+}
+
+fn wait_for_foreign_surface_count(
+    compositor: &Compositor,
+    app_id: &str,
+    count: usize,
+    label: &str,
+) -> Vec<u64> {
+    let started = Instant::now();
+    loop {
+        let ids = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+        if ids.len() == count {
+            return ids;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "{label}; wanted {count} surfaces, got {ids:?}.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn group_order(tree: &serde_json::Value) -> Vec<u64> {
+    tree.get("workspaces")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|workspace| {
+            workspace
+                .get("strips")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .flat_map(|strip| {
+            strip
+                .get("window_groups")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|group| group.get("id").and_then(serde_json::Value::as_u64))
+        .collect()
+}
+
 /// Monotonic suffix so two compositors in one test process never collide on a
 /// runtime-dir name.
 fn next_id() -> u64 {
@@ -558,6 +683,10 @@ struct ClientState {
     configured: bool,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
+    /// The compositor requested that this exact xdg toplevel exit.  `close`
+    /// carries no serial/ack: the application proves it acted by destroying
+    /// its own objects below.
+    toplevel_close_requested: bool,
     /// The exact XKB text keymap the compositor sent on keyboard focus. A
     /// protocol client must make decisions from this map, not from the
     /// compositor's preferred locale or from the test process environment.
@@ -604,6 +733,7 @@ struct TestClient {
     qh: QueueHandle<ClientState>,
     state: ClientState,
     surface: Option<WlSurface>,
+    xdg_surface: Option<XdgSurface>,
     toplevel: Option<XdgToplevel>,
     data_device: Option<WlDataDevice>,
     primary_device: Option<ZwpPrimarySelectionDeviceV1>,
@@ -626,6 +756,7 @@ impl TestClient {
             qh,
             state,
             surface: None,
+            xdg_surface: None,
             toplevel: None,
             data_device: None,
             primary_device: None,
@@ -693,6 +824,7 @@ impl TestClient {
         toplevel.set_app_id(self.app_id.clone());
         surface.commit();
         self.surface = Some(surface.clone());
+        self.xdg_surface = Some(xdg_surface);
         self.toplevel = Some(toplevel);
         self.step(&format!(
             "toplevel committed (wl_surface protocol id {}), waiting for keyboard focus",
@@ -851,6 +983,22 @@ impl TestClient {
         self.queue
             .roundtrip(&mut self.state)
             .expect("client roundtrip while pumping");
+    }
+
+    /// Cooperate with an `xdg_toplevel.close` by destroying in reverse
+    /// creation order.  A compositor close request is intentionally not a
+    /// process kill, so this is the application's observable exit action.
+    fn destroy_toplevel(&mut self) {
+        if let Some(toplevel) = self.toplevel.take() {
+            toplevel.destroy();
+        }
+        if let Some(xdg_surface) = self.xdg_surface.take() {
+            xdg_surface.destroy();
+        }
+        if let Some(surface) = self.surface.take() {
+            surface.destroy();
+        }
+        self.conn.flush().expect("flush client teardown");
     }
 
     /// Take ownership of the clipboard. The source stays alive on `self.state`
@@ -1211,13 +1359,16 @@ impl Dispatch<XdgSurface, ()> for ClientState {
 
 impl Dispatch<XdgToplevel, ()> for ClientState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &XdgToplevel,
-        _: xdg_toplevel::Event,
+        event: xdg_toplevel::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if matches!(event, xdg_toplevel::Event::Close) {
+            state.toplevel_close_requested = true;
+        }
     }
 }
 
@@ -2144,6 +2295,244 @@ fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
         client.state.keyboard_events,
         vec![(15, true), (15, false)],
         "the first post-capture key must have one matched press/release and no delayed Print release"
+    );
+}
+
+/// The desktop's core lifecycle must be true at the protocol boundary, not
+/// only after directly mutating a `WorkspaceTree`: two actual xdg clients
+/// sharing an app-id remain separate; real shortcut input navigates and
+/// reorders their groups; close reaches the selected client's `xdg_toplevel`;
+/// then that client's own destroy, unrelated chrome revisions, and a fresh
+/// compositor process all keep the selected surface absent.
+#[test]
+fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart() {
+    let mut compositor = Compositor::start();
+    let app_id = "org.qos.test.same-app-lifecycle";
+
+    // NewGroup is the production pending-placement path.  Use it twice for
+    // the same app-id: app-id identity is intentionally insufficient to
+    // identify one of an application's windows.
+    compositor.place_next_window(app_id);
+    let mut first = TestClient::new(compositor.connect(), app_id);
+    first.assert_is_qos_compositor();
+    first.map_window(&compositor);
+    let first_protocol_id = u64::from(
+        first
+            .surface
+            .as_ref()
+            .expect("first client surface")
+            .id()
+            .protocol_id(),
+    );
+    let first_ids = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        1,
+        "the first mapped client did not contribute exactly one foreign surface",
+    );
+    let first_surface = first_ids
+        .first()
+        .copied()
+        .expect("the first mapped client's compositor-global surface id");
+
+    compositor.place_next_window(app_id);
+    let mut selected = TestClient::new(compositor.connect(), app_id);
+    selected.assert_is_qos_compositor();
+    selected.map_window(&compositor);
+    let selected_protocol_id = u64::from(
+        selected
+            .surface
+            .as_ref()
+            .expect("selected client surface")
+            .id()
+            .protocol_id(),
+    );
+    assert_eq!(
+        first_protocol_id, selected_protocol_id,
+        "independent Wayland clients may reuse the same protocol-local object id"
+    );
+
+    let initial_ids = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        2,
+        "two mapped windows from one app-id did not occupy distinct foreign tabs",
+    );
+    let selected_surface = *initial_ids
+        .iter()
+        .find(|surface| **surface != first_surface)
+        .expect("the second client receives its own compositor-global surface id");
+    assert_ne!(
+        first_surface, selected_surface,
+        "the compositor must namespace equal protocol ids by client connection"
+    );
+    let initial = compositor.workspace_tree();
+
+    // These go through the native test-control executor, its real
+    // `WindowEvent` dispatch, and the per-frame compositor reconciliation.
+    // They are deliberately not calls to the host's navigation/reorder model.
+    let active_before_super = initial.get("active_group").cloned();
+    compositor.modifiers(false, false, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    let after_super = compositor.workspace_tree();
+    assert_ne!(
+        after_super.get("active_group").cloned(),
+        active_before_super,
+        "Super+Left must navigate away from the focused real client group"
+    );
+
+    let active_before_alt = after_super.get("active_group").cloned();
+    compositor.modifiers(false, false, true, false);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
+    let after_alt = compositor.workspace_tree();
+    assert_ne!(
+        after_alt.get("active_group").cloned(),
+        active_before_alt,
+        "Alt+Tab must traverse a live window group rather than only acknowledge input"
+    );
+
+    // Let the client itself tell us where it is on screen, then click it to
+    // make the later close target unambiguous after both navigation paths.
+    let point = selected.pointer_target(&compositor);
+    compositor.click_at(point.0, point.1);
+    selected.wait_until(
+        |state| state.keyboard_focused,
+        "pointer focus did not return to the selected same-app client",
+    );
+
+    let order_before = group_order(&compositor.workspace_tree());
+    compositor.modifiers(false, true, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    assert_ne!(
+        group_order(&compositor.workspace_tree()),
+        order_before,
+        "Super+Shift+Left must reorder the focused real client's group"
+    );
+
+    // Re-read the real client's pointer enter after layout changed, then use
+    // the actual close shortcut.  The close event has no protocol ack; the
+    // selected client proves receipt and cooperates by destroying its objects.
+    let point = selected.pointer_target(&compositor);
+    compositor.click_at(point.0, point.1);
+    selected.wait_until(
+        |state| state.keyboard_focused,
+        "selected client lost focus before its close shortcut",
+    );
+    compositor.modifiers(false, false, false, true);
+    compositor.key("w");
+    compositor.modifiers(false, false, false, false);
+    selected.wait_until(
+        |state| state.toplevel_close_requested,
+        "Super+W did not reach the selected xdg_toplevel.close",
+    );
+    first.roundtrip();
+    assert!(
+        !first.state.toplevel_close_requested,
+        "closing one window must not address its same-app sibling"
+    );
+    selected.destroy_toplevel();
+
+    let wait_for_tree = |want: &[u64], label: &str| {
+        let started = Instant::now();
+        loop {
+            let got = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+            if got == want {
+                return;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "{label}; wanted {want:?}, got {got:?}.\n{}",
+                compositor.debug_state()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    wait_for_tree(
+        &[first_surface],
+        "destroying the selected client did not reap exactly its foreign tab",
+    );
+
+    // A chrome-only revision exercises the native frame loop's foreign-tab
+    // mirror while the first same-app client remains live.  It used to be the
+    // edge that reinserted a still-closing foreign surface.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
+    compositor.key("Escape");
+    wait_for_tree(
+        &[first_surface],
+        "an unrelated revision/resync resurrected the selected closed surface",
+    );
+
+    // The actual QOS_STATE_PATH must contain no process-local Wayland ids.
+    // This read uses the production persistence decoder, not a raw string
+    // search. Live exact-close durability was established above while the
+    // innocent sibling remained mapped; restart safety is the separate rule
+    // that neither live surface id may be serialized as restorable layout.
+    let persisted = shell::shell::persist::load_tree_from(&compositor.state_path)
+        .expect("the close must atomically persist a reloadable WorkspaceTree");
+    let persisted = serde_json::to_value(persisted).expect("serialize persisted tree for probe");
+    assert_eq!(
+        foreign_surface_ids(&persisted, app_id),
+        Vec::<u64>::new(),
+        "QOS_STATE_PATH must strip every process-local foreign surface binding"
+    );
+
+    compositor.restart_headless();
+    let wait_selected_absent = |label: &str| {
+        let started = Instant::now();
+        loop {
+            let got = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+            if !got.contains(&selected_surface) {
+                return;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "{label}; selected {selected_surface:?} reappeared in {got:?}.\n{}",
+                compositor.debug_state()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    wait_selected_absent("the restarted native compositor resurrected a durably closed surface");
+
+    // Reconnect a fresh process from the same application after native
+    // startup.  Whether startup prunes the now-disconnected old sibling or
+    // keeps its persisted placeholder is an independent policy; neither may
+    // manufacture the selected surface id, and a new same-app window must be
+    // adopted as its own new protocol surface.
+    let mut survivor = TestClient::new(compositor.connect(), app_id);
+    survivor.assert_is_qos_compositor();
+    survivor.map_window(&compositor);
+    let survivor_protocol_id = u64::from(
+        survivor
+            .surface
+            .as_ref()
+            .expect("reconnected same-app surface")
+            .id()
+            .protocol_id(),
+    );
+    let after_reconnect = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        1,
+        "the fresh same-app client was not adopted after restart",
+    );
+    let survivor_surface = after_reconnect
+        .first()
+        .copied()
+        .expect("the reconnected client's compositor-global surface id");
+    assert_eq!(
+        survivor_surface & u64::from(u32::MAX),
+        survivor_protocol_id,
+        "the global identity must retain the client's protocol-local low bits"
+    );
+    assert!(
+        after_reconnect.contains(&survivor_surface) && !after_reconnect.contains(&selected_surface),
+        "a same-app reconnect must add its new surface without resurrecting the selected closed one; got {after_reconnect:?}"
     );
 }
 
