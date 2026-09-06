@@ -1918,6 +1918,64 @@ mod tests {
     }
 
     #[test]
+    fn native_oobe_routes_external_focus_and_editable_text_to_the_live_widget() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+
+        let intro = fb.build_a11y_tree_update(focus, 1.0);
+        let (existing_id, _) = exported_node_named(&intro, "Use existing")
+            .expect("the external tree exposes the Connect-existing action");
+        assert!(fb.dispatch_a11y_action(
+            existing_id,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+
+        let connect = fb.build_a11y_tree_update(focus, 1.0);
+        let (field_id, field) = exported_node_named(&connect, "Identity backup file")
+            .expect("the non-secret identity-path field reaches the external tree");
+        assert_eq!(field.role(), ui::accesskit::Role::TextInput);
+        assert!(field.supports_action(ui::accesskit::Action::Focus));
+        assert!(field.supports_action(ui::accesskit::Action::SetValue));
+        assert_eq!(field.value(), Some(""));
+
+        assert!(fb.dispatch_a11y_action(
+            field_id,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            focused_name(&fb, focus).as_deref(),
+            Some("Identity backup file"),
+            "an external focus request must update the compositor's real focus cursor"
+        );
+
+        let probe = "qos-atspi-edit-probe";
+        assert!(fb.dispatch_a11y_action(
+            field_id,
+            &ui::a11y::Action::SetValue(probe.into()),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+
+        let updated = fb.build_a11y_tree_update(focus, 1.0);
+        let (_, field) = exported_node_named(&updated, "Identity backup file")
+            .expect("the editable field remains externally addressable after its update");
+        assert_eq!(field.value(), Some(probe));
+    }
+
+    #[test]
     fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
         let (mut fb, _identity_dir) = onboarding_frame();
         let mut focus = None;
