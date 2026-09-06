@@ -1,6 +1,0 @@
-Command: cargo clippy -p ui -p shell -p vello --lib --example ui-perf --example redraw_bench --example retained_scene_probe --locked --no-deps -- -D warnings
-Exit code: 0
-
-    Checking shell v0.1.0 (/home/xaver/qos/shell)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.10s
-
