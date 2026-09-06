@@ -87,7 +87,10 @@ pub(crate) fn set_x11_session(session: Option<X11Session>) {
     }
 }
 
-fn x11_session() -> Option<X11Session> {
+/// The only X11 connection host launches may inherit. The compositor revokes
+/// this as soon as its bridge exits; callers must treat `None` as a deliberate
+/// Wayland-only launch, never fall back to ambient DISPLAY/XAUTHORITY.
+pub(crate) fn x11_session() -> Option<X11Session> {
     x11_slot().read().ok().and_then(|slot| slot.clone())
 }
 
@@ -427,6 +430,37 @@ mod tests {
         assert!(
             !cmd.env.iter().any(|(key, _)| key.contains("WORKSPACE")),
             "portal attribution is compositor bookkeeping, not ambient authority"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn revoked_x11_session_cannot_leak_into_a_later_host_launch() {
+        let app = app("com.example.Legacy", "Legacy", &["legacy"]);
+        set_x11_session(Some(X11Session {
+            display: ":1234".into(),
+            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+        }));
+        assert!(x11_session().is_some(), "fixture published an X11 bridge");
+
+        // This is the exact action SessionXwayland takes after reaping its
+        // child. A later host launch must receive no stale bridge arguments.
+        set_x11_session(None);
+        let command = build_launch_command(
+            &app,
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-2"),
+            None,
+            x11_session().as_ref(),
+            None,
+            None,
+        );
+        assert!(
+            !command
+                .args
+                .iter()
+                .any(|arg| arg == "--x11-display" || arg == "--x11-authority"),
+            "a dead bridge must not hand a later X11/Electron launch stale connection details"
         );
     }
 

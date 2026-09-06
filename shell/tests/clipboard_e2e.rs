@@ -2063,7 +2063,6 @@ fn installed_electron_client_consumes_host_launch_token_through_private_xwayland
 }
 
 #[test]
-#[ignore = "starts a private generic X11 client through xwayland-satellite; opt in for compatibility review"]
 fn generic_x11_client_relays_compositor_token_through_private_satellite() {
     let compositor = Compositor::start_host_desktop();
     let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-x11-token");
