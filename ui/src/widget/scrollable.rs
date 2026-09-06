@@ -171,6 +171,10 @@ pub struct Scrollable {
     /// clean boundary instead of clipping half a text baseline against the
     /// footer.
     bottom_content_inset: f32,
+    /// Additional bottom lane used only when the resolved viewport is this
+    /// compact or shorter. Long-form setup pages use it to end their initial
+    /// frame between blocks without wasting space on a normal-height dialog.
+    compact_bottom_content_inset: Option<(f32, f32)>,
 }
 
 impl Scrollable {
@@ -212,6 +216,7 @@ impl Scrollable {
             persisted_offset: None,
             content_gutter: 0.0,
             bottom_content_inset: 0.0,
+            compact_bottom_content_inset: None,
         }
     }
     pub fn new_vertical() -> Self {
@@ -300,9 +305,27 @@ impl Scrollable {
         self
     }
 
+    /// Reserve a larger clean bottom edge only for a compact resolved
+    /// viewport. This is evaluated after layout, so callers need not guess
+    /// how a max-height dialog will shrink on a short display.
+    #[must_use]
+    pub fn with_compact_bottom_content_inset(mut self, max_viewport_height: f32, px: f32) -> Self {
+        self.compact_bottom_content_inset = Some((max_viewport_height.max(0.0), px.max(0.0)));
+        self
+    }
+
     fn active_bottom_content_inset(&self) -> f32 {
         if self.content_h > self.viewport_h + FIT_EPS {
-            self.bottom_content_inset
+            self.compact_bottom_content_inset.map_or(
+                self.bottom_content_inset,
+                |(max_height, compact)| {
+                    if self.viewport_h <= max_height {
+                        self.bottom_content_inset.max(compact)
+                    } else {
+                        self.bottom_content_inset
+                    }
+                },
+            )
         } else {
             0.0
         }

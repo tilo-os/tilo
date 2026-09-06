@@ -121,17 +121,26 @@ impl LockLayout {
             .min(width / 2.0)
             .min(height / 2.0);
         let desired_scale = f64::from(theme.ui_scale).clamp(0.8, 1.6);
+        // Text-only accessibility scaling must reserve room in the lock
+        // chrome too.  The compositor draws the clock and the form labels
+        // directly, rather than through the normal widget layout engine, so
+        // leaving these slots at their default dimensions made large type
+        // encroach on the date and status rows.
+        let text_scale = f64::from(theme.text_scale).clamp(0.5, 4.0);
+        let unscaled_panel_height = 222.0 + 126.0 * (text_scale - 1.0);
+        let unscaled_stack_height =
+            72.0 * text_scale + 2.0 * text_scale + 26.0 * text_scale + 24.0 + unscaled_panel_height;
         let width_fit = ((width - edge * 2.0) / 408.0).max(0.0);
-        let height_fit = ((height - edge * 2.0) / 372.0).max(0.0);
+        let height_fit = ((height - edge * 2.0) / unscaled_stack_height).max(0.0);
         // Startup can briefly report a 1×1 output before the first modeset.
         // Keep every rect contained even then; this is not a user-facing scale.
         let scale = desired_scale.min(width_fit).min(height_fit).max(0.001);
 
         let panel_width = 384.0 * scale;
-        let panel_height = 222.0 * scale;
-        let clock_height = 68.0 * scale;
-        let date_height = 26.0 * scale;
-        let clock_date_gap = 2.0 * scale;
+        let panel_height = unscaled_panel_height * scale;
+        let clock_height = 72.0 * text_scale * scale;
+        let date_height = 26.0 * text_scale * scale;
+        let clock_date_gap = 2.0 * text_scale * scale;
         let panel_gap = 24.0 * scale;
         let stack_height = clock_height + clock_date_gap + date_height + panel_gap + panel_height;
         let top = output.origin.1 + (height - stack_height) / 2.0;
@@ -164,19 +173,19 @@ impl LockLayout {
             panel.x0 + 24.0 * scale,
             icon.y1 + 6.0 * scale,
             panel.x1 - 24.0 * scale,
-            icon.y1 + 34.0 * scale,
+            icon.y1 + 34.0 * text_scale * scale,
         );
         let password = Rect::new(
             panel.x0 + 30.0 * scale,
             title.y1 + 12.0 * scale,
             panel.x1 - 30.0 * scale,
-            title.y1 + 58.0 * scale,
+            title.y1 + 12.0 * scale + 46.0 * text_scale * scale,
         );
         let status = Rect::new(
             password.x0,
             password.y1 + 8.0 * scale,
             password.x1,
-            password.y1 + 34.0 * scale,
+            password.y1 + 8.0 * scale + 26.0 * text_scale * scale,
         );
         let notifications = Rect::new(
             password.x0,
@@ -941,6 +950,65 @@ mod tests {
             assert_inside(layout.password, layout.panel, "password/panel");
             assert_inside(layout.status, layout.panel, "status/panel");
             assert_inside(layout.notifications, layout.panel, "notifications/panel");
+        }
+    }
+
+    #[test]
+    fn accessible_lock_layout_reserves_every_text_row() {
+        let output = LockOutput {
+            origin: (0.0, 0.0),
+            size: (1280.0, 720.0),
+            scale: 1.0,
+        };
+        let normal = LockLayout::for_output(output, &Theme::dark());
+
+        for theme in [
+            Theme::dark().with_text_scale(1.3),
+            Theme::high_contrast()
+                .with_ui_scale(1.25)
+                .with_text_scale(1.3),
+        ] {
+            let layout = LockLayout::for_output(output, &theme);
+            let mut text = TextRenderer::new();
+            for (label, value, size, rect) in [
+                ("clock", "21:47", 56.0, layout.clock),
+                ("date", "Saturday, September 5", 18.0, layout.date),
+                ("title", "Session locked", 20.0, layout.title),
+                ("password", "Enter password", 15.0, layout.password),
+                (
+                    "status",
+                    "Incorrect username or password",
+                    13.0,
+                    layout.status,
+                ),
+                (
+                    "notifications",
+                    "12 notifications",
+                    13.0,
+                    layout.notifications,
+                ),
+            ] {
+                let (_, measured_height) = text.measure(
+                    value,
+                    scaled_text_size(size, layout.scale, &theme),
+                    Some(rect.width() as f32),
+                );
+                assert!(
+                    f64::from(measured_height) <= rect.height() + 0.5,
+                    "{label} text must fit its own row under {}: measured={measured_height}, row={rect:?}",
+                    theme.name,
+                );
+            }
+            assert!(layout.clock.y1 <= layout.date.y0);
+            assert!(layout.date.y1 <= layout.panel.y0);
+            assert!(layout.icon.y1 <= layout.title.y0);
+            assert!(layout.title.y1 <= layout.password.y0);
+            assert!(layout.password.y1 <= layout.status.y0);
+            assert!(layout.status.y1 <= layout.notifications.y0);
+            assert!(
+                layout.panel.height() > normal.panel.height(),
+                "large text must receive additional panel space"
+            );
         }
     }
 

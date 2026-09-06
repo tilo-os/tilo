@@ -62,7 +62,7 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// A labelled checkbox has a 44 px minimum target. Decision pages pin that
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
-const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 56.0;
+const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -775,20 +775,25 @@ impl OnboardingView {
             content = content.push(notice);
         }
         content = content.push(body);
-        // Every identity page keeps its choices outside the scroll region.
-        // This makes the three steps feel like one stable dialog and prevents
-        // a 720p viewport or longer translation from hiding Back/Continue.
+        // Every identity page keeps its choices outside the scroll region,
+        // except Backup. Its acknowledgement follows a form that can be
+        // taller than a compact accessible viewport; pinning it over that
+        // form made the initial frame bisect fields and explanatory copy.
+        // Keeping that one decision in the existing scroll flow preserves a
+        // clean viewport edge and still exposes the same keyboard actions.
         let footer_gap = spacing.s3;
-        let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery)
-            || (self.flow.screen() == Screen::Done
-                && !self.identity_ready_page
-                && !self.backup_was_verified);
-        let footer_height = FOOTER_HEIGHT
-            + if acknowledgement_footer {
-                ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
-            } else {
-                0.0
-            };
+        let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
+        let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
+        let footer_height = if backup_in_scroll {
+            0.0
+        } else {
+            FOOTER_HEIGHT
+                + if acknowledgement_footer {
+                    ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
+                } else {
+                    0.0
+                }
+        };
         let scroll_height = (panel_height - footer_height - footer_gap).max(120.0);
         let fill_panel = theme.text_scale > 1.0
             || theme.name.eq_ignore_ascii_case("high contrast")
@@ -796,20 +801,39 @@ impl OnboardingView {
             || (self.flow.screen() == Screen::Done && !self.identity_ready_page);
         let scroll = Scrollable::new_vertical()
             .with_content_gutter(spacing.s3)
-            .with_bottom_content_inset(spacing.s3)
+            // Backup has no external sticky footer. Giving it the usual
+            // footer lane would clip its in-flow Continue control despite
+            // there being clear card space below it on compact displays.
+            .with_bottom_content_inset(if backup_in_scroll { 0.0 } else { spacing.s3 })
+            // A 960×540 large-text/high-contrast dialog resolves to a 492 px
+            // scroll viewport. Keep its first frame's edge in the gap between
+            // the form card and recovery copy; the full-height 672 px dialog
+            // retains room for the acknowledgement and Continue action.
+            .with_compact_bottom_content_inset(
+                520.0,
+                if backup_in_scroll
+                    && (theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast"))
+                {
+                    spacing.s12
+                } else {
+                    0.0
+                },
+            )
             .with_child(Box::new(content));
         let scroll = if fill_panel {
             scroll.fill_parent_height()
         } else {
             scroll.with_max_height(scroll_height)
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_gap(spacing.s3)
-                .push(Box::new(scroll))
-                .push(self.identity_footer(theme)),
-        )
+        let composition = Column::new()
+            .with_no_padding()
+            .with_gap(spacing.s3)
+            .push(Box::new(scroll));
+        if backup_in_scroll {
+            Box::new(composition)
+        } else {
+            Box::new(composition.push(self.identity_footer(theme)))
+        }
     }
 
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -818,16 +842,6 @@ impl OnboardingView {
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
                     .with_label(ACKNOWLEDGEMENT),
-            ),
-            Screen::Done if !self.identity_ready_page && !self.backup_was_verified => Some(
-                Checkbox::new(
-                    "onboarding.backup.skip-acknowledged.box",
-                    KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                )
-                .with_id("onboarding.backup.skip-acknowledged.row")
-                .with_label(
-                    "I understand that without an encrypted backup, losing this device means losing this identity.",
-                ),
             ),
             _ => None,
         };
@@ -838,6 +852,13 @@ impl OnboardingView {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
+                // Match the scroll content gutter so a long acknowledgement
+                // measures and wraps inside the panel rather than running
+                // into its edge. The vertical inset is part of the sticky
+                // footer's reserved height and keeps the label distinct from
+                // the action row below it.
+                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                .with_vertical_padding(theme.tokens.spacing.s2)
                 .with_gap(theme.tokens.spacing.s3)
                 .push(Box::new(acknowledgement))
                 .push(self.identity_actions()),
@@ -1070,7 +1091,10 @@ impl OnboardingView {
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new().with_no_padding().with_gap(spacing.s3);
+        let mut list = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s3);
         for point in INTRO_POINTS {
             list = list.push(bullet(point, theme));
         }
@@ -1178,7 +1202,10 @@ impl OnboardingView {
 
     fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new().with_no_padding().with_gap(spacing.s4);
+        let mut list = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4);
         for point in NO_RECOVERY_POINTS {
             list = list.push(bullet(point, theme));
         }
@@ -1285,7 +1312,16 @@ impl OnboardingView {
             Some(KEY_BACKUP_BROWSE),
         )
         .fit_content(40.0);
-        backup = backup.push(actions(vec![Box::new(backup_button)]));
+        // The form's action is visually distinct from the confirmation field.
+        // In a text-only accessibility scale, the card can otherwise shrink
+        // the column gap until the button appears to touch that field.
+        backup = backup.push(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_vertical_padding(theme.tokens.spacing.s2)
+                .push(actions(vec![Box::new(backup_button)])),
+        ));
 
         let mut page = Column::new()
             .with_no_padding()
@@ -1308,7 +1344,42 @@ impl OnboardingView {
                 theme,
             ));
         }
-        Box::new(page)
+        // Backup deliberately keeps this acknowledgement and its existing
+        // Continue action in the document flow. On compact/large-text
+        // displays a sticky version overlays the passphrase form, whereas a
+        // scrollable decision block keeps each field and button fully
+        // reachable without a clipped resting frame.
+        let decision = if self.backup_was_verified {
+            self.identity_actions()
+        } else {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                    .with_vertical_padding(theme.tokens.spacing.s2)
+                    .with_gap(theme.tokens.spacing.s3)
+                    .push(Box::new(
+                        Checkbox::new(
+                            "onboarding.backup.skip-acknowledged.box",
+                            KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                        )
+                        .with_id("onboarding.backup.skip-acknowledged.row")
+                        .with_label(
+                            "I understand that without an encrypted backup, losing this device means losing this identity.",
+                        ),
+                    ))
+                    .push(self.identity_actions()),
+            )
+        };
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s4)
+                .push(Box::new(page))
+                .push(decision),
+        )
     }
 
     fn done(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -2180,7 +2251,22 @@ impl Widget for OnboardingView {
         } else {
             PANEL_MAX_HEIGHT
         };
-        let mut composed = self.build_composition(theme, panel_height);
+        let dense_identity_page = self.tour_page.is_none()
+            && (accessibility_expanded
+                || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+                || (self.flow.screen() == Screen::Done && !self.identity_ready_page));
+        // The scroll/footer budget must use the same preferred height as the
+        // composition itself. Previously dense normal-text pages measured a
+        // 640 px scroll region and were then placed in a 560 px card, putting
+        // the sticky action on top of its scrolling sibling.
+        let composition_height = if accessibility_expanded {
+            ACCESSIBLE_PANEL_HEIGHT
+        } else if dense_identity_page {
+            DENSE_PANEL_PREFERRED_HEIGHT
+        } else {
+            panel_height
+        };
+        let mut composed = self.build_composition(theme, composition_height);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -2192,10 +2278,6 @@ impl Widget for OnboardingView {
             // Pages with little content should own only the space they need.
             // The scroll viewport above caps longer pages, so this still
             // cannot exceed the safe laptop-height panel.
-            let dense_identity_page = self.tour_page.is_none()
-                && (accessibility_expanded
-                    || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
-                    || (self.flow.screen() == Screen::Done && !self.identity_ready_page));
             cs.size.height = if accessibility_expanded {
                 taffy::Dimension::length(ACCESSIBLE_PANEL_HEIGHT)
             } else if dense_identity_page {
@@ -3765,6 +3847,40 @@ mod tests {
                     );
                 }
 
+                let backup_page = view.flow().screen() == Screen::Done
+                    && !view.identity_ready_page
+                    // The identity-mint failure variant deliberately replaces
+                    // the passphrase form with its recovery action.
+                    && node_map.values().any(|&pointer| unsafe {
+                        (*pointer).test_id() == Some("onboarding.backup.passphrase")
+                    });
+                if backup_page {
+                    let max_offset = f64::from(scroll.max_offset_y());
+                    for control_id in [
+                        "onboarding.backup.passphrase",
+                        "onboarding.backup.confirmation",
+                        "onboarding.backup.button",
+                        "onboarding.backup.skip-acknowledged.row",
+                        "onboarding.backup.continue.button",
+                    ] {
+                        let control = widget_rect(control_id);
+                        assert!(
+                            !(control.y0 < content_viewport.y1 && control.y1 > content_viewport.y1),
+                            "the initial Backup frame must not bisect an interactive control at {width}x{height}: control={control_id} {control:?}, clip={content_viewport:?}, theme={}",
+                            theme.name,
+                        );
+                        let earliest_offset = (control.y1 - content_viewport.y1).max(0.0);
+                        let latest_offset = (control.y0 - content_viewport.y0).min(max_offset);
+                        assert!(
+                            control.height() <= content_viewport.height()
+                                && earliest_offset <= latest_offset + 0.5,
+                            "Backup control must be fully reachable by scrolling at {width}x{height}: control={control_id} {control:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                            theme.name,
+                        );
+                    }
+                    continue;
+                }
+
                 let rects = action_ids
                     .iter()
                     .map(|id| widget_rect(id))
@@ -3792,8 +3908,9 @@ mod tests {
                 );
                 assert!(
                     scroll.get_rect().y1 + 8.0 <= rects[0].y0,
-                    "the sticky footer must reserve layout space below scrolling content: scroll={:?}, actions={rects:?}",
+                    "the sticky footer must reserve layout space below scrolling content at {width}x{height}: scroll={:?}, actions={rects:?}, keys={keys:?}, error={error_state}, theme={}",
                     scroll.get_rect(),
+                    theme.name,
                 );
 
                 if view.flow().screen() == Screen::Connect {
@@ -4014,6 +4131,55 @@ mod tests {
                 "the action must stay fully in the viewport, id={id}, action={action:?}"
             );
         }
+    }
+
+    #[test]
+    fn large_text_backup_action_keeps_a_clear_gap_below_confirmation() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut document, key);
+            view.sync(&mut document, &automerge::ROOT);
+        }
+        assert_eq!(view.flow().screen(), Screen::Done);
+
+        let theme = Theme::dark().with_text_scale(1.3);
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(720.0),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("large-text backup layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let widget_rect = |id: &str| {
+            node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("backup page exposes {id}"))
+        };
+        let confirmation = widget_rect("onboarding.backup.confirmation");
+        let action = widget_rect("onboarding.backup.button");
+        assert!(
+            action.y0 - confirmation.y1 >= f64::from(theme.tokens.spacing.s2) - 0.5,
+            "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
+        );
     }
 
     #[test]
