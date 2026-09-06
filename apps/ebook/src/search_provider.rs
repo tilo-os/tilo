@@ -99,8 +99,38 @@ impl BookSearchProvider {
                 }
             }
         }
+        Self::append_annotation_entries(&mut entries, &live_annotations, books, &highlight_groups);
+
+        let trigram_index = Self::build_trigram_index(&entries);
+        Self {
+            entries,
+            trigram_index,
+        }
+    }
+
+    /// Index each distinct trigram once per row so a repeated sequence does
+    /// not bloat candidate lists or make search ranking depend on repetition.
+    fn build_trigram_index(entries: &[SearchEntry]) -> HashMap<String, Vec<usize>> {
+        let mut trigram_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let mut unique = HashSet::new();
+            for trigram in trigrams(&entry.haystack) {
+                if unique.insert(trigram.clone()) {
+                    trigram_index.entry(trigram).or_default().push(index);
+                }
+            }
+        }
+        trigram_index
+    }
+
+    fn append_annotation_entries(
+        entries: &mut Vec<SearchEntry>,
+        annotations: &[&Annotation],
+        books: &[Book],
+        highlight_groups: &HashSet<(String, uuid::Uuid)>,
+    ) {
         let mut emitted_highlights = HashSet::new();
-        for annotation in live_annotations {
+        for annotation in annotations {
             if entries.len() == DEFAULT_SEARCH_INDEX_LIMIT {
                 break;
             }
@@ -118,7 +148,7 @@ impl BookSearchProvider {
                 result: SearchResult::for_action(
                     ANNOTATION_KIND,
                     Self::preview(annotation),
-                    Self::annotation_address(annotation, &highlight_groups),
+                    Self::annotation_address(annotation, highlight_groups),
                 )
                 .with_subtitle(format!(
                     "{} · {} · Chapter {}",
@@ -131,20 +161,6 @@ impl BookSearchProvider {
                     _ => Icon::List,
                 }),
             });
-        }
-
-        let mut trigram_index: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, entry) in entries.iter().enumerate() {
-            let mut unique = HashSet::new();
-            for trigram in trigrams(&entry.haystack) {
-                if unique.insert(trigram.clone()) {
-                    trigram_index.entry(trigram).or_default().push(index);
-                }
-            }
-        }
-        Self {
-            entries,
-            trigram_index,
         }
     }
 
