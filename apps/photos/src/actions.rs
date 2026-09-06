@@ -44,7 +44,7 @@ use qos_actions::{
 };
 
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, OpenImage, Rect01};
+use crate::model::{Album, Edits, LibraryPhoto, OpenImage, Rect01};
 
 /// Registry `type_id` for every action this app exports.
 pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
@@ -52,6 +52,10 @@ pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
+/// Contextual enumeration is intentionally small; callers resolve any stable
+/// id outside this window through `ResourceProvider::resource`.
+const LIBRARY_CONTEXT_LIMIT: usize = 48;
+const ALBUM_CONTEXT_LIMIT: usize = 24;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosOperation {
@@ -61,6 +65,12 @@ pub enum PhotosOperation {
     /// has already routed the request to the Photos instance that publishes
     /// the resource, so accepting it is enough to reveal the current view.
     View,
+    /// Bring a durable album's filtered grid into view. This is presentation
+    /// state only: unlike membership actions, activating it never edits the
+    /// shared library.
+    ViewAlbum {
+        album_id: String,
+    },
     Open {
         path: Option<String>,
     },
@@ -89,9 +99,10 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let spec =
         ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, op).ok()?;
     Some(match op {
-        PhotosOperation::View | PhotosOperation::Open { .. } | PhotosOperation::Copy => {
-            spec.retry_policy(RetryPolicy::Idempotent)
-        }
+        PhotosOperation::View
+        | PhotosOperation::ViewAlbum { .. }
+        | PhotosOperation::Open { .. }
+        | PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
 }
@@ -108,6 +119,37 @@ pub enum PhotosAction {
         crop: Rect01,
         /// Clockwise quarter turns, `0..=3`.
         rotate_quarters: u8,
+    },
+    /// Import metadata for bytes already staged in the content store.
+    ImportPhoto { photo: LibraryPhoto },
+    /// Select a stable library photo for editing.
+    SelectPhoto { photo_id: String },
+    /// Remove a photo and every album membership that points to it.
+    RemovePhoto { photo_id: String },
+    /// Toggle a durable favourite marker.
+    SetFavorite { photo_id: String, favorite: bool },
+    /// Create a named collection with a caller-supplied stable id.
+    CreateAlbum { id: String, name: String },
+    /// Rename a collection without changing its stable address or membership.
+    RenameAlbum { id: String, name: String },
+    /// Remove a collection without removing photographs.
+    RemoveAlbum { id: String },
+    /// Replace one album's membership atomically after validating every id.
+    SetAlbumMembership {
+        album_id: String,
+        photo_ids: Vec<String>,
+    },
+    /// Atomically create or update the complete visible album record.  The
+    /// library editor uses this rather than issuing a rename followed by a
+    /// membership replacement, so collaborators never observe a half-saved
+    /// collection.
+    SaveAlbum {
+        id: String,
+        name: String,
+        photo_ids: Vec<String>,
+        /// `true` means the stable id must be new; `false` means it must
+        /// already exist.  This makes stale editor submits refuse explicitly.
+        create: bool,
     },
 }
 
@@ -134,14 +176,199 @@ impl PhotosAction {
             Self::SetEdits { .. } => Err(ActionError::Refused(
                 "photo edits must name a non-empty crop inside the image and a quarter turn from 0 to 3".into(),
             )),
+            _ => Err(ActionError::Refused("this is not an edit action".into())),
         }
     }
 }
 
 impl Action for PhotosAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all durable Photos mutations are kept in one exhaustive match so their atomic validation is auditable"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        PhotosDoc::set_edits(doc, &self.edits()?);
-        Ok(())
+        match self {
+            Self::SetEdits { .. } => {
+                PhotosDoc::set_edits(doc, &self.edits()?);
+                Ok(())
+            }
+            Self::ImportPhoto { photo } => {
+                if photo.id.is_empty() || photo.image.name.trim().is_empty() {
+                    return Err(ActionError::Refused("photo metadata is incomplete".into()));
+                }
+                let mut library = PhotosDoc::library(doc);
+                library.add_photo(photo.clone());
+                PhotosDoc::set_library(doc, &library);
+                PhotosDoc::set_image(doc, Some(&photo.image));
+                Ok(())
+            }
+            Self::SelectPhoto { photo_id } => {
+                let library = PhotosDoc::library(doc);
+                let photo = library.photo(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                PhotosDoc::set_image(doc, Some(&photo.image));
+                Ok(())
+            }
+            Self::RemovePhoto { photo_id } => {
+                let mut library = PhotosDoc::library(doc);
+                let before = library.photos.len();
+                library.photos.retain(|photo| photo.id != *photo_id);
+                if library.photos.len() == before {
+                    return Err(ActionError::Refused(
+                        "that photograph is no longer in the library".into(),
+                    ));
+                }
+                for album in &mut library.albums {
+                    album.photo_ids.retain(|id| id != photo_id);
+                }
+                PhotosDoc::set_library(doc, &library);
+                if PhotosDoc::image(doc)
+                    .as_ref()
+                    .is_some_and(|image| LibraryPhoto::from_image(image.clone()).id == *photo_id)
+                {
+                    PhotosDoc::set_image(doc, None);
+                }
+                Ok(())
+            }
+            Self::SetFavorite { photo_id, favorite } => {
+                let mut library = PhotosDoc::library(doc);
+                let photo = library
+                    .photos
+                    .iter_mut()
+                    .find(|photo| photo.id == *photo_id)
+                    .ok_or_else(|| {
+                        ActionError::Refused("that photograph is no longer in the library".into())
+                    })?;
+                photo.favorite = *favorite;
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::CreateAlbum { id, name } => {
+                if id.trim().is_empty() || name.trim().is_empty() {
+                    return Err(ActionError::Refused(
+                        "an album needs an id and a name".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                if library.album(id).is_some() {
+                    return Err(ActionError::Refused("that album already exists".into()));
+                }
+                library.albums.push(Album {
+                    id: id.clone(),
+                    name: name.trim().to_owned(),
+                    photo_ids: Vec::new(),
+                });
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RenameAlbum { id, name } => {
+                if name.trim().is_empty() {
+                    return Err(ActionError::Refused("an album needs a name".into()));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let album = library
+                    .albums
+                    .iter_mut()
+                    .find(|album| album.id == *id)
+                    .ok_or_else(|| {
+                        ActionError::Refused("that album is no longer in the library".into())
+                    })?;
+                album.name.clone_from(name);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RemoveAlbum { id } => {
+                let mut library = PhotosDoc::library(doc);
+                let before = library.albums.len();
+                library.albums.retain(|album| album.id != *id);
+                if library.albums.len() == before {
+                    return Err(ActionError::Refused(
+                        "that album is no longer in the library".into(),
+                    ));
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetAlbumMembership {
+                album_id,
+                photo_ids,
+            } => {
+                let mut library = PhotosDoc::library(doc);
+                let valid = photo_ids.iter().all(|id| library.photo(id).is_some())
+                    && photo_ids.iter().enumerate().all(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_none_or(|prior| !prior.contains(id))
+                    });
+                if !valid {
+                    return Err(ActionError::Refused(
+                        "album membership contains an unknown or duplicate photograph".into(),
+                    ));
+                }
+                let album = library
+                    .albums
+                    .iter_mut()
+                    .find(|album| album.id == *album_id)
+                    .ok_or_else(|| {
+                        ActionError::Refused("that album is no longer in the library".into())
+                    })?;
+                album.photo_ids.clone_from(photo_ids);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SaveAlbum {
+                id,
+                name,
+                photo_ids,
+                create,
+            } => {
+                let name = name.trim();
+                if id.trim().is_empty() || name.is_empty() {
+                    return Err(ActionError::Refused(
+                        "an album needs an id and a name".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let valid_members = photo_ids.len()
+                    == photo_ids
+                        .iter()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                    && photo_ids
+                        .iter()
+                        .all(|photo_id| library.photo(photo_id).is_some());
+                if !valid_members {
+                    return Err(ActionError::Refused(
+                        "album membership contains an unknown or duplicate photograph".into(),
+                    ));
+                }
+                match (
+                    library.albums.iter_mut().find(|album| album.id == *id),
+                    create,
+                ) {
+                    (Some(_), true) => {
+                        return Err(ActionError::Refused("that album already exists".into()));
+                    }
+                    (None, false) => {
+                        return Err(ActionError::Refused(
+                            "that album is no longer in the library".into(),
+                        ));
+                    }
+                    (Some(album), false) => {
+                        name.clone_into(&mut album.name);
+                        album.photo_ids.clone_from(photo_ids);
+                    }
+                    (None, true) => library.albums.push(Album {
+                        id: id.clone(),
+                        name: name.to_owned(),
+                        photo_ids: photo_ids.clone(),
+                    }),
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+        }
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -240,10 +467,7 @@ impl ResourceProvider for PhotosResources {
         // Nothing open: there is no addressed photograph yet. The shell's app
         // launcher remains the entry point for opening the first one.
         let Some(image) = PhotosDoc::image(doc) else {
-            return vec![
-                Resource::new("photos.library", "photos.library", "Photos")
-                    .with_action(file_operation("open", "Open photograph", true)),
-            ];
+            return library_resources(doc);
         };
         let edits = PhotosDoc::edits(doc);
         let (w, h) = image.edited_size(&edits);
@@ -321,8 +545,256 @@ impl ResourceProvider for PhotosResources {
             format!("{w} x {h} pixels"),
         ));
 
-        vec![resource]
+        let mut resources = vec![resource];
+        resources.extend(library_resources(doc));
+        resources
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "photos.library" {
+            return library_resources(doc).into_iter().next();
+        }
+        let library = PhotosDoc::library(doc);
+        if let Some(photo) = library.photos.iter().find(|photo| photo.id == id) {
+            return Some(photo_resource(doc, photo));
+        }
+        library
+            .albums
+            .iter()
+            .find(|album| album.id == id)
+            .map(album_resource)
+    }
+}
+
+/// The durable library and album resource tree. Every photo and album gets a
+/// stable resource id even when it is not selected in the editor, allowing
+/// agents and search to resolve a late library item without a visual grid
+/// having first materialised it.
+fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let library = PhotosDoc::library(doc);
+    let mut root = Resource::new("photos.library", "photos.library", "Photo library")
+        .with_action(file_operation("open", "Import photograph", true))
+        .with_action(create_album_spec());
+    for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
+        root = root.with_child(photo_resource(doc, photo));
+    }
+    for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
+        root = root.with_child(album_resource(album));
+    }
+    vec![root]
+}
+
+fn photo_resource(doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
+    let selected = PhotosDoc::image(doc)
+        .as_ref()
+        .is_some_and(|open| LibraryPhoto::from_image(open.clone()).id == photo.id);
+    let mut item =
+        Resource::new(&photo.id, "photos.photo", &photo.image.name).with_child(Resource::new(
+            format!("{}#size", photo.id),
+            "photos.size",
+            format!("{} x {} pixels", photo.image.width, photo.image.height),
+        ));
+    if let Some(spec) = direct_spec(
+        "open",
+        "Open photograph",
+        &PhotosAction::SelectPhoto {
+            photo_id: photo.id.clone(),
+        },
+    ) {
+        item = item.with_action(spec);
+    }
+    if let Some(spec) = direct_spec(
+        "favorite",
+        if photo.favorite {
+            "Remove favorite"
+        } else {
+            "Favorite"
+        },
+        &PhotosAction::SetFavorite {
+            photo_id: photo.id.clone(),
+            favorite: !photo.favorite,
+        },
+    ) {
+        item = item.with_action(spec.reversible());
+    }
+    if !selected
+        && let Some(spec) = direct_spec(
+            "remove",
+            "Remove from library",
+            &PhotosAction::RemovePhoto {
+                photo_id: photo.id.clone(),
+            },
+        )
+    {
+        item = item.with_action(spec.destructive().reversible());
+    }
+    item
+}
+
+fn album_resource(album: &Album) -> Resource {
+    let mut item = Resource::new(&album.id, "photos.album", &album.name).with_child(Resource::new(
+        format!("{}#count", album.id),
+        "photos.count",
+        format!("{} photographs", album.photo_ids.len()),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        "Open album",
+        &PhotosOperation::ViewAlbum {
+            album_id: album.id.clone(),
+        },
+    ) {
+        item = item.with_action(
+            spec.with_description("Show this album's photographs without changing membership"),
+        );
+    }
+    if let Some(spec) = direct_spec(
+        "remove",
+        "Remove album",
+        &PhotosAction::RemoveAlbum {
+            id: album.id.clone(),
+        },
+    ) {
+        item = item.with_action(spec.destructive().reversible());
+    }
+    item = item.with_action(album_rename_spec(album));
+    item = item.with_action(album_membership_spec(album));
+    item = item.with_action(album_save_spec(album));
+    item
+}
+
+fn membership_ids(args: &ActionArgs) -> Vec<String> {
+    args.text("photo_ids")
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn create_album_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "create-album",
+        "Create album",
+        "Stable album id and visible name",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required(
+                "id",
+                ParamType::Text,
+                "stable album id, for example photos.album:holiday",
+            ),
+            ActionParam::required("name", ParamType::Text, "visible album name"),
+            ActionParam::optional(
+                "photo_ids",
+                ParamType::Text,
+                "comma-separated stable photo ids",
+            ),
+        ],
+        |args| {
+            encode(&PhotosAction::SaveAlbum {
+                id: args.text("id").unwrap_or_default().trim().to_owned(),
+                name: args.text("name").unwrap_or_default().trim().to_owned(),
+                photo_ids: membership_ids(args),
+                create: true,
+            })
+        },
+    )
+    .reversible()
+    .with_description("Create an album and its initial photograph membership atomically")
+}
+
+fn album_save_spec(album: &Album) -> ActionSpec {
+    let id = album.id.clone();
+    ActionSpec::typed(
+        "save",
+        "Save album",
+        "Name and complete membership",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("name", ParamType::Text, "visible album name"),
+            ActionParam::optional(
+                "photo_ids",
+                ParamType::Text,
+                "comma-separated stable photo ids",
+            ),
+        ],
+        move |args| {
+            encode(&PhotosAction::SaveAlbum {
+                id: id.clone(),
+                name: args.text("name").unwrap_or_default().trim().to_owned(),
+                photo_ids: membership_ids(args),
+                create: false,
+            })
+        },
+    )
+    .reversible()
+    .with_description("Atomically rename this album and replace its membership")
+}
+
+fn album_rename_spec(album: &Album) -> ActionSpec {
+    let album_id = album.id.clone();
+    ActionSpec::typed(
+        "rename",
+        "Rename album",
+        "New album name",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "new album name",
+        )],
+        move |args: &ActionArgs| {
+            encode(&PhotosAction::RenameAlbum {
+                id: album_id.clone(),
+                name: args.text("name").unwrap_or_default().trim().to_owned(),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Change this album's visible name while keeping its stable id")
+}
+
+fn album_membership_spec(album: &Album) -> ActionSpec {
+    let album_id = album.id.clone();
+    ActionSpec::typed(
+        "set-membership",
+        "Set album membership",
+        "photos.photo:… , photos.photo:… (empty clears the album)",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "photo_ids",
+            ParamType::Text,
+            "comma-separated stable photo ids; empty clears the album",
+        )],
+        move |args: &ActionArgs| {
+            let ids = args
+                .text("photo_ids")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            encode(&PhotosAction::SetAlbumMembership {
+                album_id: album_id.clone(),
+                photo_ids: ids,
+            })
+        },
+    )
+    .reversible()
+    .with_description("Replace this album's photograph membership atomically")
+}
+
+fn direct_spec(id: &str, label: &str, action: &PhotosAction) -> Option<ActionSpec> {
+    ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, action).ok()
 }
 
 fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
@@ -509,16 +981,18 @@ mod tests {
     fn the_open_photograph_is_published_with_its_name_and_size() {
         let doc = doc_with_image();
         let res = PhotosResources.resources(&doc);
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].kind, IMAGE_KIND);
-        assert_eq!(res[0].label, "harbour.png");
+        let image = res
+            .iter()
+            .find(|resource| resource.kind == IMAGE_KIND)
+            .unwrap();
+        assert_eq!(image.label, "harbour.png");
         assert_eq!(
-            res[0].id.0,
+            image.id.0,
             "photos.image:/var/tmp/qos/home/user/harbour.png"
         );
         // The size is discoverable from titles alone.
-        assert_eq!(res[0].children.len(), 1);
-        assert_eq!(res[0].children[0].label, "800 x 400 pixels");
+        assert_eq!(image.children.len(), 1);
+        assert_eq!(image.children[0].label, "800 x 400 pixels");
     }
 
     #[test]
@@ -749,5 +1223,116 @@ mod tests {
         for resource in PhotosResources.resources(&doc_with_image()) {
             check(&resource);
         }
+    }
+
+    #[test]
+    fn library_actions_are_atomic_and_refuse_stale_membership() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/夏.png", 20, 10));
+        PhotosAction::ImportPhoto {
+            photo: photo.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        PhotosAction::CreateAlbum {
+            id: "album:summer".into(),
+            name: "夏".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        PhotosAction::SetAlbumMembership {
+            album_id: "album:summer".into(),
+            photo_ids: vec![photo.id.clone()],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetAlbumMembership {
+            album_id: "album:summer".into(),
+            photo_ids: vec!["photos.photo:gone".into()],
+        }
+        .apply(&mut doc)
+        .expect_err("a stale target must not partially change membership");
+        assert_eq!(PhotosDoc::library(&doc), before);
+        PhotosAction::RemovePhoto { photo_id: photo.id }
+            .apply(&mut doc)
+            .unwrap();
+        assert!(PhotosDoc::library(&doc).albums[0].photo_ids.is_empty());
+    }
+
+    #[test]
+    fn saving_an_album_is_atomic_replayable_and_refuses_a_stale_editor() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
+        PhotosAction::ImportPhoto {
+            photo: photo.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let create = PhotosAction::SaveAlbum {
+            id: "photos.album:one".into(),
+            name: "One".into(),
+            photo_ids: vec![photo.id.clone()],
+            create: true,
+        };
+        create.apply(&mut doc).unwrap();
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SaveAlbum {
+            id: "photos.album:gone".into(),
+            name: "Gone".into(),
+            photo_ids: vec![photo.id],
+            create: false,
+        }
+        .apply(&mut doc)
+        .expect_err("a stale editor cannot create a replacement album");
+        assert_eq!(PhotosDoc::library(&doc), before);
+        let encoded = encode(&create);
+        let mut replica = AutoCommit::new();
+        PhotosDoc::seed(&mut replica);
+        PhotosAction::ImportPhoto {
+            photo: LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10)),
+        }
+        .apply(&mut replica)
+        .unwrap();
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+            .decode(&encoded)
+            .unwrap()
+            .apply(&mut replica)
+            .unwrap();
+        assert_eq!(PhotosDoc::library(&replica).albums[0].name, "One");
+    }
+
+    #[test]
+    fn large_library_snapshot_is_bounded_but_late_ids_resolve_directly() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..300 {
+            library
+                .photos
+                .push(LibraryPhoto::from_image(OpenImage::from_path(
+                    &format!("/photos/{index}.png"),
+                    10,
+                    10,
+                )));
+        }
+        let late = library.photos.last().unwrap().id.clone();
+        PhotosDoc::set_library(&mut doc, &library);
+        let root = PhotosResources.resources(&doc).pop().unwrap();
+        assert!(root.children.len() <= LIBRARY_CONTEXT_LIMIT);
+        let resolved = PhotosResources
+            .resource(&doc, &late)
+            .expect("late stable id resolves");
+        assert_eq!(resolved.id.0, late);
+        assert!(resolved.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            PhotosResources
+                .resource(&doc, "photos.photo:stale")
+                .is_none()
+        );
     }
 }
