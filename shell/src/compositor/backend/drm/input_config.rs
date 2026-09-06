@@ -20,6 +20,10 @@ pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
 pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
+/// Exact host-imported delay; a qOS slider choice clears this pair.
+pub const KEY_REPEAT_DELAY_MS_KEY: &str = "key_repeat_delay_ms";
+/// Exact host-imported rate. Zero means repeat is disabled.
+pub const KEY_REPEAT_RATE_HZ_KEY: &str = "key_repeat_rate_hz";
 
 /// Fully validated per-user XKB keymap request. The strings are ready for
 /// libxkbcommon's rules API: one comma-separated variant slot per layout,
@@ -170,6 +174,8 @@ pub struct InputSettings {
     pub mouse_pointer_speed: Option<f64>,
     /// Keyboard auto-repeat, `0.0` (slow, long delay) … `1.0` (fast, short delay).
     pub key_repeat: f64,
+    pub key_repeat_delay_ms: Option<u32>,
+    pub key_repeat_rate_hz: Option<u32>,
     pub tap_drag: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
@@ -189,6 +195,8 @@ impl Default for InputSettings {
             touchpad_pointer_speed: None,
             mouse_pointer_speed: None,
             key_repeat: 0.5,
+            key_repeat_delay_ms: None,
+            key_repeat_rate_hz: None,
             tap_drag: true,
             disable_while_typing: true,
             middle_emulation: true,
@@ -238,6 +246,16 @@ impl InputSettings {
                 .filter(|value| value.is_finite())
                 .map(|value| value.clamp(0.0, 1.0)),
             key_repeat: unit_at(KEY_REPEAT_KEY, d.key_repeat),
+            key_repeat_delay_ms: section
+                .get(KEY_REPEAT_DELAY_MS_KEY)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| (1..=5_000).contains(value)),
+            key_repeat_rate_hz: section
+                .get(KEY_REPEAT_RATE_HZ_KEY)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value <= 1_000),
             tap_drag: bool_at("tap_drag", d.tap_drag),
             disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
             middle_emulation: bool_at("middle_emulation", d.middle_emulation),
@@ -282,6 +300,9 @@ impl InputSettings {
     /// Keyboard auto-repeat as `(delay, rate in keys per second)`. The two move together in
     /// opposite directions — "faster" means both a shorter wait before it starts and a shorter gap between keys — so exposing them as one slider is only honest if the mapping does that.
     pub fn key_repeat_params(&self) -> (Duration, u32) {
+        if let (Some(delay), Some(rate)) = (self.key_repeat_delay_ms, self.key_repeat_rate_hz) {
+            return (Duration::from_millis(u64::from(delay)), rate);
+        }
         let t = self.key_repeat.clamp(0.0, 1.0);
         let rate = f64::from(REPEAT_RATE_MIN) + t * f64::from(REPEAT_RATE_MAX - REPEAT_RATE_MIN);
         let delay = f64::from(REPEAT_DELAY_MAX_MS)
@@ -694,6 +715,29 @@ mod tests {
         };
         assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
         assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
+    }
+
+    #[test]
+    fn host_repeat_values_preserve_delay_rate_and_disable_semantics() {
+        let enabled = InputSettings {
+            key_repeat_delay_ms: Some(275),
+            key_repeat_rate_hz: Some(37),
+            ..Default::default()
+        };
+        assert_eq!(
+            enabled.key_repeat_params(),
+            (Duration::from_millis(275), 37)
+        );
+
+        let disabled = InputSettings {
+            key_repeat_delay_ms: Some(500),
+            key_repeat_rate_hz: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            disabled.key_repeat_params(),
+            (Duration::from_millis(500), 0)
+        );
     }
 
     #[test]

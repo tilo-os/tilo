@@ -154,6 +154,7 @@ impl Default for DisplayPrefs {
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
+    /// Compatibility fallback for pre per-device input documents.
     pub natural_scroll: bool,
     pub touchpad_natural_scroll: Option<bool>,
     pub mouse_natural_scroll: Option<bool>,
@@ -164,6 +165,9 @@ pub struct InputPrefs {
     pub mouse_pointer_speed: Option<f64>,
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
+    /// Exact host-imported repeat pair. A qOS slider selection clears both.
+    pub key_repeat_delay_ms: Option<u32>,
+    pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
     pub tap_drag: bool,
@@ -193,6 +197,8 @@ impl Default for InputPrefs {
             touchpad_pointer_speed: None,
             mouse_pointer_speed: None,
             key_repeat: 0.5,
+            key_repeat_delay_ms: None,
+            key_repeat_rate_hz: None,
             keyboard_layout: "us".to_string(),
             tap_drag: true,
             disable_while_typing: true,
@@ -229,6 +235,8 @@ impl InputPrefs {
                 settings_store::hardware::AccelProfile::Adaptive
             },
             key_repeat: self.key_repeat,
+            key_repeat_delay_ms: self.key_repeat_delay_ms,
+            key_repeat_rate_hz: self.key_repeat_rate_hz,
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
