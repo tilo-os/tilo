@@ -212,13 +212,13 @@ fn xlsx_keeps_theme_backed_styles_and_declares_minimal_styles() {
     let mut exported = ZipArchive::new(Cursor::new(out)).unwrap();
     assert!(exported.by_name("xl/styles.xml").is_ok());
     assert!(exported.by_name("xl/theme/theme1.xml").is_ok());
-    let mut rels = String::new();
+    let mut relationships_xml = String::new();
     exported
         .by_name("xl/_rels/workbook.xml.rels")
         .unwrap()
-        .read_to_string(&mut rels)
+        .read_to_string(&mut relationships_xml)
         .unwrap();
-    assert!(rels.contains("relationships/theme"));
+    assert!(relationships_xml.contains("relationships/theme"));
     let mut types = String::new();
     exported
         .by_name("[Content_Types].xml")
