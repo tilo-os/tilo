@@ -14,12 +14,18 @@ use std::os::unix::fs::{
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use rand_core::{OsRng, RngCore as _};
 
 const DISPLAY_ATTEMPTS: usize = 64;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Restarting a compatibility bridge forever turns one crashing helper into a
+/// busy loop. Three attempts give a transient host/service failure time to
+/// settle while making the eventual unavailable state deterministic.
+const MAX_RECOVERY_ATTEMPTS: u8 = 3;
+const STABLE_UPTIME: Duration = Duration::from_secs(30);
 
 /// Keep the compatibility server out of the security-hardened qOS image.
 pub(crate) const fn enabled_for(mode: super::InstallMode) -> bool {
@@ -29,12 +35,180 @@ pub(crate) const fn enabled_for(mode: super::InstallMode) -> bool {
 pub(crate) struct SessionXwayland {
     child: Child,
     runtime: PathBuf,
+    display: String,
     authority: PathBuf,
     reservation: PathBuf,
+    /// Publication is a compositor-thread action. A startup worker must never
+    /// make its private result visible after its supervisor has gone away.
+    published: bool,
+}
+
+/// Owns the one session-wide Xwayland bridge and its bounded recovery policy.
+///
+/// There is deliberately no second launcher or per-app bridge here. The
+/// existing host-launch slot is unpublished as soon as the child exits, and a
+/// successful replacement republishes one fresh authenticated connection.
+pub(crate) struct XwaylandSupervisor {
+    bridge: Option<SessionXwayland>,
+    starting: Option<Receiver<Result<SessionXwayland, String>>>,
+    consecutive_failures: u8,
+    retry_at: Option<Instant>,
+    ready_since: Option<Instant>,
+    unavailable_announced: bool,
+}
+
+impl XwaylandSupervisor {
+    pub(crate) fn start(wayland_socket: &OsStr) -> Self {
+        let mut supervisor = Self {
+            bridge: None,
+            starting: None,
+            consecutive_failures: 0,
+            retry_at: None,
+            ready_since: None,
+            unavailable_announced: false,
+        };
+        supervisor.start_async(wayland_socket, "starting");
+        supervisor
+    }
+
+    /// Poll from the compositor's frame loop. Retrying only happens after the
+    /// old child has exited and its X11 launch environment has been revoked.
+    /// That ordering matters for Electron: a renderer launched after a crash
+    /// must never inherit an authority file for the dead display.
+    pub(crate) fn poll(
+        &mut self,
+        wayland_socket: &OsStr,
+        chrome: &crate::shell::chrome_state::Chrome,
+    ) {
+        if let Some(starting) = self.starting.as_ref() {
+            match starting.try_recv() {
+                Ok(Ok(mut bridge)) => {
+                    self.starting = None;
+                    // This is the sole point that publishes DISPLAY and
+                    // XAUTHORITY. If the receiver was dropped, the worker's
+                    // unpublished bridge is simply dropped and cleaned up.
+                    bridge.publish();
+                    self.bridge = Some(bridge);
+                    self.retry_at = None;
+                    self.ready_since = Some(Instant::now());
+                    self.unavailable_announced = false;
+                    tracing::info!("rootless Xwayland compatibility bridge ready");
+                }
+                Ok(Err(error)) => {
+                    self.starting = None;
+                    tracing::warn!(%error, "rootless Xwayland compatibility startup failed");
+                    self.record_failure(Instant::now(), chrome);
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.starting = None;
+                    tracing::warn!("rootless Xwayland startup worker disconnected");
+                    self.record_failure(Instant::now(), chrome);
+                }
+            }
+        }
+
+        if let Some(bridge) = self.bridge.as_mut() {
+            match bridge.poll_exit() {
+                Ok(Some(status)) => {
+                    tracing::warn!(%status, "rootless Xwayland compatibility bridge exited");
+                    self.bridge = None;
+                    self.record_failure(Instant::now(), chrome);
+                }
+                Ok(None) => return,
+                Err(error) => {
+                    // Do not start a second server when the kernel cannot tell
+                    // us whether the first one is alive. The already-published
+                    // launch environment remains valid until an actual exit.
+                    tracing::warn!(%error, "could not inspect rootless Xwayland compatibility bridge");
+                    return;
+                }
+            }
+        }
+
+        let Some(retry_at) = self.retry_at else {
+            return;
+        };
+        if Instant::now() < retry_at {
+            return;
+        }
+        self.retry_at = None;
+        self.start_async(wayland_socket, "recovering");
+    }
+
+    /// Launch the potentially five-second readiness probe off the compositor
+    /// thread. `poll` only uses `try_recv`, so input and rendering continue
+    /// while satellite waits for Xwayland to create its socket.
+    fn start_async(&mut self, wayland_socket: &OsStr, phase: &'static str) {
+        debug_assert!(self.bridge.is_none());
+        debug_assert!(self.starting.is_none());
+        let wayland_socket = wayland_socket.to_os_string();
+        let (sender, receiver) = mpsc::channel();
+        let worker_sender = sender.clone();
+        match std::thread::Builder::new()
+            .name("qos-xwayland-start".into())
+            .spawn(move || {
+                let result = SessionXwayland::start_unpublished(&wayland_socket);
+                // If the supervisor was dropped during startup, `send` gives
+                // the unpublished bridge back in its error and dropping it
+                // kills/reaps the child without touching the launcher slot.
+                let _ = worker_sender.send(result);
+            }) {
+            Ok(_worker) => self.starting = Some(receiver),
+            Err(error) => {
+                tracing::warn!(%error, %phase, "could not start Xwayland recovery worker");
+                let _ = sender.send(Err(format!("starting Xwayland recovery worker: {error}")));
+                self.starting = Some(receiver);
+            }
+        }
+    }
+
+    fn record_failure(&mut self, now: Instant, chrome: &crate::shell::chrome_state::Chrome) {
+        if self
+            .ready_since
+            .is_some_and(|ready_since| now.saturating_duration_since(ready_since) >= STABLE_UPTIME)
+        {
+            // A bridge that stayed up for a normal session interval proved the
+            // prior recovery healthy. Its later exit starts a fresh budget.
+            self.consecutive_failures = 0;
+        }
+        self.ready_since = None;
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= MAX_RECOVERY_ATTEMPTS {
+            self.retry_at = None;
+            self.announce_unavailable(chrome);
+            return;
+        }
+        self.retry_at = now.checked_add(retry_delay(self.consecutive_failures));
+    }
+
+    fn announce_unavailable(&mut self, chrome: &crate::shell::chrome_state::Chrome) {
+        if self.unavailable_announced {
+            return;
+        }
+        self.unavailable_announced = true;
+        let mut notification = crate::shell::notification::Notification::new(
+            "X11 compatibility unavailable",
+            "Legacy X11 apps can’t open right now. qOS could not restart the compatibility service; use a Wayland app or restart the desktop session.",
+        )
+            .with_severity(crate::shell::notification::NotificationSeverity::Error)
+            .with_app_name("System")
+            .with_dismiss_after(crate::shell::notification::PERSISTENT_DISMISS);
+        // A broken compatibility service is machine state, not an app's
+        // social notification. Do Not Disturb must not conceal the only
+        // explanation for why legacy applications no longer launch.
+        notification.bypass_dnd = true;
+        chrome.borrow_mut().push_notification_full(notification);
+    }
+}
+
+fn retry_delay(consecutive_failures: u8) -> Duration {
+    // 1s, 2s; the third failure stops and tells the person what to do.
+    Duration::from_secs(1_u64 << u32::from(consecutive_failures.saturating_sub(1).min(1)))
 }
 
 impl SessionXwayland {
-    pub(crate) fn start(wayland_socket: &OsStr) -> Result<Self, String> {
+    fn start_unpublished(wayland_socket: &OsStr) -> Result<Self, String> {
         let binary = satellite_binary().ok_or_else(|| {
             "xwayland-satellite is not installed; X11-only host applications are unavailable"
                 .to_string()
@@ -118,17 +292,50 @@ impl SessionXwayland {
             return Err(error);
         }
 
-        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
-            display: x_display.clone(),
-            authority: authority.clone(),
-        }));
         tracing::info!(display = %x_display, binary = %binary.display(), "rootless Xwayland compatibility bridge starting");
         Ok(Self {
             child,
             runtime,
+            display: x_display,
             authority,
             reservation,
+            published: false,
         })
+    }
+
+    fn publish(&mut self) {
+        debug_assert!(!self.published);
+        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
+            display: self.display.clone(),
+            authority: self.authority.clone(),
+        }));
+        self.published = true;
+    }
+
+    /// Reap an exited bridge and immediately revoke its connection details
+    /// from future host launches. `None` means the child is still alive.
+    fn poll_exit(&mut self) -> Result<Option<String>, String> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                self.clear_launch_environment();
+                self.remove_runtime_files();
+                Ok(Some(status.to_string()))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => Err(format!("checking xwayland-satellite: {error}")),
+        }
+    }
+
+    fn clear_launch_environment(&self) {
+        if self.published {
+            crate::shell::host_apps::set_x11_session(None);
+        }
+    }
+
+    fn remove_runtime_files(&self) {
+        let _ = fs::remove_file(&self.authority);
+        let _ = fs::remove_file(&self.reservation);
+        let _ = fs::remove_dir(&self.runtime);
     }
 }
 
@@ -170,14 +377,12 @@ fn x_socket_ready(path: &Path) -> bool {
 
 impl Drop for SessionXwayland {
     fn drop(&mut self) {
-        crate::shell::host_apps::set_x11_session(None);
+        self.clear_launch_environment();
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
         }
         let _ = self.child.wait();
-        let _ = fs::remove_file(&self.authority);
-        let _ = fs::remove_file(&self.reservation);
-        let _ = fs::remove_dir(&self.runtime);
+        self.remove_runtime_files();
     }
 }
 
@@ -348,5 +553,136 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         assert!(x_socket_ready(&path));
         drop(listener);
+    }
+
+    #[test]
+    fn pending_startup_never_blocks_the_compositor_poll() {
+        let (_sender, receiver) = mpsc::channel::<Result<SessionXwayland, String>>();
+        let mut supervisor = XwaylandSupervisor {
+            bridge: None,
+            starting: Some(receiver),
+            consecutive_failures: 0,
+            retry_at: None,
+            ready_since: None,
+            unavailable_announced: false,
+        };
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        let started = Instant::now();
+        supervisor.poll(OsStr::new("wayland-test"), &chrome);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "poll must only try_recv while the startup worker waits for readiness"
+        );
+    }
+
+    #[test]
+    fn stable_uptime_resets_the_rapid_failure_budget_but_crash_loops_exhaust_it() {
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::default(),
+        );
+        let now = Instant::now();
+        let mut supervisor = XwaylandSupervisor {
+            bridge: None,
+            starting: None,
+            consecutive_failures: MAX_RECOVERY_ATTEMPTS - 1,
+            retry_at: None,
+            ready_since: now.checked_sub(STABLE_UPTIME),
+            unavailable_announced: false,
+        };
+        supervisor.record_failure(now, &chrome);
+        assert_eq!(supervisor.consecutive_failures, 1);
+        assert_eq!(supervisor.retry_at, now.checked_add(retry_delay(1)));
+
+        supervisor.ready_since = Some(now);
+        supervisor.consecutive_failures = MAX_RECOVERY_ATTEMPTS - 1;
+        supervisor.record_failure(now, &chrome);
+        assert_eq!(supervisor.consecutive_failures, MAX_RECOVERY_ATTEMPTS);
+        assert!(supervisor.retry_at.is_none());
+        assert!(supervisor.unavailable_announced);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn abandoned_startup_result_cannot_clear_a_newer_x11_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("xwayland");
+        fs::create_dir(&runtime).unwrap();
+        let newer_authority = temp.path().join("newer-authority");
+        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
+            display: ":5678".into(),
+            authority: newer_authority.clone(),
+        }));
+
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let unpublished = SessionXwayland {
+            child,
+            runtime,
+            display: ":1234".into(),
+            authority: temp.path().join("old-authority"),
+            reservation: temp.path().join("old-reservation"),
+            published: false,
+        };
+        let (sender, receiver) = mpsc::channel::<Result<SessionXwayland, String>>();
+        drop(receiver);
+        assert!(
+            sender.send(Ok(unpublished)).is_err(),
+            "dropping a supervisor disconnects its pending startup result"
+        );
+        assert_eq!(
+            crate::shell::host_apps::x11_session(),
+            Some(crate::shell::host_apps::X11Session {
+                display: ":5678".into(),
+                authority: newer_authority,
+            }),
+            "an unpublished result must not revoke a newer live bridge"
+        );
+        crate::shell::host_apps::set_x11_session(None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn an_exited_ready_bridge_revokes_its_x11_launch_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("xwayland");
+        fs::create_dir(&runtime).unwrap();
+        let authority = runtime.join("Xauthority-1234");
+        let reservation = runtime.join("display-1234.lock");
+        fs::write(&authority, b"test authority").unwrap();
+        fs::write(&reservation, b"reserved").unwrap();
+        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
+            display: ":1234".into(),
+            authority: authority.clone(),
+        }));
+
+        // This child represents a bridge that completed readiness and then
+        // died. Polling is the production liveness path, not a destructor-only
+        // cleanup, so a later launch cannot race stale credentials.
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exit 23"])
+            .spawn()
+            .unwrap();
+        let mut bridge = SessionXwayland {
+            child,
+            runtime,
+            display: ":1234".into(),
+            authority: authority.clone(),
+            reservation: reservation.clone(),
+            published: true,
+        };
+        let status = (0..50)
+            .find_map(|_| match bridge.poll_exit().unwrap() {
+                Some(status) => Some(status),
+                None => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    None
+                }
+            })
+            .expect("the ready bridge child exits");
+        assert!(status.contains("23"));
+        assert!(crate::shell::host_apps::x11_session().is_none());
+        assert!(!authority.exists(), "dead bridge authority is removed");
+        assert!(!reservation.exists(), "dead bridge reservation is removed");
     }
 }
