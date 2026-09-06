@@ -360,11 +360,13 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
 /// pipeline from a slow one is whether anything is *happening*, so this
 /// watches for the output growing and gives up only on silence.
 #[derive(Debug)]
+#[cfg(feature = "gst")]
 struct FlushWatch {
     last_len: u64,
     last_progress: std::time::Instant,
 }
 
+#[cfg(feature = "gst")]
 impl FlushWatch {
     fn new(len: u64, now: std::time::Instant) -> Self {
         Self {
