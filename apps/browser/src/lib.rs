@@ -36,6 +36,7 @@
     )
 )]
 
+pub mod actions;
 pub mod address_overlay;
 pub mod blocker;
 pub mod browser_widget;
