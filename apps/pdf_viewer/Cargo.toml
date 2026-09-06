@@ -23,6 +23,7 @@ automerge.workspace = true
 # The qOS ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
+qdoc = { path = "../../crates/doc/qdoc" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
