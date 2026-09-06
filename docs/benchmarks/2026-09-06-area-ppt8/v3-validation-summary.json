@@ -1,0 +1,26 @@
+{
+  "version": "v3",
+  "commands": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v3-format-diff.log"
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 101,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v3-strict-production-clippy.log"
+    },
+    {
+      "name": "test-inclusive-changed-line-clippy",
+      "exit_code": 1,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v3-test-inclusive-changed-line-clippy.log"
+    }
+  ],
+  "source_unchanged": true,
+  "finding": "UI lint repairs pass. Shell render_sparse_to_readback has 105 lines against 100; test-inclusive completed compilation reports only the same warning twice (lib and test).",
+  "runtime_tests_run": false
+}

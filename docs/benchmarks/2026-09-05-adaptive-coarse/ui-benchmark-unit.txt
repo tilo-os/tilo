@@ -1,0 +1,15 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE cargo test -p ui --example ui-perf damage_verifier_tests --locked -- --nocapture --test-threads=1
+Exit code: 0
+
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.36s
+     Running unittests examples/ui_perf.rs (target/debug/examples/ui_perf-49e8058e10f42c9c)
+
+running 4 tests
+test dashboard_perf_bench::damage_verifier_tests::allocation_traffic_budget_includes_reallocations_and_requires_redraws ... ok
+test dashboard_perf_bench::damage_verifier_tests::mean_frame_budget_uses_exact_redraw_totals_and_rejects_bad_configuration ... ok
+test dashboard_perf_bench::damage_verifier_tests::reports_only_an_8_bit_difference_beyond_aa_at_its_native_coordinate ... ok
+test dashboard_perf_bench::damage_verifier_tests::timing_helpers_match_the_benchmark_p99_rank_and_saturate_unaccounted_time ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

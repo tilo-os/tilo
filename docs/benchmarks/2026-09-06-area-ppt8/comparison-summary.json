@@ -1,0 +1,437 @@
+{
+  "attempted": 30,
+  "planned": 30,
+  "complete": 22,
+  "groups": [
+    {
+      "workload": "shell",
+      "variant": "default",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 37.625242,
+      "median_p99_ms": 86.6,
+      "worst_sample_ms": 586.492,
+      "median_peak_rss_kib": 582692,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "ppt8",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 2,
+      "numeric_passes": 0,
+      "median_mean_ms": 35.676344,
+      "median_p99_ms": 81.557,
+      "worst_sample_ms": 419.424,
+      "median_peak_rss_kib": 612052,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "known_gpu_bytes": [],
+      "issues": [
+        {
+          "name": "shell-ppt8-round-1",
+          "exit_code": 1,
+          "issues": [
+            "no complete 1000-sample summary",
+            "native 4K extent missing or changed",
+            "unplanned renderer experiment selected or telemetry missing",
+            "canonical selection not proven",
+            "bounds selection mismatch or missing",
+            "exact shell total/count invalid",
+            "XRGB measured count/bytes invalid",
+            "full-write control bytes/count changed",
+            "render attempts inconsistent",
+            "missing or duplicate PPT8 evidence",
+            "PPT8 counts inconsistent",
+            "PPT8 actual selection mismatch",
+            "eligible shell attempts were not all PPT8",
+            "invalid timing statistics"
+          ],
+          "full_summary": false
+        }
+      ],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 24.384763,
+      "median_p99_ms": 71.69,
+      "worst_sample_ms": 483.365,
+      "median_peak_rss_kib": 595092,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-ppt8",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 2,
+      "numeric_passes": 0,
+      "median_mean_ms": 22.2566085,
+      "median_p99_ms": 58.101,
+      "worst_sample_ms": 420.371,
+      "median_peak_rss_kib": 615648,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "known_gpu_bytes": [],
+      "issues": [
+        {
+          "name": "shell-bounds-ppt8-round-1",
+          "exit_code": 1,
+          "issues": [
+            "no complete 1000-sample summary",
+            "native 4K extent missing or changed",
+            "unplanned renderer experiment selected or telemetry missing",
+            "canonical selection not proven",
+            "bounds selection mismatch or missing",
+            "exact shell total/count invalid",
+            "XRGB measured count/bytes invalid",
+            "full-write control bytes/count changed",
+            "no bounds submission selected",
+            "render attempts inconsistent",
+            "missing or duplicate PPT8 evidence",
+            "PPT8 counts inconsistent",
+            "PPT8 actual selection mismatch",
+            "eligible shell attempts were not all PPT8",
+            "no actual bounds selection",
+            "invalid timing statistics"
+          ],
+          "full_summary": false
+        }
+      ],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-xrgb",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 22.812047999999997,
+      "median_p99_ms": 71.082,
+      "worst_sample_ms": 611.129,
+      "median_peak_rss_kib": 588980,
+      "median_cpu_xrgb_bytes": 807591936,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-xrgb-ppt8",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 20.645417000000002,
+      "median_p99_ms": 54.805,
+      "worst_sample_ms": 415.82,
+      "median_peak_rss_kib": 618844,
+      "median_cpu_xrgb_bytes": 807591936,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "default",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 8.476,
+      "median_p99_ms": 38.78,
+      "worst_sample_ms": 118.52,
+      "median_peak_rss_kib": 377864,
+      "median_cpu_xrgb_bytes": null,
+      "known_gpu_bytes": [
+        62282124
+      ],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "ppt8",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 1,
+      "median_mean_ms": 8.276,
+      "median_p99_ms": 38.105,
+      "worst_sample_ms": 119.111,
+      "median_peak_rss_kib": 405440,
+      "median_cpu_xrgb_bytes": null,
+      "known_gpu_bytes": [
+        62282124
+      ],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 0,
+      "numeric_passes": 0,
+      "median_mean_ms": null,
+      "median_p99_ms": null,
+      "worst_sample_ms": null,
+      "median_peak_rss_kib": null,
+      "median_cpu_xrgb_bytes": null,
+      "known_gpu_bytes": [],
+      "issues": [
+        {
+          "name": "ui-bounds-round-1",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        },
+        {
+          "name": "ui-bounds-round-2",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        },
+        {
+          "name": "ui-bounds-round-3",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        }
+      ],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds-ppt8",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 0,
+      "numeric_passes": 0,
+      "median_mean_ms": null,
+      "median_p99_ms": null,
+      "worst_sample_ms": null,
+      "median_peak_rss_kib": null,
+      "median_cpu_xrgb_bytes": null,
+      "known_gpu_bytes": [],
+      "issues": [
+        {
+          "name": "ui-bounds-ppt8-round-1",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        },
+        {
+          "name": "ui-bounds-ppt8-round-2",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        },
+        {
+          "name": "ui-bounds-ppt8-round-3",
+          "exit_code": 2,
+          "issues": [
+            "no actual bounds selection"
+          ],
+          "full_summary": true
+        }
+      ],
+      "acceptance_eligible": false
+    }
+  ],
+  "pairs": [
+    {
+      "workload": "shell",
+      "base": "default",
+      "candidate": "ppt8",
+      "paired": [
+        {
+          "round": 1,
+          "complete": false
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -9.048986316154462,
+          "p99_change_percent": -10.8898210487974,
+          "rss_change_percent": 5.824641549935317,
+          "cpu_xrgb_byte_change_percent": 0
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -1.3416545888261466,
+          "p99_change_percent": 0.7794457274826749,
+          "rss_change_percent": 3.1826840296372616,
+          "cpu_xrgb_byte_change_percent": 0
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -5.179762033158486,
+        "p99_change_percent": -5.823325635103915,
+        "rss_change_percent": 5.038682528677252
+      }
+    },
+    {
+      "workload": "shell",
+      "base": "bounds",
+      "candidate": "bounds-ppt8",
+      "paired": [
+        {
+          "round": 1,
+          "complete": false
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -12.986368286908888,
+          "p99_change_percent": -17.346910308271724,
+          "rss_change_percent": 2.772680526708471,
+          "cpu_xrgb_byte_change_percent": 0
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -9.133121367634367,
+          "p99_change_percent": -22.37398108012323,
+          "rss_change_percent": 3.8315383120321123,
+          "cpu_xrgb_byte_change_percent": 0
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -8.72739464394221,
+        "p99_change_percent": -18.955223880597018,
+        "rss_change_percent": 3.454255812546636
+      }
+    },
+    {
+      "workload": "shell",
+      "base": "bounds-xrgb",
+      "candidate": "bounds-xrgb-ppt8",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": -6.679984147783702,
+          "p99_change_percent": -1.391650099403574,
+          "rss_change_percent": 6.974255551211073,
+          "cpu_xrgb_byte_change_percent": -0.12916559028675056
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -7.352657800883266,
+          "p99_change_percent": -27.798880166568186,
+          "rss_change_percent": 5.070460796631471,
+          "cpu_xrgb_byte_change_percent": 0
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -11.044795276601194,
+          "p99_change_percent": -9.748867846850551,
+          "rss_change_percent": 3.50047942522993,
+          "cpu_xrgb_byte_change_percent": 0
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -9.497748733476252,
+        "p99_change_percent": -22.89890548943473,
+        "rss_change_percent": 5.070460796631471
+      }
+    },
+    {
+      "workload": "ui",
+      "base": "default",
+      "candidate": "ppt8",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": 0.50731477111845,
+          "p99_change_percent": -0.04254313401087506,
+          "rss_change_percent": 7.297863781678071,
+          "cpu_xrgb_byte_change_percent": null
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -2.42867248290497,
+          "p99_change_percent": 3.0756329798744764,
+          "rss_change_percent": 7.5555414363470685,
+          "cpu_xrgb_byte_change_percent": null
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -4.5611117709941755,
+          "p99_change_percent": -27.362042289840126,
+          "rss_change_percent": 7.185926458765279,
+          "cpu_xrgb_byte_change_percent": null
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -2.3596035865974585,
+        "p99_change_percent": -1.7405879319236872,
+        "rss_change_percent": 7.297863781678071
+      }
+    },
+    {
+      "workload": "ui",
+      "base": "bounds",
+      "candidate": "bounds-ppt8",
+      "paired": [
+        {
+          "round": 1,
+          "complete": false
+        },
+        {
+          "round": 2,
+          "complete": false
+        },
+        {
+          "round": 3,
+          "complete": false
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": null,
+        "p99_change_percent": null,
+        "rss_change_percent": null
+      }
+    }
+  ],
+  "acceptance_eligible": false,
+  "notes": [
+    "All attempted runs and all samples preserved, including complete numeric gate failures. Crashes/timeouts remain in attempt denominators, not treated as complete reports.",
+    "Matched PPT8 comparisons within identical renderer/XRGB configurations. Negative changes mean less observed time or RSS, not a promised hardware-independent speedup.",
+    "Known GPU bytes are accounting endpoints, not measured peak VRAM; PPT8 private-register spilling is not captured by these counters. RSS is whole-process resident memory.",
+    "Shell means use exact timing total / sample count; UI means use ordinary reported integer microseconds.",
+    "aarch64 Vulkan llvmpipe host: no physical 2010-laptop, hardware-GPU, KMS presentation or constant-60FPS proof."
+  ]
+}

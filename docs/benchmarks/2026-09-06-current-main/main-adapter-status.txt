@@ -1,0 +1,4 @@
+ M shell/src/compositor/backend/drm/paint.rs
+ M ui/examples/dashboard_perf_bench.rs
+ M ui/src/offscreen.rs
+?? shell/examples/redraw_bench.rs

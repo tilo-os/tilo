@@ -78,6 +78,15 @@ pub(crate) struct WgpuEngine {
     sparse_fine_available: bool,
     sparse_coarse_enabled: bool,
     sparse_coarse_active_bins_enabled: bool,
+    sparse_coarse_adaptive_enabled: bool,
+    sparse_tile_bounds_enabled: bool,
+    sparse_fine_quad_skip_enabled: bool,
+    sparse_opaque_prune_enabled: bool,
+    sparse_solid_fuse_enabled: bool,
+    sparse_segment_row_mask_enabled: bool,
+    canonical_segment_order_enabled: bool,
+    area_ppt8_enabled: bool,
+    clip_single_group_enabled: bool,
 }
 
 const GPU_TIMESTAMP_PASS_LIMIT: u32 = 64;
@@ -131,6 +140,65 @@ fn direct_path_workgroups_from_value(value: Option<&OsStr>) -> u32 {
 
 fn sparse_coarse_active_bins_from_value(value: Option<&OsStr>) -> bool {
     value.is_some_and(|value| value == "1")
+}
+
+fn sparse_tile_bounds_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn sparse_fine_quad_skip_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn sparse_opaque_prune_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn sparse_solid_fuse_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn sparse_segment_row_mask_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn canonical_segment_order_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn area_ppt8_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn clip_single_group_from_value(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SparseCoarsePolicy {
+    Dense,
+    Legacy,
+    Active,
+    Adaptive,
+}
+
+fn sparse_coarse_policy(
+    coarse: Option<&OsStr>,
+    active_bins: Option<&OsStr>,
+    auto: Option<&OsStr>,
+) -> SparseCoarsePolicy {
+    match coarse {
+        Some(value) if value == "1" => {
+            if sparse_coarse_active_bins_from_value(active_bins) {
+                SparseCoarsePolicy::Active
+            } else {
+                SparseCoarsePolicy::Legacy
+            }
+        }
+        Some(_) => SparseCoarsePolicy::Dense,
+        None if auto.is_some_and(|value| value == "1") => SparseCoarsePolicy::Adaptive,
+        None => SparseCoarsePolicy::Dense,
+    }
 }
 
 #[derive(Default)]
@@ -390,24 +458,32 @@ fn gpu_dispatch_stage_id(label: &str) -> u16 {
         "vello.draw_reduce" => 8,
         "vello.draw_leaf" => 9,
         "vello.clip_reduce" => 10,
-        "vello.clip_leaf" => 11,
+        "vello.clip_leaf" | "vello.clip_leaf_single_group" => 11,
         "vello.binning" => 12,
-        "vello.tile_alloc" => 13,
+        "vello.tile_alloc" | "vello.tile_alloc_sparse" => 13,
         "vello.path_count_setup" => 14,
         "vello.path_count" => 15,
         "vello.backdrop_dyn" => 16,
-        "vello.coarse" => 17,
+        "vello.coarse" | "vello.coarse_opaque_prune" | "vello.coarse_solid_fuse" => 17,
         "vello.path_tiling_setup" => 18,
-        "vello.path_tiling" => 19,
-        "vello.fine_area" => 20,
+        "vello.path_tiling" | "vello.path_tiling_segment_row_mask" => 19,
+        "vello.fine_area" | "vello.fine_area_ppt8" => 20,
         "vello.fine_msaa8" => 21,
         "vello.fine_msaa16" => 22,
-        "vello.fine_sparse_area" => 23,
-        "vello.coarse_sparse" => 24,
+        "vello.fine_sparse_area"
+        | "vello.fine_sparse_area_quad_skip"
+        | "vello.fine_sparse_area_solid_fuse"
+        | "vello.fine_sparse_area_segment_row_mask"
+        | "vello.fine_sparse_area_ppt8" => 23,
+        "vello.coarse_sparse"
+        | "vello.coarse_sparse_opaque_prune"
+        | "vello.coarse_sparse_solid_fuse" => 24,
         "vello.draw_leaf_prefix" => 25,
         "vello.path_count_direct" => 26,
-        "vello.path_tiling_direct" => 27,
-        "vello.coarse_sparse_active" => 28,
+        "vello.path_tiling_direct" | "vello.path_tiling_direct_segment_row_mask" => 27,
+        "vello.coarse_sparse_active"
+        | "vello.coarse_sparse_active_opaque_prune"
+        | "vello.coarse_sparse_active_solid_fuse" => 28,
         _ => 0,
     }
 }
@@ -1103,12 +1179,38 @@ impl WgpuEngine {
             GpuDispatchTimestampTracker::Disabled
         };
         let sparse_fine_enabled = default_enabled_from_env("VELLO_SPARSE_FINE");
-        let sparse_coarse_enabled =
-            std::env::var_os("VELLO_SPARSE_COARSE").is_some_and(|value| value == "1");
-        let sparse_coarse_active_bins_enabled = sparse_coarse_enabled
-            && sparse_coarse_active_bins_from_value(
-                std::env::var_os("VELLO_SPARSE_COARSE_ACTIVE_BINS").as_deref(),
-            );
+        let sparse_coarse_policy = sparse_coarse_policy(
+            std::env::var_os("VELLO_SPARSE_COARSE").as_deref(),
+            std::env::var_os("VELLO_SPARSE_COARSE_ACTIVE_BINS").as_deref(),
+            std::env::var_os("VELLO_SPARSE_COARSE_AUTO").as_deref(),
+        );
+        let sparse_coarse_enabled = !matches!(sparse_coarse_policy, SparseCoarsePolicy::Dense);
+        let sparse_coarse_active_bins_enabled = matches!(
+            sparse_coarse_policy,
+            SparseCoarsePolicy::Active | SparseCoarsePolicy::Adaptive
+        );
+        let sparse_coarse_adaptive_enabled =
+            matches!(sparse_coarse_policy, SparseCoarsePolicy::Adaptive);
+        let sparse_tile_bounds_enabled =
+            sparse_tile_bounds_from_value(std::env::var_os("VELLO_SPARSE_TILE_BOUNDS").as_deref());
+        let sparse_fine_quad_skip_enabled = sparse_fine_quad_skip_from_value(
+            std::env::var_os("VELLO_SPARSE_FINE_QUAD_SKIP").as_deref(),
+        );
+        let sparse_opaque_prune_enabled = sparse_opaque_prune_from_value(
+            std::env::var_os("VELLO_SPARSE_OPAQUE_PRUNE").as_deref(),
+        );
+        let sparse_solid_fuse_enabled =
+            sparse_solid_fuse_from_value(std::env::var_os("VELLO_SPARSE_SOLID_FUSE").as_deref());
+        let sparse_segment_row_mask_enabled = sparse_segment_row_mask_from_value(
+            std::env::var_os("VELLO_SPARSE_SEGMENT_ROW_MASK").as_deref(),
+        );
+        let canonical_segment_order_enabled = canonical_segment_order_from_value(
+            std::env::var_os("VELLO_CANONICAL_SEGMENT_ORDER").as_deref(),
+        );
+        let area_ppt8_enabled =
+            area_ppt8_from_value(std::env::var_os("VELLO_AREA_PPT8").as_deref());
+        let clip_single_group_enabled =
+            clip_single_group_from_value(std::env::var_os("VELLO_CLIP_SINGLE_GROUP").as_deref());
         if compute_batch_log {
             let state = if compute_batch == 0 {
                 "disabled (set VELLO_COMPUTE_BATCH=1 or 2 to enable)"
@@ -1152,6 +1254,15 @@ impl WgpuEngine {
             sparse_fine_available: sparse_fine_enabled,
             sparse_coarse_enabled,
             sparse_coarse_active_bins_enabled,
+            sparse_coarse_adaptive_enabled,
+            sparse_tile_bounds_enabled,
+            sparse_fine_quad_skip_enabled,
+            sparse_opaque_prune_enabled,
+            sparse_solid_fuse_enabled,
+            sparse_segment_row_mask_enabled,
+            canonical_segment_order_enabled,
+            area_ppt8_enabled,
+            clip_single_group_enabled,
             ..Default::default()
         }
     }
@@ -1406,6 +1517,93 @@ impl WgpuEngine {
 
     pub fn sparse_coarse_active_bins_enabled(&self) -> bool {
         self.sparse_coarse_active_bins_enabled
+    }
+
+    pub fn sparse_coarse_adaptive_enabled(&self) -> bool {
+        self.sparse_coarse_adaptive_enabled
+    }
+
+    pub fn sparse_tile_bounds_enabled(&self) -> bool {
+        self.sparse_tile_bounds_enabled
+    }
+
+    pub fn sparse_fine_quad_skip_enabled(&self) -> bool {
+        self.sparse_fine_quad_skip_enabled
+    }
+
+    pub fn sparse_opaque_prune_enabled(&self) -> bool {
+        self.sparse_opaque_prune_enabled
+    }
+
+    pub fn sparse_solid_fuse_enabled(&self) -> bool {
+        self.sparse_solid_fuse_enabled
+    }
+
+    pub fn sparse_segment_row_mask_enabled(&self) -> bool {
+        self.sparse_segment_row_mask_enabled
+    }
+
+    pub fn canonical_segment_order_enabled(&self) -> bool {
+        self.canonical_segment_order_enabled
+    }
+
+    pub fn area_ppt8_enabled(&self) -> bool {
+        self.area_ppt8_enabled
+    }
+
+    pub fn clip_single_group_enabled(&self) -> bool {
+        self.clip_single_group_enabled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_area_ppt8_fixture(&mut self) {
+        self.area_ppt8_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_clip_single_group_fixture(&mut self) {
+        self.clip_single_group_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_sparse_tile_bounds_fixture(&mut self, adaptive: bool) {
+        self.sparse_fine_enabled = true;
+        self.sparse_fine_available = true;
+        self.sparse_coarse_enabled = true;
+        self.sparse_coarse_active_bins_enabled = true;
+        self.sparse_coarse_adaptive_enabled = adaptive;
+        self.sparse_tile_bounds_enabled = true;
+        self.sparse_fine_quad_skip_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_sparse_opaque_prune_fixture(&mut self) {
+        self.sparse_fine_enabled = true;
+        self.sparse_fine_available = true;
+        self.sparse_opaque_prune_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_sparse_solid_fuse_fixture(&mut self) {
+        self.sparse_fine_enabled = true;
+        self.sparse_fine_available = true;
+        self.sparse_solid_fuse_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_sparse_segment_row_mask_fixture(&mut self, direct: bool) {
+        self.sparse_fine_enabled = true;
+        self.sparse_fine_available = true;
+        self.sparse_coarse_enabled = true;
+        self.sparse_coarse_active_bins_enabled = true;
+        self.sparse_tile_bounds_enabled = true;
+        self.direct_path_dispatch = direct;
+        self.sparse_segment_row_mask_enabled = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_canonical_segment_order_fixture(&mut self) {
+        self.canonical_segment_order_enabled = true;
     }
 
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
@@ -2511,6 +2709,10 @@ impl WgpuEngine {
         self.downloads.get(&buf.id)
     }
 
+    pub fn take_download(&mut self, buf: BufferProxy) -> Option<Buffer> {
+        self.downloads.remove(&buf.id)
+    }
+
     /// Drop every buffer the pool is holding for reuse.
     ///
     /// The pool keeps a free list per size class and never gives one up,
@@ -3202,6 +3404,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sparse_segment_row_mask_requires_exact_opt_in_value() {
+        assert!(sparse_segment_row_mask_from_value(Some(OsStr::new("1"))));
+        for value in ["", "0", "true", "01", "2"] {
+            assert!(
+                !sparse_segment_row_mask_from_value(Some(OsStr::new(value))),
+                "{value:?} must not enable the off-default row-mask experiment"
+            );
+        }
+        assert!(!sparse_segment_row_mask_from_value(None));
+    }
+
+    #[test]
+    fn canonical_segment_order_requires_exact_opt_in_value() {
+        assert!(canonical_segment_order_from_value(Some(OsStr::new("1"))));
+        for value in ["", "0", "true", "01", "2"] {
+            assert!(
+                !canonical_segment_order_from_value(Some(OsStr::new(value))),
+                "{value:?} must not enable canonical segment ordering"
+            );
+        }
+        assert!(!canonical_segment_order_from_value(None));
+    }
+
+    #[test]
+    fn area_ppt8_requires_exact_opt_in_value() {
+        assert!(area_ppt8_from_value(Some(OsStr::new("1"))));
+        for value in ["", "0", "true", "01", "2"] {
+            assert!(
+                !area_ppt8_from_value(Some(OsStr::new(value))),
+                "{value:?} must not enable the off-default Area PPT8 experiment"
+            );
+        }
+        assert!(!area_ppt8_from_value(None));
+    }
+
+    #[test]
+    fn clip_single_group_requires_exact_opt_in_value() {
+        assert!(clip_single_group_from_value(Some(OsStr::new("1"))));
+        for value in ["", "0", "true", "01", "2"] {
+            assert!(
+                !clip_single_group_from_value(Some(OsStr::new(value))),
+                "{value:?} must not enable the off-default clip single-group experiment"
+            );
+        }
+        assert!(!clip_single_group_from_value(None));
+    }
+
+    #[test]
+    fn clip_single_group_keeps_the_clip_leaf_timestamp_stage() {
+        assert_eq!(gpu_dispatch_stage_id("vello.clip_leaf"), 11);
+        assert_eq!(gpu_dispatch_stage_id("vello.clip_leaf_single_group"), 11);
+    }
+
+    #[test]
     fn cpu_pathtag_shader_labels_are_exact() {
         assert!(is_cpu_pathtag_shader("vello.pathtag_reduce"));
         assert!(is_cpu_pathtag_shader("vello.pathtag_scan_small"));
@@ -3422,6 +3678,77 @@ mod tests {
     }
 
     #[test]
+    fn sparse_tile_bounds_requires_exact_opt_in() {
+        assert!(!sparse_tile_bounds_from_value(None));
+        assert!(sparse_tile_bounds_from_value(Some(OsStr::new("1"))));
+        for disabled in ["0", "01", "true", "unexpected"] {
+            assert!(
+                !sparse_tile_bounds_from_value(Some(OsStr::new(disabled))),
+                "only exact 1 enables the bounded allocation experiment"
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_fine_quad_skip_requires_exact_opt_in() {
+        assert!(!sparse_fine_quad_skip_from_value(None));
+        assert!(sparse_fine_quad_skip_from_value(Some(OsStr::new("1"))));
+        for disabled in ["0", "01", "true", "unexpected"] {
+            assert!(!sparse_fine_quad_skip_from_value(Some(OsStr::new(
+                disabled
+            ))));
+        }
+    }
+
+    #[test]
+    fn sparse_opaque_prune_requires_exact_opt_in() {
+        assert!(!sparse_opaque_prune_from_value(None));
+        assert!(sparse_opaque_prune_from_value(Some(OsStr::new("1"))));
+        for disabled in ["0", "01", "true", "unexpected"] {
+            assert!(!sparse_opaque_prune_from_value(Some(OsStr::new(disabled))));
+        }
+    }
+
+    #[test]
+    fn sparse_solid_fuse_requires_exact_opt_in() {
+        assert!(!sparse_solid_fuse_from_value(None));
+        assert!(sparse_solid_fuse_from_value(Some(OsStr::new("1"))));
+        for disabled in ["0", "01", "true", "unexpected"] {
+            assert!(!sparse_solid_fuse_from_value(Some(OsStr::new(disabled))));
+        }
+    }
+
+    #[test]
+    fn sparse_coarse_policy_has_explicit_precedence() {
+        assert_eq!(
+            sparse_coarse_policy(None, None, None),
+            SparseCoarsePolicy::Dense
+        );
+        assert_eq!(
+            sparse_coarse_policy(None, None, Some(OsStr::new("1"))),
+            SparseCoarsePolicy::Adaptive
+        );
+        assert_eq!(
+            sparse_coarse_policy(Some(OsStr::new("1")), Some(OsStr::new("1")), None),
+            SparseCoarsePolicy::Active
+        );
+        assert_eq!(
+            sparse_coarse_policy(Some(OsStr::new("1")), None, Some(OsStr::new("1"))),
+            SparseCoarsePolicy::Legacy
+        );
+        for invalid in ["0", "unexpected"] {
+            assert_eq!(
+                sparse_coarse_policy(Some(OsStr::new(invalid)), None, Some(OsStr::new("1"))),
+                SparseCoarsePolicy::Dense
+            );
+        }
+        assert_eq!(
+            sparse_coarse_policy(None, None, Some(OsStr::new("unexpected"))),
+            SparseCoarsePolicy::Dense
+        );
+    }
+
+    #[test]
     fn promoted_gpu_paths_retain_full_cpu_and_profiler_fallbacks() {
         let cpu_engine = WgpuEngine {
             compute_batch: 2,
@@ -3466,9 +3793,47 @@ mod tests {
     fn direct_path_dispatch_timestamp_labels_are_exact() {
         assert_eq!(gpu_dispatch_stage_id("vello.path_count_direct"), 26);
         assert_eq!(gpu_dispatch_stage_id("vello.path_tiling_direct"), 27);
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.path_tiling_direct_segment_row_mask"),
+            27
+        );
         assert_eq!(gpu_dispatch_stage_id("vello.coarse_sparse_active"), 28);
+        assert_eq!(gpu_dispatch_stage_id("vello.coarse_opaque_prune"), 17);
+        assert_eq!(gpu_dispatch_stage_id("vello.coarse_solid_fuse"), 17);
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.coarse_sparse_opaque_prune"),
+            24
+        );
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.coarse_sparse_active_opaque_prune"),
+            28
+        );
+        assert_eq!(gpu_dispatch_stage_id("vello.coarse_sparse_solid_fuse"), 24);
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.coarse_sparse_active_solid_fuse"),
+            28
+        );
+        assert_eq!(gpu_dispatch_stage_id("vello.tile_alloc_sparse"), 13);
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.fine_sparse_area_quad_skip"),
+            23
+        );
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.fine_sparse_area_solid_fuse"),
+            23
+        );
         assert_eq!(gpu_dispatch_stage_id("vello.path_count"), 15);
         assert_eq!(gpu_dispatch_stage_id("vello.path_tiling"), 19);
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.path_tiling_segment_row_mask"),
+            19
+        );
+        assert_eq!(
+            gpu_dispatch_stage_id("vello.fine_sparse_area_segment_row_mask"),
+            23
+        );
+        assert_eq!(gpu_dispatch_stage_id("vello.fine_area_ppt8"), 20);
+        assert_eq!(gpu_dispatch_stage_id("vello.fine_sparse_area_ppt8"), 23);
         assert_eq!(gpu_dispatch_stage_id("vello.path_count_directly"), 0);
     }
 

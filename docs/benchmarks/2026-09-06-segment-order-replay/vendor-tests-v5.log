@@ -1,0 +1,168 @@
+$ timeout --signal=TERM --kill-after=30s 15m env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK -u QOS_REDRAW_BENCH_SCENE_REUSE cargo test -p vello --lib --locked -- --nocapture --test-threads=1
+   Compiling vello v0.9.0 (/home/xaver/qos/vendor/vello)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.45s
+     Running unittests src/lib.rs (target/debug/deps/vello-f36d37f097a63f94)
+
+running 94 tests
+test recording::tests::reset_retains_commands_and_recycles_the_packed_scene_upload ... ok
+test render::tests::direct_path_dispatch_records_the_same_nonzero_grid_for_both_stages ... ok
+test render::tests::disabled_zero_gradient_reuse_keeps_the_transient_lifetime ... ok
+test render::tests::finish_bump_readback_appends_download_then_free ... ok
+test render::tests::finish_unmeasured_bump_readback_only_frees ... ok
+test render::tests::segment_order_replay_records_guarded_patches_before_shared_ordinary_fines ... ok
+test render::tests::segment_row_mask_clear_bits_preserve_original_area_terms ... ok
+test render::tests::segment_row_mask_pair_records_one_geometry_for_both_readers_before_downloads ... ok
+test render::tests::segment_row_mask_recording_uses_only_matched_writer_reader_and_bounds ... ok
+test render::tests::segment_row_mask_selection_requires_bounded_active_pair_and_preserves_modes ... ok
+test render::tests::shared_coarse_geometry_downloads_follow_both_fine_passes_before_frees ... ok
+test render::tests::shared_coarse_pair_records_shared_inputs_and_delayed_frees ... ok
+test render::tests::sparse_coarse_active_falls_back_to_legacy_full_native_bin_grid ... ok
+test render::tests::sparse_coarse_active_records_native_bin_list_grid ... ok
+test render::tests::sparse_coarse_dense_fallback_records_no_sparse_shader ... ok
+test render::tests::sparse_fine_quad_skip_selects_only_the_private_opt_in_path ... ok
+test render::tests::sparse_opaque_prune_predicate_rejects_every_unsafe_boundary ... ok
+test render::tests::sparse_opaque_prune_selects_only_matching_coarse_variants ... ok
+test render::tests::sparse_opaque_prune_unrequested_and_missing_variants_use_original_modes ... ok
+test render::tests::sparse_solid_fuse_falls_back_to_same_mode_and_preserves_other_experiments ... ok
+test render::tests::sparse_solid_fuse_selects_only_complete_matching_pairs ... ok
+test render::tests::sparse_tile_bounds_leaves_dense_legacy_and_missing_permutations_untouched ... ok
+test render::tests::sparse_tile_bounds_records_dedicated_uniform_binding_and_free ... ok
+test render::tests::sparse_tile_bounds_refuses_zero_area_offscreen_and_full_recording_bounds ... ok
+test render::tests::zero_gradient_is_stable_and_not_freed_with_the_frame ... ok
+test scene::tests::encoding_eq_captures_image_sampler_state_in_draw_data ... ok
+test scene::tests::encoding_eq_compares_all_encoded_streams_and_scalars ... ok
+test scene::tests::encoding_eq_compares_full_glyph_stroke_style ... ok
+test scene::tests::encoding_eq_compares_late_gradient_glyph_and_image_resources ... ok
+test tests::active_sparse_coarse_timestamp_stage_name_is_stable ... ok
+test tests::diagnostic_geometry_download_cap_accepts_native_baseline_and_rejects_overflow ... ok
+test tests::overflow_latch_survives_a_later_non_overflow_and_is_consumed_once ... ok
+test tests::segment_order_replay_control_accepts_tail_and_bounds_native_tiles ... ok
+test tests::segment_order_replay_gpu_guards_reject_bad_metadata_and_ptcl_without_writes ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::segment_order_replay_patch_preserves_padding_and_unrelated_records_on_gpu ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::segment_order_replay_preflight_caps_and_preserves_duplicate_multisets ... ok
+test tests::sparse_coarse_active_bins_deduplicate_repeated_row_major_bin_ids ... ok
+test tests::sparse_coarse_active_bins_fall_back_when_selector_has_insufficient_list_space ... ok
+test tests::sparse_coarse_active_bins_preserve_the_final_partial_selector_word ... ok
+test tests::sparse_coarse_active_bins_reject_existing_over_256_native_bin_limit ... ok
+test tests::sparse_coarse_active_coverage_requires_ratio_and_absolute_savings ... ok
+test tests::sparse_coarse_adaptive_selection_skips_unprofitable_or_unpacked_lists ... ok
+test tests::sparse_coarse_tile_bits_deduplicate_and_clear_reused_words ... ok
+test tests::sparse_coarse_tile_bits_reject_malformed_or_out_of_range_records ... ok
+test tests::sparse_damage_post_render_shares_submission_and_preserves_exact_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_damage_post_render_skips_unsupported_and_empty_submissions ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_fine_quad_counts_follow_nonzero_nibbles_and_native_edges ... ok
+test tests::sparse_fine_quad_fast_path_matches_pixel_quad_oracle ... ok
+test tests::sparse_fine_quad_skip_shared_coarse_preserves_deep_unaligned_damage ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_opaque_prune_gpu_guard_matrix_preserves_deep_clips_and_unsafe_tiles ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_opaque_prune_preserves_partial_native_edge_damage ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_opaque_prune_preserves_pixels_and_restarts_the_tile_ptcl_head ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_path_tile_bounds_handles_partial_native_edges_and_rejects_bad_unions ... ok
+test tests::sparse_path_tile_bounds_unions_disjoint_tiles_without_translating_native_ids ... ok
+test tests::sparse_segment_row_mask_gpu_pair_proves_clear_bits_and_exact_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+segment-row-mask GPU proof direct=true captured_bytes=16777216 checked_clear_bits=60 requested_pixels=289
+segment-row-mask GPU proof direct=false captured_bytes=16777216 checked_clear_bits=60 requested_pixels=289
+ok
+test tests::sparse_segment_row_mask_stays_unavailable_for_default_and_full_cpu_renderers ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_solid_fuse_gpu_preserves_paints_clips_jumps_and_partial_damage ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+solid-fuse PTCL proof: plain commands=123 words=196; fused commands=68 words=141; flagged=[5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 7, 8, 9, 13, 5, 11, 11, 11, 11, 11, 11, 11, 11, 11]; jump=true fill=true captured_bytes=12582912
+ok
+test tests::sparse_solid_fuse_stays_unavailable_for_default_and_full_cpu_renderers ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_tile_bounds_active_gpu_fixture_preserves_left_of_roi_winding ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_tile_bounds_forced_active_preserves_partial_native_edge ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::sparse_tile_records_clamp_and_reject_empty_damage ... ok
+test tests::sparse_tile_records_union_overlapping_native_damage ... ok
+test tests::sparse_tile_row_masks_match_a_pixel_oracle_across_boundaries ... ok
+test tests::zero_gradient_reuse_preserves_one_image_and_fine_cache_binding ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test wgpu_engine::tests::cpu_draw_prefix_pool_is_bounded_and_zeroed ... ok
+test wgpu_engine::tests::cpu_metadata_pool_reuses_zeroed_bounded_slots ... ok
+test wgpu_engine::tests::cpu_metadata_shader_labels_are_exact ... ok
+test wgpu_engine::tests::cpu_pathtag_pool_caps_oversize_slots_and_clears ... ok
+test wgpu_engine::tests::cpu_pathtag_pool_reuses_only_known_zeroed_slots ... ok
+test wgpu_engine::tests::cpu_pathtag_shader_labels_are_exact ... ok
+test wgpu_engine::tests::deferred_frees_extend_only_the_second_batching_mode ... ok
+test wgpu_engine::tests::direct_path_dispatch_timestamp_labels_are_exact ... ok
+test wgpu_engine::tests::direct_path_dispatch_toggle_excludes_full_cpu ... ok
+test wgpu_engine::tests::direct_path_workgroups_accepts_only_the_bounded_integer_override ... ok
+test wgpu_engine::tests::disabling_cpu_pathtags_disables_draw_prefix_and_clears_its_pool ... ok
+test wgpu_engine::tests::disabling_cpu_pathtags_disables_metadata_and_clears_its_pool ... ok
+test wgpu_engine::tests::dispatch_timestamp_decoder_aggregates_repeated_and_unknown_stages ... ok
+test wgpu_engine::tests::dispatch_timestamp_decoder_rejects_bad_pairs_and_stage_counts ... ok
+test wgpu_engine::tests::dispatch_timestamp_decoder_rejects_zero_and_over_limit_pass_counts ... ok
+test wgpu_engine::tests::pending_buffer_clear_ends_a_prepared_compute_run ... ok
+test wgpu_engine::tests::production_defaults_require_an_explicit_zero_to_disable ... ok
+test wgpu_engine::tests::promoted_gpu_paths_retain_full_cpu_and_profiler_fallbacks ... ok
+test wgpu_engine::tests::sparse_coarse_active_bins_requires_exact_opt_in ... ok
+test wgpu_engine::tests::sparse_coarse_policy_has_explicit_precedence ... ok
+test wgpu_engine::tests::sparse_fine_quad_skip_requires_exact_opt_in ... ok
+test wgpu_engine::tests::sparse_opaque_prune_requires_exact_opt_in ... ok
+test wgpu_engine::tests::sparse_segment_row_mask_requires_exact_opt_in_value ... ok
+test wgpu_engine::tests::sparse_solid_fuse_requires_exact_opt_in ... ok
+test wgpu_engine::tests::sparse_tile_bounds_requires_exact_opt_in ... ok
+test wgpu_engine::tests::timestamp_decoder_rejects_invalid_metadata ... ok
+test wgpu_engine::tests::timestamp_decoder_rejects_non_monotonic_pairs ... ok
+test wgpu_engine::tests::timestamp_decoder_reports_span_and_sum_for_complete_monotonic_pairs ... ok
+test wgpu_engine::tests::timestamp_lifecycle_only_preserves_a_pending_map ... ok
+test wgpu_engine::tests::zero_gradient_reuse_uses_the_default_on_exact_zero_off_policy ... ok
+
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.64s
+
+
+EXIT_CODE=0

@@ -1,0 +1,15 @@
+{
+  "synthetic_fixtures": true,
+  "passed": 9,
+  "tests": [
+    "six complete diagnostic reports aggregate by variant",
+    "failed attempt retained without replacement",
+    "truncated run cannot enter totals",
+    "missing attempt stays explicit",
+    "duplicate attempt rejected",
+    "wrong binary identity rejected",
+    "ordinary success exit is not diagnostic completion",
+    "duplicate declaration rejected",
+    "missing parser result excluded"
+  ]
+}

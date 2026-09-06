@@ -1,0 +1,56 @@
+$ env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE cargo test -p shell --example redraw_bench --locked -- --nocapture --test-threads=1 --skip native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions
+
+   Compiling shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.56s
+     Running unittests examples/redraw_bench.rs (target/debug/examples/redraw_bench-591dddf465a25152)
+
+running 31 tests
+test tests::aggregation_uses_all_samples_and_nearest_rank_p99 ... ok
+test tests::benchmark_actions_alternate_quick_settings_open_and_outside_dismissal ... redraw_bench action 0 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 1 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 2 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 3 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 4 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 5 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 6 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 7 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 8 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 9 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 10 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 11 target=topbar_overview_button: quick_settings=false overview=false
+ok
+test tests::benchmark_actions_produce_bounded_damage ... redraw_bench retained classification: sparse_frames=11/12 covered_pixels=4257792 full_pixels/frame=8294400
+ok
+test tests::clip_telemetry_tracks_nested_depth_empty_groups_and_end_clip_bits ... ok
+test tests::diagnostic_phase_aggregation_keeps_every_phase_and_byte ... ok
+test tests::diagnostic_runs_cannot_pass_acceptance ... ok
+test tests::direct_path_workgroup_override_requires_explicit_diagnostic_mode ... ok
+test tests::dispatch_timestamp_aggregation_requires_exact_submission_match ... ok
+test tests::dispatch_timestamp_mismatch_and_unavailable_states_are_never_zero_time ... ok
+test tests::dispatch_timestamp_missing_sample_reads_post_take_invalid_status ... ok
+test tests::empty_zero_and_missing_samples_are_rejected ... ok
+test tests::fine_command_distribution_counts_blur_fixture_with_shader_widths ... ok
+test tests::gates_check_exact_mean_and_p99_boundaries ... ok
+test tests::native_4k_dense_oracle_is_repeatable_within_and_across_contexts ... ignored, explicit native-4K dense repeatability diagnostic
+test tests::native_4k_fixed_quick_settings_pose_225_dense_is_repeatable ... ignored, explicit native-4K fixed-pose dense repeatability diagnostic
+test tests::native_4k_fixed_quick_settings_pose_225_shared_geometry_is_repeatable ... ignored, explicit native-4K fixed-pose shared-coarse geometry diagnostic
+test tests::native_4k_fixed_quick_settings_poses_match_shared_coarse_and_dense ... ignored, explicit native-4K fixed quick-settings pose diagnostic
+test tests::native_4k_shared_coarse_damage_pixels_are_exact ... ignored, explicit native-4K shared-coarse fine diagnostic
+test tests::native_4k_shared_coarse_fine_command_distribution_is_representative ... ignored, explicit native-4K representative shared-coarse fine-command distribution diagnostic
+test tests::native_fine_tile_union_clips_boundaries_and_deduplicates_damage ... ok
+test tests::native_ptcl_parser_rejects_jump_cycles_bounds_and_truncated_segments ... ok
+test tests::native_ptcl_parser_uses_shader_word_widths_and_excludes_segment_padding ... ok
+test tests::opaque_prune_prediction_respects_clip_anchors_alpha_and_depth ... ok
+test tests::parsed_fine_tile_comparison_detects_changed_meaningful_segment ... ok
+test tests::parsed_fine_tile_comparison_detects_command_count_and_type_mismatches ... ok
+test tests::parsed_fine_tile_comparison_detects_fill_metadata_and_other_args ... ok
+test tests::parsed_fine_tile_comparison_reports_order_only_fill_changes ... ok
+test tests::segment_row_mask_cpu_model_covers_boundaries_and_conservative_fallbacks ... ok
+test tests::solid_successor_telemetry_distinguishes_fusable_tags ... ok
+test tests::sparse_coarse_aggregation_uses_returned_submission_stats ... ok
+test tests::timestamp_flags_require_explicit_diagnostic_mode ... ok
+
+test result: ok. 25 passed; 0 failed; 6 ignored; 0 measured; 1 filtered out; finished in 0.69s
+
+
+exit_code=0

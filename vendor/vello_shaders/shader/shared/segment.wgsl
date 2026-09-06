@@ -7,6 +7,11 @@ struct Segment {
     point0: vec2<f32>,
     point1: vec2<f32>,
     y_edge: f32,
+#ifdef segment_row_mask
+    // Uses Segment's existing trailing storage word. Only the paired sparse
+    // producer/reader permutations access it; ordinary paths retain padding.
+    row_mask: u32,
+#endif
 }
 
 // A line segment produced by flattening and ready for rasterization.

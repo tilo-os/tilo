@@ -22,7 +22,11 @@ use drm_re::control::{
     framebuffer,
 };
 
+use super::paint::{
+    BridgeError, SceneDamage, VelloDrmBridge, XrgbHistoryCommit, XrgbTargetHistory,
+};
 use crate::compositor::backend::OutputId;
+use vello::{FineDamageRect, Scene};
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = 64;
@@ -654,9 +658,37 @@ pub struct DrmScanout {
     /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
     cursor_size: u32,
+    /// Opt-in bounded CPU destination-age tracker. It owns metadata only, never pixel storage.
+    xrgb_history: XrgbTargetHistory,
+    xrgb_scanout_epoch: Option<u64>,
+    xrgb_software_cursor: [Option<FineDamageRect>; 2],
+    xrgb_damage_requested: bool,
 }
 
 impl DrmScanout {
+    pub(crate) fn invalidate_xrgb_history(&mut self) {
+        if !self.xrgb_damage_requested {
+            return;
+        }
+        self.xrgb_history.invalidate();
+        self.xrgb_software_cursor = [None, None];
+        self.xrgb_scanout_epoch = self
+            .xrgb_scanout_epoch
+            .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Whether the explicit CPU destination-age experiment was requested at scanout setup.
+    #[doc(hidden)]
+    pub fn xrgb_damage_requested(&self) -> bool {
+        self.xrgb_damage_requested
+    }
+
+    /// Whether the current scanout has a non-wrapping destination-history epoch.
+    #[doc(hidden)]
+    pub fn xrgb_damage_available(&self) -> bool {
+        self.xrgb_damage_requested && self.xrgb_scanout_epoch.is_some()
+    }
+
     /// Open `card_path` and become DRM master; split from [`Self::new`] so [`open_all_scanouts`] opens once and dups the fd per connector (libseat refuses a second open).
     fn open_card<S: Session>(session: &mut S, card_path: &Path) -> Result<Card, String> {
         use smithay::backend::session::AsErrno;
@@ -804,6 +836,11 @@ impl DrmScanout {
             cursor_buffer,
             hw_cursor_active,
             cursor_size,
+            xrgb_history: XrgbTargetHistory::new(2),
+            xrgb_scanout_epoch: Some(1),
+            xrgb_software_cursor: [None, None],
+            xrgb_damage_requested: std::env::var("QOS_DRM_XRGB_DAMAGE")
+                .is_ok_and(|value| value == "1"),
         })
     }
 
@@ -832,6 +869,9 @@ impl DrmScanout {
 
     pub fn set_cursor_size(&mut self, cursor_size: u32) {
         let cursor_size = cursor_size.clamp(24, CURSOR_DIM);
+        if self.cursor_size != cursor_size {
+            self.invalidate_xrgb_history();
+        }
         self.cursor_size = cursor_size;
         if let Some(buffer) = self.cursor_buffer.as_mut() {
             let pitch = buffer.pitch() as usize;
@@ -868,6 +908,7 @@ impl DrmScanout {
     /// Re-establish this output after the session regains hardware (VT switch/suspend): nothing
     /// survives — CRTC has no mode, framebuffer unbound, cursor plane reset, and the queued flip died with the master lock, leaving `flip_pending` latched forever. Best-effort throughout.
     pub fn restore(&mut self) {
+        self.invalidate_xrgb_history();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
         // Re-binding the mode is what the kernel needs to scan out again.
@@ -903,6 +944,7 @@ impl DrmScanout {
                          falling back to the software cursor"
                 );
                 self.hw_cursor_active = false;
+                self.invalidate_xrgb_history();
             }
         }
     }
@@ -938,6 +980,156 @@ impl DrmScanout {
         self.present_no_drain(cursor, fill);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the mapping lifetime, bridge transaction, cursor write, and presentation boundary stay ordered together"
+    )]
+    /// Present one opt-in versioned scene through the bounded two-target XRGB history.
+    ///
+    /// This is intentionally separate from [`Self::present_into`]: arbitrary callers retain the
+    /// established complete-destination contract, while this path can prove both dumb-buffer
+    /// identity and every skipped scene delta.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bridge error if rendering, retained readback, or the complete tracked XRGB
+    /// write fails. Such a failure invalidates the destination-age history before it is returned.
+    pub fn present_scene_damage(
+        &mut self,
+        cursor: Option<(f64, f64)>,
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+    ) -> Result<(), BridgeError> {
+        // This is the single-output entry point, just like `present_into`: retire a previous
+        // event before deciding whether a new history transaction may target the back buffer.
+        self.drain_flip_events();
+        if !self.xrgb_damage_available() || (self.use_pageflip && self.flip_pending) {
+            return Ok(());
+        }
+        if !bridge.xrgb_history_available() {
+            // Identity exhaustion disables only the experiment. Retain the old complete-output
+            // presenter rather than turning a safe full frame into a dropped frame.
+            self.invalidate_xrgb_history();
+            let mut result = Ok(());
+            self.present_no_drain(cursor, |dst, pitch| {
+                result = bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch);
+            });
+            return result;
+        }
+        let idx = if self.use_pageflip {
+            1usize.saturating_sub(self.front)
+        } else {
+            self.front
+        };
+        let (dw, dh) = (self.width as usize, self.height as usize);
+        let hw_cursor_active = self.hw_cursor_active;
+        let cursor_size = self.cursor_size;
+        let scanout_epoch = self.xrgb_scanout_epoch;
+        let Some(pitch) = self.buffers.get(idx).map(|buffer| buffer.pitch() as usize) else {
+            self.invalidate_xrgb_history();
+            return Ok(());
+        };
+        let identity = bridge
+            .xrgb_history_identity(pitch, 2)
+            .zip(scanout_epoch)
+            .map(|(identity, epoch)| identity.with_scanout_epoch(epoch));
+        let previous_cursor = (!hw_cursor_active)
+            .then(|| self.xrgb_software_cursor.get(idx).copied().flatten())
+            .flatten();
+        let current_cursor = (!hw_cursor_active)
+            .then(|| software_cursor_damage_rect(cursor, dw, dh, cursor_size))
+            .flatten();
+        let extra = previous_cursor.as_slice();
+        // Keep the mapping and every borrow derived from it inside this closure. In particular,
+        // the `map_dumb_buffer` result can own a mapping tied to `self.buffers`; no whole-scanout
+        // state may be invalidated until that result and any mapping have been dropped.
+        let write_result = (|| -> Result<Option<_>, BridgeError> {
+            let Some(buffer) = self.buffers.get_mut(idx) else {
+                tracing::warn!("DRM scanout: back-buffer index {idx} is unavailable");
+                return Ok(None);
+            };
+            let mut map = match self.card.map_dumb_buffer(buffer) {
+                Ok(map) => map,
+                Err(error) => {
+                    tracing::warn!("DRM scanout: map_dumb_buffer: {error}");
+                    return Ok(None);
+                }
+            };
+            let transaction = self.xrgb_history.prepare(
+                idx,
+                identity,
+                damage.revision,
+                damage.previous_revision,
+                damage.regions,
+                extra,
+            );
+            let result = bridge.paint_damage_into_xrgb8888_with_history(
+                scene,
+                damage,
+                &transaction,
+                map.as_mut(),
+                pitch,
+            )?;
+            if !hw_cursor_active {
+                if let Some((px, py)) = cursor {
+                    draw_cursor(
+                        map.as_mut(),
+                        pitch,
+                        dw,
+                        dh,
+                        pixel_coord(px),
+                        pixel_coord(py),
+                        cursor_size,
+                    );
+                }
+                let Some(slot) = self.xrgb_software_cursor.get_mut(idx) else {
+                    transaction.abort();
+                    return Err(BridgeError::InvalidSize(
+                        "software cursor target index is outside history slots".to_owned(),
+                    ));
+                };
+                *slot = current_cursor;
+            }
+            transaction.commit(if result.damage_admitted {
+                XrgbHistoryCommit::DamageAccepted
+            } else {
+                XrgbHistoryCommit::FullBoundary
+            });
+            Ok(Some(result))
+        })();
+        match write_result {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.invalidate_xrgb_history();
+                return Ok(());
+            }
+            Err(error) => {
+                self.invalidate_xrgb_history();
+                return Err(error);
+            }
+        }
+
+        if self.use_pageflip {
+            // Keep the established page-flip transfer hint. Failure does not suppress the
+            // flip, but it is a presentation boundary for destination-age tracking.
+            let (cw, ch) = self.clip_dims();
+            let clip = ClipRect::new(0, 0, cw, ch);
+            let dirty_ok = self
+                .fb_at(idx)
+                .is_some_and(|fb| self.card.dirty_framebuffer(fb, &[clip]).is_ok());
+            let flip_ok = self.flip_to(idx);
+            if !pageflip_history_commit_is_safe(dirty_ok, flip_ok) {
+                self.invalidate_xrgb_history();
+            }
+        } else if !self.flush_dirty(idx) {
+            // `flush_dirty` has performed its established set_crtc fallback. Its result is not
+            // proof that the previous destination-age chain survived that mode transition.
+            self.invalidate_xrgb_history();
+        }
+        Ok(())
+    }
+
     /// Present without draining DRM events first: the multi-output backend drains the shared card fd
     /// once per frame and routes via [`Self::mark_flip_complete`] — draining per-scanout here would steal sibling outputs' events.
     pub fn present_no_drain<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
@@ -956,6 +1148,11 @@ impl DrmScanout {
         } else {
             self.front
         };
+
+        // `fill` is an arbitrary caller-owned write, so no retained destination claim can
+        // survive this legacy entry point. Invalidate before borrowing the dumb buffer; a map
+        // failure merely makes this conservative boundary earlier.
+        self.invalidate_xrgb_history();
 
         let (dw, dh) = (self.width as usize, self.height as usize);
         let Some(buffer) = self.buffers.get_mut(idx) else {
@@ -997,9 +1194,9 @@ impl DrmScanout {
             if let Some(fb) = self.fb_at(idx) {
                 let _ = self.card.dirty_framebuffer(fb, &[clip]);
             }
-            self.flip_to(idx);
+            let _ = self.flip_to(idx);
         } else {
-            self.flush_dirty(idx);
+            let _ = self.flush_dirty(idx);
         }
     }
 
@@ -1021,10 +1218,10 @@ impl DrmScanout {
     }
 
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
-    fn flip_to(&mut self, idx: usize) {
+    fn flip_to(&mut self, idx: usize) -> bool {
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
-            return;
+            return false;
         };
         match self
             .card
@@ -1033,11 +1230,13 @@ impl DrmScanout {
             Ok(()) => {
                 self.flip_pending = true;
                 self.front = idx;
+                true
             }
             Err(e) => {
                 let code = e.raw_os_error().unwrap_or(0);
                 if code == libc::EBUSY || code == libc::EAGAIN {
                     tracing::trace!("DRM scanout: page_flip busy; skipping frame");
+                    false
                 } else {
                     tracing::warn!(
                         "DRM scanout: page_flip unsupported (errno {code}: {e}); \
@@ -1052,21 +1251,22 @@ impl DrmScanout {
                         Some(self.mode),
                     );
                     self.front = idx;
+                    false
                 }
             }
         }
     }
 
     /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
-    fn flush_dirty(&mut self, idx: usize) {
+    fn flush_dirty(&mut self, idx: usize) -> bool {
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
-            return;
+            return false;
         }
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; falling back to set_crtc");
             self.force_flush_via_set_crtc();
-            return;
+            return false;
         };
         let (cw, ch) = self.clip_dims();
         let clip = ClipRect::new(0, 0, cw, ch);
@@ -1074,6 +1274,9 @@ impl DrmScanout {
             tracing::warn!("DRM scanout: dirty_framebuffer unsupported ({e}); using set_crtc");
             self.dirtyfb_unsupported = true;
             self.force_flush_via_set_crtc();
+            false
+        } else {
+            true
         }
     }
 
@@ -1127,6 +1330,7 @@ impl DrmScanout {
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips [`Self::present`] while blanked.
     pub fn set_dpms(&mut self, on: bool) {
+        self.invalidate_xrgb_history();
         self.set_dpms_property(on);
         if on {
             // Re-modeset the saved framebuffer + mode so the last frame is back on screen; the next `present` resumes normal blitting.
@@ -1404,6 +1608,50 @@ fn draw_cursor(
     }
 }
 
+/// Conservative clipped byte footprint of [`draw_cursor`]. The square bound intentionally covers
+/// every scaled arrow byte without relying on the ASCII-art shape, so an old software cursor is
+/// always restored from retained staging before a target is reused.
+fn software_cursor_damage_rect(
+    cursor: Option<(f64, f64)>,
+    width: usize,
+    height: usize,
+    cursor_size: u32,
+) -> Option<FineDamageRect> {
+    let (px, py) = cursor?;
+    let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
+    let span = usize::try_from(CURSOR_DIM)
+        .ok()
+        .and_then(|dimension| dimension.checked_mul(scale))?;
+    let x0 = pixel_coord(px);
+    let y0 = pixel_coord(py);
+    let right = x0.saturating_add(i32::try_from(span).unwrap_or(i32::MAX));
+    let bottom = y0.saturating_add(i32::try_from(span).unwrap_or(i32::MAX));
+    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+    let left = x0.clamp(0, width_i32);
+    let top = y0.clamp(0, height_i32);
+    let right = right.clamp(0, width_i32);
+    let bottom = bottom.clamp(0, height_i32);
+    let rect_width = right.saturating_sub(left);
+    let rect_height = bottom.saturating_sub(top);
+    if rect_width == 0 || rect_height == 0 {
+        return None;
+    }
+    Some(FineDamageRect {
+        x: u32::try_from(left).ok()?,
+        y: u32::try_from(top).ok()?,
+        width: u32::try_from(rect_width).ok()?,
+        height: u32::try_from(rect_height).ok()?,
+    })
+}
+
+/// A tracked page-flip write remains reusable only if both the established transfer hint and the
+/// flip request succeeded. The caller still submits the flip after a dirtyfb failure; this helper
+/// describes only the destination-history commit decision.
+fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
+    dirty_ok && flip_ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1455,6 +1703,297 @@ mod tests {
         let mut dst = vec![0u8; pitch * h];
         draw_cursor(&mut dst, pitch, w, h, 18, 18, 24);
         draw_cursor(&mut dst, pitch, w, h, -3, -3, 24);
+    }
+
+    #[test]
+    fn software_cursor_damage_footprint_covers_every_clipped_write() {
+        let (width, height) = (80_usize, 80_usize);
+        let pitch = width * 4;
+        for cursor in [Some((4.0, 5.0)), Some((73.0, 75.0)), Some((-8.0, -6.0))] {
+            let mut bytes = vec![0xA7; pitch * height];
+            let before = bytes.clone();
+            if let Some((x, y)) = cursor {
+                draw_cursor(
+                    &mut bytes,
+                    pitch,
+                    width,
+                    height,
+                    pixel_coord(x),
+                    pixel_coord(y),
+                    48,
+                );
+            }
+            let footprint = software_cursor_damage_rect(cursor, width, height, 48)
+                .expect("partially visible cursor has a restoration footprint");
+            for (offset, (actual, original)) in bytes.iter().zip(&before).enumerate() {
+                if actual == original {
+                    continue;
+                }
+                let pixel = offset / 4;
+                let x = pixel % width;
+                let y = pixel / width;
+                assert!(
+                    x >= usize::try_from(footprint.x).expect("test x")
+                        && x < usize::try_from(footprint.x + footprint.width).expect("test right")
+                        && y >= usize::try_from(footprint.y).expect("test y")
+                        && y < usize::try_from(footprint.y + footprint.height)
+                            .expect("test bottom"),
+                    "cursor write ({x},{y}) must be restored by its footprint {footprint:?}"
+                );
+            }
+        }
+        assert_eq!(software_cursor_damage_rect(None, width, height, 24), None);
+    }
+
+    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::too_many_lines,
+        reason = "the cursor fixture keeps both destination-age transactions next to their exact same-staging restoration checks"
+    )]
+    fn two_target_history_restores_moved_and_hidden_software_cursor_from_staging() {
+        use crate::compositor::backend::drm::paint::XrgbCpuWriteMode;
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::{Color, Fill};
+
+        const WIDTH: u32 = 128;
+        const HEIGHT: u32 = 96;
+        let mut bridge = match VelloDrmBridge::new(WIDTH, HEIGHT) {
+            Ok(bridge) => bridge,
+            Err(BridgeError::NoAdapter(message)) => {
+                eprintln!("skipping cursor history test: {message}");
+                return;
+            }
+            Err(error) => panic!("unexpected bridge error: {error:?}"),
+        };
+        let width = usize::try_from(WIDTH).expect("test width");
+        let height = usize::try_from(HEIGHT).expect("test height");
+        let pitch = width.checked_mul(4).expect("test pitch") + 16;
+        let len = pitch.checked_mul(height).expect("test length");
+        let identity = bridge
+            .xrgb_history_identity(pitch, 2)
+            .expect("test identity")
+            .with_scanout_epoch(3);
+        let mut history = XrgbTargetHistory::new(2);
+        let mut targets = [vec![0xA7; len], vec![0xB8; len]];
+        let mut cursor_slots = [None, None];
+        let first_cursor = Some((4.0, 5.0));
+        let moved_cursor = Some((58.0, 12.0));
+        let a = FineDamageRect {
+            x: 8,
+            y: 10,
+            width: 12,
+            height: 9,
+        };
+        let b = FineDamageRect {
+            x: 88,
+            y: 35,
+            width: 11,
+            height: 8,
+        };
+        let c = FineDamageRect {
+            x: 42,
+            y: 68,
+            width: 9,
+            height: 7,
+        };
+        let scene_for = |rects: &[(FineDamageRect, Color)]| {
+            let mut scene = Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(0x11, 0x22, 0x33),
+                None,
+                &Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+            );
+            for (damage, color) in rects {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    *color,
+                    None,
+                    &Rect::new(
+                        f64::from(damage.x),
+                        f64::from(damage.y),
+                        f64::from(damage.x.saturating_add(damage.width)),
+                        f64::from(damage.y.saturating_add(damage.height)),
+                    ),
+                );
+            }
+            scene
+        };
+        let initial_scene = scene_for(&[]);
+        let first_scene = scene_for(&[(a, Color::from_rgb8(0xC0, 0x50, 0x20))]);
+        let second_scene = scene_for(&[
+            (a, Color::from_rgb8(0xC0, 0x50, 0x20)),
+            (b, Color::from_rgb8(0x20, 0x80, 0xD0)),
+        ]);
+        let hidden_scene = scene_for(&[
+            (a, Color::from_rgb8(0xC0, 0x50, 0x20)),
+            (b, Color::from_rgb8(0x20, 0x80, 0xD0)),
+            (c, Color::from_rgb8(0x60, 0xD0, 0x70)),
+        ]);
+        let regions_a = [a];
+        let regions_b = [b];
+        let regions_c = [c];
+
+        let initial = SceneDamage {
+            revision: 1,
+            previous_revision: None,
+            regions: Some(&regions_a),
+        };
+        let transaction = history.prepare(
+            0,
+            Some(identity),
+            initial.revision,
+            initial.previous_revision,
+            initial.regions,
+            &[],
+        );
+        let write = bridge
+            .paint_damage_into_xrgb8888_with_history(
+                &initial_scene,
+                initial,
+                &transaction,
+                &mut targets[0],
+                pitch,
+            )
+            .expect("seed target zero");
+        draw_cursor(&mut targets[0], pitch, width, height, 4, 5, 24);
+        cursor_slots[0] = software_cursor_damage_rect(first_cursor, width, height, 24);
+        transaction.commit(if write.damage_admitted {
+            XrgbHistoryCommit::DamageAccepted
+        } else {
+            XrgbHistoryCommit::FullBoundary
+        });
+
+        let first = SceneDamage {
+            revision: 2,
+            previous_revision: Some(1),
+            regions: Some(&regions_a),
+        };
+        let transaction = history.prepare(
+            1,
+            Some(identity),
+            first.revision,
+            first.previous_revision,
+            first.regions,
+            cursor_slots[1].as_slice(),
+        );
+        let write = bridge
+            .paint_damage_into_xrgb8888_with_history(
+                &first_scene,
+                first,
+                &transaction,
+                &mut targets[1],
+                pitch,
+            )
+            .expect("seed target one");
+        draw_cursor(&mut targets[1], pitch, width, height, 4, 5, 24);
+        cursor_slots[1] = software_cursor_damage_rect(first_cursor, width, height, 24);
+        transaction.commit(if write.damage_admitted {
+            XrgbHistoryCommit::DamageAccepted
+        } else {
+            XrgbHistoryCommit::FullBoundary
+        });
+
+        let moved = SceneDamage {
+            revision: 3,
+            previous_revision: Some(2),
+            regions: Some(&regions_b),
+        };
+        let transaction = history.prepare(
+            0,
+            Some(identity),
+            moved.revision,
+            moved.previous_revision,
+            moved.regions,
+            cursor_slots[0].as_slice(),
+        );
+        let write = bridge
+            .paint_damage_into_xrgb8888_with_history(
+                &second_scene,
+                moved,
+                &transaction,
+                &mut targets[0],
+                pitch,
+            )
+            .expect("restore old cursor and draw moved cursor");
+        assert_eq!(write.mode, XrgbCpuWriteMode::Partial);
+        draw_cursor(&mut targets[0], pitch, width, height, 58, 12, 24);
+        cursor_slots[0] = software_cursor_damage_rect(moved_cursor, width, height, 24);
+        transaction.commit(if write.damage_admitted {
+            XrgbHistoryCommit::DamageAccepted
+        } else {
+            XrgbHistoryCommit::FullBoundary
+        });
+        let mut moved_reference = targets[0].clone();
+        bridge
+            .swizzle_current_staging_for_test(&mut moved_reference, pitch)
+            .expect("moved cursor staging reference");
+        draw_cursor(&mut moved_reference, pitch, width, height, 58, 12, 24);
+        assert_eq!(
+            targets[0]
+                .iter()
+                .zip(&moved_reference)
+                .position(|(a, b)| a != b),
+            None,
+            "moved cursor target differs from current staging reference"
+        );
+
+        let hidden = SceneDamage {
+            revision: 4,
+            previous_revision: Some(3),
+            regions: Some(&regions_c),
+        };
+        let transaction = history.prepare(
+            1,
+            Some(identity),
+            hidden.revision,
+            hidden.previous_revision,
+            hidden.regions,
+            cursor_slots[1].as_slice(),
+        );
+        let write = bridge
+            .paint_damage_into_xrgb8888_with_history(
+                &hidden_scene,
+                hidden,
+                &transaction,
+                &mut targets[1],
+                pitch,
+            )
+            .expect("restore old cursor when hidden");
+        assert_eq!(write.mode, XrgbCpuWriteMode::Partial);
+        cursor_slots[1] = None;
+        transaction.commit(if write.damage_admitted {
+            XrgbHistoryCommit::DamageAccepted
+        } else {
+            XrgbHistoryCommit::FullBoundary
+        });
+        let mut hidden_reference = targets[1].clone();
+        bridge
+            .swizzle_current_staging_for_test(&mut hidden_reference, pitch)
+            .expect("hidden cursor staging reference");
+        assert_eq!(
+            targets[1]
+                .iter()
+                .zip(&hidden_reference)
+                .position(|(a, b)| a != b),
+            None,
+            "hidden cursor target differs from current staging reference"
+        );
+        assert_eq!(
+            cursor_slots[1], None,
+            "hidden cursor retains no stale footprint"
+        );
+    }
+
+    #[test]
+    fn pageflip_history_failure_does_not_skip_the_flip_decision() {
+        assert!(pageflip_history_commit_is_safe(true, true));
+        assert!(!pageflip_history_commit_is_safe(false, true));
+        assert!(!pageflip_history_commit_is_safe(true, false));
+        assert!(!pageflip_history_commit_is_safe(false, false));
     }
 
     #[test]

@@ -1,0 +1,32 @@
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+main benchmark adapter: name=llvmpipe (LLVM 22.1.8, 128 bits) backend=Vulkan device_type=Cpu driver=llvmpipe
+main DRM render/readback 3840x2160: samples=1000 total_us=335022140 mean=335022us p99=476438us min=248775us max=575231us
+main XRGB destination checksum after timed actions: 0xa2529531ef649ebb
+main bridge limitation: no bump settlement/recovery telemetry; each paint is its production single submission plus bounded map waits
+presentation: unavailable (no DRM/KMS page flip or scanout in this adapter)
+	Command being timed: "/home/xaver/qos-main-benchmark-20260906.nKHtNP/target-after-cache-cleanup/release/examples/redraw_bench"
+	User time (seconds): 1511.24
+	System time (seconds): 93.42
+	Percent of CPU this job got: 446%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 5:59.17
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 582396
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2387
+	Minor (reclaiming a frame) page faults: 2085461
+	Voluntary context switches: 521575
+	Involuntary context switches: 428295
+	Swaps: 0
+	File system inputs: 354344
+	File system outputs: 118576
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

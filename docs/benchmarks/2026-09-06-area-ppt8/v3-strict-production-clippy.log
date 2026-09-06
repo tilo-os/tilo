@@ -1,0 +1,25 @@
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Checking qos-app v0.1.0 (/home/xaver/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/xaver/qos/crates/session/greeter)
+    Checking word-processor v0.1.0 (/home/xaver/qos/apps/word-processor)
+    Checking file-explorer v0.2.0 (/home/xaver/qos/apps/file-explorer)
+    Checking terminal v0.2.1 (/home/xaver/qos/apps/terminal)
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+error: this function has too many lines (105/100)
+    --> shell/src/compositor/backend/drm/paint.rs:1948:5
+     |
+1948 | /     fn render_sparse_to_readback(
+1949 | |         renderer: &mut Renderer,
+1950 | |         context: &RenderContext,
+1951 | |         dev_id: usize,
+...    |
+1964 | |         damage: &[vello::FineDamageRect],
+1965 | |     ) -> Result<SparseReadback, BridgeError> {
+     | |____________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+     = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: could not compile `shell` (lib) due to 1 previous error
+

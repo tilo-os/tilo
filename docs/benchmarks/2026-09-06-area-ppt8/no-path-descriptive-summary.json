@@ -1,0 +1,46 @@
+[
+  {
+    "workload": "ui",
+    "variant": "bounds",
+    "full_1000_reports": 3,
+    "primary_eligibility_passes": 0,
+    "reason": "Bounds requested but zero actually applied; descriptive timings only, not evidence of bounds performance.",
+    "median_mean_ms": 8.381,
+    "median_p99_ms": 36.928,
+    "median_peak_rss_kib": 385512,
+    "worst_sample_ms": 107.291,
+    "actual_active_submissions": [
+      82,
+      66,
+      90
+    ],
+    "actual_bounds_applied": [
+      0,
+      0,
+      0
+    ],
+    "numeric_passes": 0
+  },
+  {
+    "workload": "ui",
+    "variant": "bounds-ppt8",
+    "full_1000_reports": 3,
+    "primary_eligibility_passes": 0,
+    "reason": "Bounds requested but zero actually applied; descriptive timings only, not evidence of bounds performance.",
+    "median_mean_ms": 8.422,
+    "median_p99_ms": 39.065,
+    "median_peak_rss_kib": 410852,
+    "worst_sample_ms": 139.501,
+    "actual_active_submissions": [
+      85,
+      66,
+      81
+    ],
+    "actual_bounds_applied": [
+      0,
+      0,
+      0
+    ],
+    "numeric_passes": 0
+  }
+]

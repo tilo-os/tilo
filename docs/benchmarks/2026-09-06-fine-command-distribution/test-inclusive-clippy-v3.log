@@ -1,0 +1,75 @@
+$ set -o pipefail
+env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE cargo clippy -p ui -p shell -p vello --lib --tests --example ui-perf --example redraw_bench --locked --no-deps --message-format=json -- --cap-lints warn | python3 -c 'import json,sys
+ranges=json.loads("{\"shell/examples/redraw_bench.rs\":[[34,35],[111,168],[547,548],[561,579],[683,685],[749,766],[772,779],[802,803],[858,859],[864,866],[869,869],[875,876],[880,882],[884,884],[902,902],[910,910],[916,916],[1002,1066],[1287,1294],[1331,1337],[1341,1370],[1387,1387],[1393,1403],[1406,1445],[1447,1463],[1465,1643],[1645,3769],[3771,3773]],\"shell/src/compositor/backend/drm/paint.rs\":[[113,136],[141,156],[187,190],[260,260],[349,355],[510,895],[936,936],[951,954],[957,957],[1096,1120],[1152,1152],[1340,1372],[1451,1451],[1489,1489],[1491,1491],[1538,1575],[1633,1674],[2216,2246]],\"shell/src/shell/overlay_host.rs\":[[5565,5575]],\"ui/examples/dashboard_perf_bench.rs\":[[337,337],[475,476],[530,541],[608,624],[651,683],[1242,1242],[1311,1311],[1319,1319],[1551,1613],[1777,1777],[1781,1795],[1804,1847],[2389,2396],[2467,2467],[2469,2485],[2628,2641]],\"ui/src/animation/animated.rs\":[[255,265],[554,593]],\"ui/src/offscreen.rs\":[[165,188],[220,272],[434,434],[655,708],[926,926],[1396,1396],[1413,1457],[1771,1772],[1790,1827],[2529,2557],[2586,2636],[2691,2861]],\"vendor/vello/src/lib.rs\":[[260,267],[506,580],[772,780],[784,876],[910,930],[934,935],[941,941],[954,954],[992,1031],[1206,1226],[1236,1278],[1293,1311],[1592,1592],[1594,1597],[1599,1599],[1604,1605],[1616,1616],[1634,1639],[1649,1650],[1654,1663],[1665,1678],[1695,1695],[1697,1697],[1702,1703],[1705,1712],[1714,1759],[1761,1811],[1823,1835],[1837,1843],[1846,1852],[1859,1886],[1891,2000],[2004,2005],[2008,2014],[2017,2035],[2037,2050],[2052,2053],[2055,2062],[2065,2065],[2068,2481],[2490,2846],[2849,2860],[2862,2925],[2927,2980],[2982,3103],[3106,3353],[3356,3366],[3368,3388],[3394,3394],[3396,3404],[3406,3406],[3410,3410],[3412,3412],[3414,3496],[3498,3499],[3501,3647],[3649,3649],[3654,3654],[3658,3686],[3688,3771],[3773,3807],[3809,3841],[3846,3846],[3850,3858],[3862,3862],[3868,3868],[3872,3872],[3876,3898],[3904,3936],[4163,4256],[4268,4271],[4302,4305],[4327,4368]],\"vendor/vello/src/render.rs\":[[25,25],[37,99],[279,280],[285,285],[297,297],[304,310],[323,327],[407,444],[447,451],[454,474],[836,864],[916,926],[943,950],[969,973],[1164,1180],[1191,1195],[1197,1197],[1227,1312],[1331,1338],[1371,1371],[1376,1376],[1379,1381],[1385,1385],[1388,1389],[1453,1453],[1483,1483],[1487,1491],[1497,1499],[1508,1839],[1850,1850],[1853,1854],[1871,1871],[1874,1875],[1884,2092]],\"vendor/vello/src/shaders.rs\":[[35,35],[43,45],[53,53],[197,216],[294,352],[438,460],[478,478],[486,488],[496,496]],\"vendor/vello/src/wgpu_engine.rs\":[[81,84],[140,178],[438,438],[442,442],[448,449],[453,453],[1149,1168],[1212,1215],[1472,1505],[2609,2612],[3523,3584],[3631,3644]]}")
+count=0
+for line in sys.stdin:
+ try: r=json.loads(line)
+ except json.JSONDecodeError: continue
+ if r.get("reason")!="compiler-message": continue
+ m=r["message"]
+ rendered=m.get("rendered") or m.get("message","")
+ relevant=m.get("level")=="error"
+ for s in m.get("spans",[]):
+  if not s.get("is_primary"): continue
+  p=s.get("file_name","").removeprefix("/home/xaver/qos/")
+  relevant=relevant or any(s.get("line_start",0)<=hi and s.get("line_end",0)>=lo for lo,hi in ranges.get(p,[]))
+ if relevant:
+  count+=1
+  print(rendered,flush=True)
+print("Changed-line/compiler diagnostics:",count,flush=True)
+sys.exit(1 if count else 0)
+'
+
+    Checking atomic-file v0.1.0 (/home/xaver/qos/crates/system/atomic-file)
+    Checking runtime-portal v0.1.0 (/home/xaver/qos/crates/runtime/runtime-portal)
+    Checking collab-types v0.1.0 (/home/xaver/qos/crates/collab/collab-types)
+    Checking qdoc v0.1.0 (/home/xaver/qos/crates/doc/qdoc)
+   Compiling runtime-fs v0.1.0 (/home/xaver/qos/crates/runtime/runtime-fs)
+    Checking runtime-identity v0.1.0 (/home/xaver/qos/crates/runtime/runtime-identity)
+    Checking settings-store v0.1.0 (/home/xaver/qos/crates/system/settings-store)
+    Checking threshold-identity v0.1.0 (/home/xaver/qos/crates/collab/threshold-identity)
+   Compiling runtime-collab v0.1.0 (/home/xaver/qos/crates/runtime/runtime-collab)
+    Checking cli v0.1.0 (/home/xaver/qos/crates/runtime/cli)
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Checking app-state v0.1.0 (/home/xaver/qos/crates/system/app-state)
+    Checking tts v0.1.0 (/home/xaver/qos/crates/system/tts)
+    Checking qos-actions v0.1.0 (/home/xaver/qos/crates/collab/actions)
+    Checking media v0.1.0 (/home/xaver/qos/crates/media)
+    Checking qos-headless-schema v0.1.0 (/home/xaver/qos/crates/dev/headless-schema)
+    Checking qos-ui-graph v0.1.0 (/home/xaver/qos/crates/dev/ui-graph)
+    Checking qos-startup-metrics v0.1.0 (/home/xaver/qos/crates/system/qos-startup-metrics)
+    Checking spellcheck v0.1.0 (/home/xaver/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/xaver/qos/crates/packaging/launcher)
+    Checking thumbnail v0.1.0 (/home/xaver/qos/crates/thumbnail)
+    Checking pkg v0.1.0 (/home/xaver/qos/crates/packaging/pkg)
+    Checking runtime-bundle v0.1.0 (/home/xaver/qos/crates/packaging/runtime-bundle)
+    Checking qos-power-mgmt v0.1.0 (/home/xaver/qos/crates/system/power)
+    Checking qos-user-identity v0.1.0 (/home/xaver/qos/crates/identity/qos-user-identity)
+    Checking qos-desktop-entry v0.1.0 (/home/xaver/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/xaver/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/xaver/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/xaver/qos/fs)
+    Checking windows-vm v0.1.0 (/home/xaver/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/xaver/qos/crates/runtime/ush)
+    Checking qdoc-pdf v0.1.0 (/home/xaver/qos/crates/doc/qdoc-pdf)
+    Checking qdoc-rtf v0.1.0 (/home/xaver/qos/crates/doc/qdoc-rtf)
+    Checking qos-bluez v0.1.0 (/home/xaver/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/xaver/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/xaver/qos/crates/windows/compat-service)
+    Checking os-actions v0.1.0 (/home/xaver/qos/crates/system/os-actions)
+    Checking qos-relay v0.1.0 (/home/xaver/qos/crates/hosting/qos-relay)
+    Checking qos-projector v0.1.0 (/home/xaver/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/xaver/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/xaver/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/xaver/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/xaver/qos/crates/collab/collab-fixtures)
+    Checking qos-app v0.1.0 (/home/xaver/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/xaver/qos/crates/session/greeter)
+    Checking terminal v0.2.1 (/home/xaver/qos/apps/terminal)
+    Checking file-explorer v0.2.0 (/home/xaver/qos/apps/file-explorer)
+    Checking word-processor v0.1.0 (/home/xaver/qos/apps/word-processor)
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 15s
+Changed-line/compiler diagnostics: 0
+
+exit_code=0

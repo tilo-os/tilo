@@ -1,0 +1,18 @@
+   Compiling vello_shaders v0.9.0 (/home/xaver/qos/vendor/vello_shaders)
+    Checking vello v0.9.0 (/home/xaver/qos/vendor/vello)
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:6360:25
+     |
+6360 |             base_color: peniko::Color::TRANSPARENT,
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+6360 -             base_color: peniko::Color::TRANSPARENT,
+6360 +             base_color: Color::TRANSPARENT,
+     |
+
+warning: `vello` (lib test) generated 1 warning (run `cargo clippy --fix --lib -p vello --tests -- --no-deps -D warnings` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.45s
+

@@ -1,0 +1,36 @@
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+error: this function has too many lines (111/100)
+    --> shell/examples/redraw_bench.rs:1309:1
+     |
+1309 | / fn finish_run(
+1310 | |     samples: &[Option<u128>],
+1311 | |     diagnostic: bool,
+1312 | |     diagnostics: FinishDiagnostics<'_>,
+1313 | | ) -> Result<(), String> {
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+     = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: this argument is passed by value, but not consumed in the function body
+    --> shell/examples/redraw_bench.rs:1312:18
+     |
+1312 |     diagnostics: FinishDiagnostics<'_>,
+     |                  ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: or consider marking this type as `Copy`
+    --> shell/examples/redraw_bench.rs:117:1
+     |
+ 117 | struct FinishDiagnostics<'a> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_pass_by_value
+     = note: `-D clippy::needless-pass-by-value` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider taking a reference instead
+     |
+1312 |     diagnostics: &FinishDiagnostics<'_>,
+     |                  +
+
+error: could not compile `shell` (example "redraw_bench") due to 2 previous errors
+

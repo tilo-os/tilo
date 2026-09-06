@@ -1,0 +1,345 @@
+{
+  "version": "v5",
+  "all_20_commands_passed": true,
+  "commands": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-format-diff.log",
+      "results": [],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-strict-production-clippy.log",
+      "results": [],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "strict-vendor-tests-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-strict-vendor-tests-clippy.log",
+      "results": [],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "test-inclusive-changed-line-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-test-inclusive-changed-line-clippy.log",
+      "results": [],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "vendor-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-vendor-tests.log",
+      "results": [
+        {
+          "passed": 107,
+          "failed": 0,
+          "ignored": 1,
+          "line": "test result: ok. 107 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 47.73s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "area-ppt8 route proof: extent=16x16 routes=full,sparse,msaa-fallback shared=ordinary quad-preempted overflow=false",
+        "area-ppt8 shared proof: extent=49x17 route=shared-coarse-p4-ppt8 fine_tiles=8 compared_bytes=3332 overflow=false"
+      ]
+    },
+    {
+      "name": "vendor-ppt8-native-shared-proof",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-vendor-ppt8-native-shared-proof.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 107 filtered out; finished in 2.62s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "area-ppt8 native proof: extent=3840x2160 route=shared-coarse-p4-ppt8 fine_tiles=10 compared_bytes=33177600 overflow=false"
+      ]
+    },
+    {
+      "name": "shell-drm-library-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-drm-library-tests.log",
+      "results": [
+        {
+          "passed": 216,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 216 passed; 0 failed; 0 ignored; 0 measured; 2075 filtered out; finished in 15.02s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "shell-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-example-tests.log",
+      "results": [
+        {
+          "passed": 43,
+          "failed": 0,
+          "ignored": 7,
+          "line": "test result: ok. 43 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 6.65s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "ui-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-ui-example-tests.log",
+      "results": [
+        {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "ui-offscreen-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-ui-offscreen-tests.log",
+      "results": [
+        {
+          "passed": 26,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 2651 filtered out; finished in 6.40s"
+        }
+      ],
+      "configuration_skips": [
+        "test offscreen::tests::active_sparse_coarse_257_native_edges_clips_and_translucency_match_dense ... skipping active sparse coarse 257 parity: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::active_sparse_coarse_overflow_recovers_dense_before_publication ... skipping active sparse coarse overflow recovery: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::adaptive_sparse_coarse_2049_uses_active_native_bins_and_matches_dense ... skipping adaptive sparse coarse 2049 active: VELLO_SPARSE_COARSE_AUTO=1 with the legacy coarse flags unset is required",
+        "test offscreen::tests::area_ppt8_attempt_accounting_resets_and_separates_routes ... skipping adaptive sparse coarse 257 dense: VELLO_SPARSE_COARSE_AUTO=1 with the legacy coarse flags unset is required",
+        "test offscreen::tests::sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames ... skipping sparse coarse test: coarse selection is not requested"
+      ],
+      "positive_proofs": []
+    },
+    {
+      "name": "shell-default-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-default-native-oracle.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 15.73s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "redraw_bench native 4K oracle: sparse_attempts=11 full_attempts=2 opaque_prune_shader_selected_submissions=0 solid_fuse_shader_selected_submissions=0 segment_row_mask_shader_selected_submissions=0 canonical_segment_order_shader_selected_full_attempts=0 canonical_segment_order_shader_selected_sparse_attempts=0 area_ppt8_shader_selected_full_attempts=0 area_ppt8_shader_selected_sparse_attempts=0 readback_payload_bytes=75915264"
+      ]
+    },
+    {
+      "name": "shell-bounds-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-bounds-native-oracle.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 15.72s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "redraw_bench native 4K oracle: sparse_attempts=11 full_attempts=2 opaque_prune_shader_selected_submissions=0 solid_fuse_shader_selected_submissions=0 segment_row_mask_shader_selected_submissions=0 canonical_segment_order_shader_selected_full_attempts=0 canonical_segment_order_shader_selected_sparse_attempts=0 area_ppt8_shader_selected_full_attempts=0 area_ppt8_shader_selected_sparse_attempts=0 readback_payload_bytes=75915264"
+      ]
+    },
+    {
+      "name": "shell-ppt8-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-ppt8-native-oracle.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 15.82s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "redraw_bench native 4K oracle: sparse_attempts=11 full_attempts=2 opaque_prune_shader_selected_submissions=0 solid_fuse_shader_selected_submissions=0 segment_row_mask_shader_selected_submissions=0 canonical_segment_order_shader_selected_full_attempts=0 canonical_segment_order_shader_selected_sparse_attempts=0 area_ppt8_shader_selected_full_attempts=2 area_ppt8_shader_selected_sparse_attempts=11 readback_payload_bytes=75915264"
+      ]
+    },
+    {
+      "name": "shell-bounds-ppt8-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-bounds-ppt8-native-oracle.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 14.58s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "redraw_bench native 4K oracle: sparse_attempts=11 full_attempts=2 opaque_prune_shader_selected_submissions=0 solid_fuse_shader_selected_submissions=0 segment_row_mask_shader_selected_submissions=0 canonical_segment_order_shader_selected_full_attempts=0 canonical_segment_order_shader_selected_sparse_attempts=0 area_ppt8_shader_selected_full_attempts=2 area_ppt8_shader_selected_sparse_attempts=11 readback_payload_bytes=75915264"
+      ]
+    },
+    {
+      "name": "shell-bounds-xrgb-ppt8-native-staging-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-bounds-xrgb-ppt8-native-staging-oracle.log",
+      "results": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2290 filtered out; finished in 18.45s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "shell-bounds-xrgb-ppt8-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-bounds-xrgb-ppt8-example-tests.log",
+      "results": [
+        {
+          "passed": 43,
+          "failed": 0,
+          "ignored": 7,
+          "line": "test result: ok. 43 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 5.51s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    },
+    {
+      "name": "vendor-ppt8-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-vendor-ppt8-tests.log",
+      "results": [
+        {
+          "passed": 107,
+          "failed": 0,
+          "ignored": 1,
+          "line": "test result: ok. 107 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 51.52s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": [
+        "area-ppt8 route proof: extent=16x16 routes=full,sparse,msaa-fallback shared=ordinary quad-preempted overflow=false",
+        "area-ppt8 shared proof: extent=49x17 route=shared-coarse-p4-ppt8 fine_tiles=8 compared_bytes=3332 overflow=false"
+      ]
+    },
+    {
+      "name": "ui-ppt8-offscreen-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-ui-ppt8-offscreen-tests.log",
+      "results": [
+        {
+          "passed": 26,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 2651 filtered out; finished in 8.19s"
+        }
+      ],
+      "configuration_skips": [
+        "test offscreen::tests::active_sparse_coarse_257_native_edges_clips_and_translucency_match_dense ... skipping active sparse coarse 257 parity: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::active_sparse_coarse_overflow_recovers_dense_before_publication ... skipping active sparse coarse overflow recovery: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::adaptive_sparse_coarse_2049_uses_active_native_bins_and_matches_dense ... skipping adaptive sparse coarse 2049 active: VELLO_SPARSE_COARSE_AUTO=1 with the legacy coarse flags unset is required",
+        "test offscreen::tests::adaptive_sparse_coarse_257_uses_dense_coarse_and_matches_dense ... skipping adaptive sparse coarse 257 dense: VELLO_SPARSE_COARSE_AUTO=1 with the legacy coarse flags unset is required",
+        "test offscreen::tests::retained_damage_matches_full_with_clips_overlaps_and_image_updates ... skipping sparse coarse test: coarse selection is not requested"
+      ],
+      "positive_proofs": []
+    },
+    {
+      "name": "ui-bounds-ppt8-offscreen-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-ui-bounds-ppt8-offscreen-tests.log",
+      "results": [
+        {
+          "passed": 26,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 2651 filtered out; finished in 11.31s"
+        }
+      ],
+      "configuration_skips": [
+        "skipping active sparse coarse 257 parity: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::active_sparse_coarse_overflow_recovers_dense_before_publication ... skipping active sparse coarse overflow recovery: VELLO_SPARSE_COARSE=1 and VELLO_SPARSE_COARSE_ACTIVE_BINS=1 are required",
+        "test offscreen::tests::sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames ... skipping sparse coarse test: coarse selection is not requested"
+      ],
+      "positive_proofs": []
+    },
+    {
+      "name": "shell-bounds-xrgb-ppt8-drm-library-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v5-shell-bounds-xrgb-ppt8-drm-library-tests.log",
+      "results": [
+        {
+          "passed": 216,
+          "failed": 0,
+          "ignored": 0,
+          "line": "test result: ok. 216 passed; 0 failed; 0 ignored; 0 measured; 2075 filtered out; finished in 17.51s"
+        }
+      ],
+      "configuration_skips": [],
+      "positive_proofs": []
+    }
+  ],
+  "harness_reported_passed": 824,
+  "explicit_configuration_guard_returns": 13,
+  "harness_ignored": 16,
+  "ignored_explanation": "14 ignored executions are 7 pre-existing opt-in shell diagnostics in two suites. Two ignored vendor executions are the new native shared proof in broad suites; this proof ran and passed separately with --exact --ignored.",
+  "new_required_gpu_fixtures_have_positive_completion_evidence": true,
+  "native_independent_d_b_p_bp_pass": true,
+  "ppt8_native_selected_attempts_each": {
+    "full": 2,
+    "sparse": 11
+  },
+  "all20_saved_raw_logs_exact": true,
+  "all33_source_hashes_match": true,
+  "generated_old_shaders_and_candidate_metadata_passed": true,
+  "performance_acceptance": false,
+  "prior_default_gpu_oracle_instability_declared_resolved": false
+}

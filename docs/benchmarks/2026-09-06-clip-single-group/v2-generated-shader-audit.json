@@ -1,0 +1,22 @@
+{
+  "source_metadata_only": true,
+  "compiled_binary_equivalence_claimed": false,
+  "checked": [
+    {
+      "path": "target/debug/build/vello_shaders-e91900944e11ff38/out/shaders.rs",
+      "old_shaders_preserved": 46,
+      "new_shader": "clip_leaf_single_group",
+      "core_tokens_unchanged": true,
+      "old_metadata_unchanged": true,
+      "candidate_declared_host_binding_count": 7,
+      "candidate_reflected_used_bindings": [
+        0,
+        1,
+        2,
+        5,
+        6
+      ],
+      "workgroup_metadata_unchanged": true
+    }
+  ]
+}

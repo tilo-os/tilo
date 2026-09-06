@@ -1,0 +1,26 @@
+{
+  "version": "v2",
+  "status": "failed before runtime",
+  "executed": 4,
+  "planned": 22,
+  "format": "passed",
+  "strict_production_clippy": {
+    "exit_code": 101,
+    "cause": "UI render_gpu_wait_count grew to102 lines vs100 limit"
+  },
+  "strict_vendor_tests_clippy": {
+    "exit_code": 0,
+    "warning": "New unnecessary qualification caught by changed-line filter"
+  },
+  "changed_line_clippy": {
+    "exit_code": 1,
+    "diagnostics": 3,
+    "causes": [
+      "vendor Color unnecessary qualification",
+      "UI test accounting type missing import (2 locations)"
+    ]
+  },
+  "runtime_checks_executed": 0,
+  "performance_runs_executed": 0,
+  "logs_preserved": true
+}

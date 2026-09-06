@@ -1,0 +1,87 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE cargo test -p vello --lib --locked -- --nocapture --test-threads=1
+Exit code: 101
+
+   Compiling vello v0.9.0 (/home/xaver/qos/vendor/vello)
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:1384:26
+     |
+1384 |         let mut render = render::Render::new();
+     |                          ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1384 -         let mut render = render::Render::new();
+1384 +         let mut render = Render::new();
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:1408:17
+     |
+1408 | /                 assert_eq!(
+1409 | |                     full[ix].as_buf().map(|p| p.id),
+1410 | |                     sparse[ix].as_buf().map(|p| p.id)
+1411 | |                 );
+     | |_________________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: the trait `std::fmt::Debug` is implemented for `Option<T>`
+    --> /home/xaver/.rustup/toolchains/1.97.1-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:591:16
+     |
+ 591 | #[derive(Copy, Debug, Hash)]
+     |                ^^^^^
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:1413:13
+     |
+1413 | /             assert_ne!(
+1414 | |                 full[4].as_buf().map(|p| p.id),
+1415 | |                 sparse[4].as_buf().map(|p| p.id)
+1416 | |             );
+     | |_____________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: the trait `std::fmt::Debug` is implemented for `Option<T>`
+    --> /home/xaver/.rustup/toolchains/1.97.1-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:591:16
+     |
+ 591 | #[derive(Copy, Debug, Hash)]
+     |                ^^^^^
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:1417:13
+     |
+1417 | /             assert_ne!(
+1418 | |                 full[5].as_image().map(|p| p.id),
+1419 | |                 sparse[5].as_image().map(|p| p.id)
+1420 | |             );
+     | |_____________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: the trait `std::fmt::Debug` is implemented for `Option<T>`
+    --> /home/xaver/.rustup/toolchains/1.97.1-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:591:16
+     |
+ 591 | #[derive(Copy, Debug, Hash)]
+     |                ^^^^^
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `vello` (lib test) generated 1 warning
+error: could not compile `vello` (lib test) due to 6 previous errors; 1 warning emitted
+

@@ -1,0 +1,12 @@
+Command: cargo clippy -p ui -p shell -p vello --lib --example ui-perf --example redraw_bench --example retained_scene_probe --locked --no-deps -- -D warnings
+Exit code: 0
+
+    Checking vello v0.9.0 (/home/xaver/qos/vendor/vello)
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Checking qos-app v0.1.0 (/home/xaver/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/xaver/qos/crates/session/greeter)
+    Checking terminal v0.2.1 (/home/xaver/qos/apps/terminal)
+    Checking file-explorer v0.2.0 (/home/xaver/qos/apps/file-explorer)
+    Checking word-processor v0.1.0 (/home/xaver/qos/apps/word-processor)
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 04s

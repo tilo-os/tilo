@@ -1,0 +1,265 @@
+{
+  "source_metadata_only": true,
+  "old_permutations_unchanged": 7,
+  "candidate_workgroup": [
+    2,
+    16,
+    1
+  ],
+  "candidate_bindings_unchanged": true,
+  "checked": [
+    {
+      "path": "target/release/build/vello_shaders-2b6d8f75849428cd/out/shaders.rs",
+      "mtime_ms": 1788694330605.3809,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    },
+    {
+      "path": "target/debug/build/vello_shaders-3410d8523ed1c46d/out/shaders.rs",
+      "mtime_ms": 1788693908736.4343,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    },
+    {
+      "path": "target/debug/build/vello_shaders-a4261e4efb6ba511/out/shaders.rs",
+      "mtime_ms": 1788693711980.5938,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    },
+    {
+      "path": "target/debug/build/vello_shaders-a89854c15b6d6423/out/shaders.rs",
+      "mtime_ms": 1788693628633.8145,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    },
+    {
+      "path": "target/debug/build/vello_shaders-847c801c52db9054/out/shaders.rs",
+      "mtime_ms": 1788693001167.9487,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    },
+    {
+      "path": "target/debug/build/vello_shaders-e91900944e11ff38/out/shaders.rs",
+      "mtime_ms": 1788692959368.558,
+      "has_ppt8": true,
+      "shaders": {
+        "fine_area": {
+          "raw_source_sha256": "3647e9e419e6db0b7a84eebb8aff573fab041b23577bc48a680d1120f5e75f99",
+          "normalized_tokens_sha256": "fc96abcefcebf731a7f3249206447012f8a9ef82e4527bc27c4604b08a55af27",
+          "metadata_sha256": "6b69a2e6763334141b87df0276570571291d01a45259a663116795447ce27657"
+        },
+        "fine_msaa8": {
+          "raw_source_sha256": "c48c8e3d3fa2b29056b500d27fd639c1da8e23a858f49c5bb7870b872494d48f",
+          "normalized_tokens_sha256": "114a0c1ad1108714291e0933dcc29c9ceed74297810945825fd465e1f6ff6830",
+          "metadata_sha256": "08e974dbf374de3710f5174377a02f6e6b81cbdc5cde423b9414d031cbd6fa48"
+        },
+        "fine_msaa16": {
+          "raw_source_sha256": "cde3cf36f2f309003a369abeaa1ebcd231facd53e3119a505c4adb20cf1c74a8",
+          "normalized_tokens_sha256": "920e6128ce1067bb1930f5b4b5fb965b75e8510265412f1027855b74c31d7224",
+          "metadata_sha256": "117c4f2c56cd046ceb58435cd6b608312d6c68d0c76c61f5e0df56ff15ca2767"
+        },
+        "fine_sparse_area": {
+          "raw_source_sha256": "f9557a456ec81929dcbfd024fbf22d929a18513b688af72f2cc1a3feedefb251",
+          "normalized_tokens_sha256": "39728711b1cc5d989f76aa8ed5464ed9df4f4d8335c0fa8463bf901739ea5e1a",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_quad_skip": {
+          "raw_source_sha256": "b4f971ff079eadfa56364b3310e14c0f4badef814c09e9430acaa28ca57e222f",
+          "normalized_tokens_sha256": "f73140bb1ca5317712c43d0828820db5a8f44f1edce9c29dff3a031357835997",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_segment_row_mask": {
+          "raw_source_sha256": "fb2778146a1cc69d6807c473eb132c33322d79810db9fedde1d77c6927614ea5",
+          "normalized_tokens_sha256": "9910a7e305483172c1e30fffc7196de7f2e6fb5e77e8ecb2eeab6ff0cb531b06",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        },
+        "fine_sparse_area_solid_fuse": {
+          "raw_source_sha256": "7fd947dfb822f8538bda0b9c026c5d32befd2843af0e7c626805bd618d22c156",
+          "normalized_tokens_sha256": "16dd56af80ea5f1a9cdd29210eabd3c42813e6411d6b058c3eeca6b2a63c2afa",
+          "metadata_sha256": "fb8f6c5b970c8a1d7ad3619b420f61054c293fcb85a269d0192a61de549f9ac9"
+        }
+      }
+    }
+  ]
+}
+
