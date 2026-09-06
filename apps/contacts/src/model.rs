@@ -16,32 +16,72 @@ pub type ContactId = Uuid;
 /// A typed, repeatable single-value field — a phone number or an email
 /// address. `label` is a free-form type tag (home / work / mobile / …);
 /// `value` is the actual number or address.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Labeled {
+    pub id: Uuid,
     pub label: String,
     pub value: String,
 }
 
 impl Labeled {
+    #[must_use]
     pub fn new(label: &str, value: &str) -> Self {
         Self {
+            id: Uuid::new_v4(),
             label: label.to_string(),
             value: value.to_string(),
         }
     }
 }
 
+impl Default for Labeled {
+    fn default() -> Self {
+        Self::new("", "")
+    }
+}
+
 /// A typed postal address. Components map onto the vCard `ADR` structured
 /// value (`PO;EXT;STREET;CITY;REGION;POSTAL;COUNTRY`) — we keep the four
 /// fields that matter for a daily address book plus a free type label.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
+    pub id: Uuid,
     pub label: String,
     pub street: String,
     pub city: String,
     pub region: String,
     pub postal: String,
     pub country: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupEntry {
+    pub id: Uuid,
+    pub value: String,
+}
+
+impl GroupEntry {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            value: value.into(),
+        }
+    }
+}
+
+impl Default for Address {
+    fn default() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            label: String::new(),
+            street: String::new(),
+            city: String::new(),
+            region: String::new(),
+            postal: String::new(),
+            country: String::new(),
+        }
+    }
 }
 
 impl Address {
@@ -235,7 +275,7 @@ pub struct Contact {
     pub phones: Vec<Labeled>,
     pub emails: Vec<Labeled>,
     pub addresses: Vec<Address>,
-    pub groups: Vec<String>,
+    pub groups: Vec<GroupEntry>,
     pub favorite: bool,
 }
 
@@ -322,7 +362,7 @@ impl Contact {
         }
         for g in &self.groups {
             hay.push(' ');
-            hay.push_str(g);
+            hay.push_str(&g.value);
         }
         hay.to_lowercase().contains(query)
     }
@@ -390,7 +430,7 @@ impl ContactStore {
         let mut set: Vec<String> = Vec::new();
         for c in &self.contacts {
             for g in &c.groups {
-                let g = g.trim();
+                let g = g.value.trim();
                 if !g.is_empty() && !set.iter().any(|x| x.eq_ignore_ascii_case(g)) {
                     set.push(g.to_string());
                 }
@@ -416,7 +456,7 @@ impl ContactStore {
             .filter(|c| c.matches(&q))
             .filter(|c| match group {
                 None => true,
-                Some(g) => c.groups.iter().any(|x| x.eq_ignore_ascii_case(g)),
+                Some(g) => c.groups.iter().any(|x| x.value.eq_ignore_ascii_case(g)),
             })
             .collect();
         out.sort_by(|a, b| sort_cmp(a, b, sort));
@@ -504,7 +544,7 @@ fn make_sample(spec: SampleSpec<'_>) -> Contact {
         groups: spec
             .groups
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|value| GroupEntry::new(*value))
             .collect(),
         favorite: spec.favorite,
     }
@@ -524,6 +564,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
                 ("home", "ada.lovelace@example.com"),
             ],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
@@ -545,6 +586,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             phones: &[("work", "+1 202 555 0143")],
             emails: &[("work", "grace.hopper@navy.mil")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "9620 Maryland Ave".into(),
                 city: "Arlington".into(),
@@ -580,6 +622,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             phones: &[("work", "+1 757 555 0188"), ("mobile", "+1 757 555 0042")],
             emails: &[("work", "k.johnson@nasa.gov")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "100 NASA Rd".into(),
                 city: "Hampton".into(),
@@ -635,6 +678,7 @@ fn sample_contacts_part2() -> Vec<Contact> {
             phones: &[("work", "+1 617 555 0156")],
             emails: &[("work", "mhamilton@mit.edu")],
             addresses: vec![Address {
+                id: Uuid::new_v4(),
                 label: "work".into(),
                 street: "77 Massachusetts Ave".into(),
                 city: "Cambridge".into(),
@@ -846,7 +890,7 @@ mod tests {
                 .unwrap()
                 .groups
                 .iter()
-                .any(|g| g.eq_ignore_ascii_case("Friends"))
+                .any(|g| g.value.eq_ignore_ascii_case("Friends"))
         }));
         assert!(!friends.is_empty());
     }
@@ -855,7 +899,11 @@ mod tests {
     fn all_groups_dedupes_case_insensitively() {
         let mut store = ContactStore::new();
         let mut a = Contact::new();
-        a.groups = vec!["Work".into(), "work".into(), "Family".into()];
+        a.groups = vec![
+            GroupEntry::new("Work"),
+            GroupEntry::new("work"),
+            GroupEntry::new("Family"),
+        ];
         store.upsert(a);
         let groups = store.all_groups();
         assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
