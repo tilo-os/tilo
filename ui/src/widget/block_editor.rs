@@ -334,7 +334,7 @@ pub struct BlockEditor {
     action_interception: bool,
     interception_before: Option<Vec<BlockSnapshot>>,
     /// Operations initiated by a synthetic accessibility control. Unlike
-    /// pointer/key input there is no enclosing window event for MainPanel to
+    /// pointer/key input there is no enclosing window event for `MainPanel` to
     /// drain, so retain them until the app's next sync dispatches the same
     /// action-owned delta.
     pending_semantic_ops: Vec<BlockEditOp>,
@@ -4032,15 +4032,16 @@ impl Widget for BlockEditor {
         let total = self.blocks.len();
         children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
             let up_disabled = index == 0;
-            let down_disabled = index + 1 == total;
+            let position = index.saturating_add(1);
+            let down_disabled = position == total;
             let bounds = self
                 .block_drag_handle_rect(index)
                 .unwrap_or_else(|| block.line.get_rect());
             AccessNode::new(Role::Group)
-                .with_name(format!("Block {}", index + 1))
+                .with_name(format!("Block {position}"))
                 .with_semantic_key(format!("notes.block:{}", block.id))
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
-                .with_position(index + 1, total)
+                .with_position(position, total)
                 .with_bounds(block.line.get_rect())
                 .with_children(vec![
                     AccessNode::new(Role::Button)
