@@ -60,8 +60,8 @@ extern crate runtime_dylib;
 fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
     // The package document is the record index; each PDF's markup lives in a
     // separate record so annotations from two files cannot collide.
-    let (room, autosave) = ui::persist::open(APP_ID);
     let records = ui::RecordSet::open(APP_ID);
+    let (room, autosave) = ui::persist::open_room(APP_ID, records.home());
     let mut app = ui::App::new(ui::State::new(), build_widget(args)?)
         .with_autosave(autosave)
         .with_records(records, room.doc);
