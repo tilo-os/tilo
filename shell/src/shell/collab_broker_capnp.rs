@@ -13,6 +13,7 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -39,9 +40,10 @@ use collab_types::{
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_input, channel_handle, collab_service, context_stream,
-    invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
-    scrollback_batch, stream, task_run_stream, workspace_control_handle,
+    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
+    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, scrollback_batch, stream, task_run_stream,
+    workspace_control_handle,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -100,9 +102,27 @@ struct AdmittedJoinIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BrokerActor {
+pub struct BrokerActor {
     id: String,
     is_agent: bool,
+}
+
+impl BrokerActor {
+    #[must_use]
+    pub fn person(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            is_agent: false,
+        }
+    }
+
+    #[must_use]
+    pub fn agent(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            is_agent: true,
+        }
+    }
 }
 
 impl AdmittedJoinIdentity {
@@ -428,6 +448,466 @@ struct PendingInvocation {
     cancellation_requested_at: Option<std::time::Instant>,
 }
 
+/// A live application's pull-only directory.  Keeping the certified route
+/// beside the capability makes every page/resolve check independent of a
+/// stale eager `publishActions` snapshot.
+#[derive(Clone)]
+struct RegisteredActionDirectory {
+    app_id: String,
+    route: CrdtRoute,
+    directory: action_directory::Client,
+}
+
+/// Inert, enumerable route metadata for one connected pull directory.  It
+/// contains no capability and disappears on disconnect, so shell search can
+/// select a source without reaching into the broker LocalSet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionDirectoryRoot {
+    pub peer_id: u64,
+    pub app_id: String,
+    pub cluster_id: String,
+    pub record_id: String,
+}
+
+/// A deterministic, inert page over the broker-retained directory root
+/// projection.  Rebuilding the projection is a connect/disconnect operation;
+/// palette keystrokes only clone the requested small page.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ActionDirectoryRootPage {
+    pub roots: Vec<ActionDirectoryRoot>,
+    pub next_after_peer: Option<u64>,
+    pub generation: u64,
+}
+
+#[derive(Default)]
+struct ActionDirectoryRootSnapshot {
+    roots: Vec<ActionDirectoryRoot>,
+    generation: u64,
+}
+
+/// LocalSet-only ownership for Rc-backed application capabilities.  The
+/// shared broker state deliberately stores neither this map nor its receiver:
+/// shell/chrome worker threads must remain Send.
+struct LocalActionDirectoryRegistry {
+    directories: RefCell<HashMap<u64, RegisteredActionDirectory>>,
+    bridge_rx: RefCell<std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>>,
+}
+
+impl LocalActionDirectoryRegistry {
+    fn new(bridge_rx: std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>) -> Self {
+        Self {
+            directories: RefCell::new(HashMap::new()),
+            bridge_rx: RefCell::new(bridge_rx),
+        }
+    }
+
+    fn registered(
+        &self,
+        peer_id: u64,
+        cluster_id: &str,
+    ) -> Result<RegisteredActionDirectory, capnp::Error> {
+        self.directories
+            .borrow()
+            .get(&peer_id)
+            .filter(|entry| entry.route.cluster_id == cluster_id)
+            .cloned()
+            .ok_or_else(|| capnp::Error::failed("unknown live application directory".into()))
+    }
+
+    fn remove(&self, peer_id: u64) {
+        self.directories.borrow_mut().remove(&peer_id);
+    }
+}
+
+/// Inert result returned from the broker LocalSet to shell chrome.  It never
+/// carries a Cap'n Proto capability or widget reference across threads.
+#[derive(Debug)]
+pub enum ActionDirectoryBridgeResponse {
+    Page(runtime_collab::ActionDirectoryPage),
+    Resolution(runtime_collab::ActionDirectoryResolution),
+    StartedDirectoryAction(StartedDirectoryAction),
+}
+
+/// Explicit consent supplied with an atomic directory invocation.  It is
+/// carried to the broker LocalSet, checked against the freshly resolved
+/// contract, and never retained in a shell search-result cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectoryActionConfirmation {
+    Confirmed,
+    Phrase(String),
+}
+
+/// Inert admission receipt for a directory action.  Progress remains
+/// available through the existing invocation-status subscription.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartedDirectoryAction {
+    pub invocation_id: u64,
+    pub initial_update: qos_actions::InvocationUpdate,
+}
+
+/// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
+/// code must retain its last cached results rather than blocking a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionDirectoryBridgeError {
+    Busy,
+    InvalidRequest,
+    Unavailable,
+    TimedOut,
+    StaleRevision,
+    NotFound,
+    ConfirmationRequired,
+}
+
+pub type ActionDirectoryBridgeReply =
+    Result<ActionDirectoryBridgeResponse, ActionDirectoryBridgeError>;
+
+enum ActionDirectoryBridgeRequest {
+    Query {
+        actor: BrokerActor,
+        cluster_id: String,
+        query: runtime_collab::ActionDirectoryQuery,
+        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+    },
+    Resolve {
+        actor: BrokerActor,
+        cluster_id: String,
+        peer_id: u64,
+        revision: String,
+        resource: String,
+        action: String,
+        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+    },
+    Start {
+        actor: BrokerActor,
+        cluster_id: String,
+        peer_id: u64,
+        revision: String,
+        resource: String,
+        action: String,
+        argument: Option<String>,
+        confirmation: Option<DirectoryActionConfirmation>,
+        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+    },
+}
+
+/// Thread-safe sender for palette/search code.  The receiver is drained only
+/// by the broker's `LocalSet`, where its Rc-backed capability clients remain
+/// valid.  Callers receive a oneshot they may poll from any executor.
+#[derive(Clone)]
+pub struct ActionDirectoryRequestQueue {
+    sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
+}
+
+impl ActionDirectoryRequestQueue {
+    const CAPACITY: usize = 64;
+
+    pub fn try_query(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        query: runtime_collab::ActionDirectoryQuery,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
+        ActionDirectoryBridgeError,
+    > {
+        if validate_directory_query_input(&query).is_err() {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
+            actor,
+            cluster_id: cluster_id.into(),
+            query,
+            reply,
+        }) {
+            Ok(()) => Ok(response),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_resolve(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        peer_id: u64,
+        revision: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
+        ActionDirectoryBridgeError,
+    > {
+        let cluster_id = cluster_id.into();
+        let revision = revision.into();
+        let resource = resource.into();
+        let action = action.into();
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+            .is_err()
+        {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
+            actor,
+            cluster_id,
+            peer_id,
+            revision,
+            resource,
+            action,
+            reply,
+        }) {
+            Ok(()) => Ok(response),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_start_resolved(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        peer_id: u64,
+        revision: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+        argument: Option<String>,
+        confirmation: Option<DirectoryActionConfirmation>,
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
+        ActionDirectoryBridgeError,
+    > {
+        let cluster_id = cluster_id.into();
+        let revision = revision.into();
+        let resource = resource.into();
+        let action = action.into();
+        if validate_directory_target_input(
+            &cluster_id,
+            &revision,
+            &resource,
+            &action,
+            argument.as_deref(),
+            confirmation.as_ref(),
+        )
+        .is_err()
+        {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
+            actor,
+            cluster_id,
+            peer_id,
+            revision,
+            resource,
+            action,
+            argument,
+            confirmation,
+            reply,
+        }) {
+            Ok(()) => Ok(response),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
+    }
+}
+
+const DIRECTORY_MAX_IDENTIFIER_BYTES: usize = 512;
+const DIRECTORY_MAX_KIND_BYTES: usize = 256;
+const DIRECTORY_MAX_LABEL_BYTES: usize = 4 * 1024;
+const DIRECTORY_MAX_DESCRIPTION_BYTES: usize = 8 * 1024;
+const DIRECTORY_MAX_CONTRACT_BYTES: usize = 32 * 1024;
+const DIRECTORY_MAX_PARAMS_BYTES: usize = 32 * 1024;
+const DIRECTORY_MAX_QUERY_REVISION_BYTES: usize = 512;
+const DIRECTORY_MAX_QUERY_NEEDLE_BYTES: usize = 4 * 1024;
+const DIRECTORY_MAX_CURSOR_BYTES: usize = 4 * 1024;
+const DIRECTORY_MAX_CONFIRMATION_BYTES: usize = 4 * 1024;
+
+fn validate_directory_text(
+    value: &str,
+    field: &str,
+    maximum: usize,
+    required: bool,
+) -> Result<(), capnp::Error> {
+    if (required && value.is_empty()) || value.len() > maximum || value.contains('\0') {
+        return Err(capnp::Error::failed(format!(
+            "invalid action directory {field}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_directory_identifier(
+    value: &str,
+    field: &str,
+    maximum: usize,
+    required: bool,
+) -> Result<(), capnp::Error> {
+    validate_directory_text(value, field, maximum, required)?;
+    if value.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(capnp::Error::failed(format!(
+            "invalid action directory {field}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_directory_query_input(
+    query: &runtime_collab::ActionDirectoryQuery,
+) -> Result<(), capnp::Error> {
+    validate_directory_text(
+        &query.revision,
+        "query revision",
+        DIRECTORY_MAX_QUERY_REVISION_BYTES,
+        false,
+    )?;
+    validate_directory_text(
+        &query.needle,
+        "query needle",
+        DIRECTORY_MAX_QUERY_NEEDLE_BYTES,
+        false,
+    )?;
+    validate_directory_identifier(
+        &query.parent_resource,
+        "query parent resource",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        false,
+    )?;
+    if query.cursor.len() > DIRECTORY_MAX_CURSOR_BYTES {
+        return Err(capnp::Error::failed(
+            "invalid action directory query cursor".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_directory_target_input(
+    cluster_id: &str,
+    revision: &str,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    confirmation: Option<&DirectoryActionConfirmation>,
+) -> Result<(), capnp::Error> {
+    validate_directory_identifier(
+        cluster_id,
+        "directory cluster",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        true,
+    )?;
+    validate_directory_text(
+        revision,
+        "directory revision",
+        DIRECTORY_MAX_QUERY_REVISION_BYTES,
+        false,
+    )?;
+    validate_directory_identifier(
+        resource,
+        "directory resource",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        true,
+    )?;
+    validate_directory_identifier(
+        action,
+        "directory action",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        true,
+    )?;
+    if let Some(argument) = argument {
+        validate_directory_text(
+            argument,
+            "directory argument",
+            DIRECTORY_MAX_PARAMS_BYTES,
+            false,
+        )?;
+    }
+    if let Some(DirectoryActionConfirmation::Phrase(phrase)) = confirmation {
+        validate_directory_text(
+            phrase,
+            "directory confirmation",
+            DIRECTORY_MAX_CONFIRMATION_BYTES,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_directory_descriptor(
+    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
+    descriptor: &runtime_collab::ExportedAction,
+) {
+    out.set_resource(&descriptor.resource);
+    out.set_action(&descriptor.action);
+    out.set_resource_kind(&descriptor.resource_kind);
+    out.set_resource_label(&descriptor.resource_label);
+    out.set_action_label(&descriptor.action_label);
+    out.set_description(descriptor.description.as_deref().unwrap_or(""));
+    out.set_operation_kind(&descriptor.operation_kind);
+    out.set_params_json(&descriptor.params_json);
+    out.set_contract_json(&descriptor.contract_json);
+    let mut input = out.init_input();
+    match &descriptor.input {
+        runtime_collab::ExportedInput::None => input.set_none(()),
+        runtime_collab::ExportedInput::Text {
+            prompt,
+            placeholder,
+            wants_content,
+        } => {
+            let mut text = input.init_text();
+            text.set_prompt(prompt);
+            text.set_placeholder(placeholder);
+            text.set_wants_content(*wants_content);
+        }
+    }
+}
+
+fn write_directory_row(
+    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
+    row: &runtime_collab::ActionDirectoryRow,
+) {
+    out.set_parent_resource(&row.parent_resource);
+    out.set_resource(&row.resource);
+    out.set_resource_kind(&row.resource_kind);
+    out.set_resource_label(&row.resource_label);
+    out.set_action(row.action.as_deref().unwrap_or(""));
+    out.set_has_children(row.has_children);
+    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
+    out.set_visibility_contract_json(&row.visibility_contract_json);
+    if let Some(descriptor) = &row.descriptor {
+        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
+    }
+}
+
+fn write_directory_page(
+    mut out: runtime_collab::collab_capnp::action_directory_page::Builder<'_>,
+    page: &runtime_collab::ActionDirectoryPage,
+) -> Result<(), capnp::Error> {
+    out.set_revision(&page.revision);
+    out.set_next_cursor(&page.next_cursor);
+    out.set_exhausted(page.exhausted);
+    out.set_stale_cursor(page.stale_cursor);
+    out.set_budget_exhausted(page.budget_exhausted);
+    let len = u32::try_from(page.rows.len())
+        .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
+    let mut rows = out.reborrow().init_rows(len);
+    for (index, row) in page.rows.iter().enumerate() {
+        write_directory_row(
+            rows.reborrow()
+                .get(u32::try_from(index).unwrap_or(u32::MAX)),
+            row,
+        );
+    }
+    Ok(())
+}
+
 struct ConfirmationGrant {
     peer_id: u64,
     resource: String,
@@ -511,6 +991,13 @@ pub struct CapnpBrokerState {
     /// Last safe launchable/durable projection per app and workspace. This is
     /// session catalogue state, never an executable capability by itself.
     archived_surfaces: Mutex<HashMap<(String, String, String), PublishedSurface>>,
+    /// Pull-only, revisioned directories owned by currently connected apps.
+    /// This intentionally has no durable/archive counterpart: retaining a
+    /// capability after disconnect would make a stale live-only row look
+    /// executable.
+    action_directory_bridge: ActionDirectoryRequestQueue,
+    action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
+    action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
@@ -529,6 +1016,13 @@ impl CapnpBrokerState {
     const MAX_RETAINED_INVOCATIONS: usize = 256;
     const INVOCATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
     const CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+    /// Broker ceilings are deliberately lower than Cap'n Proto list limits:
+    /// applications must not turn a palette keystroke into an unbounded RPC.
+    const DIRECTORY_MAX_RESULTS: u32 = 256;
+    const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
+    const DIRECTORY_MAX_WORK: u32 = 4_096;
+    const DIRECTORY_MAX_DEPTH: u16 = 32;
+    const DIRECTORY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
 
     fn expire_stale_invocations(&self) {
         self.expire_stale_invocations_at(
@@ -660,28 +1154,53 @@ impl CapnpBrokerState {
         publisher: Arc<PeerPublisher>,
         membership: Option<WorkspaceTreeHandle>,
         trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            channels: Mutex::new(HashMap::new()),
-            fanout: Arc::downgrade(fanout),
-            broker_channels,
-            publisher,
-            membership,
-            trusted_devices,
-            surfaces: Mutex::new(HashMap::new()),
-            archived_surfaces: Mutex::new(HashMap::new()),
-            invocation_subscribers: Mutex::new(HashMap::new()),
-            action_catalogue_subscribers: Mutex::new(HashMap::new()),
-            pending_invocations: Mutex::new(HashMap::new()),
-            completed_invocations: Mutex::new(HashMap::new()),
-            confirmation_grants: Mutex::new(HashMap::new()),
-            cancellation_requests: Mutex::new(std::collections::HashSet::new()),
-            task_subscribers: Mutex::new(HashMap::new()),
-            pending_task_runs: Mutex::new(HashMap::new()),
-            task_run_id: AtomicU64::new(1),
-            invocation_id: AtomicU64::new(1),
-            workspace_control_network: Mutex::new(None),
-        })
+    ) -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
+    ) {
+        let (bridge_tx, bridge_rx) =
+            std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
+        (
+            Arc::new(Self {
+                channels: Mutex::new(HashMap::new()),
+                fanout: Arc::downgrade(fanout),
+                broker_channels,
+                publisher,
+                membership,
+                trusted_devices,
+                surfaces: Mutex::new(HashMap::new()),
+                archived_surfaces: Mutex::new(HashMap::new()),
+                action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
+                action_directory_roots: Mutex::new(HashMap::new()),
+                action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
+                invocation_subscribers: Mutex::new(HashMap::new()),
+                action_catalogue_subscribers: Mutex::new(HashMap::new()),
+                pending_invocations: Mutex::new(HashMap::new()),
+                completed_invocations: Mutex::new(HashMap::new()),
+                confirmation_grants: Mutex::new(HashMap::new()),
+                cancellation_requests: Mutex::new(std::collections::HashSet::new()),
+                task_subscribers: Mutex::new(HashMap::new()),
+                pending_task_runs: Mutex::new(HashMap::new()),
+                task_run_id: AtomicU64::new(1),
+                invocation_id: AtomicU64::new(1),
+                workspace_control_network: Mutex::new(None),
+            }),
+            bridge_rx,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_broker_with_idle_directory_queue()
+    -> crate::shell::collab_broker::AppActionBroker {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = Self::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
     }
 
     fn attach_workspace_control_network(&self, network: &Arc<crate::shell::network::ShellNetwork>) {
@@ -724,6 +1243,506 @@ impl CapnpBrokerState {
             );
         }
         result
+    }
+
+    /// Clone the nonblocking bridge used by shell search.  Sending only
+    /// enqueues inert values; the broker `LocalSet` rechecks authority when
+    /// it later services the request.
+    #[must_use]
+    pub fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
+        self.action_directory_bridge.clone()
+    }
+
+    fn refresh_action_directory_root_snapshot(&self) {
+        let mut roots = self
+            .action_directory_roots
+            .lock()
+            .map(|roots| roots.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        roots.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+        if let Ok(mut snapshot) = self.action_directory_root_snapshot.lock() {
+            snapshot.roots = roots;
+            snapshot.generation = snapshot.generation.wrapping_add(1);
+        }
+    }
+
+    /// Return one bounded page from the retained directory-root projection.
+    /// This never clones or sorts the live registry on a palette query.
+    #[must_use]
+    pub fn action_directory_root_page(
+        &self,
+        after_peer: Option<u64>,
+        max_results: usize,
+    ) -> ActionDirectoryRootPage {
+        let limit = max_results.min(Self::DIRECTORY_MAX_RESULTS as usize);
+        let Ok(snapshot) = self.action_directory_root_snapshot.lock() else {
+            return ActionDirectoryRootPage::default();
+        };
+        let start = after_peer.map_or(0, |peer| {
+            snapshot.roots.partition_point(|root| root.peer_id <= peer)
+        });
+        let end = start.saturating_add(limit).min(snapshot.roots.len());
+        ActionDirectoryRootPage {
+            roots: snapshot.roots[start..end].to_vec(),
+            next_after_peer: (end < snapshot.roots.len())
+                .then(|| snapshot.roots[end.saturating_sub(1)].peer_id),
+            generation: snapshot.generation,
+        }
+    }
+
+    /// Compatibility convenience for consumers that need just the first
+    /// bounded page. New consumers should retain `next_after_peer` when
+    /// presenting deeper root navigation.
+    #[must_use]
+    pub fn action_directory_roots(&self) -> Vec<ActionDirectoryRoot> {
+        self.action_directory_root_page(None, Self::DIRECTORY_MAX_RESULTS as usize)
+            .roots
+    }
+
+    /// Drain a bounded batch on the broker LocalSet.  This function must only
+    /// be called by the accept-loop LocalSet: it starts the Rc-backed RPCs
+    /// there, while the request sender is safe for compositor threads.
+    fn drain_action_directory_bridge(
+        self: &Arc<Self>,
+        directories: &Rc<LocalActionDirectoryRegistry>,
+    ) {
+        const MAX_DRAIN_PER_TICK: usize = ActionDirectoryRequestQueue::CAPACITY;
+        for _ in 0..MAX_DRAIN_PER_TICK {
+            let request = match directories.bridge_rx.borrow().try_recv() {
+                Ok(request) => request,
+                Err(
+                    std::sync::mpsc::TryRecvError::Empty
+                    | std::sync::mpsc::TryRecvError::Disconnected,
+                ) => break,
+            };
+            let state = Arc::clone(self);
+            let directories = Rc::clone(directories);
+            tokio::task::spawn_local(async move {
+                match request {
+                    ActionDirectoryBridgeRequest::Query {
+                        actor,
+                        cluster_id,
+                        query,
+                        reply,
+                    } => {
+                        if reply.is_closed() {
+                            return;
+                        }
+                        let response = tokio::time::timeout(
+                            Self::DIRECTORY_BRIDGE_TIMEOUT,
+                            state.query_action_directory_for_actor(
+                                &directories,
+                                &actor,
+                                &cluster_id,
+                                &query,
+                            ),
+                        )
+                        .await
+                        .map_or_else(
+                            |_| Err(ActionDirectoryBridgeError::TimedOut),
+                            |result| {
+                                result
+                                    .map(ActionDirectoryBridgeResponse::Page)
+                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                            },
+                        );
+                        let _ = reply.send(response);
+                    }
+                    ActionDirectoryBridgeRequest::Resolve {
+                        actor,
+                        cluster_id,
+                        peer_id,
+                        revision,
+                        resource,
+                        action,
+                        reply,
+                    } => {
+                        if reply.is_closed() {
+                            return;
+                        }
+                        let response = tokio::time::timeout(
+                            Self::DIRECTORY_BRIDGE_TIMEOUT,
+                            state.resolve_action_directory_for_actor(
+                                &directories,
+                                &actor,
+                                &cluster_id,
+                                peer_id,
+                                &revision,
+                                &resource,
+                                &action,
+                            ),
+                        )
+                        .await
+                        .map_or_else(
+                            |_| Err(ActionDirectoryBridgeError::TimedOut),
+                            |result| {
+                                result
+                                    .map(ActionDirectoryBridgeResponse::Resolution)
+                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                            },
+                        );
+                        let _ = reply.send(response);
+                    }
+                    ActionDirectoryBridgeRequest::Start {
+                        actor,
+                        cluster_id,
+                        peer_id,
+                        revision,
+                        resource,
+                        action,
+                        argument,
+                        confirmation,
+                        reply,
+                    } => {
+                        if reply.is_closed() {
+                            return;
+                        }
+                        let response = tokio::time::timeout(
+                            Self::DIRECTORY_BRIDGE_TIMEOUT,
+                            state.start_action_directory_for_actor(
+                                &directories,
+                                &actor,
+                                &cluster_id,
+                                peer_id,
+                                &revision,
+                                &resource,
+                                &action,
+                                argument.as_deref(),
+                                confirmation,
+                            ),
+                        )
+                        .await
+                        .map_or_else(
+                            |_| Err(ActionDirectoryBridgeError::TimedOut),
+                            |result| {
+                                result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
+                            },
+                        );
+                        let _ = reply.send(response);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Shell-local counterpart to the wire `queryActionDirectory` method.
+    /// It forwards one selected live directory only, preserving the same
+    /// broker budgets and current permission checks without synthesising an
+    /// eager cross-app catalogue for every shell keystroke.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
+    )]
+    async fn query_action_directory_for_actor(
+        &self,
+        directories: &LocalActionDirectoryRegistry,
+        actor: &BrokerActor,
+        cluster_id: &str,
+        query: &runtime_collab::ActionDirectoryQuery,
+    ) -> Result<runtime_collab::ActionDirectoryPage, String> {
+        if query.peer_id == 0
+            || query.max_results == 0
+            || query.max_bytes == 0
+            || query.max_work == 0
+        {
+            return Err("directory query requires one peer and non-zero budgets".into());
+        }
+        validate_directory_query_input(query).map_err(|error| error.to_string())?;
+        let registered = directories
+            .registered(query.peer_id, cluster_id)
+            .map_err(|error| error.to_string())?;
+        let max_results = query.max_results.min(Self::DIRECTORY_MAX_RESULTS);
+        let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
+        let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
+        let max_depth = query.max_depth.min(Self::DIRECTORY_MAX_DEPTH);
+        let mut request = registered.directory.query_request();
+        {
+            let mut wire = request.get().init_query();
+            wire.set_peer_id(query.peer_id);
+            wire.set_revision(&query.revision);
+            wire.set_cursor(&query.cursor);
+            wire.set_needle(&query.needle);
+            wire.set_parent_resource(&query.parent_resource);
+            wire.set_max_results(max_results);
+            wire.set_max_bytes(max_bytes);
+            wire.set_max_work(max_work);
+            wire.set_max_depth(max_depth);
+        }
+        let reply = request
+            .send()
+            .promise
+            .await
+            .map_err(|error| error.to_string())?;
+        let page = reply
+            .get()
+            .and_then(|reply| reply.get_page())
+            .map_err(|error| error.to_string())?;
+        if page
+            .total_size()
+            .map_err(|error| error.to_string())?
+            .word_count
+            .saturating_mul(8)
+            > u64::from(max_bytes)
+        {
+            return Err("application exceeded directory byte budget".into());
+        }
+        let page = runtime_collab::decode_action_directory_page(page)
+            .map_err(|error| error.to_string())?;
+        filter_directory_page(
+            self,
+            cluster_id,
+            actor,
+            &registered.app_id,
+            page,
+            max_results,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Shell-local exact re-resolution. A `Found` row is policy-checked at
+    /// this instant; callers must never execute from an earlier page cache.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
+    )]
+    async fn resolve_action_directory_for_actor(
+        &self,
+        directories: &LocalActionDirectoryRegistry,
+        actor: &BrokerActor,
+        cluster_id: &str,
+        peer_id: u64,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
+        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+            .map_err(|error| error.to_string())?;
+        let registered = directories
+            .registered(peer_id, cluster_id)
+            .map_err(|error| error.to_string())?;
+        let mut request = registered.directory.resolve_request();
+        {
+            let mut wire = request.get();
+            wire.set_revision(revision);
+            wire.set_resource(resource);
+            wire.set_action(action);
+        }
+        let reply = request
+            .send()
+            .promise
+            .await
+            .map_err(|error| error.to_string())?;
+        let resolution = reply
+            .get()
+            .and_then(|reply| reply.get_resolution())
+            .map_err(|error| error.to_string())?;
+        let decoded = runtime_collab::decode_action_directory_resolution(resolution)
+            .map_err(|error| error.to_string())?;
+        match decoded {
+            runtime_collab::ActionDirectoryResolution::Found(row)
+                if row.resource == resource
+                    && row.action.as_deref() == Some(action)
+                    && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
+                        .map_err(|error| error.to_string())? =>
+            {
+                Ok(runtime_collab::ActionDirectoryResolution::Found(row))
+            }
+            runtime_collab::ActionDirectoryResolution::Found(_) => {
+                Ok(runtime_collab::ActionDirectoryResolution::NotFound)
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// Atomically resolve and start a directory action on the broker
+    /// LocalSet.  No cached descriptor, eager surface entry, or compositor
+    /// thread participates in admission.
+    #[allow(clippy::too_many_arguments, clippy::future_not_send)]
+    async fn start_action_directory_for_actor(
+        &self,
+        directories: &LocalActionDirectoryRegistry,
+        actor: &BrokerActor,
+        cluster_id: &str,
+        peer_id: u64,
+        revision: &str,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        confirmation: Option<DirectoryActionConfirmation>,
+    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
+        validate_directory_target_input(
+            cluster_id,
+            revision,
+            resource,
+            action,
+            argument,
+            confirmation.as_ref(),
+        )
+        .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
+        let registered = directories
+            .registered(peer_id, cluster_id)
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
+        let resolved = self
+            .resolve_action_directory_for_actor(
+                directories,
+                actor,
+                cluster_id,
+                peer_id,
+                revision,
+                resource,
+                action,
+            )
+            .await
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
+        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
+            return Err(match resolved {
+                runtime_collab::ActionDirectoryResolution::StaleRevision => {
+                    ActionDirectoryBridgeError::StaleRevision
+                }
+                _ => ActionDirectoryBridgeError::NotFound,
+            });
+        };
+        let published = published_directory_action(&row)
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
+        // Resolve rechecked the current capability and actor.  Re-run the
+        // validation immediately before constructing the invocation surface
+        // so a future local caller cannot bypass the same boundary.
+        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
+        {
+            return Err(ActionDirectoryBridgeError::NotFound);
+        }
+        let confirmation_token = self.directory_confirmation_token(
+            peer_id,
+            resource,
+            action,
+            argument,
+            actor,
+            &published.contract,
+            confirmation,
+        )?;
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: registered.app_id,
+            route: registered.route,
+            actions: vec![published.clone()],
+            live: true,
+        };
+        let job = self
+            .start_invocation_from_offered(
+                peer_id,
+                (surface, published),
+                argument,
+                actor,
+                confirmation_token.as_deref(),
+                None,
+            )
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
+        let initial_update = self
+            .invocation_status(job.id)
+            .ok_or(ActionDirectoryBridgeError::Unavailable)?;
+        Ok(StartedDirectoryAction {
+            invocation_id: job.id,
+            initial_update,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn directory_confirmation_token(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &BrokerActor,
+        contract: &qos_actions::ActionContract,
+        confirmation: Option<DirectoryActionConfirmation>,
+    ) -> Result<Option<String>, ActionDirectoryBridgeError> {
+        match &contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => return Ok(None),
+            qos_actions::ConfirmationPolicy::Confirm
+                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
+            qos_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
+                {}
+            _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut grants = self
+            .confirmation_grants
+            .lock()
+            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
+        let now = std::time::Instant::now();
+        grants.retain(|_, grant| grant.expires >= now);
+        grants.insert(
+            token.clone(),
+            ConfirmationGrant {
+                peer_id,
+                resource: resource.to_string(),
+                action: action.to_string(),
+                argument_digest: argument_digest(argument),
+                actor: actor.id.clone(),
+                expires: now
+                    .checked_add(std::time::Duration::from_secs(60))
+                    .ok_or(ActionDirectoryBridgeError::Unavailable)?,
+            },
+        );
+        Ok(Some(token))
+    }
+
+    /// Check the descriptor returned by an untrusted app capability against
+    /// the current workspace authority, not the authority that existed when a
+    /// cursor was issued. Resource-only rows are rejected by callers because
+    /// they carry no contract from which policy can be evaluated.
+    fn permits_directory_action(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+        app_id: &str,
+        action: &str,
+        contract_json: &str,
+    ) -> Result<bool, capnp::Error> {
+        if contract_json.is_empty() || contract_json.len() > DIRECTORY_MAX_CONTRACT_BYTES {
+            return Err(capnp::Error::failed(
+                "action directory contract must be non-empty and bounded".into(),
+            ));
+        }
+        let contract = serde_json::from_str::<qos_actions::ActionContract>(contract_json).map_err(
+            |error| capnp::Error::failed(format!("invalid action directory contract: {error}")),
+        )?;
+        let Some(verb) = (match contract.permission {
+            qos_actions::PermissionRequirement::None => None,
+            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
+            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
+            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+        }) else {
+            return Ok(true);
+        };
+        let membership = self.membership.as_ref().ok_or_else(|| {
+            capnp::Error::failed("the action broker has no workspace authority".into())
+        })?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == cluster_id)
+            .ok_or_else(|| {
+                capnp::Error::failed("the application workspace is no longer hosted".into())
+            })?;
+        let caller = if actor.is_agent {
+            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
+        } else {
+            workspace.actor_for_person(&actor.id)
+        };
+        Ok(workspace.decide(
+            &caller,
+            &ResourceRef::Action {
+                app: app_id.to_string(),
+                action: action.to_string(),
+            },
+            verb,
+        ) == CapDecision::Allow)
     }
 
     #[allow(
@@ -1061,6 +2080,29 @@ impl CapnpBrokerState {
                 Some((surface, action))
             })
             .ok_or_else(|| "the application no longer publishes that action".to_string())?;
+        self.start_invocation_from_offered(
+            peer_id,
+            offered,
+            argument,
+            actor,
+            confirmation_token,
+            context,
+        )
+    }
+
+    /// Admit an invocation from a just-validated live action.  Directory
+    /// actions reach this point without ever being copied into the eager
+    /// published surface; the caller must have resolved the row on this
+    /// LocalSet turn and supplied its certified route.
+    fn start_invocation_from_offered(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        argument: Option<&str>,
+        actor: &BrokerActor,
+        confirmation_token: Option<&str>,
+        context: Option<qos_actions::ActionContext>,
+    ) -> Result<InvocationJob, String> {
         let sender = self
             .invocation_subscribers
             .lock()
@@ -1087,7 +2129,7 @@ impl CapnpBrokerState {
         };
         let target = ResourceRef::Action {
             app: offered.0.app_id.clone(),
-            action: action.to_string(),
+            action: offered.1.action.clone(),
         };
         if let qos_actions::Availability::Unavailable { reason, .. } =
             &offered.1.contract.availability
@@ -1122,8 +2164,8 @@ impl CapnpBrokerState {
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
             if grant.expires < std::time::Instant::now()
                 || grant.peer_id != peer_id
-                || grant.resource != resource
-                || grant.action != action
+                || grant.resource != offered.1.resource
+                || grant.action != offered.1.action
                 || grant.argument_digest != argument_digest(argument)
                 || grant.actor != actor.id
             {
@@ -1184,8 +2226,8 @@ impl CapnpBrokerState {
         if sender
             .send(InvocationEnvelope {
                 id,
-                resource: resource.to_string(),
-                action: action.to_string(),
+                resource: offered.1.resource.clone(),
+                action: offered.1.action.clone(),
                 argument: argument.map(str::to_string),
                 actor: actor.id.clone(),
                 context,
@@ -1565,6 +2607,10 @@ impl CapnpBrokerState {
         if let Ok(mut surfaces) = self.surfaces.lock() {
             surfaces.remove(&peer_id);
         }
+        if let Ok(mut roots) = self.action_directory_roots.lock() {
+            roots.remove(&peer_id);
+        }
+        self.refresh_action_directory_root_snapshot();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
@@ -1994,6 +3040,7 @@ fn default_pointer_key_bytes() -> Vec<u8> {
 /// Root capability server. One instance per connected RPC session.
 struct CapnpCollabService {
     state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
     /// Peer id assigned at accept time. Fanout uses it to skip the
     /// author when replaying its own frames back at itself.
     peer_id: u64,
@@ -2090,6 +3137,7 @@ impl collab_service::Server for CapnpCollabService {
 
             let handle = CapnpChannelHandle {
                 state: state.clone(),
+                directories: Rc::clone(&self.directories),
                 channel_id,
                 peer_id,
                 verified_identity,
@@ -2105,6 +3153,7 @@ impl collab_service::Server for CapnpCollabService {
 /// method call inherits its (`channel_id`, `peer_id`, identity) context.
 struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
@@ -2113,6 +3162,7 @@ struct CapnpChannelHandle {
 impl Drop for CapnpChannelHandle {
     fn drop(&mut self) {
         self.state.remove_connection(self.peer_id);
+        self.directories.remove(self.peer_id);
     }
 }
 
@@ -2614,6 +3664,288 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
             state.publish_action_catalogue();
+            Ok(())
+        })
+    }
+
+    fn publish_action_directory(
+        self: Rc<Self>,
+        params: channel_handle::PublishActionDirectoryParams,
+        _results: channel_handle::PublishActionDirectoryResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(error),
+        };
+        if let Err(error) =
+            validate_directory_identifier(&app_id, "app id", DIRECTORY_MAX_IDENTIFIER_BYTES, true)
+        {
+            return Promise::err(error);
+        }
+        if self.route().app_id.is_empty() || app_id != self.route().app_id {
+            return Promise::err(capnp::Error::failed(
+                "publishActionDirectory appId must match the certified connection route".into(),
+            ));
+        }
+        let directory = match request.get_directory() {
+            Ok(directory) => directory,
+            Err(error) => return Promise::err(error),
+        };
+        let route = self.route();
+        self.directories.directories.borrow_mut().insert(
+            self.peer_id,
+            RegisteredActionDirectory {
+                app_id: app_id.clone(),
+                route: route.clone(),
+                directory,
+            },
+        );
+        if let Ok(mut roots) = self.state.action_directory_roots.lock() {
+            roots.insert(
+                self.peer_id,
+                ActionDirectoryRoot {
+                    peer_id: self.peer_id,
+                    app_id,
+                    cluster_id: route.cluster_id,
+                    record_id: route.record_id,
+                },
+            );
+        }
+        self.state.refresh_action_directory_root_snapshot();
+        // The directory can alter remote discoverability without an eager
+        // action snapshot changing, so notify legacy catalogue subscribers.
+        self.state.publish_action_catalogue();
+        Promise::ok(())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one broker boundary must copy bounded input, enforce current policy, and copy a capability page without retaining it"
+    )]
+    fn query_action_directory(
+        self: Rc<Self>,
+        params: channel_handle::QueryActionDirectoryParams,
+        mut results: channel_handle::QueryActionDirectoryResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get().and_then(|params| params.get_query()) {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let peer_id = request.get_peer_id();
+        // A global root is intentionally not synthesised from every app here:
+        // that would force a scan of all live directories for each keystroke.
+        // Callers discover live app ids from the small authenticated catalogue,
+        // then page one source at a time with an opaque source cursor.
+        if peer_id == 0 {
+            return Promise::err(capnp::Error::failed(
+                "a directory page must name one live application peer".into(),
+            ));
+        }
+        let revision = match request.get_revision().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(error),
+        };
+        let needle = match request.get_needle().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(error),
+        };
+        let parent_resource = match request.get_parent_resource().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(error),
+        };
+        let cursor = match request.get_cursor() {
+            Ok(cursor) => cursor.to_vec(),
+            Err(error) => return Promise::err(error),
+        };
+        if let Err(error) = validate_directory_query_input(&runtime_collab::ActionDirectoryQuery {
+            peer_id,
+            revision: revision.clone(),
+            cursor: cursor.clone(),
+            needle: needle.clone(),
+            parent_resource: parent_resource.clone(),
+            // Input validation is independent of numeric page budgets; these
+            // placeholders avoid delaying it until after a capability lookup.
+            max_results: 1,
+            max_bytes: 1,
+            max_work: 1,
+            max_depth: 0,
+        }) {
+            return Promise::err(error);
+        }
+        let max_results = request
+            .get_max_results()
+            .min(CapnpBrokerState::DIRECTORY_MAX_RESULTS);
+        let max_bytes = request
+            .get_max_bytes()
+            .min(CapnpBrokerState::DIRECTORY_MAX_BYTES);
+        let max_work = request
+            .get_max_work()
+            .min(CapnpBrokerState::DIRECTORY_MAX_WORK);
+        let max_depth = request
+            .get_max_depth()
+            .min(CapnpBrokerState::DIRECTORY_MAX_DEPTH);
+        if max_results == 0 || max_bytes == 0 || max_work == 0 {
+            return Promise::err(capnp::Error::failed(
+                "directory query budgets must be non-zero".into(),
+            ));
+        }
+        let cluster = self.route().cluster_id;
+        let actor = self.verified_identity.broker_actor();
+        let registered = match self.directories.registered(peer_id, &cluster) {
+            Ok(registered) => registered,
+            Err(error) => return Promise::err(error),
+        };
+        let state = self.state.clone();
+        Promise::from_future(async move {
+            let mut forward = registered.directory.query_request();
+            {
+                let mut query = forward.get().init_query();
+                query.set_peer_id(peer_id);
+                query.set_revision(&revision);
+                query.set_cursor(&cursor);
+                query.set_needle(&needle);
+                query.set_parent_resource(&parent_resource);
+                query.set_max_results(max_results);
+                query.set_max_bytes(max_bytes);
+                query.set_max_work(max_work);
+                query.set_max_depth(max_depth);
+            }
+            let response = forward.send().promise.await?;
+            let page = response.get()?.get_page()?;
+            let bytes = page.total_size()?.word_count.saturating_mul(8);
+            if bytes > u64::from(max_bytes) {
+                return Err(capnp::Error::failed(
+                    "application exceeded directory byte budget".into(),
+                ));
+            }
+            let page = runtime_collab::decode_action_directory_page(page)?;
+            let page = filter_directory_page(
+                &state,
+                &cluster,
+                &actor,
+                &registered.app_id,
+                page,
+                max_results,
+            )?;
+            write_directory_page(results.get().init_page(), &page)?;
+            Ok(())
+        })
+    }
+
+    fn resolve_published_action(
+        self: Rc<Self>,
+        params: channel_handle::ResolvePublishedActionParams,
+        mut results: channel_handle::ResolvePublishedActionResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let peer_id = request.get_peer_id();
+        let read_text = |value: capnp::Result<capnp::text::Reader<'_>>| {
+            value
+                .and_then(|value| {
+                    value
+                        .to_str()
+                        .map_err(|error| capnp::Error::failed(error.to_string()))
+                })
+                .map(str::to_owned)
+        };
+        let revision = match read_text(request.get_revision()) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        let resource = match read_text(request.get_resource()) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        let action = match read_text(request.get_action()) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        let cluster = self.route().cluster_id;
+        if let Err(error) =
+            validate_directory_target_input(&cluster, &revision, &resource, &action, None, None)
+        {
+            return Promise::err(error);
+        }
+        let actor = self.verified_identity.broker_actor();
+        let registered = match self.directories.registered(peer_id, &cluster) {
+            Ok(registered) => registered,
+            Err(error) => return Promise::err(error),
+        };
+        let state = self.state.clone();
+        Promise::from_future(async move {
+            let mut forward = registered.directory.resolve_request();
+            {
+                let mut resolve = forward.get();
+                resolve.set_revision(&revision);
+                resolve.set_resource(&resource);
+                resolve.set_action(&action);
+            }
+            let response = forward.send().promise.await?;
+            let resolution = response.get()?.get_resolution()?;
+            let resolution = runtime_collab::decode_action_directory_resolution(resolution)?;
+            let mut out = results.get().init_resolution();
+            match resolution {
+                runtime_collab::ActionDirectoryResolution::Found(row)
+                    if row.resource == resource
+                        && row.action.as_deref() == Some(action.as_str())
+                        && permits_directory_row(
+                            &state,
+                            &cluster,
+                            &actor,
+                            &registered.app_id,
+                            &row,
+                        )? =>
+                {
+                    write_directory_row(out.init_found(), &row);
+                }
+                runtime_collab::ActionDirectoryResolution::Found(_)
+                | runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
+                runtime_collab::ActionDirectoryResolution::StaleRevision => {
+                    out.set_stale_revision(())
+                }
+                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
+            }
             Ok(())
         })
     }
@@ -3625,6 +4957,228 @@ fn closed_workspace_control_event(
     ))
 }
 
+/// Validate every untrusted field before it reaches shell chrome, then
+/// apply current authority. `Ok(false)` means a structurally valid row is
+/// simply not visible to this actor; it must not suppress permitted
+/// siblings on the same source page.
+fn permits_directory_row(
+    state: &CapnpBrokerState,
+    cluster_id: &str,
+    actor: &BrokerActor,
+    app_id: &str,
+    row: &runtime_collab::ActionDirectoryRow,
+) -> Result<bool, capnp::Error> {
+    validate_directory_identifier(
+        &row.parent_resource,
+        "parent resource",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        false,
+    )?;
+    validate_directory_identifier(
+        &row.resource,
+        "resource",
+        DIRECTORY_MAX_IDENTIFIER_BYTES,
+        true,
+    )?;
+    validate_directory_identifier(
+        &row.resource_kind,
+        "resource kind",
+        DIRECTORY_MAX_KIND_BYTES,
+        true,
+    )?;
+    validate_directory_text(
+        &row.resource_label,
+        "resource label",
+        DIRECTORY_MAX_LABEL_BYTES,
+        true,
+    )?;
+    match (&row.action, &row.descriptor) {
+        (Some(action), Some(descriptor)) => {
+            validate_directory_identifier(action, "action", DIRECTORY_MAX_IDENTIFIER_BYTES, true)?;
+            if descriptor.resource != row.resource
+                || descriptor.action != *action
+                || descriptor.resource_kind != row.resource_kind
+                || descriptor.resource_label != row.resource_label
+                || row.has_children
+                || row.visibility_action.as_deref() != Some(action)
+                || row.visibility_contract_json != descriptor.contract_json
+            {
+                return Err(capnp::Error::failed(
+                    "directory action row does not match its descriptor".into(),
+                ));
+            }
+            validate_directory_text(
+                &descriptor.action_label,
+                "action label",
+                DIRECTORY_MAX_LABEL_BYTES,
+                true,
+            )?;
+            if descriptor
+                .description
+                .as_deref()
+                .is_some_and(|description| {
+                    description.len() > DIRECTORY_MAX_DESCRIPTION_BYTES
+                        || description.contains('\0')
+                })
+            {
+                return Err(capnp::Error::failed(
+                    "invalid action directory description".into(),
+                ));
+            }
+            if !matches!(
+                descriptor.operation_kind.as_str(),
+                "document" | "effect" | "view"
+            ) {
+                return Err(capnp::Error::failed(
+                    "invalid action directory operation kind".into(),
+                ));
+            }
+            if descriptor.params_json.len() > DIRECTORY_MAX_PARAMS_BYTES
+                || serde_json::from_str::<Vec<qos_actions::ActionParam>>(&descriptor.params_json)
+                    .is_err()
+            {
+                return Err(capnp::Error::failed(
+                    "invalid action directory parameters".into(),
+                ));
+            }
+            match &descriptor.input {
+                runtime_collab::ExportedInput::None => {}
+                runtime_collab::ExportedInput::Text {
+                    prompt,
+                    placeholder,
+                    ..
+                } => {
+                    validate_directory_text(
+                        prompt,
+                        "input prompt",
+                        DIRECTORY_MAX_LABEL_BYTES,
+                        true,
+                    )?;
+                    validate_directory_text(
+                        placeholder,
+                        "input placeholder",
+                        DIRECTORY_MAX_LABEL_BYTES,
+                        false,
+                    )?;
+                }
+            }
+            state.permits_directory_action(
+                cluster_id,
+                actor,
+                app_id,
+                action,
+                &descriptor.contract_json,
+            )
+        }
+        (None, None) => {
+            if row.visibility_action.is_none() || row.visibility_contract_json.is_empty() {
+                return Err(capnp::Error::failed(
+                    "directory resource row has no visibility contract".into(),
+                ));
+            }
+            let visibility_action = row.visibility_action.as_deref().unwrap_or_default();
+            validate_directory_identifier(
+                visibility_action,
+                "visibility action",
+                DIRECTORY_MAX_IDENTIFIER_BYTES,
+                true,
+            )?;
+            state.permits_directory_action(
+                cluster_id,
+                actor,
+                app_id,
+                visibility_action,
+                &row.visibility_contract_json,
+            )
+        }
+        _ => Err(capnp::Error::failed(
+            "directory row mixes resource and action shapes".into(),
+        )),
+    }
+}
+
+fn filter_directory_page(
+    state: &CapnpBrokerState,
+    cluster_id: &str,
+    actor: &BrokerActor,
+    app_id: &str,
+    mut page: runtime_collab::ActionDirectoryPage,
+    max_results: u32,
+) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
+    if page.rows.len() > usize::try_from(max_results).unwrap_or(usize::MAX) {
+        return Err(capnp::Error::failed(
+            "application exceeded directory result budget".into(),
+        ));
+    }
+    let mut visible = Vec::with_capacity(page.rows.len());
+    for row in page.rows {
+        if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
+            visible.push(row);
+        }
+    }
+    page.rows = visible;
+    Ok(page)
+}
+
+/// Convert the already validated, exact directory row into the inert action
+/// shape used by the invocation lifecycle.  This deliberately accepts only
+/// an action row: containers are discoverable but never invokable.
+fn published_directory_action(
+    row: &runtime_collab::ActionDirectoryRow,
+) -> Result<PublishedAction, capnp::Error> {
+    let action = row
+        .action
+        .as_deref()
+        .ok_or_else(|| capnp::Error::failed("directory container is not invokable".into()))?;
+    let descriptor = row
+        .descriptor
+        .as_ref()
+        .ok_or_else(|| capnp::Error::failed("directory action has no descriptor".into()))?;
+    if descriptor.resource != row.resource || descriptor.action != action {
+        return Err(capnp::Error::failed(
+            "directory descriptor address changed during conversion".into(),
+        ));
+    }
+    let operation_kind = match descriptor.operation_kind.as_str() {
+        "document" => qos_actions::OperationKind::Document,
+        "effect" => qos_actions::OperationKind::Effect,
+        "view" => qos_actions::OperationKind::View,
+        _ => {
+            return Err(capnp::Error::failed(
+                "invalid directory operation kind".into(),
+            ));
+        }
+    };
+    let params = serde_json::from_str(&descriptor.params_json)
+        .map_err(|error| capnp::Error::failed(format!("invalid directory parameters: {error}")))?;
+    let contract = serde_json::from_str(&descriptor.contract_json)
+        .map_err(|error| capnp::Error::failed(format!("invalid directory contract: {error}")))?;
+    let input = match &descriptor.input {
+        runtime_collab::ExportedInput::None => PublishedInput::None,
+        runtime_collab::ExportedInput::Text {
+            prompt,
+            placeholder,
+            wants_content,
+        } => PublishedInput::Text {
+            prompt: prompt.clone(),
+            placeholder: placeholder.clone(),
+            wants_content: *wants_content,
+        },
+    };
+    Ok(PublishedAction {
+        resource: descriptor.resource.clone(),
+        action: descriptor.action.clone(),
+        resource_kind: descriptor.resource_kind.clone(),
+        resource_label: descriptor.resource_label.clone(),
+        action_label: descriptor.action_label.clone(),
+        description: descriptor.description.clone(),
+        operation_kind,
+        params,
+        contract,
+        input,
+    })
+}
+
 fn revalidate_workspace_control(
     state: &CapnpBrokerState,
     route: &CrdtRoute,
@@ -4537,7 +6091,7 @@ pub fn spawn(
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(
+    let (state, bridge_rx) = CapnpBrokerState::new(
         fanout,
         broker_channels,
         publisher,
@@ -4580,6 +6134,7 @@ pub fn spawn(
             };
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
+                let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
                 let listener = match tokio::net::UnixListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
@@ -4591,6 +6146,7 @@ pub fn spawn(
                     }
                 };
                 loop {
+                    state.drain_action_directory_bridge(&directories);
                     if quit.load(Ordering::Relaxed) {
                         break;
                     }
@@ -4614,9 +6170,11 @@ pub fn spawn(
                         }
                     };
                     let state = Arc::clone(&state);
+                    let directories = Rc::clone(&directories);
                     let peer_id = state.next_peer_id();
                     tokio::task::spawn_local(async move {
-                        if let Err(e) = drive_connection(stream, state, peer_id).await {
+                        if let Err(e) = drive_connection(stream, state, directories, peer_id).await
+                        {
                             tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
                         }
                     });
@@ -4838,6 +6396,7 @@ async fn authenticate_launcher_handoff(
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
 ) -> Result<(), capnp::Error> {
     let mut stream = stream;
@@ -4851,7 +6410,11 @@ async fn drive_connection(
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));
-    let service = CapnpCollabService { state, peer_id };
+    let service = CapnpCollabService {
+        state,
+        directories,
+        peer_id,
+    };
     let client: collab_service::Client = capnp_rpc::new_client(service);
     let rpc = RpcSystem::new(network, Some(client.client));
     rpc.await
@@ -4868,12 +6431,587 @@ async fn drive_connection(
 )]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::time::SystemTime;
 
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
+    use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
+    use crate::shell::search::{InvocationDisposition, SearchContext, SearchProvider};
+    use automerge::{AutoCommit, ObjId};
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DirectoryResolveMode {
+        Found,
+        Stale,
+        NotFound,
+    }
+
+    /// A real Cap'n Proto directory endpoint retained by the LocalSet test
+    /// below. It answers only bounded inert rows, but is deliberately a
+    /// capability client rather than a mock of the shell bridge.
+    struct TestActionDirectory {
+        revision: String,
+        resolve_mode: DirectoryResolveMode,
+        confirmation_required: bool,
+        query_count: usize,
+    }
+
+    impl TestActionDirectory {
+        fn contract_json(&self) -> String {
+            let mut contract = qos_actions::ActionContract::view();
+            if self.confirmation_required {
+                contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
+            }
+            serde_json::to_string(&contract).expect("test action contract")
+        }
+
+        fn row(&self) -> runtime_collab::ActionDirectoryRow {
+            let contract_json = self.contract_json();
+            let descriptor = runtime_collab::ExportedAction {
+                resource: "workspace:atlas".into(),
+                action: "open".into(),
+                resource_kind: "workspace".into(),
+                resource_label: "Atlas".into(),
+                action_label: "Open Atlas".into(),
+                description: Some("Open the Atlas workspace".into()),
+                operation_kind: "view".into(),
+                params_json: "[]".into(),
+                contract_json: contract_json.clone(),
+                input: runtime_collab::ExportedInput::None,
+            };
+            runtime_collab::ActionDirectoryRow {
+                parent_resource: String::new(),
+                resource: descriptor.resource.clone(),
+                resource_kind: descriptor.resource_kind.clone(),
+                resource_label: descriptor.resource_label.clone(),
+                action: Some(descriptor.action.clone()),
+                descriptor: Some(descriptor),
+                has_children: false,
+                visibility_action: Some("open".into()),
+                visibility_contract_json: contract_json,
+            }
+        }
+    }
+
+    struct TestActionDirectoryServer {
+        state: Rc<RefCell<TestActionDirectory>>,
+    }
+
+    #[allow(
+        refining_impl_trait,
+        reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
+    )]
+    impl action_directory::Server for TestActionDirectoryServer {
+        fn query(
+            self: Rc<Self>,
+            _params: action_directory::QueryParams,
+            mut results: action_directory::QueryResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut state = self.state.borrow_mut();
+            state.query_count = state.query_count.saturating_add(1);
+            let page = runtime_collab::ActionDirectoryPage {
+                revision: state.revision.clone(),
+                rows: vec![state.row()],
+                next_cursor: Vec::new(),
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            };
+            write_directory_page(results.get().init_page(), &page)
+                .expect("test directory page encodes");
+            Promise::ok(())
+        }
+
+        fn resolve(
+            self: Rc<Self>,
+            _params: action_directory::ResolveParams,
+            mut results: action_directory::ResolveResults,
+        ) -> Promise<(), capnp::Error> {
+            let state = self.state.borrow();
+            let mut out = results.get().init_resolution();
+            match state.resolve_mode {
+                DirectoryResolveMode::Found => {
+                    write_directory_row(out.reborrow().init_found(), &state.row())
+                }
+                DirectoryResolveMode::Stale => out.set_stale_revision(()),
+                DirectoryResolveMode::NotFound => out.set_not_found(()),
+            }
+            Promise::ok(())
+        }
+    }
+
+    struct LocalDirectoryFixture {
+        state: Arc<CapnpBrokerState>,
+        directories: Rc<LocalActionDirectoryRegistry>,
+        directory: action_directory::Client,
+        directory_state: Rc<RefCell<TestActionDirectory>>,
+        broker: crate::shell::collab_broker::AppActionBroker,
+        chrome: crate::shell::chrome_state::Chrome,
+        cluster_id: String,
+        route: CrdtRoute,
+        peer_id: u64,
+        invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+    }
+
+    fn local_directory_fixture() -> LocalDirectoryFixture {
+        const PEER_ID: u64 = 71;
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(71),
+            "Directory test room",
+        );
+        let cluster_id = workspace.room.to_string();
+        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        tree.workspaces.push(workspace);
+        tree.set_active(crate::shell::state::WorkspaceId(71));
+        let membership = tree.shared();
+        let route = CrdtRoute::record("dev.qos.atlas", cluster_id.clone(), "atlas");
+        let fanout = Arc::new(FanoutState::new());
+        let (state, bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(Arc::clone(&membership)),
+            None,
+        );
+        let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+        let directory_state = Rc::new(RefCell::new(TestActionDirectory {
+            revision: "directory-r1".into(),
+            resolve_mode: DirectoryResolveMode::Found,
+            confirmation_required: false,
+            query_count: 0,
+        }));
+        let directory: action_directory::Client =
+            capnp_rpc::new_client(TestActionDirectoryServer {
+                state: Rc::clone(&directory_state),
+            });
+        directories.directories.borrow_mut().insert(
+            PEER_ID,
+            RegisteredActionDirectory {
+                app_id: route.app_id.clone(),
+                route: route.clone(),
+                directory: directory.clone(),
+            },
+        );
+        state
+            .action_directory_roots
+            .lock()
+            .expect("directory roots")
+            .insert(
+                PEER_ID,
+                ActionDirectoryRoot {
+                    peer_id: PEER_ID,
+                    app_id: route.app_id.clone(),
+                    cluster_id: cluster_id.clone(),
+                    record_id: route.record_id.clone(),
+                },
+            );
+        state.refresh_action_directory_root_snapshot();
+        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("invocation subscribers")
+            .insert(PEER_ID, invocation_tx);
+        LocalDirectoryFixture {
+            broker: crate::shell::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(
+                &state,
+            )),
+            chrome: crate::shell::chrome_state::ChromeState::new_with_handle(membership),
+            state,
+            directories,
+            directory,
+            directory_state,
+            cluster_id,
+            route,
+            peer_id: PEER_ID,
+            invocation_rx,
+        }
+    }
+
+    async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
+        fixture
+            .state
+            .drain_action_directory_bridge(&fixture.directories);
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+    }
+
+    fn query_live_directory(
+        provider: &LiveAppActionsProvider,
+        chrome: &crate::shell::chrome_state::Chrome,
+        doc: &AutoCommit,
+        root: &ObjId,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let chrome = chrome.borrow();
+        provider.query(SearchContext {
+            needle: "open",
+            wanted: &[],
+            chrome: &chrome,
+            doc,
+            doc_root: root,
+        })
+    }
+
+    fn only_directory_result(
+        results: Vec<crate::shell::search::SearchResult>,
+    ) -> crate::shell::search::SearchResult {
+        results
+            .into_iter()
+            .find(|result| result.id.starts_with("directory\u{1f}"))
+            .expect("one directory action result")
+    }
+
+    async fn load_directory_result(
+        fixture: &LocalDirectoryFixture,
+        provider: &LiveAppActionsProvider,
+        doc: &AutoCommit,
+        root: &ObjId,
+    ) -> crate::shell::search::SearchResult {
+        let initial = query_live_directory(provider, &fixture.chrome, doc, root);
+        assert!(
+            initial
+                .iter()
+                .all(|result| !result.id.starts_with("directory\u{1f}")),
+            "first provider query must not synchronously fabricate a directory row"
+        );
+        drain_directory_bridge(fixture).await;
+        only_directory_result(query_live_directory(provider, &fixture.chrome, doc, root))
+    }
+
+    #[test]
+    fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
+        let fixture = local_directory_fixture();
+        let queue = fixture.broker.action_directory_request_queue();
+        let mut oversized_text = runtime_collab::ActionDirectoryQuery {
+            peer_id: fixture.peer_id,
+            revision: String::new(),
+            cursor: Vec::new(),
+            needle: "x".repeat(DIRECTORY_MAX_QUERY_NEEDLE_BYTES.saturating_add(1)),
+            parent_resource: String::new(),
+            max_results: 1,
+            max_bytes: 1,
+            max_work: 1,
+            max_depth: 1,
+        };
+        assert!(matches!(
+            queue.try_query(
+                BrokerActor::person("actor-a"),
+                &fixture.cluster_id,
+                oversized_text.clone()
+            ),
+            Err(ActionDirectoryBridgeError::InvalidRequest)
+        ));
+        oversized_text.needle.clear();
+        oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
+        assert!(matches!(
+            queue.try_query(
+                BrokerActor::person("actor-a"),
+                &fixture.cluster_id,
+                oversized_text
+            ),
+            Err(ActionDirectoryBridgeError::InvalidRequest)
+        ));
+        assert!(matches!(
+            queue.try_resolve(
+                BrokerActor::person("actor-a"),
+                "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
+                fixture.peer_id,
+                "directory-r1",
+                "workspace:atlas",
+                "open",
+            ),
+            Err(ActionDirectoryBridgeError::InvalidRequest)
+        ));
+        assert!(matches!(
+            queue.try_start_resolved(
+                BrokerActor::person("actor-a"),
+                &fixture.cluster_id,
+                fixture.peer_id,
+                "directory-r1",
+                "workspace:atlas",
+                "open",
+                Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
+                None,
+            ),
+            Err(ActionDirectoryBridgeError::InvalidRequest)
+        ));
+        assert!(matches!(
+            queue.try_start_resolved(
+                BrokerActor::person("actor-a"),
+                &fixture.cluster_id,
+                fixture.peer_id,
+                "directory-r1",
+                "workspace:atlas",
+                "open",
+                None,
+                Some(DirectoryActionConfirmation::Phrase(
+                    "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
+                )),
+            ),
+            Err(ActionDirectoryBridgeError::InvalidRequest)
+        ));
+        assert_eq!(
+            fixture.directory_state.borrow().query_count,
+            0,
+            "invalid local requests are rejected before a directory capability is contacted"
+        );
+    }
+
+    #[test]
+    fn directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation() {
+        let fixture = local_directory_fixture();
+        let mut row = fixture.directory_state.borrow().row();
+        row.resource = "workspace:atlas\u{1f}admin".into();
+        assert!(
+            permits_directory_row(
+                &fixture.state,
+                &fixture.cluster_id,
+                &BrokerActor::person("actor-a"),
+                &fixture.route.app_id,
+                &row,
+            )
+            .is_err(),
+            "a resource cannot inject the shell result-id separator"
+        );
+        let mut row = fixture.directory_state.borrow().row();
+        row.action = Some("open\nadmin".into());
+        assert!(
+            permits_directory_row(
+                &fixture.state,
+                &fixture.cluster_id,
+                &BrokerActor::person("actor-a"),
+                &fixture.route.app_id,
+                &row,
+            )
+            .is_err(),
+            "control characters cannot turn one wire action into several shell fields"
+        );
+    }
+
+    #[test]
+    fn retained_directory_root_pages_reach_exact_bound_and_tail_without_query_sorting() {
+        let fixture = local_directory_fixture();
+        {
+            let mut roots = fixture
+                .state
+                .action_directory_roots
+                .lock()
+                .expect("directory roots");
+            for peer_id in 1..=129_u64 {
+                roots.insert(
+                    peer_id,
+                    ActionDirectoryRoot {
+                        peer_id,
+                        app_id: "dev.qos.test".into(),
+                        cluster_id: fixture.cluster_id.clone(),
+                        record_id: format!("root-{peer_id}"),
+                    },
+                );
+            }
+        }
+        fixture.state.refresh_action_directory_root_snapshot();
+        let first = fixture.state.action_directory_root_page(None, 128);
+        assert_eq!(first.roots.len(), 128);
+        assert_eq!(first.next_after_peer, Some(128));
+        let second = fixture
+            .state
+            .action_directory_root_page(first.next_after_peer, 128);
+        assert_eq!(second.roots.len(), 1);
+        assert_eq!(second.roots[0].peer_id, 129);
+        assert_eq!(second.next_after_peer, None);
+        let repeat = fixture.state.action_directory_root_page(None, 1);
+        assert_eq!(repeat.roots[0].peer_id, 1);
+        assert_eq!(repeat.generation, second.generation);
+        fixture.state.remove_connection(129);
+        let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
+        assert!(after_disconnect.roots.is_empty());
+        assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one LocalSet lifecycle test deliberately keeps every queue/cache transition in temporal order"
+    )]
+    fn localset_directory_queue_drives_pending_start_refusal_actor_cache_and_invalidation() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("current-thread test runtime");
+        let local = tokio::task::LocalSet::new();
+        runtime.block_on(local.run_until(async {
+            let mut fixture = local_directory_fixture();
+            let queue = fixture.broker.action_directory_request_queue();
+            let room = crate::shell::state::RoomId::parse(&fixture.cluster_id)
+                .expect("fixture route is a room id");
+            let directory_actor = fixture.chrome.borrow().local_user_for_room(&room);
+
+            // A request remains pending until the LocalSet drains it; no shell
+            // caller is allowed to block the compositor waiting for an RPC.
+            fixture.directory_state.borrow_mut().confirmation_required = true;
+            let mut confirmation = queue
+                .try_start_resolved(
+                    BrokerActor::person(&directory_actor),
+                    &fixture.cluster_id,
+                    fixture.peer_id,
+                    "directory-r1",
+                    "workspace:atlas",
+                    "open",
+                    None,
+                    None,
+                )
+                .expect("bounded queue accepts one request");
+            assert!(matches!(
+                confirmation.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            drain_directory_bridge(&fixture).await;
+            let confirmation_reply = tokio::time::timeout(
+                Duration::from_millis(100),
+                confirmation,
+            )
+            .await
+            .expect("LocalSet reply deadline")
+            .expect("reply sender survives");
+            assert!(matches!(
+                confirmation_reply,
+                Err(ActionDirectoryBridgeError::ConfirmationRequired)
+            ), "unexpected confirmation reply: {confirmation_reply:?}");
+            fixture.directory_state.borrow_mut().confirmation_required = false;
+
+            let provider = LiveAppActionsProvider::new(fixture.broker.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT.clone();
+            let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &root).await;
+            assert_eq!(fixture.directory_state.borrow().query_count, 1);
+
+            // Re-querying the same root uses its room-derived actor and page;
+            // changing `ChromeState::local_user_id` must not retarget it.
+            fixture.chrome.borrow_mut().local_user_id = "unrelated-active-room-user".into();
+            let room_actor_result = only_directory_result(query_live_directory(
+                &provider,
+                &fixture.chrome,
+                &doc,
+                &root,
+            ));
+            assert_eq!(fixture.directory_state.borrow().query_count, 1);
+
+            let begin = room_actor_result
+                .on_begin_invoke
+                .as_ref()
+                .expect("directory result starts through an atomic broker ticket");
+            let InvocationDisposition::Pending(ticket) = begin(
+                &mut doc,
+                &root,
+                &fixture.chrome,
+                &qos_actions::ActionArgs::none(),
+            )
+            .expect("directory invocation request enqueues") else {
+                panic!("directory action must not claim accepted before LocalSet admission");
+            };
+            assert!(ticket().expect("pending ticket").is_none());
+            drain_directory_bridge(&fixture).await;
+            let accepted = ticket()
+                .expect("accepted ticket")
+                .expect("LocalSet accepted directory action");
+            assert!(accepted.broker_invocation_id.is_some());
+            assert_eq!(
+                fixture
+                    .invocation_rx
+                    .try_recv()
+                    .expect("admitted invocation reaches application stream")
+                    .actor,
+                directory_actor
+            );
+
+            // Stale and revoked exact resolutions both invalidate the page
+            // captured by the provider, then force a fresh bounded query.
+            fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Stale;
+            let stale = room_actor_result
+                .on_begin_invoke
+                .as_ref()
+                .expect("directory ticket")(
+                &mut doc,
+                &root,
+                &fixture.chrome,
+                &qos_actions::ActionArgs::none(),
+            )
+            .expect("stale request queues");
+            let InvocationDisposition::Pending(stale) = stale else {
+                panic!("stale action must be asynchronous");
+            };
+            drain_directory_bridge(&fixture).await;
+            assert!(stale().is_err(), "stale exact resolution refuses the cached row");
+            fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Found;
+            let _refreshed_after_stale = load_directory_result(&fixture, &provider, &doc, &root).await;
+            assert_eq!(fixture.directory_state.borrow().query_count, 2);
+
+            fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::NotFound;
+            let revoked_source = only_directory_result(query_live_directory(
+                &provider,
+                &fixture.chrome,
+                &doc,
+                &root,
+            ));
+            let InvocationDisposition::Pending(revoked) = revoked_source
+                .on_begin_invoke
+                .as_ref()
+                .expect("directory ticket")(
+                &mut doc,
+                &root,
+                &fixture.chrome,
+                &qos_actions::ActionArgs::none(),
+            )
+            .expect("revoked request queues") else {
+                panic!("revoked action must be asynchronous");
+            };
+            drain_directory_bridge(&fixture).await;
+            assert!(revoked().is_err(), "revoked exact resolution refuses the cached row");
+            fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Found;
+            let disconnected_source = load_directory_result(&fixture, &provider, &doc, &root).await;
+            assert_eq!(fixture.directory_state.borrow().query_count, 3);
+
+            fixture.directories.remove(fixture.peer_id);
+            let InvocationDisposition::Pending(disconnected) = disconnected_source
+                .on_begin_invoke
+                .as_ref()
+                .expect("directory ticket")(
+                &mut doc,
+                &root,
+                &fixture.chrome,
+                &qos_actions::ActionArgs::none(),
+            )
+            .expect("disconnect request queues") else {
+                panic!("disconnect action must be asynchronous");
+            };
+            drain_directory_bridge(&fixture).await;
+            assert!(disconnected().is_err(), "disconnect invalidates the cached directory row");
+            assert!(
+                query_live_directory(&provider, &fixture.chrome, &doc, &root).is_empty(),
+                "after disconnect the provider must not render its old cached row"
+            );
+
+            fixture.directories.directories.borrow_mut().insert(
+                fixture.peer_id,
+                RegisteredActionDirectory {
+                    app_id: fixture.route.app_id.clone(),
+                    route: fixture.route.clone(),
+                    directory: fixture.directory.clone(),
+                },
+            );
+            drain_directory_bridge(&fixture).await;
+            let reconnected = query_live_directory(&provider, &fixture.chrome, &doc, &root);
+            assert!(
+                reconnected.iter().any(|result| result.id.starts_with("directory\u{1f}")),
+                "a reconnected directory is reloaded through the queue, never revived from stale cache"
+            );
+        }));
+    }
 
     fn certified_join(
         workspace: &str,
@@ -5137,7 +7275,7 @@ mod tests {
         let membership = tree.shared();
         assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
@@ -5199,7 +7337,7 @@ mod tests {
             .expect("member starts admitted");
         let membership_tree = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
@@ -5337,7 +7475,7 @@ mod tests {
         let publisher = PeerPublisher::new(
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::clone(&broker_channels),
             publisher,
@@ -5452,7 +7590,7 @@ mod tests {
     #[test]
     fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
         let fanout = Arc::new(FanoutState::new());
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
@@ -5520,7 +7658,7 @@ mod tests {
         tree.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
@@ -5808,7 +7946,7 @@ mod tests {
         tree.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let state = CapnpBrokerState::new(
+        let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),

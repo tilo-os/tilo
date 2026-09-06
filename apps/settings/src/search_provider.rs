@@ -15,8 +15,8 @@
 
 use qos_actions::{ActionAddress, Resource};
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchPage,
-    SearchProvider, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
 
 use crate::categories::Category;
@@ -98,6 +98,13 @@ impl SettingsSearchProvider {
 impl SearchProvider for SettingsSearchProvider {
     fn name(&self) -> &str {
         SETTINGS_KIND
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
