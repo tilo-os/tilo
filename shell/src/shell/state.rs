@@ -1353,6 +1353,20 @@ pub struct Workspace {
     /// adopted by the local user on first load.
     #[serde(default)]
     pub owner: Option<UserId>,
+    /// One exact, owner-signed offer awaiting the named recipient's consent.
+    /// Persisted with the workspace so restart cannot erase, extend, or retarget
+    /// the ceremony.
+    #[serde(default)]
+    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
+    /// Completed transfers retaining the outgoing owner's signed authorization
+    /// and the exact recipient's signed acceptance. This is append-only audit
+    /// evidence, not a second source of current ownership.
+    #[serde(default)]
+    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
+    /// Owner-signed cancellations retained so a cancelled proposal cannot be
+    /// replayed after restart.
+    #[serde(default)]
+    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     /// **Every** permission in this room, as capabilities — one list, one
     /// vocabulary (room membership, file shares, portal grants), so it
     /// can't drift the way a second per-app map would.
@@ -1459,6 +1473,29 @@ pub enum WorkspaceDefaultError {
     #[error("invalid default application: {0}")]
     InvalidSelection(desktop_policy::DefaultAppError),
 }
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum OwnershipTransferStateError {
+    #[error("workspace ownership transfer is not locally governed")]
+    NotGoverned,
+    #[error("workspace or current structural owner does not match the signed proposal")]
+    WrongWorkspaceOrOwner,
+    #[error("recipient must retain administrator membership until commit")]
+    RecipientNotAdministrator,
+    #[error("another live ownership-transfer proposal already exists")]
+    ProposalAlreadyPending,
+    #[error("ownership-transfer proposal is unknown, cancelled, expired, or already consumed")]
+    ProposalUnavailable,
+    #[error("ownership-transfer audit history is full; archive it before another transfer")]
+    HistoryFull,
+    #[error("invalid signed ownership-transfer record: {0}")]
+    InvalidSignature(#[from] collab_types::OwnershipTransferError),
+    #[error("ownership-transfer persistence failed: {0}")]
+    Persistence(String),
+}
+
+const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
+const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 impl Capability {
     /// The `(scope, verb)` this request descriptor asks for —
@@ -1830,7 +1867,7 @@ impl Workspace {
     /// must already be an administrator.  The latter makes transfer an
     /// explicit two-step ceremony (promote, then transfer) and avoids handing
     /// the workspace to a mistyped or stale identity.
-    pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
         if current_owner == new_owner
             || self.owner.as_ref() != Some(current_owner)
             || self.role_of(new_owner) != Some(CapRole::Owner)
@@ -2045,6 +2082,9 @@ impl Workspace {
             strips: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -2107,6 +2147,9 @@ impl Default for Workspace {
             strips: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -5300,46 +5343,227 @@ impl WorkspaceTree {
         true
     }
 
-    /// Transfer structural ownership and persist the owner record together
-    /// with its replacement Admin capability.
+    /// Persist an exact, owner-signed ownership offer without changing roles.
     ///
-    /// Only the exact current owner may do this; an Admin delegation is not
-    /// equivalent to the root authority. The recipient must already be an
-    /// Admin, so callers have a reviewable promotion step before this
-    /// irreversible governance operation.
+    /// # Errors
     ///
-    /// Returns `false` if the workspace's ownership state is incomplete.
-    pub fn transfer_workspace_ownership(
+    /// Refuses foreign governance, invalid/expired signatures, a mismatched
+    /// owner/workspace, a non-administrator recipient, replay, or replacement
+    /// of another live proposal.
+    pub fn propose_workspace_ownership_transfer(
         &mut self,
         workspace_id: WorkspaceId,
-        current_owner: &UserId,
-        new_owner: &UserId,
-    ) -> bool {
-        let Some(room) = self.room_of(workspace_id) else {
-            return false;
-        };
+        proposal: collab_types::OwnershipTransferProposalV1,
+        now_unix: u64,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
         if !room.is_nil() && !self.governs_room(room) {
-            return false;
+            return Err(OwnershipTransferStateError::NotGoverned);
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
-            return false;
-        };
-        if !ws.transfer_owner_as(current_owner, new_owner) {
-            return false;
+        proposal.verify(now_unix)?;
+        if proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
+        let expected_owner = public_key_user_id(proposal.current_owner);
+        let recipient = public_key_user_id(proposal.recipient);
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+        if proposal.workspace != ws.room.to_string() || ws.owner.as_ref() != Some(&expected_owner) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        if ws.role_of(&recipient) != Some(CapRole::Owner) {
+            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        }
+        if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
+            || ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
+        {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if ws
+            .ownership_transfer_audit
+            .iter()
+            .any(|audit| audit.proposal.proposal_id == proposal.proposal_id)
+            || ws
+                .ownership_transfer_cancellations
+                .iter()
+                .any(|cancelled| cancelled.proposal_digest == proposal.digest().unwrap_or([0; 32]))
+        {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        if ws
+            .pending_ownership_transfer
+            .as_ref()
+            .is_some_and(|pending| pending.expires_unix > now_unix)
+        {
+            return Err(OwnershipTransferStateError::ProposalAlreadyPending);
+        }
+        let previous = ws.pending_ownership_transfer.replace(proposal);
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let ws = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+            ws.pending_ownership_transfer = previous;
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Cancel the currently pending proposal using the current owner's signed
+    /// cancellation record.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an absent/stale proposal, a different signer or proposal
+    /// digest, or a workspace no longer governed by this host.
+    pub fn cancel_workspace_ownership_transfer(
+        &mut self,
+        workspace_id: WorkspaceId,
+        cancellation: &collab_types::OwnershipTransferCancellationV1,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            return Err(OwnershipTransferStateError::NotGoverned);
+        }
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let proposal = ws
+            .pending_ownership_transfer
+            .as_ref()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if ws.owner.as_deref() != Some(public_key_user_id(proposal.current_owner).as_str()) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        cancellation.verify(proposal)?;
+        let previous = proposal.clone();
+        ws.ownership_transfer_cancellations
+            .push(cancellation.clone());
+        ws.pending_ownership_transfer = None;
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let ws = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == workspace_id)
+                .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+            ws.ownership_transfer_cancellations.pop();
+            ws.pending_ownership_transfer = Some(previous);
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Verify both parties and atomically replace the structural owner while
+    /// appending both parties' signed audit evidence in the same persisted snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Refuses replay, expiry, recipient substitution, role changes, stale
+    /// ownership, invalid signatures, foreign governance, or persistence
+    /// failure. On persistence failure the in-memory owner and audit roll back.
+    pub fn accept_workspace_ownership_transfer(
+        &mut self,
+        workspace_id: WorkspaceId,
+        audit: collab_types::OwnershipTransferAuditV1,
+        now_unix: u64,
+    ) -> Result<(), OwnershipTransferStateError> {
+        let room = self
+            .room_of(workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            return Err(OwnershipTransferStateError::NotGoverned);
+        }
+        audit.verify()?;
+        if audit.committed_unix > now_unix {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == workspace_id)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let previous = self
+            .workspaces
+            .get(index)
+            .cloned()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let ws = self
+            .workspaces
+            .get_mut(index)
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        let pending = ws
+            .pending_ownership_transfer
+            .as_ref()
+            .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+        if pending != &audit.proposal || audit.proposal.workspace != ws.room.to_string() {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        audit.proposal.verify(now_unix)?;
+        if audit.proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        let current_owner = public_key_user_id(audit.proposal.current_owner);
+        let recipient = public_key_user_id(audit.proposal.recipient);
+        if ws.owner.as_ref() != Some(&current_owner) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        if ws.role_of(&recipient) != Some(CapRole::Owner) {
+            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        }
+        if ws
+            .ownership_transfer_audit
+            .iter()
+            .any(|prior| prior.proposal.proposal_id == audit.proposal.proposal_id)
+        {
+            return Err(OwnershipTransferStateError::ProposalUnavailable);
+        }
+        if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
+            return Err(OwnershipTransferStateError::HistoryFull);
+        }
+        if !ws.transfer_owner_as(&current_owner, &recipient) {
+            return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
+        }
+        ws.pending_ownership_transfer = None;
+        ws.ownership_transfer_audit.push(audit);
         let owner_capability_id = format!("owner-{}", workspace_id.raw());
-        let Some(owner_capability) = ws
+        let owner_capability = ws
             .capabilities
             .iter()
-            .find(|cap| cap.id == owner_capability_id)
+            .find(|capability| capability.id == owner_capability_id)
             .cloned()
-        else {
-            return false;
-        };
-        self.doc_set_owner(workspace_id, new_owner);
+            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+        self.doc_set_owner(workspace_id, &recipient);
         self.doc_insert_capability(workspace_id, &owner_capability);
-        self.flush_to_disk();
-        true
+        if let Some(path) = &self.persist_path
+            && let Err(error) = crate::shell::persist::save_tree_to(self, path)
+        {
+            let workspace = self
+                .workspaces
+                .get_mut(index)
+                .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
+            *workspace = previous;
+            self.seed_doc_from_cache();
+            return Err(OwnershipTransferStateError::Persistence(error.to_string()));
+        }
+        self.export_fs_capabilities();
+        Ok(())
     }
 
     /// Mirror a capability grant into the automerge doc so peer-sync
@@ -6100,6 +6324,9 @@ impl WorkspaceTree {
             }],
             collaborators: Vec::new(),
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -6193,6 +6420,9 @@ impl WorkspaceTree {
                     .with_role("editor"),
             ],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -6256,6 +6486,9 @@ impl WorkspaceTree {
             }],
             collaborators: vec![],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -6965,6 +7198,10 @@ impl WorkspaceTree {
             None
         }
     }
+}
+
+fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
+    hex::encode(key.as_bytes())
 }
 
 /// What colour each person on `roster` is drawn in. One function so
@@ -9272,6 +9509,9 @@ mod active_group_tests {
             strips: vec![strip],
             collaborators: vec![],
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -9616,6 +9856,9 @@ mod active_workspace_peer_count_tests {
             }],
             collaborators: collabs,
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -10368,31 +10611,102 @@ mod peer_window_merge_tests {
     }
 
     #[test]
-    fn ownership_transfer_requires_exact_owner_and_preexisting_admin() {
-        let mut tree = WorkspaceTree::default();
+    fn ownership_transfer_requires_both_signatures_survives_restart_and_rejects_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("state.json");
+        let mut tree = WorkspaceTree {
+            persist_path: Some(state_path.clone()),
+            ..WorkspaceTree::default()
+        };
         let workspace_id = tree.append_empty_workspace("Security review");
-        let alice = "alice".to_string();
-        let bob = "bob".to_string();
-        let delegated_admin = "mallory".to_string();
+        let (alice_key, alice_public) = collab_types::generate_keypair();
+        let (bob_key, bob_public) = collab_types::generate_keypair();
+        let (mallory_key, _) = collab_types::generate_keypair();
+        let alice = public_key_user_id(alice_public);
+        let bob = public_key_user_id(bob_public);
         tree.adopt_ownerless_workspaces(&alice);
-
-        assert!(!tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
-
-        for person in [&bob, &delegated_admin] {
-            tree.grant_in_workspace(
-                workspace_id,
-                &alice,
-                CapOverride::membership(
-                    Subject::Principal(Principal::Person(person.clone())),
-                    tree.room_of(workspace_id).unwrap().to_string(),
-                    Verb::Admin,
-                ),
-            )
-            .expect("owner may promote a collaborator");
-        }
-
-        assert!(!tree.transfer_workspace_ownership(workspace_id, &delegated_admin, &bob));
-        assert!(tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+        let room = tree.room_of(workspace_id).unwrap();
+        tree.grant_in_workspace(
+            workspace_id,
+            &alice,
+            CapOverride::membership(
+                Subject::Principal(Principal::Person(bob.clone())),
+                room.to_string(),
+                Verb::Admin,
+            ),
+        )
+        .expect("owner may promote a collaborator");
+        let overlong = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [6; 32],
+            alice_public,
+            bob_public,
+            604_901,
+            &alice_key,
+        )
+        .unwrap();
+        assert!(matches!(
+            tree.propose_workspace_ownership_transfer(workspace_id, overlong, 100),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
+        let proposal = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [7; 32],
+            alice_public,
+            bob_public,
+            200,
+            &alice_key,
+        )
+        .unwrap();
+        tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
+            .unwrap();
+        let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
+        tree.persist_path = Some(state_path);
+        let wrong_acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &mallory_key).unwrap();
+        assert!(wrong_acceptance.verify(&proposal, 101).is_err());
+        let acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_key).unwrap();
+        let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102).unwrap();
+        let recipient_admin = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .unwrap()
+            .capabilities
+            .iter()
+            .find(|capability| {
+                capability.id != format!("owner-{}", workspace_id.raw())
+                    && matches!(
+                        &capability.subject,
+                        Subject::Principal(Principal::Person(person)) if person == &bob
+                    )
+                    && capability.verb.implies(Verb::Admin)
+            })
+            .unwrap()
+            .id
+            .clone();
+        assert!(tree.revoke_in_workspace(workspace_id, &alice, &recipient_admin));
+        assert!(matches!(
+            tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102),
+            Err(OwnershipTransferStateError::RecipientNotAdministrator)
+        ));
+        tree.grant_in_workspace(
+            workspace_id,
+            &alice,
+            CapOverride::membership(
+                Subject::person(bob.clone()),
+                tree.room_of(workspace_id).unwrap().to_string(),
+                Verb::Admin,
+            ),
+        )
+        .unwrap();
+        tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102)
+            .unwrap();
+        assert!(matches!(
+            tree.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
         let ws = tree
             .workspaces
             .iter()
@@ -10401,6 +10715,61 @@ mod peer_window_merge_tests {
         assert_eq!(ws.owner.as_ref(), Some(&bob));
         assert_eq!(ws.role_of(&alice), None);
         assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
+        assert_eq!(ws.ownership_transfer_audit.len(), 1);
+        assert!(ws.pending_ownership_transfer.is_none());
+    }
+
+    #[test]
+    fn cancelled_transfer_is_durable_and_cannot_be_replayed() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("state.json");
+        let mut tree = WorkspaceTree {
+            persist_path: Some(state_path.clone()),
+            ..WorkspaceTree::default()
+        };
+        let workspace_id = tree.append_empty_workspace("Security review");
+        let (owner_key, owner_public) = collab_types::generate_keypair();
+        let (recipient_key, recipient_public) = collab_types::generate_keypair();
+        let owner = public_key_user_id(owner_public);
+        let recipient = public_key_user_id(recipient_public);
+        tree.adopt_ownerless_workspaces(&owner);
+        let room = tree.room_of(workspace_id).unwrap();
+        tree.grant_in_workspace(
+            workspace_id,
+            &owner,
+            CapOverride::membership(Subject::person(recipient), room.to_string(), Verb::Admin),
+        )
+        .unwrap();
+        let proposal = collab_types::OwnershipTransferProposalV1::new(
+            room.to_string(),
+            [11; 32],
+            owner_public,
+            recipient_public,
+            200,
+            &owner_key,
+        )
+        .unwrap();
+        tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
+            .unwrap();
+        let cancellation =
+            collab_types::OwnershipTransferCancellationV1::new(&proposal, 101, &owner_key).unwrap();
+        let acceptance =
+            collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &recipient_key)
+                .unwrap();
+        let audit =
+            collab_types::OwnershipTransferAuditV1::new(proposal.clone(), acceptance, 101).unwrap();
+        tree.cancel_workspace_ownership_transfer(workspace_id, &cancellation)
+            .unwrap();
+        let mut restarted = crate::shell::persist::load_tree_from(&state_path).unwrap();
+        restarted.persist_path = Some(state_path);
+        assert!(matches!(
+            restarted.propose_workspace_ownership_transfer(workspace_id, proposal, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
+        assert!(matches!(
+            restarted.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+            Err(OwnershipTransferStateError::ProposalUnavailable)
+        ));
     }
 
     #[test]
