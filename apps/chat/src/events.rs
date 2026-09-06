@@ -33,6 +33,13 @@ fn new_channel_id() -> String {
     format!("c_{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Mint a category id before dispatch.  The id belongs in the collaborative
+/// payload; generating it inside a document helper makes replay depend on a
+/// different peer's RNG.
+fn new_category_id() -> String {
+    format!("cat_{}", uuid::Uuid::new_v4().simple())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -572,7 +579,13 @@ impl ChatApp {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) if self.can_participate() => {
-                ChatDoc::toggle_category_collapsed(doc, &id);
+                let collapsed = self
+                    .category(&id)
+                    .is_some_and(|category| category.collapsed);
+                self.perform_action(
+                    doc,
+                    &actions::set_category_collapsed_action(&id, !collapsed),
+                );
             }
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
@@ -656,10 +669,6 @@ impl ChatApp {
             // handled at press time; permission-gated fallthroughs are no-ops.
             _ => {}
         }
-        // Whatever the interaction resolved to, the channel now in view is
-        // read: advance its watermark so its unread badge stays cleared once
-        // the user navigates elsewhere.
-        self.mark_active_read(doc);
         self.reload(doc);
     }
 
@@ -689,6 +698,10 @@ impl ChatApp {
             if self.left_mode == crate::responsive::FlapMode::Overlay {
                 self.left_flap.close();
             }
+            // Navigation is the user-visible read boundary. Other controls in
+            // an already-open room must not append a second MarkRead action
+            // after their own canonical action or obscure it in history.
+            self.mark_active_read(doc);
         }
     }
 
@@ -708,7 +721,11 @@ impl ChatApp {
     }
 
     fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
-        let id = ChatDoc::create_category(doc, ws, "New Category");
+        let id = new_category_id();
+        self.perform_action(
+            doc,
+            &actions::create_category_action(ws, &id, "New Category"),
+        );
         self.begin_rename(MenuTarget::Category(id));
     }
 
@@ -752,17 +769,22 @@ impl ChatApp {
             self.call.expanded = !self.call.expanded;
             self.request_relayout();
         } else {
-            let channel = self
+            let existing = self
                 .ws_channels()
                 .into_iter()
                 .find(|c| c.kind == ChannelKind::Voice)
-                .map_or_else(
-                    || {
-                        let ws = self.active_ws.clone();
-                        ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
-                    },
-                    |c| c.id.clone(),
+                .map(|channel| channel.id.clone());
+            let channel = if let Some(existing) = existing {
+                existing
+            } else {
+                let ws = self.active_ws.clone();
+                let id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    &actions::create_channel_action(&ws, "", &id, "Voice", ChannelKind::Voice),
                 );
+                id
+            };
             self.join_voice(&channel, doc);
         }
     }
@@ -984,7 +1006,11 @@ impl ChatApp {
             },
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
-                    let id = ChatDoc::create_category(doc, &ws, "New Category");
+                    let id = new_category_id();
+                    self.perform_action(
+                        doc,
+                        &actions::create_category_action(&ws, &id, "New Category"),
+                    );
                     self.begin_rename(MenuTarget::Category(id));
                 }
             }
@@ -1008,10 +1034,12 @@ impl ChatApp {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
             }
-            // Reordering is a sibling `order` swap — structural view ordering,
-            // left as a direct write (not part of the exported action set).
-            MenuAction::MoveUp => ChatDoc::reorder_channel(doc, id, true),
-            MenuAction::MoveDown => ChatDoc::reorder_channel(doc, id, false),
+            MenuAction::MoveUp => {
+                self.perform_action(doc, &actions::reorder_channel_action(id, true));
+            }
+            MenuAction::MoveDown => {
+                self.perform_action(doc, &actions::reorder_channel_action(id, false));
+            }
             _ => {}
         }
         self.reload(doc);
@@ -1021,8 +1049,11 @@ impl ChatApp {
         let ws = self.active_ws.clone();
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
-            MenuAction::Delete => ChatDoc::delete_category(doc, id),
-            MenuAction::ToggleCollapse => ChatDoc::toggle_category_collapsed(doc, id),
+            MenuAction::Delete => self.perform_action(doc, &actions::delete_category_action(id)),
+            MenuAction::ToggleCollapse => {
+                let collapsed = self.category(id).is_some_and(|category| category.collapsed);
+                self.perform_action(doc, &actions::set_category_collapsed_action(id, !collapsed));
+            }
             MenuAction::NewChannelHere => {
                 let new_id = new_channel_id();
                 self.perform_action(
@@ -1080,9 +1111,9 @@ impl ChatApp {
                     MenuTarget::Channel(id) => {
                         self.perform_action(doc, &actions::rename_channel_action(&id, &text));
                     }
-                    // Categories are structural view grouping (not part of the
-                    // exported channel/message action set) — a direct write.
-                    MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, &text),
+                    MenuTarget::Category(id) => {
+                        self.perform_action(doc, &actions::rename_category_action(&id, &text));
+                    }
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
             }
