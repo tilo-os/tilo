@@ -24,7 +24,7 @@ strip changes context; switching a window or tab changes focus within it.
 |---|---|---|
 | Search current app | Ctrl+K | Search |
 | Search all qOS | Super+K, Super+Space; Alt+Space when nested | Search |
-| Open/close Overview | Ctrl+Tab or Super+Tab | Overview button |
+| Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
 | Previous/next workspace | Ctrl+Up/Down or Super+Up/Down | Workspace arrows/wheel |
@@ -45,6 +45,7 @@ word-wise movement. Escape is captured only while shell chrome is open.
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
 | Close focused tab | Super+W | Tab close |
 | Duplicate focused tab | Super+D | Tab action |
+| Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
 | Open wireless display picker | Super+P | Quick Settings / display route |
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
