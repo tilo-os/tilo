@@ -4,47 +4,30 @@
 //! host resolves that stable address against the fresh resource tree before it
 //! navigates, so stale rows never fall through to private activation code.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 use crate::model::{AnnoKind, Annotation, Book};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
-/// A query never probes more than this many full entry strings.  The index is
-/// complete, but a pathological query such as "the" must not turn Ctrl+K into
-/// an unbounded main-thread scan on a large shared library.
-const MAX_QUERY_CANDIDATES: usize = 2_048;
-
 pub struct BookSearchProvider {
-    entries: Vec<SearchEntry>,
-    /// One-, two-, and three-character postings.  Indexing all three sizes
-    /// means even a one-letter query is narrowed by the index rather than
-    /// falling back to a linear scan. `GramKey` packs Unicode scalar values
-    /// into a `u64`, avoiding one heap allocation per character window. Each
-    /// entry contributes at most three postings per input character, so the
-    /// index remains linear in library text size.
-    gram_index: HashMap<GramKey, Vec<usize>>,
+    /// qOS' shared, paged catalogue. It retains every resource row but never
+    /// forces Ctrl+K to inspect/materialise the entire library in one turn.
+    catalogue: SearchCatalog,
 }
 
 struct SearchEntry {
     haystack: String,
     result: SearchResult,
 }
-
-/// A compact one-, two-, or three-scalar search gram. Three Unicode scalar
-/// values need 63 bits (each scalar fits in 21), leaving no need for a hash or
-/// string allocation. Missing trailing scalars use the first value above the
-/// Unicode range, so one-, two-, and three-scalar keys cannot alias even when
-/// real text contains NUL. That matters because candidate verification is
-/// deliberately bounded: a key collision must not let unrelated early entries
-/// hide a valid late match.
-type GramKey = u64;
-const GRAM_END: u64 = 0x11_0000;
 
 impl BookSearchProvider {
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
@@ -100,26 +83,17 @@ impl BookSearchProvider {
         }
         Self::append_annotation_entries(&mut entries, &live_annotations, books, &highlight_groups);
 
-        let gram_index = Self::build_gram_index(&entries);
-        Self {
-            entries,
-            gram_index,
+        let catalogue = SearchCatalog::new("Books");
+        for entry in entries {
+            let Some(address) = entry.result.action_address() else {
+                continue;
+            };
+            // Every row above is constructed with `for_action`, and its
+            // resource id is therefore both stable and canonical. The shared
+            // catalogue enforces that contract defensively at this boundary.
+            let _ = catalogue.upsert(address.resource, entry.haystack, entry.result);
         }
-    }
-
-    /// Index each distinct 1/2/3-gram once per row so repetition does not
-    /// bloat postings or make ranking depend on repeated words.
-    fn build_gram_index(entries: &[SearchEntry]) -> HashMap<GramKey, Vec<usize>> {
-        let mut gram_index: HashMap<GramKey, Vec<usize>> = HashMap::new();
-        for (index, entry) in entries.iter().enumerate() {
-            let mut unique = HashSet::new();
-            for_each_gram_key(&entry.haystack, |gram| {
-                if unique.insert(gram) {
-                    gram_index.entry(gram).or_default().push(index);
-                }
-            });
-        }
-        gram_index
+        Self { catalogue }
     }
 
     fn append_annotation_entries(
@@ -220,116 +194,18 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let q = query.trim().to_lowercase();
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        if limit == 0 {
-            return Vec::new();
-        }
-        if q.is_empty() {
-            return self
-                .entries
-                .iter()
-                .take(limit)
-                .map(|entry| entry.result.clone())
-                .collect();
-        }
-
-        self.candidate_indexes(&q)
-            .into_iter()
-            // The final substring check makes every returned hit exact while
-            // intersecting *all* query grams prevents an exact title hit from
-            // suppressing other partial body/annotation matches.
-            .filter_map(|index| self.entries.get(index))
-            .filter(|entry| entry.haystack.contains(&q))
-            .take(limit)
-            .map(|entry| entry.result.clone())
-            .collect()
+        self.catalogue.search_limited(query, limit)
     }
-}
-
-impl BookSearchProvider {
-    /// Return a bounded, ordered candidate set by intersecting every query
-    /// gram. Posting lists are entry-order sorted as they are built, so output
-    /// is stable and exact/title results are never treated as a terminal tier.
-    fn candidate_indexes(&self, query: &str) -> Vec<usize> {
-        let chars = query.chars().count();
-        let gram_len = chars.min(3);
-        let Some(mut postings) = gram_keys(query, gram_len)
-            .into_iter()
-            .map(|gram| self.gram_index.get(&gram))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Vec::new();
-        };
-        postings.sort_by_key(|list| list.len());
-        let Some((first, rest)) = postings.split_first() else {
-            return Vec::new();
-        };
-        first
-            .iter()
-            .copied()
-            .filter(|candidate| {
-                rest.iter()
-                    .all(|list| list.binary_search(candidate).is_ok())
-            })
-            .take(MAX_QUERY_CANDIDATES)
-            .collect()
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalogue
+            .query_page(query, cursor, work_budget, result_limit)
     }
-
-    #[cfg(test)]
-    fn index_stats(&self) -> (usize, usize) {
-        (
-            self.gram_index.len(),
-            self.gram_index.values().map(Vec::len).sum(),
-        )
-    }
-}
-
-/// Run `visit` once for every 1/2/3-scalar gram in `text`, without building a
-/// temporary character array or allocating a string for every overlapping
-/// window. This preserves Unicode scalar boundaries — unlike byte trigrams,
-/// it cannot split a multi-byte character.
-fn for_each_gram_key(text: &str, mut visit: impl FnMut(GramKey)) {
-    let mut prev2 = '\0';
-    let mut prev1 = '\0';
-    for (seen, ch) in text.chars().enumerate() {
-        visit(pack_gram(ch, None, None));
-        if seen >= 1 {
-            visit(pack_gram(prev1, Some(ch), None));
-        }
-        if seen >= 2 {
-            visit(pack_gram(prev2, Some(prev1), Some(ch)));
-        }
-        prev2 = prev1;
-        prev1 = ch;
-    }
-}
-
-/// Pack up to three Unicode scalar values in their original order. Unicode's
-/// largest scalar (`0x10_FFFF`) fits in 21 bits.
-fn pack_gram(a: char, b: Option<char>, c: Option<char>) -> GramKey {
-    u64::from(u32::from(a))
-        | (b.map_or(GRAM_END, |value| u64::from(u32::from(value))) << 21)
-        | (c.map_or(GRAM_END, |value| u64::from(u32::from(value))) << 42)
-}
-
-/// Compact query grams; this allocates only one small vector for sorting the
-/// relevant posting lists, never one allocation per window.
-fn gram_keys(text: &str, width: usize) -> Vec<GramKey> {
-    let mut keys = Vec::with_capacity(text.chars().count().saturating_sub(width - 1));
-    let mut prev2 = '\0';
-    let mut prev1 = '\0';
-    for (seen, ch) in text.chars().enumerate() {
-        match width {
-            1 => keys.push(pack_gram(ch, None, None)),
-            2 if seen >= 1 => keys.push(pack_gram(prev1, Some(ch), None)),
-            3 if seen >= 2 => keys.push(pack_gram(prev2, Some(prev1), Some(ch))),
-            _ => {}
-        }
-        prev2 = prev1;
-        prev1 = ch;
-    }
-    keys
 }
 
 #[cfg(test)]
@@ -518,8 +394,8 @@ mod tests {
     }
 
     #[test]
-    fn candidate_probe_is_bounded_even_for_a_common_short_query() {
-        let books = (0..(MAX_QUERY_CANDIDATES + 100))
+    fn paged_search_is_bounded_and_reaches_every_broad_match() {
+        let books = (0..257)
             .map(|i| Book {
                 id: format!("book:{i}"),
                 title: "A common title".into(),
@@ -527,12 +403,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let provider = BookSearchProvider::new(&books, &[]);
-
-        assert_eq!(provider.candidate_indexes("a").len(), MAX_QUERY_CANDIDATES);
+        let mut cursor = None;
+        let mut seen = 0usize;
+        loop {
+            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.inspected <= 17, "work must stay bounded per page");
+            assert!(page.results.len() <= 5, "materialisation is page sized");
+            seen += page.results.len();
+            let Some(next) = page.next else {
+                break;
+            };
+            cursor = Some(next);
+        }
+        assert_eq!(seen, books.len(), "continuations cannot lose broad hits");
     }
 
     #[test]
-    fn compact_unicode_index_preserves_unicode_substrings_and_linear_postings() {
+    fn paged_index_preserves_unicode_substrings() {
         let books = (0..1_000)
             .map(|i| Book {
                 id: format!("book:{i}"),
@@ -541,24 +428,29 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let provider = BookSearchProvider::new(&books, &[]);
-        let indexed_chars = provider
-            .entries
-            .iter()
-            .map(|entry| entry.haystack.chars().count())
-            .sum::<usize>();
-        let (unique_keys, postings) = provider.index_stats();
-
-        assert!(provider.search("den Fl").len() > 1);
-        assert!(unique_keys <= postings);
-        assert!(postings <= indexed_chars * 3);
+        let page = provider.search_page("DEN FL", None, 8, 8);
+        assert!(!page.results.is_empty());
+        assert!(page.inspected <= 8);
     }
 
     #[test]
-    fn gram_widths_do_not_alias_when_text_contains_nul() {
-        assert_ne!(pack_gram('a', None, None), pack_gram('a', Some('\0'), None));
-        assert_ne!(
-            pack_gram('a', Some('b'), None),
-            pack_gram('a', Some('b'), Some('\0'))
+    fn a_unique_late_hit_remains_findable_beyond_one_hundred_thousand_books() {
+        let mut books = (0..100_001)
+            .map(|i| Book {
+                id: format!("book:{i:06}"),
+                title: format!("Library volume {i}"),
+                ..Book::default()
+            })
+            .collect::<Vec<_>>();
+        books.last_mut().expect("nonempty library").title = "Late catalogue needle".into();
+
+        let provider = BookSearchProvider::new(&books, &[]);
+        let page = provider.search_page("catalogue needle", None, 4, 4);
+        assert_eq!(
+            page.inspected, 1,
+            "the rare index posting avoids a full scan"
         );
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Late catalogue needle");
     }
 }
