@@ -83,9 +83,16 @@ pub const CHAT_OPERATION_TYPE: &str = "chat.operation";
 /// document or its undo/history stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatOperation {
+    OpenWorkspace {
+        workspace: String,
+    },
     OpenChannel {
         workspace: String,
         channel: String,
+    },
+    OpenCategory {
+        workspace: String,
+        category: String,
     },
     RevealMessage {
         workspace: String,
@@ -177,7 +184,10 @@ pub enum ChatAction {
         ts: i64,
     },
     /// Delete a message row from `channel`.
-    DeleteMessage { channel: String, id: String },
+    DeleteMessage {
+        channel: String,
+        id: String,
+    },
     /// Add `user`'s `emoji` reaction to a message (idempotent).
     AddReaction {
         channel: String,
@@ -208,13 +218,47 @@ pub enum ChatAction {
         name: String,
         kind: ChannelKind,
     },
+    /// Create a durable category.  Its id is minted at authoring time so the
+    /// same replay produces the same grouping row on every peer.
+    CreateCategory {
+        workspace: String,
+        id: String,
+        name: String,
+    },
+    RenameCategory {
+        id: String,
+        name: String,
+    },
+    /// Delete the category while retaining its channels in the uncategorised
+    /// group, matching the recoverable document policy.
+    DeleteCategory {
+        id: String,
+    },
+    SetCategoryCollapsed {
+        id: String,
+        collapsed: bool,
+    },
+    /// Move a channel one slot in its current category.  The document derives
+    /// the adjacent sibling from its replay base, just as the live UI does.
+    ReorderChannel {
+        id: String,
+        up: bool,
+    },
     /// Rename a channel.
-    RenameChannel { id: String, name: String },
+    RenameChannel {
+        id: String,
+        name: String,
+    },
     /// Delete a channel and its messages, voice membership, and draft.
-    DeleteChannel { id: String },
+    DeleteChannel {
+        id: String,
+    },
     /// Set (or clear) a channel's archived flag. Archived channels drop out of
     /// the sidebar but stay in the document (reachable via Ctrl+K to unarchive).
-    ArchiveChannel { id: String, archived: bool },
+    ArchiveChannel {
+        id: String,
+        archived: bool,
+    },
     /// Advance `user`'s read watermark for `channel` to `count`, minted at
     /// authoring time (the channel's top-level message count) and carried here so
     /// replay never re-reads live state.
@@ -256,10 +300,16 @@ pub enum ChatAction {
     // action, and it was the one part of chat that was not.
     /// Enter the call on `channel` as `user`, as far as the document is
     /// concerned: the membership row appears and everyone sees it.
-    JoinCall { channel: String, user: String },
+    JoinCall {
+        channel: String,
+        user: String,
+    },
     /// Leave it. The membership row goes, along with everything hanging off
     /// it — which is why this is one action and not a clear of each field.
-    LeaveCall { channel: String, user: String },
+    LeaveCall {
+        channel: String,
+        user: String,
+    },
     /// This peer's mic and listening state, as the others read it.
     ///
     /// One action rather than four because it is one fact with four fields:
@@ -298,6 +348,10 @@ pub enum ChatAction {
 }
 
 /// Durable, browseable history metadata for a Chat mutation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive action-to-history mapping keeps every ChatAction variant compiler-checked"
+)]
 pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
@@ -334,6 +388,29 @@ pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
             ("Update agent work", channel, msg, "chat.message")
         }
         ChatAction::CreateChannel { id, .. } => ("Create channel", id, id, "chat.channel"),
+        ChatAction::CreateCategory { id, .. } => ("Create category", id, id, "chat.category"),
+        ChatAction::RenameCategory { id, .. } => ("Rename category", id, id, "chat.category"),
+        ChatAction::DeleteCategory { id } => ("Delete category", id, id, "chat.category"),
+        ChatAction::SetCategoryCollapsed { id, collapsed } => (
+            if *collapsed {
+                "Collapse category"
+            } else {
+                "Expand category"
+            },
+            id,
+            id,
+            "chat.category",
+        ),
+        ChatAction::ReorderChannel { id, up } => (
+            if *up {
+                "Move channel up"
+            } else {
+                "Move channel down"
+            },
+            id,
+            id,
+            "chat.channel",
+        ),
         ChatAction::RenameChannel { id, .. } => ("Rename channel", id, id, "chat.channel"),
         ChatAction::DeleteChannel { id } => ("Delete channel", id, id, "chat.channel"),
         ChatAction::ArchiveChannel { id, archived } => (
@@ -485,6 +562,25 @@ impl ChatAction {
                 kind,
             } => {
                 ChatDoc::insert_channel(doc, id, workspace, category, name, *kind);
+            }
+            ChatAction::CreateCategory {
+                workspace,
+                id,
+                name,
+            } => {
+                ChatDoc::insert_category(doc, id, workspace, name);
+            }
+            ChatAction::RenameCategory { id, name } => {
+                ChatDoc::rename_category(doc, id, name);
+            }
+            ChatAction::DeleteCategory { id } => {
+                ChatDoc::delete_category(doc, id);
+            }
+            ChatAction::SetCategoryCollapsed { id, collapsed } => {
+                ChatDoc::set_category_collapsed(doc, id, *collapsed);
+            }
+            ChatAction::ReorderChannel { id, up } => {
+                ChatDoc::reorder_channel(doc, id, *up);
             }
             ChatAction::RenameChannel { id, name } => {
                 ChatDoc::rename_channel(doc, id, name);
@@ -673,6 +769,39 @@ pub fn create_channel_action(
     }
 }
 
+pub fn create_category_action(workspace: &str, id: &str, name: &str) -> ChatAction {
+    ChatAction::CreateCategory {
+        workspace: workspace.to_string(),
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+pub fn rename_category_action(id: &str, name: &str) -> ChatAction {
+    ChatAction::RenameCategory {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+pub fn delete_category_action(id: &str) -> ChatAction {
+    ChatAction::DeleteCategory { id: id.to_string() }
+}
+
+pub fn set_category_collapsed_action(id: &str, collapsed: bool) -> ChatAction {
+    ChatAction::SetCategoryCollapsed {
+        id: id.to_string(),
+        collapsed,
+    }
+}
+
+pub fn reorder_channel_action(id: &str, up: bool) -> ChatAction {
+    ChatAction::ReorderChannel {
+        id: id.to_string(),
+        up,
+    }
+}
+
 pub fn rename_channel_action(id: &str, name: &str) -> ChatAction {
     ChatAction::RenameChannel {
         id: id.to_string(),
@@ -776,6 +905,16 @@ pub struct ChannelResource {
     pub archived: bool,
 }
 
+/// A durable channel grouping published alongside channels.  Categories are
+/// not merely paint-time headings: rename, delete and collapse are shared
+/// document facts and therefore have ordinary resource actions and history.
+#[derive(Debug, Clone)]
+pub struct CategoryResource {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
+}
+
 /// A message as the resource tree needs to see it: its id, a display label
 /// (author + snippet) and whether it is pinned (so pin toggles to unpin).
 #[derive(Debug, Clone)]
@@ -817,7 +956,9 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
         .expect("encode chat action")
         .reversible();
     match action {
-        ChatAction::DeleteMessage { .. } | ChatAction::DeleteChannel { .. } => spec.destructive(),
+        ChatAction::DeleteMessage { .. }
+        | ChatAction::DeleteChannel { .. }
+        | ChatAction::DeleteCategory { .. } => spec.destructive(),
         _ => spec,
     }
 }
@@ -877,7 +1018,15 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 &ws.name
             },
         )
-        .with_action(new_channel_action_spec(&ws.id));
+        .with_action(view_operation(
+            "open",
+            "Open workspace",
+            &ChatOperation::OpenWorkspace {
+                workspace: ws.id.clone(),
+            },
+        ))
+        .with_action(new_channel_action_spec(&ws.id))
+        .with_action(new_category_action_spec(&ws.id));
 
         let mut channels = all_channels
             .iter()
@@ -894,6 +1043,19 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             };
             workspace =
                 workspace.with_child(build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]));
+        }
+        let mut categories = ChatDoc::list_categories(doc)
+            .into_iter()
+            .filter(|category| category.workspace == ws.id)
+            .collect::<Vec<_>>();
+        categories.sort_by_key(|category| category.order);
+        for category in categories {
+            let category = CategoryResource {
+                id: category.id,
+                name: category.name,
+                collapsed: category.collapsed,
+            };
+            workspace = workspace.with_child(build_category_resource(&ws.id, &category));
         }
         annotate_contracts(&mut workspace);
         forest.push(workspace);
@@ -939,6 +1101,74 @@ fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
             }
         },
     )
+}
+
+fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
+    ActionSpec::prompted(
+        "new-category",
+        "New category",
+        "Name",
+        "category name…",
+        ExecutionLocus::ClientLocal,
+        {
+            let workspace = workspace_id.to_string();
+            move |name: &str| {
+                let name = name.trim();
+                let name = if name.is_empty() {
+                    "New Category"
+                } else {
+                    name
+                };
+                let id = format!("cat_{}", uuid::Uuid::new_v4().simple());
+                encode(&create_category_action(&workspace, &id, name))
+            }
+        },
+    )
+}
+
+fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> Resource {
+    let mut resource = Resource::new(
+        format!("chat.category:{}", category.id),
+        "chat.category",
+        category.name.clone(),
+    )
+    .with_action(view_operation(
+        "open",
+        "Open category",
+        &ChatOperation::OpenCategory {
+            workspace: workspace_id.to_string(),
+            category: category.id.clone(),
+        },
+    ))
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename category",
+        "Name",
+        "category name…",
+        ExecutionLocus::ClientLocal,
+        {
+            let id = category.id.clone();
+            move |name: &str| encode(&rename_category_action(&id, name.trim()))
+        },
+    ));
+    resource = resource.with_action(immediate_spec(
+        if category.collapsed {
+            "expand"
+        } else {
+            "collapse"
+        },
+        if category.collapsed {
+            "Expand category"
+        } else {
+            "Collapse category"
+        },
+        &set_category_collapsed_action(&category.id, !category.collapsed),
+    ));
+    resource.with_action(immediate_spec(
+        "delete",
+        "Delete category",
+        &delete_category_action(&category.id),
+    ))
 }
 
 /// A channel resource: its actions (post/rename/archive/mark-read/delete),
@@ -1573,6 +1803,45 @@ mod tests {
         );
         dispatch(&mut doc, &delete_channel_action("c_new"));
         assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
+    }
+
+    #[test]
+    fn category_mutations_replay_through_resources_and_history() {
+        let mut doc = seeded();
+        dispatch(
+            &mut doc,
+            &create_category_action("ws_acme", "cat_action", "Design"),
+        );
+        dispatch(
+            &mut doc,
+            &rename_category_action("cat_action", "Design reviews"),
+        );
+        dispatch(&mut doc, &set_category_collapsed_action("cat_action", true));
+        assert!(
+            ChatDoc::list_categories(&doc)
+                .iter()
+                .any(|category| category.id == "cat_action"
+                    && category.name == "Design reviews"
+                    && category.collapsed)
+        );
+
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+        let category = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "chat.category:cat_action")
+            .unwrap();
+        assert!(category.actions.iter().any(|action| action.id == "open"));
+        assert!(category.actions.iter().any(|action| action.id == "rename"));
+        assert!(category.actions.iter().any(|action| action.id == "expand"));
+        assert!(category.actions.iter().any(|action| action.id == "delete"));
+        assert_eq!(
+            history_context(&delete_category_action("cat_action"))
+                .resource
+                .unwrap()
+                .id,
+            "chat.category:cat_action"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
