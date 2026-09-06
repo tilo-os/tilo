@@ -45,7 +45,9 @@ use qos_actions::{
 };
 
 use crate::doc::ContactsDoc;
-use crate::model::{Address, Birthday, Contact, ContactId, GroupEntry, Labeled};
+use crate::model::{
+    Address, Birthday, Contact, ContactId, GroupEntry, Labeled, group_names_equal, normalize_text,
+};
 
 /// Registry `type_id` for every contacts action.
 pub const CONTACTS_ACTION_TYPE: &str = "contacts.action";
@@ -57,6 +59,13 @@ pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
 pub fn contact_resource_id(id: ContactId) -> String {
     format!("contacts.contact:{id}")
 }
+
+/// The eagerly published command palette page is deliberately small. The
+/// address book itself can be arbitrarily large; every omitted contact is
+/// still reachable through [`ResourceProvider::resource`] and the complete
+/// search index, rather than making each frame allocate every action for the
+/// whole book.
+pub const MAX_CONTEXT_CONTACT_RESOURCES: usize = 64;
 
 /// Canonical view action that reveals one contact in the app.
 pub fn open_contact_address(id: ContactId) -> ActionAddress {
@@ -340,6 +349,7 @@ pub enum ListEdit<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ContactPatch {
     pub first: Option<String>,
     pub last: Option<String>,
@@ -356,6 +366,24 @@ pub struct ContactPatch {
 }
 
 impl ContactPatch {
+    /// Whether the patch carries no durable change. The resource/action door
+    /// rejects these before they enter history, while `apply` remains the
+    /// authority for untrusted replay payloads.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.first.is_none()
+            && self.last.is_none()
+            && self.org.is_none()
+            && self.title.is_none()
+            && self.website.is_none()
+            && self.birthday.is_none()
+            && self.notes.is_none()
+            && self.group_edits.is_empty()
+            && self.phone_edits.is_empty()
+            && self.email_edits.is_empty()
+            && self.address_edits.is_empty()
+    }
+
     #[must_use]
     pub fn between(base: &Contact, edited: &Contact) -> Self {
         let changed = |before: &str, after: &str| (before != after).then(|| after.to_string());
@@ -822,6 +850,16 @@ pub struct ContactsResourceCtx {
     pub export_busy: bool,
 }
 
+fn ordered_contacts(contacts: &[Contact]) -> Vec<&Contact> {
+    let mut ordered = contacts.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        normalize_text(&left.display_name())
+            .cmp(&normalize_text(&right.display_name()))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    ordered
+}
+
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.
@@ -843,11 +881,55 @@ fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec 
         })
 }
 
+fn invalid_arguments(message: impl Into<String>) -> EncodedAction {
+    EncodedAction {
+        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: message.into().into_bytes(),
+    }
+}
+
+/// The complete agent-facing edit surface. Unlike the convenient Rename and
+/// Add-to-group prompts, this accepts the typed sparse [`ContactPatch`] JSON
+/// directly, covering every scalar and UUID-addressed repeated field without
+/// asking a caller to reproduce a private form interaction.
+fn patch_spec(contact: &Contact) -> ActionSpec {
+    let id = contact.id.to_string();
+    ActionSpec::typed(
+        "update-fields",
+        "Update contact fields",
+        "Sparse ContactPatch object",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "patch",
+            ParamType::Object,
+            "Sparse ContactPatch with scalar fields and UUID-addressed list edits",
+        )],
+        move |args| {
+            let Some(value) = args.to_json().remove("patch") else {
+                return invalid_arguments("patch is required");
+            };
+            let patch = match serde_json::from_value::<ContactPatch>(value) {
+                Ok(patch) if !patch.is_empty() => patch,
+                Ok(_) => return invalid_arguments("patch must change at least one contact field"),
+                Err(error) => return invalid_arguments(format!("invalid ContactPatch: {error}")),
+            };
+            if let Err(error) = patch.validate() {
+                return invalid_arguments(error.to_string());
+            }
+            encode(&ContactsAction::PatchContact {
+                id: id.clone(),
+                patch: Box::new(patch),
+            })
+        },
+    )
+}
+
 /// Build the resource tree Contacts currently has open: the book (with a "New
-/// contact" action) and each contact (rename, add-to-group, favourite, delete).
+/// contact" action) and each contact (typed field patch, rename, add-to-group,
+/// favourite, delete).
 /// Every document-mutating operation is exported as the same action the
 /// on-screen affordance dispatches.
-pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
     let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
     let mut import = file_operation("import-vcard", "Import vCard", false);
     if ctx.import_busy {
@@ -880,95 +962,125 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
         },
     ));
 
-    for contact in &ctx.contacts {
-        let id = contact.id.to_string();
-        let mut child = Resource::new(
-            contact_resource_id(contact.id),
-            "contacts.contact",
-            contact.display_name(),
-        );
-        if let Some(open) = contact_operation(
-            "open",
-            "Open contact",
-            OperationKind::View,
-            &ContactsOperation::Open { id: id.clone() },
-        ) {
-            child = child.with_action(open);
-        }
+    root
+}
 
-        // Rename — a prompted patch that never carries unrelated fields from
-        // the resource snapshot, so peer edits remain intact.
-        let base = contact.clone();
-        child = child.with_action(ActionSpec::prompted(
-            "edit",
-            "Rename contact",
-            "Name",
-            "full name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let (first, last) = split_name(name);
-                let mut edited = base.clone();
-                edited.first = first;
-                edited.last = last;
-                encode(&patch_contact_action(&base, &edited))
-            },
-        ));
+/// Resource and action catalogue for one stable contact identity. Kept
+/// independent of the open-resource page so a search result can resolve a
+/// contact that is not among the current 64 palette rows.
+pub fn contact_resource(contact: &Contact) -> Resource {
+    let id = contact.id.to_string();
+    let mut child = Resource::new(
+        contact_resource_id(contact.id),
+        "contacts.contact",
+        contact.display_name(),
+    );
+    if let Some(open) = contact_operation(
+        "open",
+        "Open contact",
+        OperationKind::View,
+        &ContactsOperation::Open { id: id.clone() },
+    ) {
+        child = child.with_action(open);
+    }
 
-        // Add to a group — a prompted entry-level list patch (deduped,
-        // case-insensitive) rather than a full record replacement.
-        let base = contact.clone();
-        child = child.with_action(ActionSpec::prompted(
-            "add-to-group",
-            "Add to group",
-            "Group",
-            "group name…",
-            ExecutionLocus::ClientLocal,
-            move |group: &str| {
-                let mut edited = base.clone();
-                let g = group.trim();
-                if !g.is_empty()
-                    && !edited
-                        .groups
-                        .iter()
-                        .any(|x| x.value.eq_ignore_ascii_case(g))
-                {
-                    edited.groups.push(GroupEntry::new(g));
-                }
-                encode(&patch_contact_action(&base, &edited))
-            },
-        ));
+    child = child.with_action(patch_spec(contact));
 
-        // Favourite — one immediate action toggles to the resolved value.
-        let fav_label = if contact.favorite {
-            "Remove from favorites"
-        } else {
-            "Add to favorites"
-        };
-        child = child.with_action(immediate_spec(
-            "favorite",
-            fav_label,
-            &set_favorite_action(id.clone(), !contact.favorite),
-        ));
+    // Rename — a prompted patch that never carries unrelated fields from
+    // the resource snapshot, so peer edits remain intact.
+    let base = contact.clone();
+    child = child.with_action(ActionSpec::prompted(
+        "edit",
+        "Rename contact",
+        "Name",
+        "full name…",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| {
+            let (first, last) = split_name(name);
+            let mut edited = base.clone();
+            edited.first = first;
+            edited.last = last;
+            encode(&patch_contact_action(&base, &edited))
+        },
+    ));
 
-        // Delete.
-        child = child.with_action(
-            immediate_spec(
-                "delete",
-                "Delete contact",
-                &delete_contact_action(id.clone()),
-            )
-            .destructive(),
-        );
+    // Add to a group — a prompted entry-level list patch (deduped,
+    // case-insensitive) rather than a full record replacement.
+    let base = contact.clone();
+    child = child.with_action(ActionSpec::prompted(
+        "add-to-group",
+        "Add to group",
+        "Group",
+        "group name…",
+        ExecutionLocus::ClientLocal,
+        move |group: &str| {
+            let mut edited = base.clone();
+            let g = group.trim();
+            if !g.is_empty() && !edited.groups.iter().any(|x| group_names_equal(&x.value, g)) {
+                edited.groups.push(GroupEntry::new(g));
+            }
+            encode(&patch_contact_action(&base, &edited))
+        },
+    ));
 
-        root = root.with_child(child);
+    // Favourite — one immediate action toggles to the resolved value.
+    let fav_label = if contact.favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    };
+    child = child.with_action(immediate_spec(
+        "favorite",
+        fav_label,
+        &set_favorite_action(id.clone(), !contact.favorite),
+    ));
+
+    // Delete.
+    child = child.with_action(
+        immediate_spec("delete", "Delete contact", &delete_contact_action(id)).destructive(),
+    );
+
+    child
+}
+
+/// Build the contextual resource page the palette renders. Discovery stays
+/// bounded even for a very large shared book; direct resource lookup and the
+/// search provider retain complete reachability.
+pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = book_resource(ctx);
+    for contact in ordered_contacts(&ctx.contacts)
+        .into_iter()
+        .take(MAX_CONTEXT_CONTACT_RESOURCES)
+    {
+        root = root.with_child(contact_resource(contact));
     }
 
     vec![root]
 }
 
+/// Resolve one resource from the complete current book without materialising
+/// the contextual action page. A missing id intentionally stays missing: the
+/// broker then refuses a stale search result before it can reach an operation
+/// handler.
+pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
+    if id == "contacts.book" {
+        return Some(book_resource(ctx));
+    }
+    let raw_id = id.strip_prefix("contacts.contact:")?;
+    let contact_id = raw_id.parse::<ContactId>().ok()?;
+    ctx.contacts
+        .iter()
+        .find(|contact| contact.id == contact_id)
+        .map(contact_resource)
+}
+
 impl ResourceProvider for crate::app::ContactsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.contacts_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resolve_resource(&self.contacts_resource_ctx(), id)
     }
 }
 
@@ -1059,6 +1171,85 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("New contact")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn contextual_catalogue_is_bounded_but_every_contact_resolves_directly() {
+        let contacts = (0..(MAX_CONTEXT_CONTACT_RESOURCES + 2))
+            .map(|index| Contact {
+                id: Uuid::new_v4(),
+                first: format!("Person {index:03}"),
+                ..Contact::default()
+            })
+            .collect::<Vec<_>>();
+        let ctx = ContactsResourceCtx {
+            contacts: contacts.clone(),
+            import_busy: false,
+            export_busy: false,
+        };
+
+        let page = provide_resources(&ctx, &AutoCommit::new());
+        assert_eq!(page[0].children.len(), MAX_CONTEXT_CONTACT_RESOURCES);
+
+        let target = contacts.last().expect("fixture is populated");
+        let address = open_contact_address(target.id);
+        let direct = resolve_resource(&ctx, &address.resource)
+            .expect("contacts outside the contextual page resolve lazily");
+        assert!(
+            qos_actions::door::resolve(&[direct], &address).is_some(),
+            "the lazy resource exposes its canonical open action"
+        );
+        assert!(
+            resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
+            "a stale contact id is refused rather than resurrected"
+        );
+    }
+
+    #[test]
+    fn typed_field_patch_action_covers_the_complete_contact_form() {
+        let (_app, mut doc) = seeded();
+        let contact = first_contact(&doc);
+        let resource = contact_resource(&contact);
+        let spec = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "update-fields")
+            .expect("every contact exports its typed field patch action");
+
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"patch": {"title": "Admiral"}})
+                    .as_object()
+                    .expect("the fixture is an argument object"),
+            )
+            .expect("the typed patch is accepted at the action door");
+        let decoded = registry()
+            .decode(&encoded)
+            .expect("the resource action is a registered ContactsAction");
+        decoded
+            .apply(&mut doc)
+            .expect("the canonical patch action applies");
+        assert_eq!(
+            ContactsDoc::list_contacts(&doc)
+                .into_iter()
+                .find(|candidate| candidate.id == contact.id)
+                .expect("target contact remains active")
+                .title,
+            "Admiral"
+        );
+
+        let empty = spec
+            .build_json(
+                serde_json::json!({"patch": {}})
+                    .as_object()
+                    .expect("the fixture is an argument object"),
+            )
+            .expect("the invalid payload is still an encoded rejection");
+        assert_eq!(
+            empty.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "empty patches cannot create meaningless history entries"
         );
     }
 

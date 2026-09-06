@@ -7,7 +7,23 @@
 //! is plain, unit-testable logic.
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
+
+/// Canonical, Unicode-safe text projection used for search, group matching,
+/// and deterministic list ordering. NFC first makes canonically equivalent
+/// user input compare alike; lowercasing is deliberately scalar-based, never
+/// byte-indexed, so names in every script remain valid UTF-8 throughout.
+#[must_use]
+pub fn normalize_text(value: &str) -> String {
+    value.nfc().flat_map(char::to_lowercase).collect()
+}
+
+/// Whether two user-visible group names designate the same group.
+#[must_use]
+pub fn group_names_equal(left: &str, right: &str) -> bool {
+    normalize_text(left.trim()) == normalize_text(right.trim())
+}
 
 /// Stable identifier for a single contact record. Backs every
 /// cross-reference and the CRDT map key.
@@ -329,7 +345,7 @@ impl Contact {
         }
     }
 
-    /// True if `query` (already lower-cased) matches anywhere in the
+    /// True if `query` matches anywhere in the
     /// record — name, org, title, any phone / email / address, notes or
     /// group. Powers the cross-field search box.
     pub fn matches(&self, query: &str) -> bool {
@@ -347,16 +363,38 @@ impl Contact {
         hay.push(' ');
         hay.push_str(&self.website);
         hay.push(' ');
+        if let Some(birthday) = self.birthday {
+            hay.push_str(&birthday.iso());
+            hay.push(' ');
+            hay.push_str(&birthday.pretty());
+            hay.push(' ');
+        }
         hay.push_str(&self.notes);
         for p in &self.phones {
+            hay.push(' ');
+            hay.push_str(&p.label);
             hay.push(' ');
             hay.push_str(&p.value);
         }
         for e in &self.emails {
             hay.push(' ');
+            hay.push_str(&e.label);
+            hay.push(' ');
             hay.push_str(&e.value);
         }
         for a in &self.addresses {
+            hay.push(' ');
+            hay.push_str(&a.label);
+            hay.push(' ');
+            hay.push_str(&a.street);
+            hay.push(' ');
+            hay.push_str(&a.city);
+            hay.push(' ');
+            hay.push_str(&a.region);
+            hay.push(' ');
+            hay.push_str(&a.postal);
+            hay.push(' ');
+            hay.push_str(&a.country);
             hay.push(' ');
             hay.push_str(&a.one_line());
         }
@@ -364,7 +402,7 @@ impl Contact {
             hay.push(' ');
             hay.push_str(&g.value);
         }
-        hay.to_lowercase().contains(query)
+        normalize_text(&hay).contains(&normalize_text(query))
     }
 }
 
@@ -431,12 +469,26 @@ impl ContactStore {
         for c in &self.contacts {
             for g in &c.groups {
                 let g = g.value.trim();
-                if !g.is_empty() && !set.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+                if g.is_empty() {
+                    continue;
+                }
+                if let Some(existing) = set.iter_mut().find(|x| group_names_equal(x, g)) {
+                    // CRDT/map arrival order is not a presentation contract.
+                    // Pick one deterministic spelling for equivalent Unicode
+                    // group names so separate peers expose the same filter.
+                    if g < existing.as_str() {
+                        *existing = g.to_string();
+                    }
+                } else {
                     set.push(g.to_string());
                 }
             }
         }
-        set.sort_by_key(|s| s.to_lowercase());
+        set.sort_by(|left, right| {
+            normalize_text(left)
+                .cmp(&normalize_text(right))
+                .then_with(|| left.cmp(right))
+        });
         set
     }
 
@@ -449,14 +501,14 @@ impl ContactStore {
         group: Option<&str>,
         sort: SortKey,
     ) -> Vec<ContactId> {
-        let q = query.trim().to_lowercase();
+        let q = normalize_text(query.trim());
         let mut out: Vec<&Contact> = self
             .contacts
             .iter()
             .filter(|c| c.matches(&q))
             .filter(|c| match group {
                 None => true,
-                Some(g) => c.groups.iter().any(|x| x.value.eq_ignore_ascii_case(g)),
+                Some(g) => c.groups.iter().any(|x| group_names_equal(&x.value, g)),
             })
             .collect();
         out.sort_by(|a, b| sort_cmp(a, b, sort));
@@ -477,8 +529,14 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let key = |c: &Contact| -> (String, String) {
         match sort {
-            SortKey::Name => (c.last.trim().to_lowercase(), c.first.trim().to_lowercase()),
-            SortKey::Org => (c.org.trim().to_lowercase(), c.display_name().to_lowercase()),
+            SortKey::Name => (
+                normalize_text(c.last.trim()),
+                normalize_text(c.first.trim()),
+            ),
+            SortKey::Org => (
+                normalize_text(c.org.trim()),
+                normalize_text(&c.display_name()),
+            ),
         }
     };
     let (ka1, ka2) = key(a);
@@ -492,10 +550,9 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     }
     match ka1.cmp(&kb1) {
         Ordering::Equal => match ka2.cmp(&kb2) {
-            Ordering::Equal => a
-                .display_name()
-                .to_lowercase()
-                .cmp(&b.display_name().to_lowercase()),
+            Ordering::Equal => normalize_text(&a.display_name())
+                .cmp(&normalize_text(&b.display_name()))
+                .then_with(|| a.id.cmp(&b.id)),
             other => other,
         },
         other => other,
@@ -907,6 +964,22 @@ mod tests {
         store.upsert(a);
         let groups = store.all_groups();
         assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
+    }
+
+    #[test]
+    fn groups_and_search_handle_canonically_equivalent_unicode() {
+        let mut store = ContactStore::new();
+        let mut first = Contact::new();
+        first.groups.push(GroupEntry::new("Cafe\u{301}"));
+        let mut second = Contact::new();
+        second.groups.push(GroupEntry::new("CAFÉ"));
+        store.upsert(first.clone());
+        store.upsert(second.clone());
+
+        assert_eq!(store.all_groups(), vec!["CAFÉ".to_string()]);
+        let visible = store.filtered_sorted("", Some("café"), SortKey::Name);
+        assert_eq!(visible.len(), 2);
+        assert!(first.matches("CAFÉ"));
     }
 
     #[test]

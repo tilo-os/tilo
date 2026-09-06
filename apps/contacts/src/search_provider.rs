@@ -8,54 +8,66 @@
 //! exported `open` view action, so pointer, keyboard, assistive technology and
 //! agents all enter through the same brokered operation.
 
+use std::collections::BTreeMap;
 use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult, SearchTextIndex};
 
-use crate::model::{Contact, ContactStore};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
+
+use crate::model::{Contact, ContactId, ContactStore, normalize_text};
 
 /// The kind label (and result group header) Contacts produces.
 pub const CONTACT_KIND: &str = "Contacts";
 
-/// A contact plus its independently searchable fields. A newline separates
-/// values in the indexed projection, so ordinary text queries cannot bridge
-/// the end of a phone number into the start of an email.
-struct SearchEntry {
-    contact: Contact,
-    sources: Vec<String>,
-}
-
-/// A [`SearchProvider`] over a snapshot of the address book. Rebuild it (cheap)
-/// whenever the store changes, or when the search surface opens.
+/// A complete, cursor-paged catalogue over the address-book snapshot.
+///
+/// `SearchCatalog` indexes every stable contact resource, while the small map
+/// lets the search framework lazily resolve an item omitted from Contacts'
+/// bounded open-resource page. Cloning a provider is cheap: the index itself
+/// is an `Arc` handle managed by the shared search implementation.
+#[derive(Clone)]
 pub struct ContactSearchProvider {
-    entries: Vec<SearchEntry>,
-    /// Complete Unicode substring index over the address book. The result
-    /// window is bounded, but no contact is silently left out of the corpus.
-    index: SearchTextIndex,
+    catalog: SearchCatalog,
+    contacts: BTreeMap<ContactId, Contact>,
 }
 
 impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
-        let entries: Vec<_> = store
-            .contacts
-            .iter()
-            .cloned()
-            .map(|contact| SearchEntry {
-                sources: searchable_fields(&contact),
-                contact,
-            })
-            .collect();
-        Self {
-            index: SearchTextIndex::new(entries.iter().map(|entry| entry.sources.join("\n"))),
-            entries,
+        let provider = Self {
+            catalog: SearchCatalog::new(CONTACT_KIND),
+            contacts: store
+                .contacts
+                .iter()
+                .cloned()
+                .map(|contact| (contact.id, contact))
+                .collect(),
+        };
+        // Browse pages use insertion order, so seed the catalogue in durable
+        // UUID order rather than incidental Automerge/map projection order.
+        for contact in provider.contacts.values() {
+            provider.index_contact(contact);
         }
+        provider
     }
 
-    fn matching_entry_ids(&self, query: &str, limit: usize) -> Vec<usize> {
-        if query.is_empty() || limit == 0 {
-            return Vec::new();
-        }
-        self.index.matching_ids(query, limit)
+    fn index_contact(&self, contact: &Contact) {
+        let result = contact_result(contact);
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        // NFC normalisation happens before the shared lowercasing/indexing
+        // layer, so a continuation cursor remains valid when callers switch
+        // between canonically equivalent Unicode spellings of the query.
+        let searchable = normalize_text(&searchable_fields(contact).join("\0"));
+        let _ = self.catalog.upsert(address.resource, searchable, result);
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
     }
 }
 
@@ -70,14 +82,26 @@ fn searchable_fields(contact: &Contact) -> Vec<String> {
         contact.website.clone(),
         contact.notes.clone(),
     ];
-    fields.extend(contact.phones.iter().map(|field| field.value.clone()));
-    fields.extend(contact.emails.iter().map(|field| field.value.clone()));
-    fields.extend(
-        contact
-            .addresses
-            .iter()
-            .map(crate::model::Address::one_line),
-    );
+    if let Some(birthday) = contact.birthday {
+        fields.extend([birthday.iso(), birthday.pretty()]);
+    }
+    for field in &contact.phones {
+        fields.extend([field.label.clone(), field.value.clone()]);
+    }
+    for field in &contact.emails {
+        fields.extend([field.label.clone(), field.value.clone()]);
+    }
+    for address in &contact.addresses {
+        fields.extend([
+            address.label.clone(),
+            address.street.clone(),
+            address.city.clone(),
+            address.region.clone(),
+            address.postal.clone(),
+            address.country.clone(),
+            address.one_line(),
+        ]);
+    }
     fields.extend(contact.groups.iter().map(|group| group.value.clone()));
     fields
         .into_iter()
@@ -95,23 +119,29 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        if limit == 0 {
-            return Vec::new();
-        }
-        if query.is_empty() {
-            return self
-                .entries
-                .iter()
-                .take(limit)
-                .map(|entry| contact_result(&entry.contact))
-                .collect();
-        }
-        self.matching_entry_ids(query, limit)
-            .into_iter()
-            .filter_map(|id| self.entries.get(id))
-            .map(|entry| contact_result(&entry.contact))
-            .collect()
+        self.catalog.search_limited(&normalize_text(query), limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(&normalize_text(query), cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(
+        &self,
+        address: &qos_actions::ActionAddress,
+    ) -> Option<qos_actions::Resource> {
+        let raw_id = address.resource.strip_prefix("contacts.contact:")?;
+        let id = raw_id.parse::<ContactId>().ok()?;
+        let contact = self.contacts.get(&id)?;
+        (address == &crate::actions::open_contact_address(id))
+            .then(|| crate::actions::contact_resource(contact))
     }
 }
 
@@ -175,6 +205,45 @@ mod tests {
         assert!(
             hits.iter().any(|r| r.title == "Grace Hopper"),
             "a field-only (email) match still surfaces the contact"
+        );
+    }
+
+    #[test]
+    fn indexes_every_contact_field_with_unicode_normalization() {
+        let mut contact = Contact::new();
+        contact.first = "Jose\u{301}".into(); // decomposed é
+        contact.birthday = crate::model::Birthday::parse("--02-29");
+        contact
+            .phones
+            .push(crate::model::Labeled::new("satellite", "+1 555 0100"));
+        contact.addresses.push(crate::model::Address {
+            label: "Sommarstuga".into(),
+            city: "Göteborg".into(),
+            ..Default::default()
+        });
+        let mut store = ContactStore::new();
+        store.upsert(contact.clone());
+        let provider = ContactSearchProvider::new(&store);
+
+        for query in [
+            "José",
+            "satellite",
+            "Sommarstuga",
+            "Göteborg",
+            "February 29",
+        ] {
+            assert_eq!(
+                provider
+                    .search(query)
+                    .first()
+                    .map(|result| result.title.as_str()),
+                Some("Jose\u{301}"),
+                "{query:?} reaches a stored field with a canonical open action"
+            );
+        }
+        assert_eq!(
+            provider.search("José")[0].action_address(),
+            Some(crate::actions::open_contact_address(contact.id))
         );
     }
 
@@ -254,5 +323,58 @@ mod tests {
             "the complete index reaches the final contact"
         );
         assert_eq!(hits[0].title, "Contact 4096 needle beyond legacy cap");
+    }
+
+    #[test]
+    fn paged_catalogue_reaches_a_late_contact_without_unbounded_allocation() {
+        let contacts = (0..100_001u128)
+            .map(|index| Contact {
+                id: Uuid::from_u128(index + 1),
+                first: if index == 100_000 {
+                    "Late catalogue needle".into()
+                } else {
+                    format!("Contact {index}")
+                },
+                ..Contact::default()
+            })
+            .collect();
+        let provider = ContactSearchProvider::new(&ContactStore { contacts });
+
+        let page = provider.search_page("catalogue needle", None, 4, 1);
+        assert_eq!(page.inspected, 1, "rare postings avoid scanning the book");
+        assert_eq!(page.results.len(), 1, "one bounded result is materialised");
+        assert_eq!(page.results[0].title, "Late catalogue needle");
+        assert!(page.next.is_none(), "the unique match is exhausted");
+        let address = page.results[0]
+            .action_address()
+            .expect("catalogue hits use canonical open addresses");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the late hit resolves without expanding the contextual page");
+        assert!(qos_actions::door::resolve(&[resource], &address).is_some());
+        assert_eq!(provider.stats().records, 100_001);
+    }
+
+    #[test]
+    fn paged_unicode_query_continues_with_an_opaque_cursor() {
+        let contacts = (0..3u128)
+            .map(|index| Contact {
+                id: Uuid::from_u128(index + 1),
+                first: format!("Cafe\u{301} contact {index}"),
+                ..Contact::default()
+            })
+            .collect();
+        let provider = ContactSearchProvider::new(&ContactStore { contacts });
+
+        let first = provider.search_page("CAFÉ", None, 1, 1);
+        assert_eq!(first.results.len(), 1);
+        assert_eq!(first.inspected, 1);
+        let cursor = first.next.expect("two matching resources remain");
+        // The cursor deliberately stays opaque. Supplying an NFC spelling of
+        // the equivalent query continues the same canonical query page.
+        let second = provider.search_page("Café", Some(&cursor), 1, 1);
+        assert_eq!(second.results.len(), 1);
+        assert_ne!(second.results[0].action_id, first.results[0].action_id);
+        assert_eq!(second.inspected, 1);
     }
 }

@@ -48,7 +48,7 @@ use crate::doc::ContactsDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, GroupEntry, Labeled, SortKey,
-    sample_contacts,
+    group_names_equal, sample_contacts,
 };
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
@@ -332,7 +332,7 @@ impl EditForm {
                         .map(|name| {
                             previous
                                 .iter()
-                                .position(|entry| entry.value.eq_ignore_ascii_case(name))
+                                .position(|entry| group_names_equal(&entry.value, name))
                                 .map_or_else(
                                     || GroupEntry::new(name),
                                     |index| previous.remove(index),
@@ -4230,6 +4230,14 @@ impl Widget for ContactsApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Resolve contacts outside the contextual palette page. This is the
+    /// other half of bounded discovery: a search hit for contact 65,000 still
+    /// reaches the exact current resource/action catalogue, while a deleted
+    /// contact has no resource for the broker to invoke.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
