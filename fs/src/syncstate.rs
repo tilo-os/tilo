@@ -132,6 +132,9 @@ pub struct RecordIndexPageV3 {
 }
 
 impl RecordIndexManifestV3 {
+    /// # Errors
+    ///
+    /// Returns an error when an opaque authority manifest is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != 3
             || self.revision.len() != 64
@@ -146,6 +149,9 @@ impl RecordIndexManifestV3 {
 }
 
 impl RecordIndexPageV3 {
+    /// # Errors
+    ///
+    /// Returns an error when an opaque authority page is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != 3
             || self.revision.len() != 64
@@ -173,6 +179,9 @@ impl RecordIndexPageV3 {
 }
 
 impl RecordIndexExactV2 {
+    /// # Errors
+    ///
+    /// Returns an error when an exact authority projection is malformed.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
             || self.revision.len() != 64
