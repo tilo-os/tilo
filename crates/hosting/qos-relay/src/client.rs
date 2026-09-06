@@ -101,6 +101,15 @@ pub enum ClientError {
 impl RelayClient {
     /// Execute an owner-authorized lifecycle operation against a pinned home
     /// peer. The mutual handshake proves both enrolled device certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when dialing, framing, or mutual authentication
+    /// fails, including when the relay's pinned user or device differs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "public compatibility API mirrors the independently supplied endpoint, pinned identity, and caller credentials"
+    )]
     pub async fn manage_home_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -164,6 +173,15 @@ impl RelayClient {
     }
     /// Resolve the authenticated direct filesystem endpoint advertised by a
     /// relay. The returned address is never the relay socket itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
+    )]
     pub async fn discover_content_endpoint(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -189,6 +207,15 @@ impl RelayClient {
 
     /// Resolve both the content endpoint and authenticated Files workspace
     /// ticket needed by a fresh device to join the live record plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "public compatibility API keeps caller credentials and pinned relay identity explicit"
+    )]
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -212,8 +239,17 @@ impl RelayClient {
     }
 
     /// Resolve content from a relay whose certified user root differs from
-    /// this client. The caller pins its derived relay service NodeId; the
+    /// this client. The caller pins its derived relay service `NodeId`; the
     /// challenge still proves the server holds its certified device key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when dialing, framing, or authenticated
+    /// discovery fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "public compatibility API keeps caller credentials and the explicit pinned host identity separate"
+    )]
     pub async fn discover_content_endpoint_to_pinned_host(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
@@ -393,6 +429,11 @@ impl RelayClient {
     /// certificate and the exact enrolled device certificate.  The relay
     /// service endpoint is intentionally a separate Iroh key, so endpoint
     /// pinning alone cannot establish the identity behind it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when dialing, framing, or the pinned
+    /// user/device authentication check fails.
     pub async fn connect_to_enrolled_home_peer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,

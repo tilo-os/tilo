@@ -171,6 +171,10 @@ mod workspace_id_serde {
         Legacy(u64),
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's with-module serialization callback requires a reference to the field"
+    )]
     pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
