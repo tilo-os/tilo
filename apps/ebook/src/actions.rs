@@ -24,7 +24,7 @@ use qos_actions::{
 };
 
 use crate::doc::BooksDoc;
-use crate::model::{AnnoKind, Annotation, HiColor};
+use crate::model::{AnnoKind, Annotation, HiColor, Progress};
 
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
@@ -182,7 +182,7 @@ pub struct HiPiece {
     pub excerpt: String,
 }
 
-/// Every collaborative operation Books exports on its annotation store.
+/// Every collaborative operation Books exports on its durable reader store.
 ///
 /// Determinism contract: ids and timestamps are minted at *authoring* time and
 /// carried in the payload, never inside [`Action::apply`], which must not touch
@@ -190,6 +190,18 @@ pub struct HiPiece {
 /// error, so a bad replay can't wedge a peer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EbookAction {
+    /// Persist one book's reading position. This is intentionally separate
+    /// from the reader's transient page animation and open rails: the
+    /// position is the durable, collaborative part of navigation.
+    SetProgress {
+        book_id: String,
+        chapter: usize,
+        page: usize,
+        fraction: f32,
+        /// `0` preserves the existing last-opened time. A nonzero timestamp
+        /// is minted by the caller and makes an explicit open replayable.
+        opened: u64,
+    },
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
@@ -267,6 +279,26 @@ pub enum EbookAction {
 // Per-variant `apply` bodies, kept as inherent methods (not trait methods) so
 // `too_many_lines` can be satisfied without moving code out of this impl.
 impl EbookAction {
+    fn apply_set_progress(
+        doc: &mut Doc,
+        book_id: &str,
+        chapter: usize,
+        page: usize,
+        fraction: f32,
+        opened: u64,
+    ) {
+        BooksDoc::write_progress(
+            doc,
+            book_id,
+            &Progress {
+                chapter,
+                page,
+                fraction: fraction.clamp(0.0, 1.0),
+                opened,
+            },
+        );
+    }
+
     fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
         if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
             && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
@@ -478,6 +510,16 @@ impl EbookAction {
 impl Action for EbookAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            EbookAction::SetProgress {
+                book_id,
+                chapter,
+                page,
+                fraction,
+                opened,
+            } => {
+                Self::apply_set_progress(doc, book_id, *chapter, *page, *fraction, *opened);
+                Ok(())
+            }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
             EbookAction::DeleteAnnotation { id } => Self::apply_delete_annotation(doc, id),
             EbookAction::AddNote {
@@ -607,6 +649,19 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
 
 pub fn delete_annotation_action(id: Uuid) -> EbookAction {
     EbookAction::DeleteAnnotation { id: id.to_string() }
+}
+
+/// Build the replayable navigation action used whenever a reader changes its
+/// durable position. `opened` is caller-supplied so applying an action never
+/// consults the wall clock.
+pub fn set_progress_action(book_id: &str, progress: Progress) -> EbookAction {
+    EbookAction::SetProgress {
+        book_id: book_id.to_string(),
+        chapter: progress.chapter,
+        page: progress.page,
+        fraction: progress.fraction.clamp(0.0, 1.0),
+        opened: progress.opened,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1398,6 +1453,38 @@ mod tests {
         assert_eq!(
             BooksDoc::annotations_for(&a, &book_id).len(),
             BooksDoc::annotations_for(&b, &book_id).len(),
+        );
+    }
+
+    #[test]
+    fn progress_action_replays_byte_identically_and_preserves_open_timestamp() {
+        let (_app, mut a, book_id, _group) = open_with_annotations();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let action = set_progress_action(
+            &book_id,
+            Progress {
+                chapter: 2,
+                page: 7,
+                fraction: 0.625,
+                opened: 1_700_000_000_000,
+            },
+        );
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("action applies");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("action replays");
+
+        assert_eq!(a.get_heads(), b.get_heads(), "position converges exactly");
+        assert_eq!(
+            BooksDoc::read_progress(&a, &book_id),
+            Progress {
+                chapter: 2,
+                page: 7,
+                fraction: 0.625,
+                opened: 1_700_000_000_000,
+            }
         );
     }
 
