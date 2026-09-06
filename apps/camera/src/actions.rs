@@ -39,7 +39,7 @@ use qos_actions::{
 };
 
 use crate::doc;
-use crate::model::{CaptureMode, Facing};
+use crate::model::{CaptureMode, Facing, PhotoFormat, Resolution, Settings, Timer};
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
@@ -79,6 +79,36 @@ pub enum CameraAction {
     SetFacing {
         facing: Facing,
     },
+    /// One scalar capture preference.  These stay deliberately granular: a
+    /// collaborator changing the grid must not overwrite a concurrently
+    /// selected timer or resolution.
+    SetResolution {
+        resolution: Resolution,
+    },
+    SetPhotoFormat {
+        photo_format: PhotoFormat,
+    },
+    SetTimer {
+        timer: Timer,
+    },
+    SetGrid {
+        on: bool,
+    },
+    SetLevel {
+        on: bool,
+    },
+    SetMirrorFront {
+        on: bool,
+    },
+    SetGeotag {
+        on: bool,
+    },
+    SetHdr {
+        on: bool,
+    },
+    SetDefaultFacing {
+        facing: Facing,
+    },
     /// Star / unstar a gallery shot by id (its file name). The pixels live on
     /// disk (external); only the collaborative "favorited" bit is this action.
     /// Explicit (`on`) rather than a toggle so a delete can also clear the flag
@@ -103,6 +133,21 @@ impl Action for CameraAction {
         match self {
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
+            CameraAction::SetResolution { resolution } => {
+                doc::set_resolution(doc, &ROOT, *resolution);
+            }
+            CameraAction::SetPhotoFormat { photo_format } => {
+                doc::set_photo_format(doc, &ROOT, *photo_format);
+            }
+            CameraAction::SetTimer { timer } => doc::set_timer(doc, &ROOT, *timer),
+            CameraAction::SetGrid { on } => doc::set_grid(doc, &ROOT, *on),
+            CameraAction::SetLevel { on } => doc::set_level(doc, &ROOT, *on),
+            CameraAction::SetMirrorFront { on } => doc::set_mirror_front(doc, &ROOT, *on),
+            CameraAction::SetGeotag { on } => doc::set_geotag(doc, &ROOT, *on),
+            CameraAction::SetHdr { on } => doc::set_hdr(doc, &ROOT, *on),
+            CameraAction::SetDefaultFacing { facing } => {
+                doc::set_default_facing(doc, &ROOT, *facing);
+            }
             CameraAction::SetFavorite { id, on } => {
                 // An empty id is never produced by our own builder; no-op.
                 if !id.is_empty() {
@@ -183,6 +228,7 @@ pub struct CameraResourceCtx {
     pub mode: CaptureMode,
     pub facing: Facing,
     pub recording: bool,
+    pub settings: Settings,
 }
 
 impl Default for CameraResourceCtx {
@@ -192,6 +238,7 @@ impl Default for CameraResourceCtx {
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             recording: false,
+            settings: Settings::default(),
         }
     }
 }
@@ -220,6 +267,10 @@ fn item_label(it: &GalleryItem) -> String {
 /// is chosen from the shot's *current* favorite state (recomputed each frame —
 /// a steady, level-triggered value), so the on-screen heart and the palette row
 /// dispatch the identical [`EncodedAction`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "the gallery and settings are Camera's two resource roots; keeping their complete, typed action inventory together makes the palette contract auditable"
+)]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("camera.gallery", "camera.gallery", "Gallery");
     if let Ok(spec) = ActionSpec::operation(
@@ -324,7 +375,124 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         }
         root = root.with_child(child);
     }
-    vec![root]
+    let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
+    for resolution in Resolution::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("resolution-{}", resolution.as_str()),
+            &format!("Use {} resolution", resolution.label()),
+            &CameraAction::SetResolution { resolution },
+        ) {
+            settings = settings.with_action(if resolution == ctx.settings.resolution {
+                spec.unavailable("already_selected", "This resolution is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for photo_format in PhotoFormat::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("format-{}", photo_format.as_str()),
+            &format!("Use {} photos", photo_format.label()),
+            &CameraAction::SetPhotoFormat { photo_format },
+        ) {
+            settings = settings.with_action(if photo_format == ctx.settings.photo_format {
+                spec.unavailable("already_selected", "This photo format is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for timer in Timer::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("timer-{}", timer.seconds()),
+            &format!("Use {} timer", timer.label()),
+            &CameraAction::SetTimer { timer },
+        ) {
+            settings = settings.with_action(if timer == ctx.settings.timer {
+                spec.unavailable("already_selected", "This timer is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for (id, label, action) in [
+        (
+            "grid",
+            if ctx.settings.grid {
+                "Turn off composition grid"
+            } else {
+                "Turn on composition grid"
+            },
+            CameraAction::SetGrid {
+                on: !ctx.settings.grid,
+            },
+        ),
+        (
+            "level",
+            if ctx.settings.level {
+                "Turn off level guide"
+            } else {
+                "Turn on level guide"
+            },
+            CameraAction::SetLevel {
+                on: !ctx.settings.level,
+            },
+        ),
+        (
+            "mirror-front",
+            if ctx.settings.mirror_front {
+                "Turn off front-camera mirroring"
+            } else {
+                "Turn on front-camera mirroring"
+            },
+            CameraAction::SetMirrorFront {
+                on: !ctx.settings.mirror_front,
+            },
+        ),
+        (
+            "geotag",
+            if ctx.settings.geotag {
+                "Turn off photo location"
+            } else {
+                "Turn on photo location"
+            },
+            CameraAction::SetGeotag {
+                on: !ctx.settings.geotag,
+            },
+        ),
+        (
+            "hdr",
+            if ctx.settings.hdr {
+                "Turn off HDR"
+            } else {
+                "Turn on HDR"
+            },
+            CameraAction::SetHdr {
+                on: !ctx.settings.hdr,
+            },
+        ),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &action) {
+            settings = settings.with_action(spec);
+        }
+    }
+    for facing in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("default-lens-{}", facing.as_str()),
+            &format!("Use {} as the default camera", facing.label()),
+            &CameraAction::SetDefaultFacing { facing },
+        ) {
+            settings = settings.with_action(if facing == ctx.settings.default_facing {
+                spec.unavailable(
+                    "already_selected",
+                    "This default camera is already selected",
+                )
+            } else {
+                spec
+            });
+        }
+    }
+    vec![root, settings]
 }
 
 impl ResourceProvider for crate::app::CameraApp {
@@ -369,8 +537,11 @@ mod tests {
     fn ctrl_k_publishes_the_gallery_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one gallery root");
-        let gallery = &resources[0];
+        assert_eq!(resources.len(), 2, "gallery and settings roots");
+        let gallery = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "camera.gallery")
+            .expect("gallery root");
         assert_eq!(gallery.kind, "camera.gallery");
         assert!(!gallery.children.is_empty(), "the sample gallery has shots");
 
@@ -496,6 +667,55 @@ mod tests {
             Some("https://qos.example/hello"),
             "the scan landed at the front of the peer's history"
         );
+    }
+
+    #[test]
+    fn capture_preferences_are_granular_replayable_actions() {
+        let mut a = AutoCommit::new();
+        doc::init_defaults(&mut a, &ROOT, crate::model::Screen::Camera);
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+
+        let action = CameraAction::SetGrid { on: false };
+        let encoded = encode(&action).unwrap();
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+
+        assert!(!doc::read_settings(&a, &ROOT).grid);
+        assert!(!doc::read_settings(&b, &ROOT).grid);
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the preference replayed exactly"
+        );
+    }
+
+    #[test]
+    fn ctrl_k_exposes_every_capture_preference() {
+        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+        let settings = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "camera.settings")
+            .expect("stable settings resource");
+        let ids: Vec<&str> = settings
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in [
+            "resolution-4k",
+            "format-png",
+            "timer-3",
+            "grid",
+            "level",
+            "mirror-front",
+            "geotag",
+            "hdr",
+            "default-lens-front",
+        ] {
+            assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+        }
     }
 
     /// Single source of truth: the on-screen favorite affordance dispatches the
