@@ -325,11 +325,27 @@ impl Widget for StoragePane {
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.refresh_sync();
-                    self.sync_message = Some(format!(
-                        "Freed {} from {} synced files.",
-                        human_bytes(report.freed_bytes),
-                        report.evicted_files
-                    ));
+                    self.sync_message = Some(
+                        if report.queued_files > 0 && report.evicted_files > 0 {
+                            format!(
+                                "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
+                                human_bytes(report.freed_bytes),
+                                report.evicted_files,
+                                report.queued_files
+                            )
+                        } else if report.queued_files > 0 {
+                            format!(
+                                "{} synced file(s) queued for verified background reclamation; nothing is counted as free until GC confirms it.",
+                                report.queued_files
+                            )
+                        } else {
+                            format!(
+                                "Freed {} from {} synced files.",
+                                human_bytes(report.freed_bytes),
+                                report.evicted_files
+                            )
+                        },
+                    );
                 }
                 Ok(Err(error)) => {
                     self.sync_busy = false;

@@ -8,8 +8,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use collab_types::{FileRecordId, FileVersionId};
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,8 +20,426 @@ use uuid::Uuid;
 
 use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-    EvictionRequirements, RecordKind, Residency,
+    EvictionRequirements, RecordAvailability, RecordKind, Residency,
 };
+use crate::{FileHistoryStore, Hydrator};
+
+/// Bound catalog I/O so opening Settings does not serialize one backend
+/// status query per chunk across a large workspace.
+const MAX_CONCURRENT_CATALOG_INSPECTIONS: usize = 8;
+
+/// The one process-local bridge from durable eviction intent to backend GC.
+/// Both FUSE controls and Settings use this coordinator so no caller can
+/// silently replace exact-version receipts, retained-history checks, or the
+/// exact absence observation with a Hydrator-lifetime approximation.
+#[derive(Clone)]
+pub struct EvictionCoordinator {
+    hydrator: Arc<Hydrator>,
+    registry: Arc<Mutex<AvailabilityRegistry>>,
+    queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
+    history: Option<Arc<FileHistoryStore>>,
+}
+
+impl EvictionCoordinator {
+    pub fn new(
+        hydrator: Arc<Hydrator>,
+        registry: Arc<Mutex<AvailabilityRegistry>>,
+        queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
+        history: Option<Arc<FileHistoryStore>>,
+    ) -> Self {
+        Self {
+            hydrator,
+            registry,
+            queue,
+            history,
+        }
+    }
+
+    /// Produce the same fail-closed dry run used immediately before GC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when policy, history, or payload inspection cannot
+    /// establish one coherent exact-version plan.
+    pub async fn plan(
+        &self,
+        record_id: FileRecordId,
+        mode: EvictionMode,
+    ) -> anyhow::Result<EvictionPlan> {
+        let records = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .records()
+            .cloned()
+            .collect::<Vec<_>>();
+        let catalog = self.catalog_for_targets(&records, &[record_id]).await?;
+        let registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry.records().cloned().collect::<Vec<_>>() != records {
+            anyhow::bail!("availability changed during eviction planning");
+        }
+        let plan = plan_for_mode(&registry, &catalog, record_id, mode)?;
+        drop(registry);
+        Ok(plan)
+    }
+
+    /// Build one coherent payload catalog for multiple Settings rows, then
+    /// evaluate each safe plan against that same captured registry generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry changes during catalog inspection or
+    /// the history/payload catalog cannot be constructed safely.
+    pub async fn batch_safe_plans(
+        &self,
+        targets: &[FileRecordId],
+    ) -> anyhow::Result<HashMap<FileRecordId, Option<EvictionPlan>>> {
+        let records = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .records()
+            .cloned()
+            .collect::<Vec<_>>();
+        let catalog = self.catalog_for_targets(&records, targets).await?;
+        let registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry.records().cloned().collect::<Vec<_>>() != records {
+            anyhow::bail!("availability changed during eviction planning");
+        }
+        let plans = batch_plan_safe(&registry, &catalog, targets, coordinator_now_ms());
+        drop(registry);
+        Ok(plans)
+    }
+
+    /// Enqueue and freshly authorize one safe request. `expected_hash`, when
+    /// supplied by Settings' snapshot token, binds the action to the exact
+    /// immutable manifest it previewed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exact version, policy roots, queue, or backend
+    /// GC authorization cannot be verified and persisted.
+    #[allow(
+        clippy::await_holding_lock,
+        clippy::significant_drop_tightening,
+        reason = "policy must remain stable from exact-plan revalidation through backend tag release"
+    )]
+    pub async fn prepare(
+        &self,
+        record_id: FileRecordId,
+        mode: EvictionMode,
+        existing_request: Option<EvictionRequestId>,
+        expected_hash: Option<Hash>,
+    ) -> anyhow::Result<(EvictionRequestId, EvictionPlan)> {
+        let store = Arc::clone(&self.hydrator.store);
+        let runtime = self.hydrator.runtime_handle.clone();
+        self.prepare_with_handoff(
+            record_id,
+            mode,
+            existing_request,
+            expected_hash,
+            move |plan, existing_request, queue, registry, catalog, now_ms| {
+                let request_id = match existing_request {
+                    Some(request_id) => request_id,
+                    None => queue.enqueue(plan, now_ms)?.id,
+                };
+                tokio::task::block_in_place(|| {
+                    runtime.block_on(store.release_eviction_to_backend_gc(
+                        queue,
+                        request_id,
+                        registry,
+                        catalog,
+                        now_ms,
+                        EvictionRequirements::default(),
+                    ))
+                })?;
+                Ok(request_id)
+            },
+        )
+        .await
+    }
+
+    /// As [`Self::prepare`], but makes the actual backend-GC handoff an
+    /// explicit caller-supplied critical section. Storage uses this to retain
+    /// its live namespace and dirty guards from validation through durable
+    /// enqueue and tag release.
+    ///
+    /// The handoff deliberately runs while the availability and queue locks
+    /// are held. It is not a preview-time hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same planning and persistence errors as [`Self::prepare`],
+    /// or an error from `handoff` when its live validation, persistence, or
+    /// backend release fails.
+    #[allow(
+        clippy::await_holding_lock,
+        clippy::significant_drop_tightening,
+        reason = "policy must remain stable from exact-plan revalidation through backend tag release"
+    )]
+    pub async fn prepare_with_handoff<F>(
+        &self,
+        record_id: FileRecordId,
+        mode: EvictionMode,
+        existing_request: Option<EvictionRequestId>,
+        expected_hash: Option<Hash>,
+        handoff: F,
+    ) -> anyhow::Result<(EvictionRequestId, EvictionPlan)>
+    where
+        F: FnOnce(
+                &EvictionPlan,
+                Option<EvictionRequestId>,
+                &mut EvictionQueue,
+                &AvailabilityRegistry,
+                &EvictionCatalog,
+                u64,
+            ) -> anyhow::Result<EvictionRequestId>
+            + Send,
+    {
+        let records = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .records()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(expected_hash) = expected_hash {
+            let current = records
+                .iter()
+                .find(|record| record.record_id == record_id)
+                .and_then(|record| record.current_version)
+                .ok_or_else(|| anyhow::anyhow!("record has no exact current version"))?;
+            let version = self
+                .history
+                .as_ref()
+                .and_then(|history| history.snapshot(record_id))
+                .and_then(|snapshot| {
+                    snapshot
+                        .versions
+                        .into_iter()
+                        .find(|version| version.id == current)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("version history changed during eviction planning")
+                })?;
+            if version.content_hash != Some(collab_types::ContentHash(*expected_hash.as_bytes())) {
+                anyhow::bail!("workspace changed since preview");
+            }
+        }
+        let catalog = self.catalog_for_targets(&records, &[record_id]).await?;
+        let registry = Arc::clone(&self.registry);
+        let queue = Arc::clone(&self.queue);
+        let runtime = self.hydrator.runtime_handle.clone();
+        tokio::task::block_in_place(|| {
+            runtime.block_on(async {
+                let registry_guard = registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if registry_guard.records().cloned().collect::<Vec<_>>() != records {
+                    anyhow::bail!("availability changed during eviction planning");
+                }
+                let plan = plan_for_mode(&registry_guard, &catalog, record_id, mode)?;
+                let mut queue_guard = queue.lock().await;
+                let request_id = handoff(
+                    &plan,
+                    existing_request,
+                    &mut queue_guard,
+                    &registry_guard,
+                    &catalog,
+                    coordinator_now_ms(),
+                )?;
+                Ok((request_id, plan))
+            })
+        })
+    }
+
+    /// Observe exact backend state once and atomically project completed work
+    /// into durable local residency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request or backend observation cannot be
+    /// loaded/persisted. A newer record version is deliberately not changed.
+    pub async fn observe_once(
+        &self,
+        record_id: FileRecordId,
+        id: EvictionRequestId,
+    ) -> anyhow::Result<bool> {
+        let mut queue = self.queue.lock().await;
+        let request = queue
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown eviction request"))?;
+        let observation = self
+            .hydrator
+            .store
+            .observe_eviction_request(&mut queue, id, coordinator_now_ms())
+            .await?;
+        drop(queue);
+        let EvictionRequestState::Completed { observed_at_ms } = observation.state else {
+            return Ok(false);
+        };
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if request.record_id != record_id
+            || registry.get(record_id).is_none_or(|record| {
+                record.current_version != Some(request.version_id)
+                    // A later verified local hydration of the same version
+                    // must not be erased by replaying an older completion.
+                    || record.freshness.local_verified_at_ms.is_some_and(|at| at > observed_at_ms)
+            })
+        {
+            return Ok(true);
+        }
+        let mut record = registry
+            .get(record_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("evicted record disappeared"))?;
+        record.residency = Residency::NotResident;
+        record.freshness.local_verified_at_ms = None;
+        registry.put(record)?;
+        drop(registry);
+        Ok(true)
+    }
+
+    pub fn spawn_observer(&self, record_id: FileRecordId, id: EvictionRequestId) {
+        let coordinator = self.clone();
+        self.hydrator.runtime_handle.spawn(async move {
+            for _ in 0..=75 {
+                match coordinator.observe_once(record_id, id).await {
+                    Ok(true) | Err(_) => break,
+                    Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+                }
+            }
+        });
+    }
+
+    async fn catalog_for_targets(
+        &self,
+        records: &[RecordAvailability],
+        targets: &[FileRecordId],
+    ) -> anyhow::Result<EvictionCatalog> {
+        let targets = targets.iter().copied().collect::<HashSet<_>>();
+        let history = self
+            .history
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("durable version history is unavailable"))?;
+        let mut keys = Vec::new();
+        for record in records {
+            if record.kind != RecordKind::File {
+                continue;
+            }
+            let protects_current = targets.contains(&record.record_id)
+                || record.residency != Residency::NotResident
+                || captured_effective_pinned(records, record.record_id);
+            if protects_current && let Some(version) = record.current_version {
+                keys.push((record.record_id, version));
+            }
+            keys.extend(
+                record
+                    .retained_versions
+                    .iter()
+                    .copied()
+                    .map(|version| (record.record_id, version)),
+            );
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        let mut payload_keys = Vec::new();
+        let mut empty = Vec::new();
+        for (record_id, version_id) in keys {
+            let version = history
+                .snapshot(record_id)
+                .and_then(|snapshot| {
+                    snapshot
+                        .versions
+                        .into_iter()
+                        .find(|version| version.id == version_id)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("version history changed during eviction planning")
+                })?;
+            match version.content_hash {
+                Some(hash) => payload_keys.push((record_id, version_id, Hash::from(hash.0))),
+                None => empty.push((record_id, version_id)),
+            }
+        }
+        let store = Arc::clone(&self.hydrator.store);
+        let payloads = stream::iter(payload_keys)
+            .map(|(record_id, version_id, hash)| {
+                let store = Arc::clone(&store);
+                async move {
+                    store
+                        .inspect_version_payload(record_id, version_id, hash)
+                        .await
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_CATALOG_INSPECTIONS)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(EvictionCatalog::with_empty_versions(payloads, empty)?)
+    }
+}
+
+fn captured_effective_pinned(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
+    let mut current = Some(record_id);
+    let mut remaining = records.len().saturating_add(1);
+    while let Some(record_id) = current {
+        if remaining == 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(1);
+        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+            return true;
+        };
+        if record.policy == AvailabilityPolicy::Pinned {
+            return true;
+        }
+        current = record.parent;
+    }
+    false
+}
+
+fn plan_for_mode(
+    registry: &AvailabilityRegistry,
+    catalog: &EvictionCatalog,
+    record_id: FileRecordId,
+    mode: EvictionMode,
+) -> Result<EvictionPlan, PlanError> {
+    match mode {
+        EvictionMode::Safe => plan_safe_eviction(
+            registry,
+            catalog,
+            record_id,
+            coordinator_now_ms(),
+            EvictionRequirements::default(),
+        ),
+        EvictionMode::DestructiveOverride => plan_destructive_eviction(
+            registry,
+            catalog,
+            record_id,
+            coordinator_now_ms(),
+            EvictionRequirements::default(),
+        ),
+    }
+}
+
+fn coordinator_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
 
 /// One blob in a version payload, with locally verified byte accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -768,6 +1189,171 @@ fn plan(
     })
 }
 
+/// Near-linear multi-target equivalent of repeated `plan_safe_eviction`.
+/// Protected roots are catalogued exactly once; each target then only walks
+/// its own immutable payload and subtracts its own current-root contribution.
+fn batch_plan_safe(
+    registry: &AvailabilityRegistry,
+    catalog: &EvictionCatalog,
+    targets: &[FileRecordId],
+    now_ms: u64,
+) -> HashMap<FileRecordId, Option<EvictionPlan>> {
+    let requirements = EvictionRequirements::default();
+    let mut protected_counts = HashMap::<Hash, usize>::new();
+    let mut own_current = HashMap::<FileRecordId, HashSet<Hash>>::new();
+    let mut roots_valid = true;
+    for record in registry.records() {
+        if record.kind != RecordKind::File {
+            continue;
+        }
+        let current_is_protected = if let Ok(policy) = registry.effective_policy(record.record_id) {
+            record.residency != Residency::NotResident || policy == Some(AvailabilityPolicy::Pinned)
+        } else {
+            roots_valid = false;
+            true
+        };
+        if current_is_protected {
+            let Some(version) = record.current_version else {
+                roots_valid = false;
+                continue;
+            };
+            match payload_hashes(catalog, record.record_id, version) {
+                Ok(hashes) => {
+                    for hash in &hashes {
+                        let count = protected_counts.entry(*hash).or_default();
+                        *count = count.saturating_add(1);
+                    }
+                    own_current.insert(record.record_id, hashes);
+                }
+                Err(_) => roots_valid = false,
+            }
+        }
+        for &version in &record.retained_versions {
+            match payload_hashes(catalog, record.record_id, version) {
+                Ok(hashes) => {
+                    for hash in hashes {
+                        let count = protected_counts.entry(hash).or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+                Err(_) => roots_valid = false,
+            }
+        }
+    }
+    targets
+        .iter()
+        .copied()
+        .map(|record_id| {
+            let plan = if roots_valid {
+                batch_target_plan(
+                    registry,
+                    catalog,
+                    record_id,
+                    &protected_counts,
+                    own_current.get(&record_id),
+                    requirements,
+                    now_ms,
+                )
+                .ok()
+            } else {
+                None
+            };
+            (record_id, plan)
+        })
+        .collect()
+}
+
+fn payload_hashes(
+    catalog: &EvictionCatalog,
+    record_id: FileRecordId,
+    version_id: FileVersionId,
+) -> Result<HashSet<Hash>, PlanError> {
+    if catalog.is_empty(record_id, version_id) {
+        return Ok(HashSet::new());
+    }
+    Ok(catalog
+        .get(record_id, version_id)
+        .ok_or(PlanError::ProtectedPayloadMissing {
+            record_id,
+            version_id,
+        })?
+        .blobs()
+        .map(|blob| blob.hash)
+        .collect())
+}
+
+fn batch_target_plan(
+    registry: &AvailabilityRegistry,
+    catalog: &EvictionCatalog,
+    record_id: FileRecordId,
+    protected_counts: &HashMap<Hash, usize>,
+    own_current: Option<&HashSet<Hash>>,
+    requirements: EvictionRequirements,
+    now_ms: u64,
+) -> Result<EvictionPlan, PlanError> {
+    if !matches!(
+        registry.eviction_decision(record_id, now_ms, requirements, false),
+        EvictionDecision::Allowed
+    ) {
+        return Err(PlanError::Denied(EvictionBlocker::UnknownRecord));
+    }
+    let record = registry
+        .get(record_id)
+        .ok_or(PlanError::Denied(EvictionBlocker::UnknownRecord))?;
+    let version_id = record
+        .current_version
+        .ok_or(PlanError::TargetVersionUnknown)?;
+    let target = if catalog.is_empty(record_id, version_id) {
+        Vec::new()
+    } else {
+        canonical_blobs(
+            catalog
+                .get(record_id, version_id)
+                .ok_or(PlanError::TargetPayloadMissing {
+                    record_id,
+                    version_id,
+                })?
+                .blobs(),
+        )?
+    };
+    let mut reclaimable = Vec::new();
+    let mut shared_and_protected = Vec::new();
+    let mut already_absent = Vec::new();
+    for extent in target {
+        if !extent.locally_present {
+            already_absent.push(extent.hash);
+            continue;
+        }
+        let own = usize::from(own_current.is_some_and(|hashes| hashes.contains(&extent.hash)));
+        if protected_counts.get(&extent.hash).copied().unwrap_or(0) > own {
+            shared_and_protected.push(extent);
+        } else {
+            reclaimable.push(extent);
+        }
+    }
+    sort_extents(&mut reclaimable);
+    sort_extents(&mut shared_and_protected);
+    already_absent.sort_by_key(|hash| *hash.as_bytes());
+    Ok(EvictionPlan {
+        record_id,
+        version_id,
+        mode: EvictionMode::Safe,
+        reclaimable_bytes: sum_bytes(&reclaimable),
+        unaccounted_reclaimable_blobs: reclaimable
+            .iter()
+            .filter(|extent| extent.resident_bytes.is_none())
+            .count(),
+        protected_shared_bytes: sum_bytes(&shared_and_protected),
+        unaccounted_protected_shared_blobs: shared_and_protected
+            .iter()
+            .filter(|extent| extent.resident_bytes.is_none())
+            .count(),
+        reclaimable,
+        shared_and_protected,
+        already_absent,
+    })
+}
+
 fn add_protected_payload(
     protected: &mut HashSet<Hash>,
     catalog: &EvictionCatalog,
@@ -915,7 +1501,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut registry =
             AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = 1_000;
+        let now = coordinator_now_ms();
         let record = FileRecordId::new();
         let version = FileVersionId::new();
         registry.put(resident_file(record, version, now)).unwrap();
@@ -1494,5 +2080,66 @@ mod tests {
             reopened.revalidate_for_backend_gc(id, &plan),
             Err(EvictionQueueError::RequestNotPending(found)) if found == id
         ));
+    }
+
+    #[test]
+    fn captured_policy_roots_fail_closed_for_missing_or_cyclic_ancestry() {
+        let child_id = FileRecordId::new();
+        let missing = FileRecordId::new();
+        let mut child = RecordAvailability::new(child_id, RecordKind::File);
+        child.parent = Some(missing);
+        assert!(captured_effective_pinned(&[child.clone()], child_id));
+
+        child.parent = Some(child_id);
+        assert!(captured_effective_pinned(&[child], child_id));
+    }
+
+    #[test]
+    fn batch_safe_plans_match_single_plans_for_shared_and_partial_payloads() {
+        let temp = TempDir::new().unwrap();
+        let mut registry =
+            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+        let now = coordinator_now_ms();
+        let first = FileRecordId::new();
+        let first_version = FileVersionId::new();
+        let second = FileRecordId::new();
+        let second_version = FileVersionId::new();
+        registry
+            .put(resident_file(first, first_version, now))
+            .unwrap();
+        registry
+            .put(resident_file(second, second_version, now))
+            .unwrap();
+        let catalog = EvictionCatalog::new([
+            payload(
+                first,
+                first_version,
+                (1, Some(4)),
+                &[(7, Some(9)), (8, None)],
+            ),
+            payload(
+                second,
+                second_version,
+                (2, Some(4)),
+                &[(7, Some(9)), (9, None)],
+            ),
+        ])
+        .unwrap();
+        let batch = batch_plan_safe(&registry, &catalog, &[first, second], now);
+        for record in [first, second] {
+            assert_eq!(
+                batch.get(&record).and_then(Option::as_ref),
+                Some(
+                    &plan_safe_eviction(
+                        &registry,
+                        &catalog,
+                        record,
+                        now,
+                        EvictionRequirements::default()
+                    )
+                    .unwrap()
+                )
+            );
+        }
     }
 }
