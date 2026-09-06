@@ -36,6 +36,7 @@
 pub mod actions;
 pub mod app;
 pub mod collab;
+mod preferences;
 pub use app::{PlayerApp, source_for_path};
 
 use std::path::PathBuf;
