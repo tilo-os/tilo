@@ -418,12 +418,21 @@ impl WorkspaceAcl {
 /// production) swaps the contents under it — an uncontended `RwLock`
 /// read, dwarfed by the FUSE round-trip it sits inside.
 #[derive(Clone, Debug)]
-pub struct AclHandle(Arc<RwLock<WorkspaceAcl>>);
+pub struct AclHandle {
+    acl: Arc<RwLock<WorkspaceAcl>>,
+    revision: Arc<std::sync::atomic::AtomicU64>,
+    revision_watch: tokio::sync::watch::Sender<u64>,
+}
 
 impl AclHandle {
     /// A handle over `acl`.
     pub fn new(acl: WorkspaceAcl) -> Self {
-        Self(Arc::new(RwLock::new(acl)))
+        let (revision_watch, _) = tokio::sync::watch::channel(0_u64);
+        Self {
+            acl: Arc::new(RwLock::new(acl)),
+            revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            revision_watch,
+        }
     }
 
     /// Does `identity` hold `access` on `path`, per the ACL bound *right
@@ -431,7 +440,7 @@ impl AclHandle {
     pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
         // A poisoned lock means a writer panicked mid-swap. Fail closed: the
         // alternative is answering from a value nobody vouches for.
-        match self.0.read() {
+        match self.acl.read() {
             Ok(acl) => acl.permits(identity, path, access),
             Err(_) => false,
         }
@@ -440,7 +449,7 @@ impl AclHandle {
     /// Does the remote identity `peer` hold `access` on `path`, per the ACL
     /// bound *right now*? Delegates to [`WorkspaceAcl::permits_peer`].
     pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
-        match self.0.read() {
+        match self.acl.read() {
             Ok(acl) => acl.permits_peer(peer, path, access),
             Err(_) => false,
         }
@@ -451,7 +460,7 @@ impl AclHandle {
     /// captured at connect time) so a revocation reaches the network plane
     /// on the next request, same as it already reaches FUSE on the next `open`.
     pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
-        match self.0.read() {
+        match self.acl.read() {
             Ok(acl) => acl.reads_anything(peer),
             Err(_) => false,
         }
@@ -464,7 +473,7 @@ impl AclHandle {
     pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
         // Fail closed on a poisoned lock, as `permits` does — an
         // unvouched-for ACL must hide, not reveal.
-        match self.0.read() {
+        match self.acl.read() {
             Ok(acl) => acl.visible(identity, path),
             Err(_) => false,
         }
@@ -473,17 +482,33 @@ impl AclHandle {
     /// Replace the bound ACL. Every access after this call is decided by
     /// `acl`; accesses already in flight finish against the old one.
     pub fn replace(&self, acl: WorkspaceAcl) {
-        match self.0.write() {
+        match self.acl.write() {
             Ok(mut slot) => *slot = acl,
             // Re-establish a known value rather than leaving the mount deciding
             // from a poisoned lock (which `permits` denies on).
             Err(poisoned) => *poisoned.into_inner() = acl,
         }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.revision_watch
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// Monotonic policy generation for ACL-filtered derived projections.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Subscribe to policy replacements without polling the filesystem. The
+    /// latest generation is sufficient because derived ACL views coalesce
+    /// intermediate replacements before rebuilding.
+    pub fn subscribe_revision(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision_watch.subscribe()
     }
 
     /// The currently-bound ACL, cloned. For tests and for logging.
     pub fn snapshot(&self) -> WorkspaceAcl {
-        match self.0.read() {
+        match self.acl.read() {
             Ok(acl) => acl.clone(),
             Err(_) => WorkspaceAcl::new(),
         }
