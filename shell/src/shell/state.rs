@@ -6939,6 +6939,11 @@ impl WorkspaceTree {
             let _ = self
                 .doc
                 .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+            // Workspace selection is user-visible session state, not merely
+            // a render hint. Persist it immediately so a compositor restart
+            // opens the workspace the user selected rather than the one that
+            // happened to be active at the last unrelated mutation.
+            self.flush_to_disk();
         }
     }
 
@@ -6967,6 +6972,7 @@ impl WorkspaceTree {
         let _ = self
             .doc
             .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        self.flush_to_disk();
         true
     }
 
@@ -6984,6 +6990,7 @@ impl WorkspaceTree {
         let _ = self
             .doc
             .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        self.flush_to_disk();
         true
     }
 
