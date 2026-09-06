@@ -350,6 +350,11 @@ impl Widget for MusicApp {
         self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
+            // Library and playback are both shared. Reload the catalog every
+            // frame, but only adopt playback when the document itself changed
+            // so a peer's play/pause/seek immediately controls this device
+            // without jittering the local clock between edits.
+            self.reconcile_document_playback(state);
         } else {
             self.reload(state);
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
