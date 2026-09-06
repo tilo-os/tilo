@@ -460,6 +460,25 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
+    /// Move one existing group to its persisted strip position without
+    /// publishing a user drag.  Shell reconciliation uses this after a
+    /// remote/document revision changes the order: keeping the original
+    /// `WindowGroup` instance preserves its tab hosts, focus and in-flight
+    /// presentation state.
+    pub fn reorder_group_by_id(&mut self, id: u64, idx: usize) -> bool {
+        let Some(from) = self.groups.iter().position(|group| group.id == id) else {
+            return false;
+        };
+        let to = idx.min(self.groups.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let group = self.groups.remove(from);
+        self.groups.insert(to, group);
+        self.structure_dirty = true;
+        true
+    }
+
     pub fn shift_anim_t(&self) -> f64 {
         let Some(anim) = &self.shift_anim else {
             return 1.0;
@@ -781,6 +800,16 @@ impl GroupRow {
         let Some(g) = self.groups.iter_mut().find(|g| g.id == group_id) else {
             return false;
         };
+        if !g.tabs().iter().any(|tab| tab.id == tab_id) {
+            return false;
+        }
+        // Selecting the tab already visible is still a valid address.  The
+        // shell uses this boolean as a stale-target guard before it writes
+        // durable focus, so `false` must mean "the group/tab does not
+        // exist", not merely "nothing needed repainting".
+        if g.active_tab_id() == tab_id {
+            return true;
+        }
         if !g.set_active_tab(tab_id) {
             return false;
         }
@@ -2409,6 +2438,28 @@ mod tests {
         let g1 = make_group(200, &[3]);
         let mut row = GroupRow::new(vec![g0, g1]);
         assert!(!row.transfer_tab(0, 1, 999, 0));
+    }
+
+    #[test]
+    fn active_tab_address_must_exist_even_when_the_bar_is_stale() {
+        let stale = WindowGroup::new(
+            100,
+            vec![(
+                TabDescriptor::new(2, "surviving"),
+                TileContent::Stub {
+                    kind: crate::widget::AppKind::Settings,
+                    label: "surviving".into(),
+                },
+            )],
+            1,
+            WindowWidth::Normal,
+        );
+        let mut row = GroupRow::new(vec![stale]);
+
+        assert!(
+            !row.set_group_active_tab(100, 1),
+            "an active id left behind by a close is not a valid focus target"
+        );
     }
 
     #[test]
