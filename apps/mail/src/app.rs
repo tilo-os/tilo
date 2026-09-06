@@ -193,11 +193,10 @@ pub struct MailApp {
     awaiting_engine: bool,
     resource_refresh_invocation: Option<qos_actions::InvocationId>,
     resource_refresh_result: Option<qos_actions::InvocationUpdate>,
-    /// A resource/action open first changes the local view through the view
-    /// operation door, then the next mutable sync records the same read action
-    /// as a direct row open. This keeps navigation immediate without silently
-    /// exempting global-search and agent-driven opens from normal mail
-    /// semantics.
+    /// A normal resource/action open first changes the local view through the
+    /// view operation door, then the next mutable sync records the same read
+    /// action as a direct row open. The separate explicit inspection operation
+    /// intentionally never fills this slot.
     pending_reveal_read: Option<MessageId>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
@@ -315,6 +314,24 @@ impl MailApp {
     pub fn prime_detail_shot(&mut self) {
         self.nav.show_detail();
         self.nav.snap();
+        self.dirty = true;
+    }
+
+    /// Open an unread sample message through the same explicit read-state
+    /// neutral path that agents and Ctrl+K use, so visual review covers the
+    /// persistent preview indicator rather than relying only on a unit test.
+    pub fn prime_preview_shot(&mut self) {
+        let id = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .find_map(|message| (!message.read).then_some(message.id));
+        if let Some(id) = id {
+            self.shared.borrow_mut().reveal_message(id, true);
+            self.process_intents();
+        }
         self.dirty = true;
     }
 
@@ -2633,10 +2650,24 @@ impl Widget for MailApp {
                 let id = id
                     .parse::<crate::model::MessageId>()
                     .map_err(|_| "invalid message id")?;
-                if !self.shared.borrow_mut().reveal_message(id) {
+                if !self.shared.borrow_mut().reveal_message(id, false) {
                     return Err("message is no longer loaded".into());
                 }
                 self.pending_reveal_read = Some(id);
+                self.process_intents();
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MailOperation::InspectMessage { id },
+            ) => {
+                let id = id
+                    .parse::<crate::model::MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().reveal_message(id, true) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.shared.borrow_mut().status =
+                    Some("Previewing without changing this message’s read state".into());
                 self.process_intents();
             }
             (qos_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
@@ -3294,9 +3325,14 @@ impl Widget for MailApp {
                     AccessNode::new(Role::Document)
                         .with_name(format!("Reading: {}", current.subject))
                         .with_description(format!(
-                            "Current message from {}; {message_count} message{} in this conversation",
+                            "Current message from {}; {message_count} message{} in this conversation{}",
                             current.from.display(),
-                            if message_count == 1 { "" } else { "s" }
+                            if message_count == 1 { "" } else { "s" },
+                            if st.inspection == Some(current.id) {
+                                "; previewing without changing its read state"
+                            } else {
+                                ""
+                            },
                         ))
                         .with_children({
                             let mut reader_children = vec![
@@ -4283,6 +4319,63 @@ mod tests {
         assert!(
             app.take_committed_action().is_some(),
             "mark-read remains a replayable collaborative action"
+        );
+    }
+
+    #[test]
+    fn explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact() {
+        let (mut app, mut doc) = app();
+        let id = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .find(|message| !message.read)
+            .map(|message| message.id)
+            .expect("sample contains an unread message");
+        let payload = serde_json::to_vec(&crate::actions::MailOperation::InspectMessage {
+            id: id.to_string(),
+        })
+        .unwrap();
+        let heads_before_preview = doc.get_heads();
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.selected_message(), Some(id));
+        assert!(
+            !app.shared.borrow().mailbox.get(id).unwrap().read,
+            "preview is read-state neutral before sync"
+        );
+        assert_eq!(doc.get_heads(), heads_before_preview);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            !app.shared.borrow().mailbox.get(id).unwrap().read,
+            "unlike Open message, explicit preview never queues mark-read"
+        );
+        assert!(
+            app.take_committed_action().is_none(),
+            "a read-state-neutral preview creates no collaborative action"
+        );
+        let semantics = app.accessibility().expect("reader accessibility");
+        let reader = semantics
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Document)
+            .expect("reader document");
+        assert!(
+            reader
+                .description
+                .as_deref()
+                .is_some_and(|text| text.contains("without changing its read state")),
+            "assistive technology receives the same explicit preview distinction"
         );
     }
 
