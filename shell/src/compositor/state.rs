@@ -2410,7 +2410,12 @@ impl CompositorHandler for State {
         // scale of the *output it is on*, not one session-wide number,
         // since a docked laptop has two different right answers. Runs for
         // every surface so any HiDPI-aware client with a `wp_fractional_scale_v1` object learns its scale. `set_preferred_scale` is idempotent, only emitting a wire event on real change, and stores the value even before the client creates the object (smithay replays it on `get_fractional_scale`).
-        let scale = self.surface_scale(crate::compositor::state::surface_id(surface));
+        // The cache is keyed by [`surface_id`], which includes the client
+        // index. Using the bare Wayland object id worked only for the first
+        // client and made a second client's surface fall back to the
+        // session-wide scale after moving between monitors.
+        let surface_id = crate::compositor::state::surface_id(surface);
+        let scale = self.surface_scale(surface_id);
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -2418,7 +2423,6 @@ impl CompositorHandler for State {
         });
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
-        let surface_id = crate::compositor::state::surface_id(surface);
         let is_shared = self
             .workspace_tree
             .workspaces

@@ -18,7 +18,7 @@ pub use drm::DrmBackend;
 pub use headless::HeadlessBackend;
 pub use winit::WinitBackend;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct OutputId(pub u32);
 
 #[derive(Clone, Debug)]

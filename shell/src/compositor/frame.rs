@@ -1851,6 +1851,16 @@ impl FrameBuilder {
             .then_some((keyboard.surface_id(), rect))
     }
 
+    /// The compositor-owned keyboard's painted rectangle, if it is currently
+    /// visible. Native output membership uses this rather than the focused
+    /// app's rectangle: the keyboard is its own Wayland surface and may move
+    /// to a different output as focus changes.
+    pub fn osk_surface_rect(&self) -> Option<(u64, Rect)> {
+        let keyboard = self.osk_overlay.as_ref()?;
+        (self.osk_active && keyboard.is_mapped())
+            .then_some((keyboard.surface_id(), keyboard.get_rect()))
+    }
+
     pub fn theme(&self) -> &Theme {
         &self.theme
     }
