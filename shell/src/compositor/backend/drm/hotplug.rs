@@ -227,6 +227,39 @@ mod tests {
     }
 
     #[test]
+    fn fake_hybrid_cards_replug_without_disturbing_the_other_gpu() {
+        // Deterministic fake connector snapshots for a normal hybrid laptop:
+        // the internal panel belongs to one card and the dock connector to
+        // another.  Both happen to use DRM connector handle 10, which is why
+        // the `(device, connector)` identity is load-bearing.
+        let panel = conn(101, 10, (1920, 1080));
+        let dock = conn(202, 10, (2560, 1440));
+        let mut registry = super::super::outputs::OutputRegistry::new();
+        let panel_id = registry.intern(panel.key);
+        let dock_id = registry.intern(dock.key);
+        assert_eq!((panel_id, dock_id), (OutputId(0), OutputId(1)));
+        let live_outputs = [
+            live(101, 10, panel_id.0, (1920, 1080)),
+            live(202, 10, dock_id.0, (2560, 1440)),
+        ];
+
+        let unplug = plan(&live_outputs, &[panel]);
+        assert_eq!(unplug.removed, vec![OutputId(1)]);
+        assert!(unplug.added.is_empty());
+        assert!(unplug.remoded.is_empty());
+
+        // The panel remains live throughout the dock cycle, so its wl_output
+        // identity is untouched.  When the connector returns, the runtime
+        // asks its OutputRegistry for the existing key and restores id 1.
+        assert_eq!(registry.intern(dock.key), dock_id);
+        let after_unplug = [live(101, 10, panel_id.0, (1920, 1080))];
+        let replug = plan(&after_unplug, &[panel, dock]);
+        assert_eq!(replug.added, vec![dock]);
+        assert!(replug.removed.is_empty());
+        assert!(replug.remoded.is_empty());
+    }
+
+    #[test]
     fn everything_unplugged_removes_everything() {
         // A dock pulled out. All outputs go; the compositor keeps serving
         // its socket headless rather than exiting.

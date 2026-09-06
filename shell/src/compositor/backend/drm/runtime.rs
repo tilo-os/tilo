@@ -7,7 +7,8 @@
 //! [`super::gestures`]), which is what keeps them testable — none of this
 //! runs under `cargo test`. `DrmRuntime::new` fails cleanly with `Err` rather than panicking when there is no seat.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -37,7 +38,7 @@ use winit::keyboard::{
 };
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
-use super::devices::{ModeInfo, filter_kms_nodes, order_by_connected_connectors};
+use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
 #[cfg(test)]
 use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
@@ -49,7 +50,9 @@ use super::input_config::{
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
-    CardHandle, CursorPlanes, DrmScanout, ScanoutBuild, discover_icc_profiles, open_all_scanouts,
+    CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DrmScanout, ScanoutBuild,
+    device_id_from_dev_t, discover_icc_profiles, physical_card_identity,
+    resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::{
@@ -161,15 +164,56 @@ pub struct DrmDispatchState {
     pub session: Option<SessionState>,
     pub outputs: OutputRegistry,
     pub events: Vec<BackendEvent>,
-    /// The primary card, held open on the loop thread for the whole
-    /// session — libseat refuses a second `open` of an already-open node, so this is the only way a later-plugged display can be enumerated; `None` when headless.
-    pub card: Option<CardHandle>,
+    /// Every KMS card this seat can use, held open on the loop thread for
+    /// the entire session.  A card owns the CRTCs for only its own
+    /// connectors, so retaining just the startup winner strands connectors
+    /// on a hybrid GPU or dock.  The map key is the card's `dev_t`, the same
+    /// device component used in [`DrmOutputKey`].
+    pub cards: BTreeMap<u64, CardHandle>,
+    /// A clone of the active libseat session used only to acquire a card
+    /// announced after startup.  The runtime keeps the original alive; this
+    /// clone lets the udev callback add a KMS device without a side channel.
+    seat: Option<LibSeatSession>,
+    /// Cards no longer eligible for scanout, but whose original libseat fd
+    /// cannot be closed until the presenter has dropped its duplicate scanout
+    /// fds.  A udev `Removed` therefore moves a card here instead of simply
+    /// dropping it from [`Self::cards`].
+    retiring_cards: BTreeMap<u64, CardHandle>,
+    /// A card can reappear before the presenter acknowledges removal of its
+    /// former scanouts.  Retain its `Added` path and open it only after the
+    /// original libseat device was closed, avoiding a forbidden second
+    /// `Session::open` on one card node.
+    deferred_card_adds: BTreeMap<u64, (u64, PathBuf)>,
+    /// Presenter acknowledgements for card teardown.  The sender travels in
+    /// the reconfigure command; the receiver is intentionally loop-thread
+    /// owned because `LibSeatSession` is not sent to the render thread.
+    card_removal_ack_sender: Option<Sender<u64>>,
+    card_removal_acks: Option<Receiver<u64>>,
+    /// A failed `Session::close` leaves libseat's device state uncertain.
+    /// Do not guess by opening that path again in this session; only a fresh
+    /// compositor/libseat session may safely recover it.
+    failed_card_close_paths: BTreeSet<PathBuf>,
+    /// Same fail-closed guard for a physical card which re-enumerates under
+    /// another `cardN` path and dev_t before a session restart.
+    failed_card_close_identities: BTreeSet<String>,
+    /// Without a stable physical identity, no later card node can be proven
+    /// distinct from the failed lease. Block all new opens until restart.
+    unidentified_card_close_failure: bool,
+    /// Pure ownership state mirroring `cards`/`retiring_cards`; it makes the
+    /// remove → presenter ack → libseat close → deferred re-add ordering
+    /// explicit and independently testable.
+    card_leases: CardLeaseLifecycle,
     /// Profiles already parsed by the ICC worker and proven capable of
     /// producing an RGBA8 output transform. Capability publication reads only
     /// this cache, so directory/profile I/O never stalls the compositor loop.
     pub color_profiles: BTreeMap<String, String>,
     /// Every output currently being driven, in `OutputId` order — mirrors what the presenter owns (scanouts live on the render thread).
     pub live: Vec<LiveEntry>,
+    /// Every physically connected output from the previous rescan, including
+    /// outputs disabled in persistent intent. This is intentionally separate
+    /// from `live`: a disabled dock connector still needs a fresh Settings
+    /// capability snapshot when it is plugged or removed.
+    capability_topology: BTreeSet<DrmOutputKey>,
     /// Channel to whoever owns the scanouts — the presenter once split off, the backend itself before that.
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
@@ -228,7 +272,10 @@ pub struct DrmDispatchState {
 pub struct LiveEntry {
     pub key: DrmOutputKey,
     pub id: OutputId,
+    /// Raw KMS label retained for libinput's `output_name` metadata.
     pub connector_name: String,
+    /// Collision-resolved key used for display persistence and layout.
+    pub config_key: String,
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
@@ -252,6 +299,9 @@ pub enum ScanoutCommand {
         remove: Vec<OutputId>,
         add: Vec<ScanoutEntry>,
         outputs: Vec<Output>,
+        /// Sent only after the presenter dropped every removed scanout.  The
+        /// loop thread then closes the matching original libseat fd.
+        removal_ack: Option<(u64, Sender<u64>)>,
     },
     /// The session lost the hardware: stop presenting entirely.
     Pause,
@@ -262,29 +312,275 @@ pub enum ScanoutCommand {
     SetCursorSize(u32),
 }
 
+/// The ownership state for one card across a udev remove/re-add race.  This
+/// tiny state machine is deliberately fd-free so its ordering can be tested
+/// without libseat or a presenter thread; the runtime keeps the actual
+/// `CardHandle`s in the maps beside it.
+#[derive(Debug, Default)]
+struct CardLeaseLifecycle {
+    active: BTreeSet<u64>,
+    retiring: BTreeSet<u64>,
+    deferred_readds: BTreeSet<u64>,
+    failed_closes: BTreeSet<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardLeaseAction {
+    Open,
+    AlreadyOpen,
+    DeferReadd,
+    DetachPresenter,
+    CloseSessionFd,
+    ReopenDeferred,
+    BlockedByCloseFailure,
+    Noop,
+}
+
+impl CardLeaseLifecycle {
+    fn from_active(active: impl IntoIterator<Item = u64>) -> Self {
+        Self {
+            active: active.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    fn add_requested(&mut self, device_id: u64) -> CardLeaseAction {
+        if self.failed_closes.contains(&device_id) {
+            CardLeaseAction::BlockedByCloseFailure
+        } else if self.retiring.contains(&device_id) {
+            self.deferred_readds.insert(device_id);
+            CardLeaseAction::DeferReadd
+        } else if self.active.contains(&device_id) {
+            CardLeaseAction::AlreadyOpen
+        } else {
+            CardLeaseAction::Open
+        }
+    }
+
+    fn opened(&mut self, device_id: u64) {
+        self.active.insert(device_id);
+    }
+
+    fn remove_requested(&mut self, device_id: u64) -> CardLeaseAction {
+        if self.active.remove(&device_id) {
+            self.retiring.insert(device_id);
+            CardLeaseAction::DetachPresenter
+        } else {
+            CardLeaseAction::Noop
+        }
+    }
+
+    fn presenter_detached(&self, device_id: u64) -> CardLeaseAction {
+        self.retiring
+            .contains(&device_id)
+            .then_some(CardLeaseAction::CloseSessionFd)
+            .unwrap_or(CardLeaseAction::Noop)
+    }
+
+    fn session_close_finished(&mut self, device_id: u64, succeeded: bool) -> CardLeaseAction {
+        if !self.retiring.remove(&device_id) {
+            return CardLeaseAction::Noop;
+        }
+        let had_deferred_readd = self.deferred_readds.remove(&device_id);
+        if succeeded && had_deferred_readd {
+            CardLeaseAction::ReopenDeferred
+        } else {
+            if !succeeded {
+                self.failed_closes.insert(device_id);
+            }
+            CardLeaseAction::Noop
+        }
+    }
+}
+
+/// Hardware part of a seat master handoff. Kept this small so the all-card
+/// distribution policy can be proven with fakes while [`CardHandle`] remains
+/// the only real DRM implementation.
+trait KmsMasterControl {
+    fn release_master(&self);
+    fn acquire_master(&self);
+}
+
+impl KmsMasterControl for CardHandle {
+    fn release_master(&self) {
+        CardHandle::drop_master(self);
+    }
+
+    fn acquire_master(&self) {
+        CardHandle::acquire_master(self);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MasterAction {
+    Release,
+    Acquire,
+}
+
+/// Apply a DRM-master transition to every retained seat GPU. The caller owns
+/// sequencing with `PauseScanout`/`Resume`; this helper's narrow job is to
+/// make "all cards" non-accidental and unit-testable.
+fn apply_master_action<'a, T: KmsMasterControl + 'a>(
+    cards: impl IntoIterator<Item = &'a T>,
+    action: MasterAction,
+) {
+    for card in cards {
+        match action {
+            MasterAction::Release => card.release_master(),
+            MasterAction::Acquire => card.acquire_master(),
+        }
+    }
+}
+
+/// A removed card stays libseat-owned until the presenter drops its duplicate
+/// scanout fds. A VT pause in that interval must release its DRM master too;
+/// a resume intentionally reacquires only active cards.
+fn release_masters_for_pause<'a, T: KmsMasterControl + 'a>(
+    active: impl IntoIterator<Item = &'a T>,
+    retiring: impl IntoIterator<Item = &'a T>,
+) {
+    apply_master_action(active.into_iter().chain(retiring), MasterAction::Release);
+}
+
+/// Probe every retained card, then resolve connector keys over the *whole*
+/// seat before looking up display intent.  Per-card configuration lookup is
+/// wrong for a hybrid laptop because both cards may legitimately have an
+/// `HDMI-A-1`; this one path is shared by startup, hotplug, Settings
+/// publication and transaction validation.
+fn configured_connectors(
+    cards: &BTreeMap<u64, CardHandle>,
+) -> BTreeMap<u64, Vec<ConnectorSnapshot>> {
+    let mut snapshots: BTreeMap<u64, Vec<_>> = cards
+        .iter()
+        .map(|(&device_id, card)| (device_id, card.connected()))
+        .collect();
+    let config = settings_store::hardware::DisplayConfig::load_effective();
+    let keys = resolve_connector_config_keys(
+        snapshots.iter().flat_map(|(&device_id, outputs)| {
+            let card_identity = cards
+                .get(&device_id)
+                .map_or("drm-unknown", CardHandle::config_identity);
+            outputs.iter().map(move |output| ConnectorKeyCandidate {
+                key: DrmOutputKey {
+                    device: device_id,
+                    connector: output.connector_id,
+                },
+                connector_name: &output.connector_name,
+                card_identity,
+            })
+        }),
+        &config,
+    );
+    for (&device_id, outputs) in &mut snapshots {
+        for output in outputs {
+            let raw = output.connector_name.clone();
+            let config_key = keys
+                .get(&DrmOutputKey {
+                    device: device_id,
+                    connector: output.connector_id,
+                })
+                .cloned()
+                // Every entry above creates a candidate. Retaining the raw
+                // label is just defensive for a future partial probe.
+                .unwrap_or(raw);
+            CardHandle::apply_output_config(output, config_key, &config);
+        }
+    }
+    snapshots
+}
+
+/// Build the Settings capability contract from the same topology that chose
+/// scanout configuration keys. Disabled sinks stay visible here so users can
+/// independently re-enable a colliding connector.
+fn display_capabilities(
+    cards: &BTreeMap<u64, CardHandle>,
+    profiles: &BTreeMap<String, String>,
+) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
+    let snapshots = configured_connectors(cards);
+    let mut outputs: Vec<_> = cards
+        .iter()
+        .flat_map(|(&device_id, card)| {
+            card.display_capabilities(
+                snapshots.get(&device_id).map_or(&[], Vec::as_slice),
+                profiles,
+            )
+        })
+        .collect();
+    outputs.sort_by(|a, b| a.descriptor.connector.cmp(&b.descriptor.connector));
+    outputs
+}
+
+/// Rebind already-modeset entries to the collision-resolved key from the
+/// latest full-card topology. A connector can stay on the same CRTC and mode
+/// while a same-named peer appears; it still must switch its settings key
+/// before layout/primary/scale intent is read.
+fn reconcile_live_config_keys(
+    live: &mut [LiveEntry],
+    keys: &BTreeMap<DrmOutputKey, String>,
+) -> bool {
+    let mut changed = false;
+    for entry in live {
+        if let Some(key) = keys.get(&entry.key)
+            && entry.config_key != *key
+        {
+            entry.config_key.clone_from(key);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Record a physical capability topology independently from active scanout.
+/// The return value is the publish trigger for a disabled connector/card
+/// replug where `hotplug::plan` quite correctly has no modeset work.
+fn reconcile_capability_topology(
+    previous: &mut BTreeSet<DrmOutputKey>,
+    current: BTreeSet<DrmOutputKey>,
+) -> bool {
+    if *previous == current {
+        false
+    } else {
+        *previous = current;
+        true
+    }
+}
+
 impl DrmDispatchState {
     /// Build the initial dispatch state from everything [`DrmRuntime::new`]
-    /// gathered before it — the seat's active session, the primary card (if
-    /// scanout came up), and the persisted settings. Every other field
+    /// gathered before it — the seat's active session, every retained KMS
+    /// card, and the persisted settings. Every other field
     /// starts at its zero value; [`Self::finalize_startup_scanouts`] is
     /// what actually populates `live`/`output_meta`/`pointer`. Extracted
     /// from that constructor to keep it a readable top-level sequence.
     fn new(
         session_state: SessionState,
-        card: Option<CardHandle>,
+        cards: BTreeMap<u64, CardHandle>,
+        seat: LibSeatSession,
         input: InputSettings,
         accessibility: AccessibilityInputSettings,
         scale_override: Option<f64>,
         commands_tx: Sender<ScanoutCommand>,
         keyboard: Option<KeyboardXkb>,
     ) -> Self {
+        let (card_removal_ack_sender, card_removal_acks) = channel();
+        let card_leases = CardLeaseLifecycle::from_active(cards.keys().copied());
         Self {
             session: Some(session_state),
             outputs: OutputRegistry::new(),
             events: Vec::new(),
-            card,
+            cards,
+            seat: Some(seat),
+            retiring_cards: BTreeMap::new(),
+            deferred_card_adds: BTreeMap::new(),
+            card_removal_ack_sender: Some(card_removal_ack_sender),
+            card_removal_acks: Some(card_removal_acks),
+            failed_card_close_paths: BTreeSet::new(),
+            failed_card_close_identities: BTreeSet::new(),
+            unidentified_card_close_failure: false,
+            card_leases,
             color_profiles: BTreeMap::new(),
             live: Vec::new(),
+            capability_topology: BTreeSet::new(),
             commands: Some(commands_tx),
             input,
             accessibility,
@@ -355,9 +651,7 @@ impl DrmDispatchState {
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
     fn publish_display_snapshot(&self) {
-        let Some(card) = self.card.as_ref() else {
-            return;
-        };
+        let outputs = display_capabilities(&self.cards, &self.color_profiles);
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: settings_store::hardware::unix_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -365,18 +659,20 @@ impl DrmDispatchState {
             publisher_start_ticks:
                 settings_store::hardware::process_start_ticks(std::process::id())
                     .unwrap_or_default(),
-            outputs: card.display_capabilities(&self.color_profiles),
+            outputs,
         };
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
         }
     }
 
-    /// Send a command to whoever owns the scanouts — silently dropped when there's no channel (headless) or the far end is gone (render thread died, reported separately).
-    fn command(&self, cmd: ScanoutCommand) {
-        if let Some(tx) = self.commands.as_ref() {
-            let _ = tx.send(cmd);
-        }
+    /// Send a command to whoever owns the scanouts.  `false` means there is
+    /// no owner: either a headless test/backend or a presenter that already
+    /// exited and therefore dropped every scanout fd it held.
+    fn command(&self, cmd: ScanoutCommand) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|tx| tx.send(cmd).is_ok())
     }
 
     /// Re-ask the hardware what is connected and reconcile.
@@ -384,23 +680,55 @@ impl DrmDispatchState {
     /// Every udev edge lands here, including no-op ones — a `Changed` event
     /// fires on every DPMS transition and EDID re-read, and re-modesetting on those would flash the panel for nothing. [`hotplug::plan`] tells the two apart.
     pub fn rescan_outputs(&mut self, reason: &str) {
-        let Some(card) = self.card.as_ref() else {
-            return;
-        };
-        let device_id = card.device_id();
-        let snapshots = card.connected();
+        self.rescan_outputs_with_removal_ack(reason, None);
+    }
+
+    /// As [`Self::rescan_outputs`], with an acknowledgement sent by the
+    /// presenter after it has dropped the scanouts for a removed card.  The
+    /// card's original libseat fd remains in `retiring_cards` until that
+    /// acknowledgement reaches the loop thread.
+    fn rescan_outputs_with_removal_ack(
+        &mut self,
+        reason: &str,
+        removal_ack: Option<(u64, Sender<u64>)>,
+    ) {
+        let snapshots = configured_connectors(&self.cards);
+        let config_keys: BTreeMap<_, _> = snapshots
+            .iter()
+            .flat_map(|(&device_id, snapshots)| {
+                snapshots.iter().map(move |snapshot| {
+                    (
+                        DrmOutputKey {
+                            device: device_id,
+                            connector: snapshot.connector_id,
+                        },
+                        snapshot.config_key.clone(),
+                    )
+                })
+            })
+            .collect();
+        let capability_topology_changed = reconcile_capability_topology(
+            &mut self.capability_topology,
+            config_keys.keys().copied().collect(),
+        );
+        let live_config_changed = reconcile_live_config_keys(&mut self.live, &config_keys);
         let connected: Vec<ConnectedOutput> = snapshots
             .iter()
-            .map(|s| {
-                let (w, h) = s.mode.size();
-                ConnectedOutput {
-                    key: DrmOutputKey {
-                        device: device_id,
-                        connector: s.connector_id,
-                    },
-                    size: (u32::from(w), u32::from(h)),
-                    mm: s.physical_mm,
-                }
+            .flat_map(|(&device_id, snapshots)| {
+                snapshots
+                    .iter()
+                    .filter(|snapshot| snapshot.enabled)
+                    .map(move |s| {
+                        let (w, h) = s.mode.size();
+                        ConnectedOutput {
+                            key: DrmOutputKey {
+                                device: device_id,
+                                connector: s.connector_id,
+                            },
+                            size: (u32::from(w), u32::from(h)),
+                            mm: s.physical_mm,
+                        }
+                    })
             })
             .collect();
         let live_view: Vec<LiveOutput> = self
@@ -414,7 +742,39 @@ impl DrmDispatchState {
             .collect();
         let plan = hotplug::plan(&live_view, &connected);
         if plan.is_noop() {
-            tracing::debug!(reason, "DRM hotplug: nothing changed");
+            if let Some((device_id, ack)) = removal_ack {
+                // The card had no presenter-owned scanouts, so there is
+                // nothing to await.  Use the same loop-thread completion
+                // path as the normal presenter acknowledgement.
+                let _ = ack.send(device_id);
+            }
+            if live_config_changed {
+                // No modeset is necessary, but the same physical output now
+                // reads a different per-card key. Re-layout and tell the
+                // presenter/client output table before the next frame.
+                self.relayout_outputs();
+                self.command(ScanoutCommand::Reconfigure {
+                    remove: Vec::new(),
+                    add: Vec::new(),
+                    outputs: self.output_table(),
+                    removal_ack: None,
+                });
+                self.outputs_changed = true;
+                self.push(BackendEvent::OutputsChanged);
+                self.push(BackendEvent::Redraw);
+            }
+            if capability_topology_changed || live_config_changed {
+                // `connected` intentionally excludes disabled outputs, but
+                // Settings must still see a disabled dock connector/card as
+                // it appears or disappears so it can be re-enabled.
+                self.publish_display_snapshot();
+            }
+            tracing::debug!(
+                reason,
+                live_config_changed,
+                capability_topology_changed,
+                "DRM hotplug: no scanout modeset required"
+            );
             return;
         }
         tracing::info!(
@@ -433,8 +793,14 @@ impl DrmDispatchState {
         let surviving: Vec<OutputId> = self.live.iter().map(|l| l.id).collect();
         self.hw_cursor.retain_outputs(&surviving);
 
-        // Bring up everything new, avoiding the crtcs the survivors hold.
-        let mut used: Vec<_> = self.live.iter().map(|l| l.crtc).collect();
+        // Bring up everything new, avoiding the CRTCs survivors hold on
+        // *that same card*.  CRTC handle values are card-local, so a flat
+        // list would incorrectly make card1's CRTC 42 unavailable merely
+        // because card0 also has a CRTC 42.
+        let mut used: BTreeMap<u64, Vec<_>> = BTreeMap::new();
+        for live in &self.live {
+            used.entry(live.key.device).or_default().push(live.crtc);
+        }
         let to_add: Vec<&ConnectedOutput> = plan
             .added
             .iter()
@@ -442,14 +808,19 @@ impl DrmDispatchState {
             .collect();
         let mut builds: Vec<ScanoutBuild> = Vec::new();
         for want in to_add {
-            let Some(snapshot) = snapshots
-                .iter()
-                .find(|s| s.connector_id == want.key.connector)
-            else {
+            let Some(card) = self.cards.get(&want.key.device) else {
                 continue;
             };
-            if let Some(build) = card.bring_up(snapshot, &used) {
-                used.push(build.crtc);
+            let Some(snapshot) = snapshots.get(&want.key.device).and_then(|snapshots| {
+                snapshots
+                    .iter()
+                    .find(|s| s.connector_id == want.key.connector)
+            }) else {
+                continue;
+            };
+            let used_on_card = used.entry(want.key.device).or_default();
+            if let Some(build) = card.bring_up(snapshot, used_on_card) {
+                used_on_card.push(build.crtc);
                 builds.push(build);
             }
         }
@@ -457,11 +828,21 @@ impl DrmDispatchState {
         let added_entries = self.adopt_builds(builds);
         self.relayout_outputs();
         let outputs = self.output_table();
-        self.command(ScanoutCommand::Reconfigure {
+        let send_failure_ack = removal_ack
+            .as_ref()
+            .map(|(device_id, ack)| (*device_id, ack.clone()));
+        if !self.command(ScanoutCommand::Reconfigure {
             remove,
             add: added_entries,
             outputs,
-        });
+            removal_ack,
+        }) && let Some((device_id, ack)) = send_failure_ack
+        {
+            // If the receiver is gone, its presenter (and all duplicate card
+            // fds) is gone too.  Complete teardown rather than holding the
+            // original libseat device forever and blocking a later re-add.
+            let _ = ack.send(device_id);
+        }
         self.outputs_changed = true;
         // A changed output set changes the scene size and the pointer's extent — both must reach the compositor before it paints again.
         self.push(BackendEvent::OutputsChanged);
@@ -490,6 +871,7 @@ impl DrmDispatchState {
                 key,
                 id,
                 connector_name: build.connector_name,
+                config_key: build.config_key,
                 size: build.scanout.size(),
                 physical_mm: build.physical_mm,
                 crtc: build.crtc,
@@ -500,6 +882,7 @@ impl DrmDispatchState {
             });
             entries.push(ScanoutEntry {
                 id,
+                device_id: build.device_id,
                 position: (0, 0),
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
@@ -519,17 +902,14 @@ impl DrmDispatchState {
         let config = settings_store::hardware::DisplayConfig::load_effective();
         self.live.sort_by_key(|l| {
             (
-                !config
-                    .outputs
-                    .get(&l.connector_name)
-                    .is_some_and(|c| c.primary),
+                !config.outputs.get(&l.config_key).is_some_and(|c| c.primary),
                 l.id.0,
             )
         });
         for entry in &mut self.live {
             entry.transform = config
                 .outputs
-                .get(&entry.connector_name)
+                .get(&entry.config_key)
                 .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
                     c.transform
                 });
@@ -547,7 +927,7 @@ impl DrmDispatchState {
             .map(|(entry, fallback)| {
                 config
                     .outputs
-                    .get(&entry.connector_name)
+                    .get(&entry.config_key)
                     .map_or(*fallback, |c| (c.x, c.y))
             })
             .collect();
@@ -555,13 +935,12 @@ impl DrmDispatchState {
             let Some(target) = self
                 .live
                 .get(index)
-                .and_then(|entry| config.outputs.get(&entry.connector_name))
+                .and_then(|entry| config.outputs.get(&entry.config_key))
                 .and_then(|c| c.mirror_of.as_deref())
             else {
                 continue;
             };
-            let Some(target_index) = self.live.iter().position(|l| l.connector_name == target)
-            else {
+            let Some(target_index) = self.live.iter().position(|l| l.config_key == target) else {
                 continue;
             };
             let Some(&target_position) = positions.get(target_index) else {
@@ -586,7 +965,7 @@ impl DrmDispatchState {
         }
         for (entry, position) in self.live.iter_mut().zip(&positions) {
             entry.position = *position;
-            entry.scale = config.outputs.get(&entry.connector_name).map_or_else(
+            entry.scale = config.outputs.get(&entry.config_key).map_or_else(
                 || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
                 |c| c.scale,
             );
@@ -617,7 +996,7 @@ impl DrmDispatchState {
                         transform: l.transform,
                         color_profile: config
                             .outputs
-                            .get(&l.connector_name)
+                            .get(&l.config_key)
                             .and_then(|output| output.color_profile.as_ref())
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
@@ -660,22 +1039,25 @@ impl DrmDispatchState {
 
     fn perform(&mut self, action: SessionAction) {
         match action {
-            SessionAction::PauseScanout => self.command(ScanoutCommand::Pause),
+            SessionAction::PauseScanout => {
+                self.command(ScanoutCommand::Pause);
+            }
             SessionAction::DropMaster => {
-                if let Some(card) = self.card.as_ref() {
+                if !self.cards.is_empty() || !self.retiring_cards.is_empty() {
                     // The Pause command is asynchronous once the scanouts
                     // live on the presenter thread. Holding this gate until
                     // the release completes closes the window in which a
                     // page flip could race the loss of DRM master.
                     Self::with_presentations_quiesced(self.present_gate.as_ref(), || {
-                        card.drop_master();
+                        release_masters_for_pause(
+                            self.cards.values(),
+                            self.retiring_cards.values(),
+                        );
                     });
                 }
             }
             SessionAction::AcquireMaster => {
-                if let Some(card) = self.card.as_ref() {
-                    card.acquire_master();
-                }
+                apply_master_action(self.cards.values(), MasterAction::Acquire);
             }
             // The remaining three all happen inside the scanouts, which
             // live on the render thread, so they travel together as one ordered `Resume` — splitting would let a frame slip between modeset and unpause.
@@ -788,6 +1170,24 @@ impl DrmDispatchState {
         }
         let id = device.id();
         let output_name = device.output_name().map(str::to_owned);
+        if let Some(output_name) = output_name.as_deref()
+            && self
+                .live
+                .iter()
+                .filter(|output| output.connector_name == output_name)
+                .nth(1)
+                .is_some()
+        {
+            // Libinput's metadata names a connector but carries no DRM card
+            // identity. Do not let iteration order silently bind this touch
+            // device to one of two same-named connectors; touch events use
+            // the documented primary-output fallback below.
+            tracing::warn!(
+                device = %id,
+                output = output_name,
+                "DRM input: touchscreen output association is ambiguous; using primary fallback"
+            );
+        }
         tracing::debug!(
             device = %id,
             output = ?output_name,
@@ -975,6 +1375,7 @@ impl DrmDispatchState {
         match event {
             UdevEvent::Added { device_id, path } => {
                 tracing::info!(?device_id, ?path, "DRM: udev device added");
+                self.add_card(path.as_ref(), device_id_from_dev_t(device_id));
                 self.rescan_outputs("udev device added");
             }
             UdevEvent::Changed { device_id } => {
@@ -983,7 +1384,257 @@ impl DrmDispatchState {
             }
             UdevEvent::Removed { device_id } => {
                 tracing::info!(?device_id, "DRM: udev device removed");
-                self.rescan_outputs("udev device removed");
+                // `device_id` is the node's `dev_t`, the same value used as
+                // our card/output key.  Remove it from the active scanout
+                // map before rescanning, but retain the original libseat fd
+                // until the presenter has acknowledged dropping all of its
+                // duplicate scanout fds.  Dropping `OwnedFd` alone would
+                // leak libseat's tracked Device and make an eGPU re-add fail.
+                self.retire_card(device_id_from_dev_t(device_id));
+            }
+        }
+    }
+
+    /// Begin ordered teardown for one removed KMS card.  The active card map
+    /// must lose the card before the hotplug diff runs, while the separate
+    /// retirement map keeps ownership of the original session fd until its
+    /// presenter duplicates are gone.
+    fn retire_card(&mut self, device_id: u64) {
+        if self.card_leases.remove_requested(device_id) != CardLeaseAction::DetachPresenter {
+            self.rescan_outputs("udev unknown device removed");
+            return;
+        }
+        let Some(card) = self.cards.remove(&device_id) else {
+            // Keep the fd-bearing map and the pure ownership map from ever
+            // drifting silently if a future caller bypasses `add_card`.
+            tracing::warn!(device_id, "DRM: card ownership state had no active handle");
+            self.card_leases.retiring.remove(&device_id);
+            self.rescan_outputs("udev unknown device removed");
+            return;
+        };
+        self.retiring_cards.insert(device_id, card);
+        let removal_ack = self
+            .card_removal_ack_sender
+            .as_ref()
+            .cloned()
+            .map(|ack| (device_id, ack));
+        self.rescan_outputs_with_removal_ack("udev device removed", removal_ack);
+    }
+
+    /// Remember that libseat could not close a device. Reopening it in this
+    /// session is unsafe even if it returns as another card node, so guard by
+    /// both the observed node and the stable physical sysfs identity.
+    fn block_card_after_close_failure(
+        &mut self,
+        device_id: u64,
+        path: &Path,
+        physical_identity: Option<&str>,
+    ) {
+        self.failed_card_close_paths.insert(path.to_path_buf());
+        if let Some(identity) = physical_identity {
+            self.failed_card_close_identities
+                .insert(identity.to_owned());
+        } else {
+            self.unidentified_card_close_failure = true;
+        }
+        self.card_leases.failed_closes.insert(device_id);
+    }
+
+    /// Close exactly one `Session::open` fd and install the same fail-closed
+    /// guard for retirement and duplicate-open cleanup. Smithay removes its
+    /// tracked `libseat::Device` before `close_device` can return an error,
+    /// so retrying an open here could orphan a second lease.
+    fn close_session_card_fd(
+        &mut self,
+        fd: OwnedFd,
+        device_id: u64,
+        path: &Path,
+        physical_identity: Option<&str>,
+        context: &str,
+    ) -> bool {
+        let result = match self.seat.as_mut() {
+            Some(seat) => seat.close(fd).map_err(|error| error.to_string()),
+            None => {
+                drop(fd);
+                Err("no libseat session clone".into())
+            }
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!(device_id, device = %path.display(), context, "DRM: closed libseat card");
+                true
+            }
+            Err(error) => {
+                self.block_card_after_close_failure(device_id, path, physical_identity);
+                tracing::error!(
+                    device_id,
+                    device = %path.display(),
+                    ?physical_identity,
+                    %error,
+                    context,
+                    "DRM: libseat close failed; refusing this physical card until a fresh session"
+                );
+                false
+            }
+        }
+    }
+
+    /// Complete card teardowns acknowledged by the scanout owner.  This is
+    /// called only on the loop thread, where the libseat session lives.
+    ///
+    /// Returns whether a deferred udev add was opened and therefore requires
+    /// a fresh connector rescan.
+    fn finish_retired_cards(&mut self) -> bool {
+        let completed: Vec<u64> = self
+            .card_removal_acks
+            .as_ref()
+            .map(|acks| acks.try_iter().collect())
+            .unwrap_or_default();
+        let mut deferred_adds = Vec::new();
+        for device_id in completed {
+            if self.card_leases.presenter_detached(device_id) != CardLeaseAction::CloseSessionFd {
+                continue;
+            }
+            let Some(card) = self.retiring_cards.remove(&device_id) else {
+                continue;
+            };
+            let card_path = card.path().to_path_buf();
+            let physical_identity = card.physical_identity().map(str::to_owned);
+            let fd = card.into_session_fd();
+            let close_succeeded = self.close_session_card_fd(
+                fd,
+                device_id,
+                &card_path,
+                physical_identity.as_deref(),
+                "retired card",
+            );
+            if self
+                .card_leases
+                .session_close_finished(device_id, close_succeeded)
+                == CardLeaseAction::ReopenDeferred
+                && let Some((readd_device_id, path)) = self.deferred_card_adds.remove(&device_id)
+            {
+                deferred_adds.push((readd_device_id, path));
+            } else if !close_succeeded {
+                self.deferred_card_adds.remove(&device_id);
+            }
+        }
+        for (device_id, path) in &deferred_adds {
+            self.add_card(path, *device_id);
+        }
+        !deferred_adds.is_empty()
+    }
+
+    /// Retain a KMS card announced after startup.  Normal hybrid laptops
+    /// already have both cards when the session begins, but docks and eGPUs
+    /// can create a `cardN` later.  Keeping the fd is also what lets later
+    /// connector edges use the same libseat-granted node rather than trying
+    /// an illegal second `open`.
+    fn add_card(&mut self, path: &Path, udev_device_id: u64) {
+        let physical_identity = physical_card_identity(path);
+        if self.unidentified_card_close_failure
+            || self.failed_card_close_paths.contains(path)
+            || physical_identity
+                .as_ref()
+                .is_some_and(|identity| self.failed_card_close_identities.contains(identity))
+        {
+            tracing::error!(
+                device = %path.display(),
+                udev_device_id,
+                ?physical_identity,
+                "DRM: refusing card re-add after libseat close failure; restart the session"
+            );
+            return;
+        }
+        if let Some((&retiring_device_id, _)) = self
+            .retiring_cards
+            .iter()
+            .find(|(_, card)| card.same_physical_node(path))
+        {
+            // eGPUs and some USB display adapters may return as a new cardN
+            // (and therefore a different dev_t) before the old fd is closed.
+            // Physical identity matching keeps that GPU from receiving a
+            // second libseat open even if it returned as another cardN.
+            self.card_leases.deferred_readds.insert(retiring_device_id);
+            self.deferred_card_adds
+                .insert(retiring_device_id, (udev_device_id, path.to_path_buf()));
+            tracing::debug!(
+                device = %path.display(),
+                udev_device_id,
+                retiring_device_id,
+                "DRM: deferred card re-add until old libseat fd closes"
+            );
+            return;
+        }
+        if self.card_leases.add_requested(udev_device_id) == CardLeaseAction::DeferReadd {
+            // A physical re-add can race the render thread's teardown of the
+            // old card.  Opening now would make libseat track two opens for
+            // one node, so retain the newest path and reopen only after the
+            // presenter acknowledgement reaches `finish_retired_cards`.
+            self.deferred_card_adds
+                .insert(udev_device_id, (udev_device_id, path.to_path_buf()));
+            tracing::debug!(device = %path.display(), udev_device_id, "DRM: deferred card re-add until old libseat fd closes");
+            return;
+        }
+        if self.card_leases.add_requested(udev_device_id) == CardLeaseAction::BlockedByCloseFailure
+        {
+            tracing::error!(
+                device = %path.display(),
+                udev_device_id,
+                "DRM: refusing card re-add after libseat close failure; restart the session"
+            );
+            return;
+        }
+        if self.card_leases.active.contains(&udev_device_id) {
+            tracing::debug!(device = %path.display(), udev_device_id, "DRM: card is already retained");
+            return;
+        }
+        if !is_kms_node(path) || self.cards.values().any(|card| card.path() == path) {
+            return;
+        }
+        let Some(mut seat) = self.seat.clone() else {
+            tracing::debug!(device = %path.display(), "DRM: no seat clone for newly added card");
+            return;
+        };
+        match CardHandle::open(&mut seat, path) {
+            Ok(card) => {
+                let device_id = card.device_id();
+                if device_id != udev_device_id {
+                    // Both identities originate from the same kernel dev_t
+                    // (`fstat(card_fd).st_rdev` and UdevEvent::Added), so a
+                    // mismatch means a racing node replacement. Keep the fd
+                    // identity authoritative for scanout and log the race
+                    // instead of attaching outputs to the wrong key.
+                    tracing::warn!(
+                        device = %path.display(),
+                        udev_device_id,
+                        card_device_id = device_id,
+                        "DRM: added card dev_t changed while opening"
+                    );
+                }
+                if self.cards.contains_key(&device_id) {
+                    tracing::debug!(device = %path.display(), device_id, "DRM: card is already retained");
+                    // `CardHandle::open` used `Session::open` before the
+                    // duplicate identity was detected.  Balance it through
+                    // libseat rather than merely dropping its OwnedFd.
+                    let card_path = card.path().to_path_buf();
+                    let card_physical_identity = card.physical_identity().map(str::to_owned);
+                    let fd = card.into_session_fd();
+                    self.close_session_card_fd(
+                        fd,
+                        device_id,
+                        &card_path,
+                        card_physical_identity.as_deref(),
+                        "duplicate added card",
+                    );
+                    return;
+                }
+                self.cards.insert(device_id, card);
+                self.card_leases.opened(device_id);
+                tracing::info!(device = %path.display(), device_id, "DRM: retained newly added KMS card");
+            }
+            Err(error) => {
+                tracing::warn!(device = %path.display(), %error, "DRM: cannot open added KMS card")
             }
         }
     }
@@ -1283,7 +1934,9 @@ pub struct DrmRuntime {
     pub dispatch: DrmDispatchState,
     /// Kept alive so libseat doesn't close the seat — the notifier is inserted into `event_loop` and its source token lives there.
     session: LibSeatSession,
-    /// KMS card path that successfully acquired at least one scanout.
+    /// KMS card path that supplied the first adopted output.  This remains
+    /// diagnostic/public primary metadata; scanout ownership is in
+    /// [`DrmDispatchState::cards`] and includes every usable card.
     pub primary_gpu: Option<PathBuf>,
     /// Live scanouts — one per connected output. Construction requires at
     /// least one; the vector can become empty later if every display is
@@ -1303,6 +1956,10 @@ pub struct DrmRuntime {
 /// One live output: its public [`OutputId`], top-left position in the combined coordinate space (laid out side-by-side), and the [`DrmScanout`] driving its crtc.
 pub struct ScanoutEntry {
     pub id: OutputId,
+    /// `dev_t` of the KMS card that owns this CRTC.  Page-flip events and
+    /// CRTC handles are scoped to this card, so multi-card presentation must
+    /// drain and route them per device rather than per whole compositor.
+    pub device_id: u64,
     pub position: (i32, i32),
     pub transform: settings_store::hardware::OutputTransform,
     pub color_profile: Option<String>,
@@ -1350,45 +2007,42 @@ pub(crate) fn logical_output_size(
     }
 }
 
-/// Bring up scanout(s) on the first usable GPU, keeping its card fd open as
-/// DRM master. Candidates are already ranked by connected connectors, but a
-/// card can still fail at open or modeset time. Trying the remaining cards is
-/// important on hybrid systems and when firmware exposes an unusable KMS node.
+/// Open every usable seat GPU once and bring up every connector each card can
+/// drive.  `CardHandle` remains on the loop thread for the session lifetime;
+/// per-connector scanouts receive dup'd fds, so libseat never has to grant a
+/// second open for an existing `cardN` during hotplug.
 ///
-/// `open_all_scanouts` opens a card once and modesets every connected
-/// connector, each on its own crtc, sharing a dup'd fd. libseat refuses a
-/// second `open` of the selected node, so the connector-enumeration pass in
-/// [`enumerate_secondary_connectors`] excludes it.
-fn bring_up_first_scanouts(
+/// Card ordering is still meaningful: it determines which output is adopted
+/// first and therefore preserves `OutputId(0)` as the primary-output
+/// fallback.  Unlike the previous "first usable GPU" implementation, a
+/// failure or a connectorless card is local and never suppresses the other
+/// GPUs.
+fn bring_up_all_devices(
     session: &LibSeatSession,
     kms_gpus: &[PathBuf],
-) -> Option<(PathBuf, CardHandle, Vec<ScanoutBuild>)> {
+) -> (
+    BTreeMap<u64, CardHandle>,
+    Option<PathBuf>,
+    Vec<ScanoutBuild>,
+) {
+    let mut cards = BTreeMap::new();
+    let mut card_order = Vec::new();
+    let mut primary_gpu = None;
     for path in kms_gpus {
         eprintln!(
             "nirios compositor: trying KMS scanout device {}",
             path.display()
         );
         let mut scanout_session = session.clone();
-        match open_all_scanouts(&mut scanout_session, path) {
-            Ok((card, builds)) if !builds.is_empty() => {
-                eprintln!(
-                    "nirios compositor: {} live DRM output(s) on {}",
-                    builds.len(),
-                    path.display()
-                );
+        match CardHandle::open(&mut scanout_session, path) {
+            Ok(card) => {
+                let device_id = card.device_id();
                 tracing::info!(
-                    count = builds.len(),
                     device = %path.display(),
-                    "DRM backend: scanout live"
+                    "DRM backend: card retained for multi-card scanout"
                 );
-                return Some((path.clone(), card, builds));
-            }
-            Ok((_card, _)) => {
-                eprintln!(
-                    "nirios compositor: no connected DRM output on {}",
-                    path.display()
-                );
-                tracing::warn!(device = %path.display(), "DRM backend: no connected scanout");
+                cards.insert(device_id, card);
+                card_order.push((device_id, path.clone()));
             }
             Err(error) => {
                 eprintln!(
@@ -1403,32 +2057,39 @@ fn bring_up_first_scanouts(
             }
         }
     }
-    None
-}
-
-/// Connector enumeration on the GPUs scanout does not own (the primary is
-/// held open by [`bring_up_first_scanouts`]). Driving connectors on
-/// secondary GPUs needs a second card fd plus cross-GPU buffer handling, so
-/// this pass is diagnostic-only (logs what's attached). Failures are logged
-/// and skipped, not fatal; `LibSeatSession` is cheap to clone. Extracted
-/// from [`DrmRuntime::new`] for the same reason as
-/// [`bring_up_first_scanouts`].
-fn enumerate_secondary_connectors(
-    session: &LibSeatSession,
-    kms_gpus: Vec<PathBuf>,
-    primary_gpu: &PathBuf,
-) -> Vec<ConnectorInfo> {
-    let enum_gpus: Vec<PathBuf> = kms_gpus
-        .into_iter()
-        .filter(|path| path != primary_gpu)
-        .collect();
-    let mut session_for_enum = session.clone();
-    let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
-    tracing::info!(
-        count = connectors.len(),
-        "DRM backend: enumerated DRM connectors on secondary GPUs (diagnostic; not yet driven)"
-    );
-    connectors
+    // Every card must be open before configuration is selected: a connector
+    // name that looked unique on card0 may collide with one on card1. This is
+    // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
+    let snapshots = configured_connectors(&cards);
+    let mut all_builds = Vec::new();
+    for (device_id, path) in card_order {
+        let Some(card) = cards.get(&device_id) else {
+            continue;
+        };
+        let mut used = Vec::new();
+        let mut builds = Vec::new();
+        for snapshot in snapshots
+            .get(&device_id)
+            .into_iter()
+            .flatten()
+            .filter(|snapshot| snapshot.enabled)
+        {
+            if let Some(build) = card.bring_up(snapshot, &used) {
+                used.push(build.crtc);
+                builds.push(build);
+            }
+        }
+        eprintln!(
+            "nirios compositor: {} live DRM output(s) on {}",
+            builds.len(),
+            path.display()
+        );
+        if primary_gpu.is_none() && !builds.is_empty() {
+            primary_gpu = Some(path);
+        }
+        all_builds.extend(builds);
+    }
+    (cards, primary_gpu, all_builds)
 }
 
 /// Register the three loop-wide event sources: session (VT switch), udev
@@ -1521,20 +2182,17 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // Bring up scanout(s) on the highest-ranked usable GPU, then
-        // diagnostically enumerate whatever is attached to the rest.
-        let Some((primary_gpu, card, scanout_builds)) =
-            bring_up_first_scanouts(&session, &kms_gpus)
-        else {
+        // Retain and drive every usable KMS card.  The CPU bridge renders the
+        // combined scene once, then each card scans its own XRGB dumb buffer;
+        // no unsafe cross-GPU texture import is needed for this path.
+        let (cards, primary_gpu, scanout_builds) = bring_up_all_devices(&session, &kms_gpus);
+        if scanout_builds.is_empty() {
             // `--backend headless` is the explicit display-free mode. A real
             // DRM login that cannot drive a connector must return control to
             // the display manager instead of staying alive behind the stale
             // grey framebuffer left by the greeter.
             return Err(DrmBackendError::NoScanout(kms_gpus));
-        };
-        // Diagnostic-only (logs internally); nothing later in construction
-        // consults the result — see the helper's doc comment.
-        enumerate_secondary_connectors(&session, kms_gpus, &primary_gpu);
+        }
 
         // The session-interface adapter routes libinput's `open`/`close` calls through libseat so it inherits privileged FDs without root.
         let mut libinput_ctx =
@@ -1576,7 +2234,8 @@ impl DrmRuntime {
 
         let mut dispatch = DrmDispatchState::new(
             session_state,
-            Some(card),
+            cards,
+            session.clone(),
             input,
             accessibility,
             scale_override,
@@ -1592,7 +2251,7 @@ impl DrmRuntime {
             event_loop,
             dispatch,
             session,
-            primary_gpu: Some(primary_gpu),
+            primary_gpu,
             scanouts,
             commands: Some(rx),
             last_display_transaction_check: std::time::Instant::now(),
@@ -1698,6 +2357,7 @@ impl DrmRuntime {
             remove: Vec::new(),
             add: Vec::new(),
             outputs,
+            removal_ack: None,
         });
         self.dispatch.outputs_changed = true;
         self.dispatch.push(BackendEvent::OutputsChanged);
@@ -1725,6 +2385,7 @@ impl DrmRuntime {
                 remove: Vec::new(),
                 add: Vec::new(),
                 outputs: self.dispatch.output_table(),
+                removal_ack: None,
             });
             self.dispatch.outputs_changed = true;
             self.dispatch.push(BackendEvent::OutputsChanged);
@@ -1765,15 +2426,11 @@ impl DrmRuntime {
         }
         match transaction.state {
             DisplayTransactionState::Requested => {
-                let descriptors: Vec<_> = self
-                    .dispatch
-                    .card
-                    .as_ref()
-                    .map(|card| card.display_capabilities(&self.dispatch.color_profiles))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|output| output.descriptor)
-                    .collect();
+                let descriptors: Vec<_> =
+                    display_capabilities(&self.dispatch.cards, &self.dispatch.color_profiles)
+                        .into_iter()
+                        .map(|output| output.descriptor)
+                        .collect();
                 if descriptors.is_empty() {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -1830,6 +2487,13 @@ impl DrmRuntime {
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
         let _ = self.event_loop.dispatch(Duration::ZERO, &mut self.dispatch);
+        if self.dispatch.finish_retired_cards() {
+            // A Udev Added that raced removal was deliberately held until
+            // libseat closed the old fd.  It is a new physical card from the
+            // active scanout map's perspective, so now reconcile it.
+            self.dispatch
+                .rescan_outputs("udev card re-added after teardown");
+        }
         self.dispatch
             .pump_keyboard_repeat(std::time::Instant::now());
     }
@@ -1893,6 +2557,7 @@ fn touch_slot(slot: TouchSlot) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TouchOutputGeometry<'a> {
     connector_name: &'a str,
+    config_key: &'a str,
     position: (i32, i32),
     physical_size: (u32, u32),
     transform: settings_store::hardware::OutputTransform,
@@ -1902,6 +2567,7 @@ impl<'a> From<&'a LiveEntry> for TouchOutputGeometry<'a> {
     fn from(output: &'a LiveEntry) -> Self {
         Self {
             connector_name: &output.connector_name,
+            config_key: &output.config_key,
             position: output.position,
             physical_size: output.size,
             transform: output.transform,
@@ -1912,21 +2578,33 @@ impl<'a> From<&'a LiveEntry> for TouchOutputGeometry<'a> {
 /// Pick a touchscreen's output from libinput's connector name. The input is
 /// in layout order, whose first member is the configured primary (then the
 /// stable `OutputId` order), making missing and stale associations safe and
-/// deterministic after a hotplug.
+/// deterministic after a hotplug. Libinput provides only the raw connector
+/// label, not a DRM card/bus id, so an ambiguous raw label deliberately falls
+/// back to the primary instead of selecting the first matching GPU.
 fn touch_output_for_name<'a>(
     outputs: impl IntoIterator<Item = TouchOutputGeometry<'a>>,
     output_name: Option<&str>,
 ) -> Option<TouchOutputGeometry<'a>> {
     let mut fallback = None;
+    let mut raw_match = None;
+    let mut raw_match_count = 0usize;
     for output in outputs {
         if fallback.is_none() {
             fallback = Some(output);
         }
-        if output_name.is_some_and(|name| name == output.connector_name) {
+        if output_name.is_some_and(|name| name == output.config_key) {
             return Some(output);
         }
+        if output_name.is_some_and(|name| name == output.connector_name) {
+            raw_match_count = raw_match_count.saturating_add(1);
+            raw_match = Some(output);
+        }
     }
-    fallback
+    if raw_match_count == 1 {
+        raw_match
+    } else {
+        fallback
+    }
 }
 
 /// Convert a clamped device-normalised touch coordinate to the selected
@@ -2952,12 +3630,14 @@ mod tests {
 
     fn touch_geometry(
         connector_name: &'static str,
+        config_key: &'static str,
         position: (i32, i32),
         physical_size: (u32, u32),
         transform: settings_store::hardware::OutputTransform,
     ) -> TouchOutputGeometry<'static> {
         TouchOutputGeometry {
             connector_name,
+            config_key,
             position,
             physical_size,
             transform,
@@ -2971,8 +3651,8 @@ mod tests {
         // eDP-1's right edge is adjacent to HDMI-A-1, which is the precise
         // layout that exposed a panel spanning the combined desktop.
         let outputs = [
-            touch_geometry("eDP-1", (0, 0), (1920, 1080), Normal),
-            touch_geometry("HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+            touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
         ];
         let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
 
@@ -2990,8 +3670,8 @@ mod tests {
         use settings_store::hardware::OutputTransform::Normal;
 
         let outputs = [
-            touch_geometry("eDP-1", (0, 360), (1920, 1080), Normal),
-            touch_geometry("DP-1", (1920, 0), (2560, 1440), Normal),
+            touch_geometry("eDP-1", "eDP-1", (0, 360), (1920, 1080), Normal),
+            touch_geometry("DP-1", "DP-1", (1920, 0), (2560, 1440), Normal),
         ];
         let dock_touch = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
 
@@ -3012,7 +3692,13 @@ mod tests {
         // A connected eDP touchscreen loses its named output during a
         // hot-unplug. Resolving against the *current* layout must not retain
         // an old output id or re-expand across a now-gone desktop extent.
-        let after_unplug = [touch_geometry("HDMI-A-1", (0, 0), (2560, 1440), Normal)];
+        let after_unplug = [touch_geometry(
+            "HDMI-A-1",
+            "HDMI-A-1",
+            (0, 0),
+            (2560, 1440),
+            Normal,
+        )];
         let fallback =
             touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary fallback");
         assert_eq!(fallback.connector_name, "HDMI-A-1");
@@ -3024,18 +3710,54 @@ mod tests {
         // Libinput is also allowed to report no association. It follows the
         // same deterministic primary rule instead of the combined extent.
         let no_metadata = [
-            touch_geometry("eDP-1", (0, 0), (1920, 1080), Normal),
-            touch_geometry("HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+            touch_geometry("HDMI-A-1", "HDMI-A-1", (1920, 0), (2560, 1440), Normal),
         ];
         let fallback = touch_output_for_name(no_metadata, None).expect("primary fallback");
         assert_eq!(calibrate_touch_position(fallback, 0.5, 0.5), (959.5, 539.5));
     }
 
     #[test]
+    fn ambiguous_libinput_connector_name_never_picks_a_secondary_gpu_by_order() {
+        use settings_store::hardware::OutputTransform::Normal;
+
+        // The raw libinput metadata has no card/bus component. Even though
+        // the second entry happens to be an HDMI match too, it must not win
+        // merely because it was encountered last (or first after a map
+        // re-order); the configured primary is the safe fallback.
+        let outputs = [
+            touch_geometry("eDP-1", "eDP-1", (0, 0), (1920, 1080), Normal),
+            touch_geometry(
+                "HDMI-A-1",
+                "pci:0000:01:00.0/HDMI-A-1",
+                (1920, 0),
+                (2560, 1440),
+                Normal,
+            ),
+            touch_geometry(
+                "HDMI-A-1",
+                "pci:0000:03:00.0/HDMI-A-1",
+                (4480, 0),
+                (2560, 1440),
+                Normal,
+            ),
+        ];
+        let fallback = touch_output_for_name(outputs, Some("HDMI-A-1"))
+            .expect("primary fallback for ambiguous raw connector");
+        assert_eq!(fallback.config_key, "eDP-1");
+
+        // A caller that can supply the compositor's qualified key is still
+        // precise; only libinput's raw legacy metadata is ambiguous.
+        let qualified = touch_output_for_name(outputs, Some("pci:0000:03:00.0/HDMI-A-1"))
+            .expect("qualified output");
+        assert_eq!(qualified.position, (4480, 0));
+    }
+
+    #[test]
     fn rotated_touch_calibration_and_synthesized_pointer_share_coordinates() {
         use settings_store::hardware::OutputTransform::Rotate90;
 
-        let output = touch_geometry("eDP-1", (100, 50), (1920, 1080), Rotate90);
+        let output = touch_geometry("eDP-1", "eDP-1", (100, 50), (1920, 1080), Rotate90);
         // The physical panel's top-left maps to the post-transform logical
         // top-right corner; this is the inverse of scanout's rotation.
         let (x, y) = calibrate_touch_position(output, 0.0, 0.0);
@@ -3070,13 +3792,24 @@ mod tests {
     }
 
     fn entry(id: u32, connector: u32, size: (u32, u32), mm: Option<(u32, u32)>) -> LiveEntry {
+        entry_on_device(1, id, connector, size, mm)
+    }
+
+    /// Fake one modeset output without a real card.  Giving the fixture a
+    /// device id lets topology tests cover the exact identity boundary where
+    /// DRM connector and CRTC handles restart on a second GPU.
+    fn entry_on_device(
+        device: u64,
+        id: u32,
+        connector: u32,
+        size: (u32, u32),
+        mm: Option<(u32, u32)>,
+    ) -> LiveEntry {
         LiveEntry {
-            key: DrmOutputKey {
-                device: 1,
-                connector,
-            },
+            key: DrmOutputKey { device, connector },
             id: OutputId(id),
             connector_name: format!("TEST-{connector}"),
+            config_key: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
             // Test ids are always small literals; `saturating_add` just
@@ -3089,6 +3822,156 @@ mod tests {
         }
     }
 
+    #[test]
+    fn duplicate_plug_rekeys_an_unchanged_live_output_before_layout_reads_config() {
+        use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
+
+        let key = DrmOutputKey {
+            device: 11,
+            connector: 7,
+        };
+        let qualified = "pci:0000:01:00.0/HDMI-A-1";
+        let intent = OutputConfig {
+            enabled: true,
+            primary: true,
+            x: 640,
+            y: 240,
+            scale: 1.5,
+            mode: Some(OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 120_000,
+            }),
+            mirror_of: Some("pci:0000:03:00.0/HDMI-A-1".into()),
+            ..Default::default()
+        };
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(qualified.into(), intent.clone());
+
+        // Card A was already modeset before card B's same-named connector
+        // appeared. Its OutputId/CRTC/size stay untouched; only settings
+        // identity changes before `relayout_outputs` reads it.
+        let mut live = vec![entry_on_device(11, 4, 7, (2560, 1440), None)];
+        live[0].connector_name = "HDMI-A-1".into();
+        live[0].config_key = "HDMI-A-1".into();
+        let keys = BTreeMap::from([(key, qualified.to_string())]);
+        assert!(reconcile_live_config_keys(&mut live, &keys));
+        assert_eq!(live[0].id, OutputId(4), "no output replug/re-id");
+        assert_eq!(live[0].crtc, crtc(5), "no re-modeset required");
+        assert_eq!(live[0].config_key, qualified);
+        assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
+
+        // The resolver retains the existing qualified key after card B is
+        // removed, so the unchanged survivor never falls back to raw intent.
+        assert!(!reconcile_live_config_keys(&mut live, &keys));
+        assert_eq!(config.output_for(&live[0].config_key), Some(&intent));
+    }
+
+    #[test]
+    fn disabled_connector_replug_and_removal_refresh_capabilities_without_scanout_work() {
+        let disabled = DrmOutputKey {
+            device: 12,
+            connector: 9,
+        };
+        let mut published = BTreeSet::new();
+
+        // A disabled connector is absent from `ConnectedOutput`, so there is
+        // no active plan to add/remove. Capability topology still changes and
+        // drives the Settings snapshot publication path.
+        assert!(hotplug::plan(&[], &[]).is_noop());
+        assert!(reconcile_capability_topology(
+            &mut published,
+            BTreeSet::from([disabled])
+        ));
+        assert!(published.contains(&disabled));
+        assert!(hotplug::plan(&[], &[]).is_noop());
+        assert!(reconcile_capability_topology(
+            &mut published,
+            BTreeSet::new()
+        ));
+        assert!(published.is_empty());
+    }
+
+    #[test]
+    fn fake_card_remove_readd_waits_for_presenter_before_closing_and_reopening_libseat() {
+        // This models an eGPU/cardN that disappears and comes back before a
+        // render frame drains its removal command.  The actual fd stays in
+        // `retiring_cards`; the pure state machine proves the required
+        // ownership order without a real seat or presenter thread.
+        let mut cards = CardLeaseLifecycle::from_active([42]);
+        assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
+        assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
+        assert_eq!(
+            cards.presenter_detached(42),
+            CardLeaseAction::CloseSessionFd,
+            "the original Session::open fd must remain owned until presenter scanouts are gone"
+        );
+        assert_eq!(
+            cards.session_close_finished(42, true),
+            CardLeaseAction::ReopenDeferred
+        );
+        cards.opened(42);
+        assert_eq!(cards.add_requested(42), CardLeaseAction::AlreadyOpen);
+    }
+
+    #[test]
+    fn fake_card_close_failure_discards_deferred_readd_until_fresh_session() {
+        let mut cards = CardLeaseLifecycle::from_active([42]);
+        assert_eq!(cards.remove_requested(42), CardLeaseAction::DetachPresenter);
+        assert_eq!(cards.add_requested(42), CardLeaseAction::DeferReadd);
+        assert_eq!(
+            cards.presenter_detached(42),
+            CardLeaseAction::CloseSessionFd
+        );
+        assert_eq!(
+            cards.session_close_finished(42, false),
+            CardLeaseAction::Noop,
+            "a failed libseat close must never reopen a possibly orphaned device"
+        );
+        assert_eq!(
+            cards.add_requested(42),
+            CardLeaseAction::BlockedByCloseFailure,
+            "only a fresh session clears a failed card close"
+        );
+    }
+
+    #[test]
+    fn duplicate_open_close_error_blocks_the_same_physical_card_after_cardn_churn() {
+        // The duplicate-open cleanup and retired-card close share this guard.
+        // A later card1/dev_t must be blocked by physical identity even
+        // though the failed duplicate was card0/dev_t 226.
+        let mut state = DrmDispatchState::default();
+        state.block_card_after_close_failure(
+            226,
+            Path::new("/dev/dri/card0"),
+            Some("sysfs-0000:03:00.0"),
+        );
+        let reenumerated_identity = "sysfs-0000:03:00.0";
+        assert!(
+            state
+                .failed_card_close_identities
+                .contains(reenumerated_identity),
+            "card1's new path/dev_t cannot bypass a failed card0 close"
+        );
+        assert_eq!(
+            state.card_leases.add_requested(226),
+            CardLeaseAction::BlockedByCloseFailure
+        );
+    }
+
+    #[test]
+    fn unidentified_close_error_blocks_all_card_adds_until_fresh_session() {
+        let mut state = DrmDispatchState::default();
+        state.block_card_after_close_failure(226, Path::new("/dev/dri/card0"), None);
+        assert!(state.unidentified_card_close_failure);
+        assert!(
+            state
+                .failed_card_close_paths
+                .contains(Path::new("/dev/dri/card0")),
+            "the original path stays diagnostic, but unknown new paths are blocked too"
+        );
+    }
+
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
     fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
         let (tx, rx) = channel();
@@ -3097,6 +3980,82 @@ mod tests {
             ..Default::default()
         };
         (state, rx)
+    }
+
+    #[derive(Clone)]
+    struct FakeMasterCard {
+        id: u64,
+        calls: std::rc::Rc<std::cell::RefCell<Vec<(u64, MasterAction)>>>,
+    }
+
+    impl KmsMasterControl for FakeMasterCard {
+        fn release_master(&self) {
+            self.calls
+                .borrow_mut()
+                .push((self.id, MasterAction::Release));
+        }
+
+        fn acquire_master(&self) {
+            self.calls
+                .borrow_mut()
+                .push((self.id, MasterAction::Acquire));
+        }
+    }
+
+    #[test]
+    fn session_master_transition_is_planned_for_every_retained_card() {
+        // No DRM fd or libseat session: this fake records the exact fan-out
+        // used by `perform` between PauseScanout and Resume. A one-card loop
+        // here would silently reproduce the hybrid-GPU VT/resume regression.
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let cards = [
+            FakeMasterCard {
+                id: 11,
+                calls: std::rc::Rc::clone(&calls),
+            },
+            FakeMasterCard {
+                id: 22,
+                calls: std::rc::Rc::clone(&calls),
+            },
+        ];
+        apply_master_action(cards.iter(), MasterAction::Release);
+        apply_master_action(cards.iter(), MasterAction::Acquire);
+        assert_eq!(
+            *calls.borrow(),
+            vec![
+                (11, MasterAction::Release),
+                (22, MasterAction::Release),
+                (11, MasterAction::Acquire),
+                (22, MasterAction::Acquire),
+            ]
+        );
+    }
+
+    #[test]
+    fn vt_pause_after_card_remove_releases_retiring_master_before_presenter_ack() {
+        // Card 22 was removed from the active map, but its presenter
+        // scanout/fd has not acknowledged teardown yet. Dropping master on
+        // only card 11 would leave the old KMS lease alive across the VT
+        // handoff. Resume acquires only active card 11; card 22 is closing.
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let active = [FakeMasterCard {
+            id: 11,
+            calls: std::rc::Rc::clone(&calls),
+        }];
+        let retiring = [FakeMasterCard {
+            id: 22,
+            calls: std::rc::Rc::clone(&calls),
+        }];
+        release_masters_for_pause(active.iter(), retiring.iter());
+        apply_master_action(active.iter(), MasterAction::Acquire);
+        assert_eq!(
+            *calls.borrow(),
+            vec![
+                (11, MasterAction::Release),
+                (22, MasterAction::Release),
+                (11, MasterAction::Acquire),
+            ]
+        );
     }
 
     #[test]
@@ -3155,6 +4114,47 @@ mod tests {
         state.relayout_outputs();
         assert_eq!(state.live[0].position, (0, 0));
         assert_eq!(state.output_size, (2560, 1440));
+    }
+
+    #[test]
+    fn fake_hybrid_gpu_layout_reflows_after_secondary_card_unplug() {
+        // Pure fake KMS state: connector and CRTC ids intentionally overlap
+        // across the two cards.  The runtime's card-scoped identity must
+        // still publish both outputs, route the combined layout across them,
+        // and retract only the dock output when that card disappears.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry_on_device(41, 0, 10, (1920, 1080), Some((294, 165))),
+            entry_on_device(99, 1, 10, (2560, 1440), Some((597, 336))),
+        ];
+        state.relayout_outputs();
+
+        let table = state.output_table();
+        assert_eq!(
+            table.iter().map(|output| output.id).collect::<Vec<_>>(),
+            [OutputId(0), OutputId(1)]
+        );
+        assert_eq!(table[0].position, (0, 0));
+        assert_eq!(table[1].position, (1920, 0));
+        assert_eq!(state.output_size, (4480, 1440));
+
+        // This is the same layout record used by wl_output globals and by
+        // cursor/touch routing.  A secondary-card unplug must leave no gap
+        // and clamp an input position that was on the dock back onto the
+        // laptop panel.
+        state.pointer = (3300.0, 900.0);
+        state.live.retain(|output| output.key.device == 41);
+        state.relayout_outputs();
+        assert_eq!(
+            state
+                .output_table()
+                .iter()
+                .map(|output| output.id)
+                .collect::<Vec<_>>(),
+            [OutputId(0)]
+        );
+        assert_eq!(state.output_size, (1920, 1080));
+        assert_eq!(state.pointer, (1919.0, 900.0));
     }
 
     #[test]
