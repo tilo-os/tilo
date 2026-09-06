@@ -26,7 +26,12 @@ use vello::peniko::Color;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
 
-pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
+/// Persistent chrome is deliberately a little taller than the original
+/// concept's 40 px sketch.  Forty pixels forced the navigation and status
+/// controls down to 18--22 px targets; 48 px leaves a consistent 32 px target
+/// while retaining substantially more room for content than a conventional
+/// desktop panel.
+pub const TOPBAR_HEIGHT_PX: f32 = 48.0;
 
 /// The toolkit's shared chrome opacity, so the bar cannot drift from the
 /// popovers hanging off it. [`TopBarChrome::draw`] fills `surfaces.overlay`
@@ -778,6 +783,10 @@ impl TopBarChrome {
     /// Overview icon, divider, and up/down workspace chevrons. Returns
     /// the x cursor position immediately after the down chevron, where
     /// the workspace name pill begins.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one compact cluster owns its shared background, three aligned targets, disabled-state colours and returned layout cursor; splitting those would duplicate or desynchronise geometry"
+    )]
     fn draw_workspace_nav(
         &mut self,
         scene: &mut Scene,
@@ -788,20 +797,59 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let pad_x = f64::from(tokens.spacing.s3);
-        let icon_size = 14.0_f64;
+        let icon_size = 18.0_f64;
+        let control = 32.0_f64;
 
         let mut x = self.rect.x0 + pad_x;
+        let switch_w = 32.0_f64;
+        let nav_width = control
+            + f64::from(tokens.spacing.s2)
+            + 1.0
+            + f64::from(tokens.spacing.s2)
+            + switch_w * 2.0;
+        let nav_rect = Rect::new(
+            x,
+            center_y - control / 2.0,
+            x + nav_width,
+            center_y + control / 2.0,
+        );
+        let nav_body = bar_selector_body(theme, ui::chrome::SelectionState::active(false));
+        ui::chrome::shell::paint_glass_body(
+            scene,
+            transform,
+            nav_rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, nav_rect.height()),
+            theme,
+            &nav_body,
+            1.0,
+        );
 
         self.overview_btn_rect = Rect::new(
-            x - 4.0,
-            center_y - icon_size / 2.0 - 4.0,
-            x + icon_size + 4.0,
-            center_y + icon_size / 2.0 + 4.0,
-        );
-        let overview_icon_rect = Rect::new(
             x,
+            center_y - control / 2.0,
+            x + control,
+            center_y + control / 2.0,
+        );
+        let overview_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.overview);
+        if overview_open {
+            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+            ui::chrome::shell::paint_glass_body(
+                scene,
+                transform,
+                self.overview_btn_rect,
+                ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
+                theme,
+                &selected,
+                1.0,
+            );
+        }
+        let overview_icon_rect = Rect::new(
+            x + (control - icon_size) / 2.0,
             center_y - icon_size / 2.0,
-            x + icon_size,
+            x + f64::midpoint(control, icon_size),
             center_y + icon_size / 2.0,
         );
         ui::icons::draw_icon(
@@ -809,10 +857,10 @@ impl TopBarChrome {
             transform,
             overview_icon_rect,
             Self::overview_glyph_icon(),
-            colors.text_dim,
+            colors.text_primary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += icon_size + f64::from(tokens.spacing.s3);
+        x += control + f64::from(tokens.spacing.s2);
 
         // Vertical divider
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
@@ -825,14 +873,19 @@ impl TopBarChrome {
         );
         x += 1.0 + f64::from(tokens.spacing.s2);
 
-        let chev = 10.0_f64;
+        let chev = 14.0_f64;
         self.up_btn_rect = Rect::new(
-            x - 4.0,
-            center_y - chev * 0.35 - 6.0,
-            x + chev + 4.0,
-            center_y + chev * 0.35 + 6.0,
+            x,
+            center_y - control / 2.0,
+            x + switch_w,
+            center_y + control / 2.0,
         );
-        let up_icon_rect = Rect::new(x, center_y - chev / 2.0, x + chev, center_y + chev / 2.0);
+        let up_icon_rect = Rect::new(
+            x + (switch_w - chev) / 2.0,
+            center_y - chev / 2.0,
+            x + f64::midpoint(switch_w, chev),
+            center_y + chev / 2.0,
+        );
         ui::icons::draw_icon(
             scene,
             transform,
@@ -845,15 +898,20 @@ impl TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + f64::from(tokens.spacing.s2);
+        x += switch_w;
 
         self.down_btn_rect = Rect::new(
-            x - 4.0,
-            center_y - chev * 0.35 - 6.0,
-            x + chev + 4.0,
-            center_y + chev * 0.35 + 6.0,
+            x,
+            center_y - control / 2.0,
+            x + switch_w,
+            center_y + control / 2.0,
         );
-        let dn_icon_rect = Rect::new(x, center_y - chev / 2.0, x + chev, center_y + chev / 2.0);
+        let dn_icon_rect = Rect::new(
+            x + (switch_w - chev) / 2.0,
+            center_y - chev / 2.0,
+            x + f64::midpoint(switch_w, chev),
+            center_y + chev / 2.0,
+        );
         ui::icons::draw_icon(
             scene,
             transform,
@@ -866,7 +924,7 @@ impl TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x + chev + f64::from(tokens.spacing.s3)
+        x + switch_w + f64::from(tokens.spacing.s3)
     }
 
     /// Workspace-name pill (click toggles workspace settings) and its
@@ -883,22 +941,39 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ws_text_size = tokens.typography.scale.sm;
-        let ws_label = format!(
-            "{}  {}/{}",
-            self.workspace_name,
+        let position_suffix = format!(
+            "  {}/{}",
             self.workspace_index.saturating_add(1),
             self.workspace_total
         );
         // Measured at the same weight it's drawn at (Semibold), so the
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
+        // The centre carousel owns a fixed central lane.  Long translated or
+        // user-authored workspace names must yield to it instead of painting
+        // underneath it. Preserve the compact position suffix while eliding
+        // only the user-authored portion, so even the compact layout says where
+        // the current workspace sits.
+        let center_left = f64::midpoint(self.rect.x0, self.rect.x1) - 180.0;
+        let label_budget = ui::num::f32_of_f64((center_left - x - 54.0).clamp(32.0, 260.0));
+        let suffix_width = text_renderer
+            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
+            .0;
+        let name_budget = (label_budget - suffix_width).max(0.0);
+        let visible_name = text_renderer.elide_to_width_weighted(
+            &self.workspace_name,
+            ws_text_size,
+            name_budget,
+            ws_weight,
+        );
+        let ws_label = format!("{visible_name}{position_suffix}");
         let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
         let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
             x - 6.0,
-            center_y - 12.0,
+            center_y - 16.0,
             x + f64::from(ws_w) + 28.0,
-            center_y + 12.0,
+            center_y + 16.0,
         );
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
@@ -952,7 +1027,7 @@ impl TopBarChrome {
             ws_weight,
         );
         let gear_x = x + f64::from(ws_w) + 6.0;
-        let gear_rect = Rect::new(gear_x - 2.0, center_y - 6.0, gear_x + 10.0, center_y + 6.0);
+        let gear_rect = Rect::new(gear_x - 2.0, center_y - 7.0, gear_x + 12.0, center_y + 7.0);
         ui::icons::draw_icon(
             scene,
             transform,
@@ -979,7 +1054,7 @@ impl TopBarChrome {
     ) -> (f64, f64, f64) {
         let colors = &theme.tokens.colors;
         let band_w = 360.0_f64;
-        let band_h = 28.0_f64;
+        let band_h = 34.0_f64;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
             band_cx - band_w / 2.0,
@@ -1005,14 +1080,11 @@ impl TopBarChrome {
             );
         }
 
-        let dot_x = band.x0 + 12.0;
-        let dot_size = Self::DOT_BASE_SIZE;
-        let dot_gap = 4.0_f64;
-        let dot_col_h = 3.0 * dot_size + 2.0 * dot_gap;
-        let dot_top = center_y - dot_col_h / 2.0;
+        let dot_x = band.x0 + 16.0;
+        let dot_gap = 24.0_f64;
         let active_dot = self.center_widget.index();
         for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
-            let cy = dot_top + small_count_to_f64(i) * (dot_size + dot_gap) + dot_size / 2.0;
+            let cx = dot_x + small_count_to_f64(i) * dot_gap;
             let active = active_dot == i;
             let r = if active {
                 Self::DOT_ACTIVE_RADIUS
@@ -1024,14 +1096,14 @@ impl TopBarChrome {
             } else {
                 colors.neutral[7]
             };
-            // Generous 10 px square hit region for clickability.
-            *slot = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
-            let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
+            // Full-height target; neighbouring 24 px lanes remain distinct.
+            *slot = Rect::new(cx - 12.0, center_y - 16.0, cx + 12.0, center_y + 16.0);
+            let c = vello::kurbo::Circle::new(Point::new(cx, center_y), r);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
         // Widget content fills the band to the right of the dots.
-        let content_x0 = dot_x + 24.0;
+        let content_x0 = dot_x + 64.0;
         let content_x1 = band.x1 - 12.0;
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
@@ -1276,11 +1348,11 @@ impl TopBarChrome {
 
         // Sizes itself to what's actually knowable; an unarrived
         // reading contributes nothing rather than a plausible default.
-        let tray_h = 22.0_f64;
-        let tray_slot = 18.0_f64;
-        let tray_pad = 9.0_f64;
+        let tray_h = 32.0_f64;
+        let tray_slot = 24.0_f64;
+        let tray_pad = 8.0_f64;
         let tray_gap = 4.0_f64;
-        let icon_px = 14.0_f64;
+        let icon_px = 17.0_f64;
         let pct_size = tokens.typography.scale.xs;
 
         let has_volume = self.status.volume.is_some();
@@ -1743,18 +1815,18 @@ impl TopBarChrome {
         stack_right_x: f64,
     ) -> usize {
         let colors = &theme.tokens.colors;
-        // Up to 3 chips, overlapping by 4px, newest on top. Routed
+        // Up to 3 chips, overlapping by 5px, newest on top. Routed
         // through `ui::Avatar` so the roster stays pixel-identical to
         // app rosters.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
-            let cx = stack_right_x - small_count_to_f64(i) * (14.0 - 4.0);
-            let center = Point::new(cx - 7.0, center_y);
-            // 15 px chip (r = 7.5); ring adds 1.5 px, outer disc r = 9.
+            let cx = stack_right_x - small_count_to_f64(i) * 15.0;
+            let center = Point::new(cx - 10.0, center_y);
+            // 20 px chip; large enough that an initial remains legible at 1:1.
             let rect = Rect::new(
-                center.x - 7.5,
-                center.y - 7.5,
-                center.x + 7.5,
-                center.y + 7.5,
+                center.x - 10.0,
+                center.y - 10.0,
+                center.x + 10.0,
+                center.y + 10.0,
             );
             let fill = self
                 .collaborator_colors
@@ -1778,13 +1850,13 @@ impl TopBarChrome {
 
         if self.collaborator_overflow > 0 {
             let i = self.collaborator_initials.len();
-            let cx = stack_right_x - small_count_to_f64(i) * (14.0 - 4.0);
-            let center = Point::new(cx - 7.0, center_y);
+            let cx = stack_right_x - small_count_to_f64(i) * 15.0;
+            let center = Point::new(cx - 10.0, center_y);
             let rect = Rect::new(
-                center.x - 7.5,
-                center.y - 7.5,
-                center.x + 7.5,
-                center.y + 7.5,
+                center.x - 10.0,
+                center.y - 10.0,
+                center.x + 10.0,
+                center.y + 10.0,
             );
             ui::widget::Avatar::draw_overflow_at(
                 scene,
@@ -1821,12 +1893,16 @@ impl TopBarChrome {
         let (center_y, stack_right_x) = pos;
         if slot_count > 0 {
             // Stack grows leftward from `stack_right_x`; each circle is
-            // 18 px wide with 4 px overlap, so step = 14 px.
-            let step = 14.0_f64;
+            // 20 px wide with 5 px overlap, so step = 15 px.
+            let step = 15.0_f64;
             let leftmost_cx = stack_right_x - (small_count_to_f64(slot_count) - 1.0) * step;
             let y_mid = center_y;
-            self.avatar_stack_rect =
-                Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
+            self.avatar_stack_rect = Rect::new(
+                leftmost_cx - 20.0,
+                y_mid - 16.0,
+                stack_right_x,
+                y_mid + 16.0,
+            );
             return;
         }
         self.avatar_stack_rect = Rect::ZERO;
@@ -2458,6 +2534,75 @@ mod tests {
         };
         tree.active = tree.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
+    }
+
+    fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(width),
+                        height: Dimension::length(TOPBAR_HEIGHT_PX),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .expect("viewport");
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("layout");
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        bar.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+        );
+    }
+
+    #[test]
+    fn persistent_topbar_controls_have_coherent_targets() {
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(bar.overview_btn_rect.width() >= 32.0);
+        assert!(bar.overview_btn_rect.height() >= 32.0);
+        assert!(bar.up_btn_rect.height() >= 32.0);
+        assert!(bar.up_btn_rect.width() >= 32.0);
+        assert!(bar.down_btn_rect.height() >= 32.0);
+        assert!(bar.down_btn_rect.width() >= 32.0);
+        assert!(bar.ws_pill_rect.height() >= 32.0);
+        assert!(bar.tray_pill_rect.height() >= 32.0);
+        assert!(bar.center_rect.height() >= 32.0);
+    }
+
+    #[test]
+    fn long_workspace_name_yields_to_the_center_lane() {
+        for width in [800.0, 1280.0, 1600.0] {
+            let mut bar = sample_chrome();
+            bar.workspace_name =
+                "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
+                    .to_string();
+            lay_out_and_draw(&mut bar, width);
+            assert!(
+                bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0,
+                "workspace pill {:?} must not collide with centre {:?} at {width}px",
+                bar.ws_pill_rect,
+                bar.center_rect,
+            );
+        }
     }
 
     #[test]
