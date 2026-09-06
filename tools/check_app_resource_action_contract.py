@@ -69,10 +69,6 @@ SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 # The value names the retained-model work still required, making this debt
 # visible in review without keeping the repository permanently red.
 TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
-    "apps/chat/src/search_provider.rs": "retain one incremental catalogue for messages, people, rooms and attachments",
-    "apps/feeds/src/search_provider.rs": "incrementally index all feed entries by stable entry resource id",
-    "apps/video_editor/src/search_provider.rs": "incrementally index project tracks, clips, markers, captions and effects",
-    "apps/weather/src/search_provider.rs": "retain the complete saved-location catalogue",
 }
 TRUNCATING_SEARCH = re.compile(
     r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"

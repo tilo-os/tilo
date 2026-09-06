@@ -3,16 +3,24 @@
 use qos_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
 
-use crate::model::{Channel, ChannelKind, Message, User, Workspace};
+use crate::model::{Category, Channel, Message, User, Workspace};
 
 pub const CHANNEL_KIND: &str = "Conversations";
 pub const MESSAGE_KIND: &str = "Messages";
 pub const PERSON_KIND: &str = "People";
+pub const WORKSPACE_KIND: &str = "Workspaces";
+pub const CATEGORY_KIND: &str = "Categories";
 
 pub struct ChatSearchProvider {
+    /// Complete, paged index over the durable chat namespace.  This is never a
+    /// capped snapshot: a late message remains discoverable even when a room
+    /// has far more rows than a single palette frame can inspect or render.
+    catalog: SearchCatalog,
+    categories: Vec<Category>,
     channels: Vec<Channel>,
     workspaces: Vec<Workspace>,
     messages: Vec<Message>,
@@ -21,33 +29,22 @@ pub struct ChatSearchProvider {
 
 impl ChatSearchProvider {
     pub fn new(
+        categories: &[Category],
         channels: &[Channel],
         workspaces: &[Workspace],
         messages: &[Message],
         users: &[User],
     ) -> Self {
-        Self {
-            channels: channels
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
-            workspaces: workspaces
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
-            messages: messages
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
-            users: users
-                .iter()
-                .take(DEFAULT_SEARCH_INDEX_LIMIT)
-                .cloned()
-                .collect(),
-        }
+        let provider = Self {
+            catalog: SearchCatalog::new("Chat"),
+            categories: categories.to_vec(),
+            channels: channels.to_vec(),
+            workspaces: workspaces.to_vec(),
+            messages: messages.to_vec(),
+            users: users.to_vec(),
+        };
+        provider.index_complete_snapshot();
+        provider
     }
 
     fn channel_address(id: &str) -> ActionAddress {
@@ -58,6 +55,123 @@ impl ChatSearchProvider {
     }
     fn person_address(id: &str) -> ActionAddress {
         ActionAddress::new(format!("chat.person:{id}"), "open")
+    }
+    fn workspace_address(id: &str) -> ActionAddress {
+        ActionAddress::new(format!("chat.workspace:{id}"), "open")
+    }
+    fn category_address(id: &str) -> ActionAddress {
+        ActionAddress::new(format!("chat.category:{id}"), "open")
+    }
+
+    /// Index each row exactly once.  The catalog validates that every result
+    /// names an action on the same canonical resource before it accepts it;
+    /// search cannot accidentally grow a private navigation backdoor.
+    fn index_complete_snapshot(&self) {
+        for workspace in &self.workspaces {
+            let result = SearchResult::for_action(
+                WORKSPACE_KIND,
+                workspace.name.clone(),
+                Self::workspace_address(&workspace.id),
+            )
+            .with_subtitle("Workspace");
+            self.upsert(
+                format!("chat.workspace:{}", workspace.id),
+                &workspace.name,
+                result,
+            );
+        }
+        for channel in &self.channels {
+            let workspace = self.workspace_name(&channel.workspace);
+            let subtitle = if channel.topic.trim().is_empty() {
+                workspace.to_string()
+            } else {
+                format!("{workspace} · {}", channel.topic)
+            };
+            let result = SearchResult::for_action(
+                CHANNEL_KIND,
+                format!("{}{}", channel.kind.glyph(), channel.name),
+                Self::channel_address(&channel.id),
+            )
+            .with_subtitle(subtitle)
+            .with_icon(Icon::Mail);
+            self.upsert(
+                format!("chat.channel:{}", channel.id),
+                format!("{} {} {}", channel.name, channel.topic, workspace),
+                result,
+            );
+        }
+        for category in &self.categories {
+            let workspace = self.workspace_name(&category.workspace);
+            let state = if category.collapsed {
+                "collapsed"
+            } else {
+                "expanded"
+            };
+            let result = SearchResult::for_action(
+                CATEGORY_KIND,
+                category.name.clone(),
+                Self::category_address(&category.id),
+            )
+            .with_subtitle(format!("{workspace} · {state}"));
+            self.upsert(
+                format!("chat.category:{}", category.id),
+                format!("{} {workspace}", category.name),
+                result,
+            );
+        }
+        for message in &self.messages {
+            let Some(channel) = self.channel(&message.channel) else {
+                // An orphaned row is not a navigable resource.  Refusing to
+                // index it is preferable to advertising an activation that a
+                // fresh resource tree must reject.
+                continue;
+            };
+            let author = self.user_name(&message.author);
+            let attachment = message
+                .attachment
+                .as_ref()
+                .map(super::model::Attachment::name);
+            let title = if message.text.trim().is_empty() {
+                attachment.unwrap_or("Attachment").to_string()
+            } else {
+                message.text.trim().chars().take(96).collect()
+            };
+            let result =
+                SearchResult::for_action(MESSAGE_KIND, title, Self::message_address(&message.id))
+                    .with_subtitle(format!(
+                        "{author} · {}{} · {}",
+                        channel.kind.glyph(),
+                        channel.name,
+                        self.workspace_name(&channel.workspace)
+                    ))
+                    .with_icon(Icon::Mail);
+            self.upsert(
+                format!("chat.message:{}", message.id),
+                format!("{author} {} {}", message.text, attachment.unwrap_or("")),
+                result,
+            );
+        }
+        for user in &self.users {
+            let result = SearchResult::for_action(
+                PERSON_KIND,
+                user.name.clone(),
+                Self::person_address(&user.id),
+            )
+            .with_subtitle(if user.is_agent { "Agent" } else { "Person" });
+            self.upsert(
+                format!("chat.person:{}", user.id),
+                format!("{} {}", user.name, user.id),
+                result,
+            );
+        }
+    }
+
+    fn upsert(&self, resource_id: String, searchable_text: impl AsRef<str>, result: SearchResult) {
+        // All inputs above are created from their matching stable resource id,
+        // so validation failure would be a programming error rather than user
+        // input.  Do not expose a partially indexed namespace if that contract
+        // is ever broken: one row being absent is safer than a non-canonical hit.
+        let _ = self.catalog.upsert(resource_id, searchable_text, result);
     }
 
     fn workspace_name(&self, id: &str) -> &str {
@@ -87,103 +201,25 @@ impl SearchProvider for ChatSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        if limit == 0 {
-            return Vec::new();
-        }
-        let query = query.trim().to_lowercase();
-        let mut results = Vec::with_capacity(limit.min(32));
-        for channel in &self.channels {
-            if channel.kind == ChannelKind::Text
-                && !channel.archived
-                && (channel.name.to_lowercase().contains(&query)
-                    || channel.topic.to_lowercase().contains(&query))
-            {
-                let workspace = self.workspace_name(&channel.workspace);
-                let subtitle = if channel.topic.trim().is_empty() {
-                    workspace.to_string()
-                } else {
-                    format!("{workspace} · {}", channel.topic)
-                };
-                results.push(
-                    SearchResult::for_action(
-                        CHANNEL_KIND,
-                        format!("#{}", channel.name),
-                        Self::channel_address(&channel.id),
-                    )
-                    .with_subtitle(subtitle)
-                    .with_icon(Icon::Mail),
-                );
-                if results.len() == limit {
-                    return results;
-                }
-            }
-        }
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
+    }
 
-        // Keep an empty query useful as a compact conversation browser; the
-        // much larger full-text and directory sets join only for a real query.
-        if query.is_empty() {
-            return results;
-        }
-
-        for message in &self.messages {
-            let author = self.user_name(&message.author);
-            let Some(channel) = self.channel(&message.channel) else {
-                continue;
-            };
-            let attachment = message
-                .attachment
-                .as_ref()
-                .map(|attachment| match attachment {
-                    crate::model::Attachment::File { name, .. }
-                    | crate::model::Attachment::Image { name, .. }
-                    | crate::model::Attachment::Video { name, .. } => name.as_str(),
-                });
-            let searchable = format!("{author} {} {}", message.text, attachment.unwrap_or(""));
-            if !searchable.to_lowercase().contains(&query) {
-                continue;
-            }
-            let title = if message.text.trim().is_empty() {
-                attachment.unwrap_or("Attachment").to_string()
-            } else {
-                message.text.trim().chars().take(96).collect()
-            };
-            results.push(
-                SearchResult::for_action(MESSAGE_KIND, title, Self::message_address(&message.id))
-                    .with_subtitle(format!(
-                        "{author} · #{} · {}",
-                        channel.name,
-                        self.workspace_name(&channel.workspace)
-                    ))
-                    .with_icon(Icon::Mail),
-            );
-            if results.len() == limit {
-                return results;
-            }
-        }
-        for user in &self.users {
-            if format!("{} {}", user.name, user.id)
-                .to_lowercase()
-                .contains(&query)
-            {
-                results.push(
-                    SearchResult::for_action(
-                        PERSON_KIND,
-                        user.name.clone(),
-                        Self::person_address(&user.id),
-                    )
-                    .with_subtitle(if user.is_agent {
-                        "Agent"
-                    } else {
-                        "Person"
-                    }),
-                );
-                if results.len() == limit {
-                    break;
-                }
-            }
-        }
-        results
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
@@ -228,6 +264,60 @@ mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
     use ui::widget::Widget;
+
+    fn workspace() -> Workspace {
+        Workspace {
+            id: "ws".into(),
+            name: "Team Ångström".into(),
+            glyph: "TA".into(),
+            color_idx: 0,
+            order: 0,
+        }
+    }
+
+    fn channel() -> Channel {
+        Channel {
+            id: "c".into(),
+            workspace: "ws".into(),
+            category: String::new(),
+            name: "general".into(),
+            topic: String::new(),
+            kind: crate::model::ChannelKind::Text,
+            order: 0,
+            unread: 0,
+            archived: false,
+        }
+    }
+
+    fn user() -> User {
+        User {
+            id: "u".into(),
+            name: "Élodie".into(),
+            initials: "É".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent: false,
+        }
+    }
+
+    fn message(id: usize, text: impl Into<String>) -> Message {
+        Message {
+            id: format!("m_{id:06}"),
+            channel: "c".into(),
+            author: "u".into(),
+            ts: id as i64,
+            text: text.into(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            reference: None,
+            attachment: None,
+            pinned: false,
+            work: None,
+        }
+    }
 
     fn seeded() -> (crate::app::ChatApp, AutoCommit) {
         let mut app = crate::app::ChatApp::new_ephemeral();
@@ -355,5 +445,97 @@ mod tests {
         .unwrap();
         assert_eq!(app.revealed_person.as_deref(), Some(person.id.as_str()));
         assert!(app.right_flap_open());
+    }
+
+    #[test]
+    fn unicode_late_message_remains_findable_beyond_one_hundred_thousand_rows() {
+        let messages = (0..100_001)
+            .map(|index| {
+                message(
+                    index,
+                    if index == 100_000 {
+                        "late ÄTHER-needle 🧪"
+                    } else {
+                        "ordinary row"
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let provider =
+            ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
+
+        let page = provider.search_page("äther-needle 🧪", None, 8, 8);
+        assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(
+            page.results[0].action_address(),
+            Some(ActionAddress::new("chat.message:m_100000", "open"))
+        );
+    }
+
+    #[test]
+    fn adversarial_message_search_pages_bound_work_and_materialization() {
+        let mut messages = (0..1_000)
+            .map(|index| message(index, "abcXbcd"))
+            .collect::<Vec<_>>();
+        messages.push(message(1_000, "the exact abcd message"));
+        let provider =
+            ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
+
+        let mut cursor = None;
+        let mut results = Vec::new();
+        loop {
+            let page = provider.search_page("abcd", cursor.as_ref(), 31, 4);
+            assert!(page.inspected <= 31);
+            assert!(page.results.len() <= 4);
+            assert!(
+                page.results
+                    .iter()
+                    .all(|result| result.action_address().is_some())
+            );
+            results.extend(page.results);
+            let Some(next) = page.next else { break };
+            cursor = Some(next);
+        }
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "the exact abcd message");
+    }
+
+    #[test]
+    fn stale_search_resource_is_refused_at_activation() {
+        let (mut app, mut doc) = seeded();
+        let message = app
+            .search_messages
+            .iter()
+            .find(|message| !message.text.is_empty())
+            .cloned()
+            .unwrap();
+        let mut providers = app.search_providers();
+        let provider = providers.pop().unwrap();
+        let hit = provider
+            .search(&message.text)
+            .into_iter()
+            .find(|hit| {
+                hit.action_address().is_some_and(|address| {
+                    address.resource == format!("chat.message:{}", message.id)
+                })
+            })
+            .unwrap();
+        let address = hit.action_address().unwrap();
+        let stale = provider.resolve_action_resource(&address).unwrap();
+        let encoded = qos_actions::door::encode(&[stale], &address, None).unwrap();
+        crate::doc::ChatDoc::delete_message(&mut doc, &message.channel, &message.id);
+        app.reload(&doc);
+
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
     }
 }
