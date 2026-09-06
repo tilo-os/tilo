@@ -68,7 +68,9 @@ later worker implementation, not a new sync or identity stack.
    - Branches: `hdr-foundation` (+2), `flatpak-peerview-hdr` (+7), `flatpak-color-management-v1` (+5),
      `flatpak-hevc-main10` (+8), `presence-ui-polish` (+4), `systemd-boot-swap` (+4).
    - Build gap: horizontal window resize, better reorder, real h-strip scroll, drag-file-to-open;
-     fractional scaling; finish HDR; notifications, session-lock, power-mgmt, audio routing, AT-SPI a11y.
+     fractional scaling; finish HDR, session-lock, power management and audio routing. Notifications
+     and the external AT-SPI endpoint have since landed; their current status and release evidence are
+     recorded below.
 
 ## Stale/divergent branches (reference only — off an old base, not clean merges)
 `docs/sync-host-model`, big `app-model-*`, `legacy-collab-*`, `nirios-shell`, `apps-fleet`,
