@@ -112,20 +112,43 @@ content_name=$(property "$app_bus" "$content_path" Name)
     exit 1
 }
 
-top_level=$(children "$app_bus" "$content_path")
+# Files composes the toolbar and responsive body into semantic containers. A
+# backend is free to flatten a container or retain it, so inspecting only the
+# root's immediate children makes this smoke depend on AccessKit's incidental
+# tree shape. Walk a small, cycle-safe subtree instead: the contract is that
+# visible named controls are exported, not which intermediate group owns them.
+# AccessKit can publish the application root one transaction before it adds
+# its semantic descendants.  Treat that as an in-flight tree, rather than a
+# failed audit of an otherwise healthy app, and bound both retries and walk.
 names=""
-while IFS= read -r child_path; do
-    [[ -n "$child_path" ]] || continue
-    names+="$(property "$app_bus" "$child_path" Name)"$'\n'
-done < <(printf '%s\n' "$top_level" | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' )
+for _ in $(seq 1 200); do
+    names=""
+    declare -a pending=("$content_path")
+    declare -A visited=()
+    while [[ ${#pending[@]} -gt 0 && ${#visited[@]} -lt 256 ]]; do
+        current=${pending[0]}
+        pending=("${pending[@]:1}")
+        [[ -n ${visited[$current]+yes} ]] && continue
+        visited[$current]=1
+        names+="$(property "$app_bus" "$current" Name 2>/dev/null || true)"$'\n'
+        while IFS= read -r child_path; do
+            [[ -n "$child_path" ]] && pending+=("$child_path")
+        done < <(
+            children "$app_bus" "$current" 2>/dev/null \
+                | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true
+        )
+    done
+    [[ "$names" == *"Breadcrumbs"* && "$names" == *"View options"* ]] && break
+    sleep 0.05
+done
 
 [[ "$names" == *"Breadcrumbs"* ]] || {
     echo "AT-SPI tree is missing Breadcrumbs" >&2
     exit 1
 }
-[[ "$names" == *"Places"* ]] || {
-    echo "AT-SPI tree is missing Places" >&2
+[[ "$names" == *"View options"* ]] || {
+    echo "AT-SPI tree is missing View options" >&2
     exit 1
 }
 
-printf 'AT-SPI smoke passed: Files activity, Breadcrumbs, and Places are exported.\n'
+printf 'AT-SPI smoke passed: Files activity, Breadcrumbs, and View options are exported.\n'

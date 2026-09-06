@@ -14,6 +14,7 @@ use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sy
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
+use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -196,8 +197,13 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
 /// full path remains an invocation payload only and is revalidated against the
 /// current template catalogue before it is read.
 fn template_resource_id(path: &str) -> String {
-    let digest = blake3::hash(path.as_bytes());
-    format!("files.template:{}", hex_prefix(digest.as_bytes(), 12))
+    // Resource addresses cross the action door and history, so a collision
+    // must be cryptographically infeasible rather than merely improbable. The
+    // 128-bit SHA-256 prefix is stable, opaque, and far beyond the collision
+    // bound of the small, local Templates catalogue; SHA-2 is already part of
+    // the qOS shared cryptographic stack.
+    let digest = Sha256::digest(path.as_bytes());
+    format!("files.template:{}", hex_prefix(&digest, 16))
 }
 
 fn short_fingerprint(key: &[u8; 32]) -> String {
@@ -4877,6 +4883,14 @@ impl FileExplorerWidget {
     /// Open the "New File" flyout listing one "New <name>" entry per template.
     fn open_templates_submenu(&mut self, at: Point) {
         let tpls = self.available_templates();
+        // The catalogue can change after its parent menu was opened.  Do not
+        // leave a focusable, visually empty flyout behind when its last
+        // template vanishes (and keep headless action-state shots truthful).
+        if tpls.is_empty() {
+            self.submenu.close();
+            self.submenu_commands.clear();
+            return;
+        }
         let mut menu = ContextMenu::new();
         let mut cmds = Vec::with_capacity(tpls.len());
         for t in tpls {
@@ -6482,7 +6496,6 @@ impl Widget for FileExplorerWidget {
                 !visible_record_ids.contains(&record.record_id)
                     && exported_records.insert(record.record_id)
             })
-            .take(crate::search_provider::MAX_COLLABORATIVE_SEARCH_RECORDS)
         {
             let resource = Resource::new(
                 crate::search_provider::record_resource_id(record.record_id),
@@ -8250,7 +8263,7 @@ mod command_path_tests {
         assert_eq!(first_id, template_resource_id(first));
         assert_ne!(first_id, template_resource_id(second));
         assert!(first_id.starts_with("files.template:"));
-        assert!(first_id.len() <= "files.template:".len() + 24);
+        assert_eq!(first_id.len(), "files.template:".len() + 32);
         assert!(!first_id.contains("alice"));
         assert!(!first_id.contains("Templates"));
     }
@@ -9138,6 +9151,16 @@ mod command_path_tests {
             "templates present → New File entry shown"
         );
         assert!(has_new_folder(&two));
+    }
+
+    #[test]
+    fn disappearing_templates_do_not_leave_an_empty_flyout() {
+        let (mut w, _cfg) = hermetic();
+        // A catalogue can be emptied after the parent menu opens. The flyout
+        // must close instead of painting an empty, focusable surface.
+        w.open_templates_submenu(Point::new(80.0, 80.0));
+        assert!(!w.submenu.is_open());
+        assert!(w.submenu_commands.is_empty());
     }
 
     #[test]
@@ -10562,6 +10585,12 @@ mod responsive_body_tests {
         assert!(
             h.open_menu_labels().iter().any(|label| label == "Forward"),
             "compact overflow retains history navigation rather than removing it"
+        );
+
+        h.lay_out(560.0, 760.0);
+        assert!(
+            h.w.toolbar.is_compact(),
+            "the 560 px tablet width keeps the location readable instead of overlapping it with desktop controls"
         );
 
         // The width is discovered during layout; one follow-up composition is
