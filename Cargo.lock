@@ -4258,7 +4258,6 @@ version = "0.2.0"
 dependencies = [
  "accounts",
  "automerge",
- "blake3",
  "chrono",
  "collab-types",
  "dirs 6.0.0",
@@ -4284,6 +4283,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "thumbnail",
