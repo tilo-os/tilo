@@ -239,6 +239,8 @@ fn settle_layout(
 ///   first-note action a new person sees before any sample content exists.
 /// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
 ///   live reflow gap).
+/// - `Some("block_drag")` — drag a document block by its six-dot handle,
+///   showing the discoverable in-editor reorder affordance.
 /// - `Some("menu")` — open a page row's right-click context menu.
 /// - `Some("slash")` — open the editor's `/` block menu.
 /// - `Some("slash_applied")` — pick a `/` command by click; the trigger is
@@ -454,6 +456,28 @@ fn dispatch_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &Windo
     }
 }
 
+fn dispatch_block_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // The sample Welcome note has several blocks. Grab the first block's
+    // dedicated handle and move over the third, stopping before release so
+    // the capture truthfully shows the active interaction state.
+    let points = {
+        let editor = app.main_panel_mut().editor();
+        editor.blocks().get(0).and_then(|first| {
+            let from = first.line.get_rect();
+            let target = editor.blocks().get(2)?.line.get_rect();
+            Some((
+                Point::new(from.x0 - 14.0, from.center().y),
+                Point::new(from.x0 - 14.0, target.center().y),
+            ))
+        })
+    };
+    if let Some((from, target)) = points {
+        send(app, &cursor_event(from.x, from.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        send(app, &cursor_event(target.x, target.y));
+    }
+}
+
 fn dispatch_menu(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
     if let Some(row) = app.sidebar_row_center_for_test(1) {
         send(app, &cursor_event(row.x, row.y));
@@ -563,6 +587,7 @@ fn dispatch_scenario(
     match scenario {
         Some("drawer") => app.open_drawer_for_shots(),
         Some("drag") => dispatch_drag(app, send),
+        Some("block_drag") => dispatch_block_drag(app, send),
         Some("menu") => dispatch_menu(app, send),
         Some("rename") => dispatch_rename(app, send),
         Some("rename_commit") => dispatch_rename_commit(app, send),
@@ -575,6 +600,8 @@ fn dispatch_scenario(
         Some("formula") => dispatch_formula(app, send),
         // Force the floating status bubble fully visible for the still.
         Some("status") => app.arm_status_bubble_for_shots(),
+        Some("saving") => app.set_save_status_for_shots(storage::SaveStatus::Saving),
+        Some("save_error") => app.set_save_status_for_shots(storage::SaveStatus::Failed),
         _ => {}
     }
 }

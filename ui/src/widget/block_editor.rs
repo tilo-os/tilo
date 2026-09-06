@@ -27,7 +27,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::{LinkPopover, PageEntry};
-use crate::widget::marks::{Mark, MarkSpan};
+use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine};
 use crate::widget::slash_menu::SlashMenu;
 
@@ -108,6 +108,17 @@ pub struct Block {
     /// Set by Shift+Enter: renders with no inter-block top spacing so
     /// the two lines read as one paragraph.
     pub soft_break: bool,
+}
+
+/// Ephemeral pointer state for the editor's block-order handle.  The durable
+/// result is still produced by the normal semantic-diff bridge as a stable-id
+/// [`BlockEditOp::Move`]; this only owns the gesture before that action exists.
+#[derive(Debug, Clone, Copy)]
+struct BlockDrag {
+    source: usize,
+    target: usize,
+    start: Point,
+    active: bool,
 }
 
 impl Block {
@@ -285,6 +296,19 @@ pub struct BlockEditor {
     /// Byte offset of the leading `[[`, spliced back out once a page
     /// is selected.
     link_open_at: Option<usize>,
+    /// The popovers open while handling a key event, before a draw has the
+    /// current glyph geometry.  Retaining the block + byte lets the overlay
+    /// refresh against the actual rendered caret (and its real theme) just
+    /// before it paints instead of guessing from a line edge.
+    slash_anchor_caret: Option<(usize, usize)>,
+    link_anchor_caret: Option<(usize, usize)>,
+    /// Actual painted link geometry from the most recent draw. This keeps
+    /// app-level navigation hit-testing independent of a guessed theme,
+    /// padding, font advances, or window scale.
+    live_link_hits: Vec<(Rect, PageId)>,
+    /// Reordering begins only from the quiet six-dot handle, preserving normal
+    /// text selection drags everywhere else in a block.
+    block_drag: Option<BlockDrag>,
     /// `Some`: backed by this Automerge block-Map list, bound per-line
     /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
@@ -309,6 +333,11 @@ pub struct BlockEditor {
     preferred_formula_mode: crate::math::FormulaMode,
     action_interception: bool,
     interception_before: Option<Vec<BlockSnapshot>>,
+    /// Operations initiated by a synthetic accessibility control. Unlike
+    /// pointer/key input there is no enclosing window event for MainPanel to
+    /// drain, so retain them until the app's next sync dispatches the same
+    /// action-owned delta.
+    pending_semantic_ops: Vec<BlockEditOp>,
 }
 
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
@@ -339,6 +368,10 @@ impl BlockEditor {
             slash_open_at: None,
             link_popover: LinkPopover::new(),
             link_open_at: None,
+            slash_anchor_caret: None,
+            link_anchor_caret: None,
+            live_link_hits: Vec::new(),
+            block_drag: None,
             blocks_list: None,
             doc_structure_dirty: false,
             local_author: None,
@@ -351,6 +384,7 @@ impl BlockEditor {
             preferred_formula_mode: crate::math::FormulaMode::Visual,
             action_interception: false,
             interception_before: None,
+            pending_semantic_ops: Vec::new(),
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -394,6 +428,11 @@ impl BlockEditor {
             return Vec::new();
         };
         semantic_block_ops(&before, &self.block_snapshot())
+    }
+
+    /// Drain UUID-addressed edits requested through synthetic AT controls.
+    pub fn take_pending_semantic_ops(&mut self) -> Vec<BlockEditOp> {
+        std::mem::take(&mut self.pending_semantic_ops)
     }
 
     fn block_snapshot(&self) -> Vec<BlockSnapshot> {
@@ -1138,10 +1177,252 @@ impl BlockEditor {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.refresh_popover_anchors(theme);
         self.slash_menu
             .draw_overlay(scene, transform, text_renderer, theme);
         self.link_popover
             .draw_overlay(scene, transform, text_renderer, theme);
+    }
+
+    /// Re-anchor overlays from rendered caret geometry.  Event handling cannot
+    /// safely invent a theme: plain and padded fields have different text
+    /// origins, and custom fonts can change every advance.  This runs in the
+    /// overlay paint pass, after the line has shaped with the active theme.
+    fn refresh_popover_anchors(&mut self, theme: &Theme) {
+        if self.slash_menu.is_visible()
+            && let Some((index, byte)) = self.slash_anchor_caret
+            && let Some(line) = self.blocks.get(index).map(|block| &block.line)
+        {
+            let caret = line.caret_rect(theme, byte);
+            self.slash_menu
+                .set_anchor(Point::new(caret.x0, caret.y1 + 2.0));
+        }
+        if self.link_popover.is_visible()
+            && let Some((index, byte)) = self.link_anchor_caret
+            && let Some(line) = self.blocks.get(index).map(|block| &block.line)
+        {
+            let caret = line.caret_rect(theme, byte);
+            self.link_popover
+                .set_anchor(Point::new(caret.x0, caret.y1 + 2.0));
+        }
+    }
+
+    fn fallback_popover_anchor(&self, index: usize) -> Point {
+        self.blocks.get(index).map_or(Point::ZERO, |block| {
+            let rect = block.line.get_rect();
+            Point::new(rect.x0, rect.y1 + 2.0)
+        })
+    }
+
+    /// Small reserved target just left of an editable block. The main Notes
+    /// panel deliberately leaves a 32px gutter, so this never narrows text or
+    /// steals list/checkbox clicks.
+    fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
+        let line = self.blocks.get(index)?.line.get_rect();
+        let center_y = line.center().y;
+        Some(Rect::new(
+            line.x0 - 22.0,
+            center_y - 10.0,
+            line.x0 - 6.0,
+            center_y + 10.0,
+        ))
+    }
+
+    /// Move a block in the local projection. With action interception enabled
+    /// this is converted into a UUID-addressed `Move` operation immediately
+    /// after the input event; non-intercepting consumers keep their existing
+    /// direct-CRDT reconciliation path.
+    fn move_block_to(&mut self, source: usize, target: usize) -> bool {
+        if source >= self.blocks.len() || target >= self.blocks.len() || source == target {
+            return false;
+        }
+        let mut block = self.blocks.remove(source);
+        // A just-moved focused line must not retain a stale blurred state.
+        block.line.set_focus(self.is_focused);
+        self.blocks.insert(target, block);
+        self.focused = Some(target);
+        self.structure_dirty = true;
+        self.doc_structure_dirty = true;
+        self.commit_pending = true;
+        self.edit_pending = true;
+        self.dirty = true;
+        true
+    }
+
+    fn block_move_target(block_id: &str, direction: &str) -> String {
+        format!("notes.block-move:{block_id}:{direction}")
+    }
+
+    fn parse_block_move_target(target: &str) -> Option<(&str, bool)> {
+        let (id, direction) = target.strip_prefix("notes.block-move:")?.rsplit_once(':')?;
+        match direction {
+            "up" => Some((id, true)),
+            "down" => Some((id, false)),
+            _ => None,
+        }
+    }
+
+    fn move_block_from_semantics(&mut self, target: &str) -> bool {
+        let Some((block_id, up)) = Self::parse_block_move_target(target) else {
+            return false;
+        };
+        let Some(source) = self.blocks.iter().position(|block| block.id == block_id) else {
+            return false; // Stable target from a stale AT tree: refuse safely.
+        };
+        let Some(target_index) = (if up {
+            source.checked_sub(1)
+        } else {
+            source
+                .checked_add(1)
+                .filter(|index| *index < self.blocks.len())
+        }) else {
+            return false;
+        };
+        self.begin_action_intercept();
+        if !self.move_block_to(source, target_index) {
+            return false;
+        }
+        let ops = self.take_intercepted_ops();
+        self.pending_semantic_ops.extend(ops);
+        true
+    }
+
+    fn try_move_focused_block_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(key @ (NamedKey::ArrowUp | NamedKey::ArrowDown)),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let modifiers = ctx.modifiers.state();
+        // Alt+Arrow is intentionally chosen: arrows retain caret navigation,
+        // Ctrl/Cmd+Shift+Arrow retains cross-block selection, and this maps to
+        // the conventional "move current item" accelerator.
+        if !modifiers.alt_key() || modifiers.control_key() || modifiers.super_key() {
+            return false;
+        }
+        let Some(source) = self.focused else {
+            return false;
+        };
+        let target = match key {
+            NamedKey::ArrowUp => source.saturating_sub(1),
+            NamedKey::ArrowDown => source.saturating_add(1),
+            _ => source,
+        };
+        if self.move_block_to(source, target) {
+            *ctx.handled = true;
+        }
+        // Consume edge attempts too: Alt+Arrow must never unexpectedly move
+        // the text caret when a screen-reader user is moving blocks.
+        true
+    }
+
+    fn draw_block_drag_affordance(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let tokens = &theme.tokens;
+        for index in 0..self.blocks.len() {
+            let Some(handle) = self.block_drag_handle_rect(index) else {
+                continue;
+            };
+            let active = self.block_drag.is_some_and(|drag| drag.source == index);
+            let highlighted =
+                active || self.focused == Some(index) || handle.contains(self.last_mouse_pos);
+            let color = if highlighted {
+                tokens.colors.text_primary.with_alpha_factor(0.72)
+            } else {
+                tokens.colors.text_dim.with_alpha_factor(0.58)
+            };
+            let center = handle.center();
+            for col in [-3.0, 3.0] {
+                for row in [-5.0, 0.0, 5.0] {
+                    let dot = Rect::new(
+                        center.x + col - 1.25,
+                        center.y + row - 1.25,
+                        center.x + col + 1.25,
+                        center.y + row + 1.25,
+                    );
+                    scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
+                }
+            }
+        }
+        if let Some(drag) = self.block_drag.filter(|drag| drag.active) {
+            self.draw_block_drop_indicator(scene, transform, tokens.colors.accent[5], drag);
+        }
+    }
+
+    fn draw_block_drop_indicator(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        color: vello::peniko::Color,
+        drag: BlockDrag,
+    ) {
+        let Some(target) = self.blocks.get(drag.target) else {
+            return;
+        };
+        let rect = target.line.get_rect();
+        let y = if drag.target > drag.source {
+            rect.y1
+        } else {
+            rect.y0
+        };
+        let insertion = Rect::new(rect.x0 - 4.0, y - 1.0, rect.x1, y + 1.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &insertion,
+        );
+    }
+
+    /// Complete or cancel a handle drag before normal text routing sees its
+    /// terminal event. A cancelled drag never changed the projection; a drop
+    /// is immediately captured by the semantic action bridge.
+    fn handle_block_drag_lifecycle(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        let escape = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        if escape && self.block_drag.take().is_some() {
+            *ctx.handled = true;
+            self.dirty = true;
+            return true;
+        }
+        let released = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        );
+        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
+            return false;
+        };
+        if drag.active {
+            let _ = self.move_block_to(drag.source, drag.target);
+        }
+        *ctx.handled = true;
+        self.dirty = true;
+        true
     }
 
     pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
@@ -1155,6 +1436,34 @@ impl BlockEditor {
     #[doc(hidden)]
     pub fn link_popover_mut(&mut self) -> &mut LinkPopover {
         &mut self.link_popover
+    }
+
+    /// Resolve a link against the exact geometry produced by the live draw.
+    /// A stale layout intentionally refuses rather than approximating with a
+    /// different theme or font.
+    pub fn link_at_point(&self, point: Point) -> Option<PageId> {
+        self.live_link_hits
+            .iter()
+            .find_map(|(rect, id)| rect.contains(point).then_some(*id))
+    }
+
+    fn refresh_live_link_hits(&mut self, theme: &Theme) {
+        self.live_link_hits.clear();
+        for block in &self.blocks {
+            let line = &block.line;
+            for span in line.marks() {
+                let Mark::Link(id) = &span.mark else {
+                    continue;
+                };
+                let x0 = line.pixel_x_for_byte(theme, span.range.start);
+                let x1 = line.pixel_x_for_byte(theme, span.range.end);
+                if x1 > x0 {
+                    let rect = line.get_rect();
+                    self.live_link_hits
+                        .push((Rect::new(x0, rect.y0, x1, rect.y1), *id));
+                }
+            }
+        }
     }
 
     fn commit_link_selection(&mut self, page: &PageEntry) {
@@ -1217,15 +1526,12 @@ impl BlockEditor {
             .blocks
             .get(focused_idx)
             .map_or(0, |b| b.line.cursor_pos());
-        let line_rect = self
-            .blocks
-            .get(focused_idx)
-            .map_or(Rect::ZERO, |b| b.line.get_rect());
         self.slash_menu
-            .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+            .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
         self.slash_open_at = Some(caret);
+        self.slash_anchor_caret = Some((focused_idx, caret));
     }
 
     #[doc(hidden)]
@@ -3363,6 +3669,7 @@ impl Widget for BlockEditor {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
+        self.refresh_live_link_hits(theme);
 
         // Painted BEFORE block content so the live caret stays on top.
         if self.blocks.len() == 1
@@ -3388,6 +3695,8 @@ impl Widget for BlockEditor {
                 None,
             );
         }
+
+        self.draw_block_drag_affordance(scene, transform, theme);
 
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
@@ -3537,6 +3846,14 @@ impl Widget for BlockEditor {
             return;
         }
 
+        if self.try_move_focused_block_shortcut(event, &mut ctx) {
+            return;
+        }
+
+        if self.handle_block_drag_lifecycle(event, &mut ctx) {
+            return;
+        }
+
         // Reset the anchor on anything but a Ctrl+Shift+Arrow extend, so
         // the next extend latches a fresh one.
         self.maybe_reset_kbd_sel_anchor(event, *ctx.modifiers);
@@ -3617,6 +3934,15 @@ impl Widget for BlockEditor {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.block_drag.is_some() {
+            return Some(winit::window::CursorIcon::Grabbing);
+        }
+        if (0..self.blocks.len()).any(|index| {
+            self.block_drag_handle_rect(index)
+                .is_some_and(|rect| rect.contains(point))
+        }) {
+            return Some(winit::window::CursorIcon::Grab);
+        }
         if self.formula_chrome.iter().flatten().any(|chrome| {
             chrome.source_button.contains(point) || chrome.visual_button.contains(point)
         }) {
@@ -3660,7 +3986,7 @@ impl Widget for BlockEditor {
     /// walks the per-block subtree instead.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let formulas = self
+        let mut children: Vec<AccessNode> = self
             .formula_chrome
             .iter()
             .enumerate()
@@ -3680,6 +4006,7 @@ impl Widget for BlockEditor {
                 Some(
                     AccessNode::new(Role::Group)
                         .with_name(format!("{syntax} formula"))
+                        .with_hashed_key(format!("notes.formula:{}", self.blocks.get(start)?.id))
                         .with_value(source)
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
@@ -3702,16 +4029,63 @@ impl Widget for BlockEditor {
                 )
             })
             .collect();
+        let total = self.blocks.len();
+        children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
+            let up_disabled = index == 0;
+            let down_disabled = index + 1 == total;
+            let bounds = self
+                .block_drag_handle_rect(index)
+                .unwrap_or_else(|| block.line.get_rect());
+            AccessNode::new(Role::Group)
+                .with_name(format!("Block {}", index + 1))
+                .with_semantic_key(format!("notes.block:{}", block.id))
+                .with_hashed_key(format!("notes.block:group:{}", block.id))
+                .with_position(index + 1, total)
+                .with_bounds(block.line.get_rect())
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name("Move block up")
+                        .with_action_target(Self::block_move_target(&block.id, "up"))
+                        .with_bounds(bounds)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(!up_disabled)
+                                .disabled(up_disabled),
+                        ),
+                    AccessNode::new(Role::Button)
+                        .with_name("Move block down")
+                        .with_action_target(Self::block_move_target(&block.id, "down"))
+                        .with_bounds(bounds)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(!down_disabled)
+                                .disabled(down_disabled),
+                        ),
+                ])
+        }));
         Some(
             AccessNode::new(Role::Document)
+                .with_description(
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block.",
+                )
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
                     focused: self.is_focused(),
                     multiline: true,
                     ..Default::default()
                 })
-                .with_children(formulas),
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        matches!(action, crate::a11y::Action::Activate) && self.move_block_from_semantics(target)
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3911,6 +4285,7 @@ impl BlockEditor {
         }
         if !self.link_popover.is_visible() {
             self.link_open_at = None;
+            self.link_anchor_caret = None;
         }
         if consumed {
             *ctx.handled = true;
@@ -3938,6 +4313,7 @@ impl BlockEditor {
         }
         if !self.slash_menu.is_visible() {
             self.slash_open_at = None;
+            self.slash_anchor_caret = None;
         }
         if consumed {
             *ctx.handled = true;
@@ -4024,6 +4400,63 @@ impl BlockEditor {
         }
     }
 
+    /// Give the topmost overlay first refusal of a pointer press. It closes on
+    /// an outside click but deliberately lets that click continue into the
+    /// editor, matching normal popover focus behavior.
+    fn handle_popover_pointer_press(&mut self, ctx: &mut EventCtx<'_>) -> bool {
+        if self.slash_menu.is_visible() {
+            if let Some(new_kind) = self.slash_menu.click_at(self.last_mouse_pos) {
+                self.commit_slash_selection(new_kind);
+                self.slash_open_at = None;
+                self.slash_anchor_caret = None;
+                *ctx.handled = true;
+                self.dirty = true;
+                return true;
+            }
+            self.slash_menu.set_visible(false);
+            self.slash_open_at = None;
+            self.slash_anchor_caret = None;
+            self.dirty = true;
+        }
+        if self.link_popover.is_visible() {
+            if let Some(page) = self.link_popover.click_at(self.last_mouse_pos) {
+                self.commit_link_selection(&page);
+                self.link_open_at = None;
+                self.link_anchor_caret = None;
+                *ctx.handled = true;
+                self.dirty = true;
+                return true;
+            }
+            self.link_popover.set_visible(false);
+            self.link_open_at = None;
+            self.link_anchor_caret = None;
+            self.dirty = true;
+        }
+        false
+    }
+
+    fn begin_block_drag_at_handle(&mut self, ctx: &mut EventCtx<'_>) -> bool {
+        let Some(source) = (0..self.blocks.len()).find(|&index| {
+            self.block_drag_handle_rect(index)
+                .is_some_and(|rect| rect.contains(self.last_mouse_pos))
+        }) else {
+            return false;
+        };
+        self.clear_cross_block_selection();
+        self.visual_formula_focus = None;
+        self.focus_block(source, CursorPlacement::Start);
+        self.block_drag = Some(BlockDrag {
+            source,
+            target: source,
+            start: self.last_mouse_pos,
+            active: false,
+        });
+        *ctx.focus_target = Some(ctx.node_id);
+        *ctx.handled = true;
+        self.dirty = true;
+        true
+    }
+
     /// A left click on the slash-menu, a checklist checkbox, or empty
     /// block space (which arms a cross-block drag). Runs BEFORE event
     /// routing so the click doesn't fall through to `TextInput` (which
@@ -4040,20 +4473,8 @@ impl BlockEditor {
         else {
             return false;
         };
-        // A click on a slash-menu row selects that kind (strips the
-        // trigger, like Enter); elsewhere dismisses it. Checked first
-        // since the popover paints on top.
-        if self.slash_menu.is_visible() {
-            if let Some(new_kind) = self.slash_menu.click_at(self.last_mouse_pos) {
-                self.commit_slash_selection(new_kind);
-                self.slash_open_at = None;
-                *ctx.handled = true;
-                self.dirty = true;
-                return true;
-            }
-            self.slash_menu.set_visible(false);
-            self.slash_open_at = None;
-            self.dirty = true;
+        if self.handle_popover_pointer_press(ctx) || self.begin_block_drag_at_handle(ctx) {
+            return true;
         }
         // A click on a formula's source/visual toggle, or inside its
         // visual editor (to place a caret there). Checked before the
@@ -4129,6 +4550,26 @@ impl BlockEditor {
         // mouse and keyboard drive the same selection cursor.
         if self.slash_menu.is_visible() && self.slash_menu.hover_at(logical) {
             self.dirty = true;
+        }
+        if self.link_popover.is_visible() && self.link_popover.hover_at(logical) {
+            self.dirty = true;
+        }
+
+        if let Some(mut drag) = self.block_drag {
+            let dx = logical.x - drag.start.x;
+            let dy = logical.y - drag.start.y;
+            if !drag.active && dx.hypot(dy) >= 4.0 {
+                drag.active = true;
+            }
+            if drag.active
+                && let Some(target) = self.block_at_y(logical.y)
+                && target != drag.target
+            {
+                drag.target = target;
+                self.dirty = true;
+            }
+            self.block_drag = Some(drag);
+            return;
         }
 
         // Per-block drag stays under the start TextInput's control
@@ -4223,15 +4664,12 @@ impl BlockEditor {
             .blocks
             .get(focused_idx)
             .map_or(0, |b| b.line.cursor_pos());
-        let line_rect = self
-            .blocks
-            .get(focused_idx)
-            .map_or(Rect::ZERO, |b| b.line.get_rect());
         self.slash_menu
-            .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+            .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
         self.slash_open_at = Some(caret_byte);
+        self.slash_anchor_caret = Some((focused_idx, caret_byte));
     }
 
     /// Focus whichever editable block a left click lands on first, so the
@@ -4379,16 +4817,16 @@ impl BlockEditor {
                 self.extend_block_selection(idx, *caret, 1);
             }
             LineSignal::LinkOpen { open_at } => {
-                // Anchored at the line's bottom-left, like SlashMenu.
-                let line_rect = self
-                    .blocks
-                    .get(idx)
-                    .map_or(Rect::ZERO, |b| b.line.get_rect());
                 self.link_popover
-                    .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+                    .set_anchor(self.fallback_popover_anchor(idx));
                 self.link_popover.set_filter("");
                 self.link_popover.set_visible(true);
                 self.link_open_at = Some(*open_at);
+                let caret = self
+                    .blocks
+                    .get(idx)
+                    .map_or(*open_at, |block| block.line.cursor_pos());
+                self.link_anchor_caret = Some((idx, caret));
             }
         }
     }
@@ -4419,6 +4857,65 @@ mod tests {
         Widget::set_focus(&mut ed, true);
         let node = Widget::accessibility(&ed).unwrap();
         assert!(node.state.focused);
+    }
+
+    #[test]
+    fn accessible_block_reorder_controls_are_stable_and_action_owned() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
+        editor.set_action_interception(true);
+        let first_id = editor.blocks()[0].id.clone();
+        let second_id = editor.blocks()[1].id.clone();
+        let node = Widget::accessibility(&editor).expect("document semantics");
+        let first = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Block 1"))
+            .expect("first block group");
+        let first_group_key = first.key.expect("block group has durable AT identity");
+        assert!(first.children[0].state.disabled, "top block cannot move up");
+        let down_target = BlockEditor::block_move_target(&first_id, "down");
+        assert_eq!(
+            first.children[1].action_target.as_deref(),
+            Some(&*down_target)
+        );
+
+        assert!(Widget::perform_semantic_action(
+            &mut editor,
+            &down_target,
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(editor.blocks()[1].id, first_id);
+        let reordered = Widget::accessibility(&editor).expect("reordered document semantics");
+        let first_semantic_key = format!("notes.block:{first_id}");
+        assert_eq!(
+            reordered
+                .children
+                .iter()
+                .find(|child| child.semantic_key.as_deref() == Some(first_semantic_key.as_str()))
+                .and_then(|child| child.key),
+            Some(first_group_key),
+            "assistive technology keeps the same block node across reorder",
+        );
+        assert_eq!(
+            editor.take_pending_semantic_ops(),
+            vec![BlockEditOp::Move {
+                block_id: second_id,
+                after: None,
+            }]
+        );
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut editor,
+                "notes.block-move:missing:down",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ),
+            "a stale stable id must refuse instead of moving another block"
+        );
     }
 
     #[test]
@@ -5412,6 +5909,28 @@ mod tests {
                 text: "e".into(),
             }]
         );
+    }
+
+    #[test]
+    fn moving_a_block_emits_a_stable_id_move_operation() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::paragraph("first"),
+            Block::paragraph("second"),
+            Block::paragraph("third"),
+        ]);
+        let first_id = editor.blocks()[0].id.clone();
+        let second_id = editor.blocks()[1].id.clone();
+        editor.set_action_interception(true);
+        editor.begin_action_intercept();
+        assert!(editor.move_block_to(0, 2));
+        assert_eq!(editor.blocks()[2].id, first_id);
+        assert!(editor.take_structure_dirty());
+        let ops = editor.take_intercepted_ops();
+        assert!(ops.contains(&BlockEditOp::Move {
+            block_id: second_id,
+            after: None,
+        }));
     }
 
     #[test]
