@@ -9,11 +9,15 @@
 //! library + play-state replicate across devices.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use base64::Engine as _;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -325,6 +329,10 @@ pub struct MusicApp {
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
+    /// The off-thread portable PNG conversion started after a portal selection.
+    /// Image decoding/resize/encoding never runs in the frame loop.
+    cover_embed: Option<Receiver<Result<String, String>>>,
+    cover_embed_for: Option<String>,
 
     seeded: bool,
     /// When `true`, a first `sync` onto an empty document writes the bundled
@@ -612,6 +620,8 @@ impl MusicApp {
             mpris_last: None,
             cover_pick: None,
             cover_pick_for: None,
+            cover_embed: None,
+            cover_embed_for: None,
             seeded: false,
             seed_samples: false,
             playback_loaded: false,
@@ -933,6 +943,25 @@ impl MusicApp {
     }
 
     fn persist_playback(&mut self, state: &mut AutoCommit) {
+        // Reducers such as a media-key play/pause can receive an already loaded
+        // track before a queue has been materialised. Canonicalise that local
+        // convenience state before it crosses the durable action boundary, so
+        // peers only ever observe the validated queue/current invariant.
+        if let Some(current) = self.pb.current.clone() {
+            if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
+                self.pb.queue_index = index;
+            } else {
+                self.pb.queue = vec![current];
+                self.pb.queue_index = 0;
+            }
+            self.playhead_ms = self
+                .playhead_ms
+                .clamp(0.0, self.current_duration_ms() as f64);
+        } else {
+            self.pb.playing = false;
+            self.pb.queue_index = 0;
+            self.playhead_ms = 0.0;
+        }
         self.pb.position_ms = self.playhead_ms as u64;
         self.perform_action(
             state,
@@ -1034,6 +1063,7 @@ impl MusicApp {
                     .map(|tid| crate::actions::TrackRef {
                         id: tid.clone(),
                         label: self.track_label(tid),
+                        liked: self.lib.is_liked(tid),
                     })
                     .collect(),
             })
@@ -1044,30 +1074,31 @@ impl MusicApp {
                 .lib
                 .tracks
                 .values()
-                .map(|track| crate::actions::CatalogResource {
+                .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
                     label: self.track_label(&track.id),
                     offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                    liked: self.lib.is_liked(&track.id),
                 })
                 .collect(),
             albums: self
                 .lib
                 .albums
                 .values()
-                .map(|album| crate::actions::CatalogResource {
+                .map(|album| crate::actions::CatalogAlbumResource {
                     id: album.id.clone(),
                     label: album.title.clone(),
-                    offline: false,
+                    saved: self.lib.is_album_saved(&album.id),
                 })
                 .collect(),
             artists: self
                 .lib
                 .artists
                 .values()
-                .map(|artist| crate::actions::CatalogResource {
+                .map(|artist| crate::actions::CatalogArtistResource {
                     id: artist.id.clone(),
                     label: artist.name.clone(),
-                    offline: false,
+                    followed: self.lib.is_artist_followed(&artist.id),
                 })
                 .collect(),
             playback: self.pb.clone(),
@@ -1231,9 +1262,9 @@ impl MusicApp {
     }
 
     /// Apply a completed playlist-cover pick from the file portal (if any
-    /// arrived this frame): persist the chosen image path onto the playlist and
-    /// record it for the cover image cache, or toast a failure.
-    fn drain_cover_pick(&mut self, state: &mut AutoCommit) {
+    /// arrived this frame). The selected local file is converted off-thread
+    /// before a portable cover value is persisted onto the playlist.
+    fn drain_cover_pick(&mut self, _state: &mut AutoCommit) {
         let Some(rx) = &self.cover_pick else { return };
         let outcome = match rx.try_recv() {
             Ok(o) => o,
@@ -1251,18 +1282,12 @@ impl MusicApp {
                 let Some(playlist_id) = playlist_id else {
                     return;
                 };
-                // Store as a `file://` URL so the image cache (shared with http
-                // covers) can fetch it off disk.
-                let url = format!("file://{}", path.display());
-                // The pick (the file portal) is app-side, non-deterministic work;
-                // the resulting write of the chosen URL is a replayable action so
-                // the cover replicates to peers like any other playlist edit.
-                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
-                self.reload_library(state);
-                // Overwrite (not `or_insert`) so re-picking a cover replaces the
-                // old one in the image cache.
-                self.art_urls.insert(playlist_id, url);
-                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+                self.cover_embed_for = Some(playlist_id);
+                self.cover_embed = Some(embed_cover_off_thread(path));
+                self.toast = Some((
+                    "Preparing portable playlist cover…".to_string(),
+                    Instant::now(),
+                ));
             }
             PortalOutcome::Cancelled => {}
             PortalOutcome::Failed(reason) => {
@@ -1271,6 +1296,36 @@ impl MusicApp {
                     Instant::now(),
                 ));
             }
+        }
+    }
+
+    fn drain_cover_embed(&mut self, state: &mut AutoCommit) {
+        let Some(receiver) = &self.cover_embed else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.cover_embed = None;
+                self.cover_embed_for = None;
+                self.toast = Some(("Couldn’t prepare playlist cover".into(), Instant::now()));
+                return;
+            }
+        };
+        self.cover_embed = None;
+        let playlist_id = self.cover_embed_for.take();
+        match (playlist_id, result) {
+            (Some(playlist_id), Ok(url)) => {
+                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
+                self.reload_library(state);
+                self.art_urls.insert(playlist_id, url);
+                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+            }
+            (_, Err(reason)) => {
+                self.toast = Some((format!("Couldn’t set cover: {reason}"), Instant::now()));
+            }
+            (None, Ok(_)) => {}
         }
     }
 
@@ -3810,39 +3865,91 @@ fn hit_to_live(hit: &TrackHit) -> LiveTrack {
     }
 }
 
-/// Read a **local** cover image (a `file://…` URL or an absolute path) off disk,
-/// so a playlist cover the user picked via the file portal renders in every
-/// build — including the hermetic offline / `--shots` path — without any
-/// network. `None` for non-local URLs (handled by the HTTP fetcher) or an
-/// unreadable / absurdly-large file.
-fn read_local_image(url: &str) -> Option<Vec<u8>> {
-    let path = if let Some(rest) = url.strip_prefix("file://") {
-        // `file:///abs/path` → `/abs/path`; tolerate a missing host segment.
-        std::path::PathBuf::from(rest)
-    } else if url.starts_with('/') {
-        std::path::PathBuf::from(url)
-    } else {
-        return None;
-    };
-    let bytes = std::fs::read(&path).ok()?;
-    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+/// Keep source reads bounded before handing an image decoder potentially
+/// untrusted portal data. The resulting shared payload has the tighter action
+/// budget in [`crate::actions::MAX_PORTABLE_COVER_BYTES`].
+const MAX_COVER_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Decode a portal-selected image and normalize it into a small PNG data URL.
+/// This pure helper lets tests exercise the same path without a real portal.
+fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
+    if source.is_empty() || source.len() as u64 > MAX_COVER_SOURCE_BYTES {
+        return Err("image is empty or larger than 8 MiB".to_string());
+    }
+    let image = image::load_from_memory(source).map_err(|error| error.to_string())?;
+    let image = image.thumbnail(
+        crate::actions::MAX_PORTABLE_COVER_EDGE,
+        crate::actions::MAX_PORTABLE_COVER_EDGE,
+    );
+    let mut output = Cursor::new(Vec::new());
+    image
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?;
+    let png = output.into_inner();
+    if png.len() > crate::actions::MAX_PORTABLE_COVER_BYTES {
+        return Err("normalized image is larger than 256 KiB".to_string());
+    }
+    let value = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    if !crate::actions::portable_cover_value(&value) {
+        return Err("normalized image did not meet the portable cover policy".to_string());
+    }
+    Ok(value)
+}
+
+fn portable_cover_path(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_COVER_SOURCE_BYTES {
+        return Err("image is larger than 8 MiB".to_string());
+    }
+    let source = std::fs::read(path).map_err(|error| error.to_string())?;
+    portable_cover_data_url(&source)
+}
+
+/// Run local disk I/O and decode/resize/encode work away from the UI thread.
+fn embed_cover_off_thread(path: PathBuf) -> Receiver<Result<String, String>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if let Err(error) = std::thread::Builder::new()
+        .name("music-cover-embed".to_string())
+        .spawn(move || {
+            let _ = sender.send(portable_cover_path(&path));
+        })
+    {
+        let (fallback_sender, fallback_receiver) = std::sync::mpsc::channel();
+        let _ = fallback_sender.send(Err(error.to_string()));
+        return fallback_receiver;
+    }
+    receiver
+}
+
+/// Decode only canonical embedded cover values. Document actions reject local
+/// paths and `file:` URLs, so the renderer never dereferences peer-local files.
+fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
+    if !crate::actions::portable_cover_value(url) {
         return None;
     }
-    Some(bytes)
+    let encoded = url.strip_prefix("data:image/png;base64,")?;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
 }
 
 /// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
 /// the `live` build (a shared blocking `reqwest` client with a connection
-/// pool); a local-file loader otherwise, so a picked playlist cover still
-/// renders and the hermetic `--shots` path never opens a socket.
+/// pool); embedded portable PNG values render in every build, and the
+/// hermetic `--shots` path never opens a socket.
 #[cfg(feature = "live")]
 fn image_fetcher() -> ui::Fetcher {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
-        // Local covers (the portal-picked playlist image) load straight off disk.
-        if let Some(bytes) = read_local_image(url) {
+        if let Some(bytes) = embedded_cover_bytes(url) {
             return Some(bytes);
+        }
+        if !url.starts_with("https://") {
+            return None;
         }
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
@@ -3866,8 +3973,8 @@ fn image_fetcher() -> ui::Fetcher {
 
 #[cfg(not(feature = "live"))]
 fn image_fetcher() -> ui::Fetcher {
-    // No HTTP stack, but a locally-picked playlist cover still renders offline.
-    Arc::new(|url: &str| read_local_image(url))
+    // No HTTP stack, but a portal-picked portable PNG still renders offline.
+    Arc::new(embedded_cover_bytes)
 }
 
 mod render;
@@ -3888,6 +3995,57 @@ mod tests {
         app.ensure_seeded(&mut doc);
         app.reload(&doc);
         (app, doc)
+    }
+
+    #[test]
+    fn picked_cover_normalizes_to_a_portable_renderable_action_value() {
+        let mut output = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let source = output.into_inner();
+        let portable = portable_cover_data_url(&source).expect("small PNG normalizes");
+        let action = crate::actions::set_cover_action("pl_test", &portable);
+        let crate::actions::MusicAction::SetPlaylistCover { cover, .. } = action else {
+            unreachable!("cover builder returns a cover action");
+        };
+        assert!(crate::actions::portable_cover_value(&cover));
+        assert!(!cover.contains("file:"));
+        assert!(!cover.contains("/tmp/"));
+
+        let decoded = embedded_cover_bytes(&cover).expect("renderer accepts portable value");
+        assert!(
+            image::load_from_memory(&decoded).is_ok(),
+            "the image cache receives a decodable PNG"
+        );
+        assert!(embedded_cover_bytes("file:///tmp/cover.png").is_none());
+        assert!(embedded_cover_bytes("/tmp/cover.png").is_none());
+    }
+
+    #[test]
+    fn completed_portal_cover_write_contains_no_device_local_path() {
+        let (mut app, mut doc) = app_with_doc();
+        let playlist = app.lib.playlists[0].id.clone();
+        let mut output = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let source = output.into_inner();
+        let portable = portable_cover_data_url(&source).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(Ok(portable)).unwrap();
+        app.cover_embed_for = Some(playlist.clone());
+        app.cover_embed = Some(receiver);
+
+        app.drain_cover_embed(&mut doc);
+        let persisted = doc::load_library(&doc)
+            .playlist(&playlist)
+            .unwrap()
+            .cover
+            .clone();
+        assert!(persisted.starts_with("data:image/png;base64,"));
+        assert!(!persisted.contains("file:"));
+        assert!(!persisted.contains("/tmp/"));
     }
 
     #[test]
@@ -6862,22 +7020,21 @@ mod tests {
     #[test]
     fn following_an_artist_toggles_and_persists() {
         let (mut app, mut doc) = app_with_doc();
-        assert!(!app.lib.is_artist_followed("UCdaftpunk"));
-        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        let artist = app.lib.artists.keys().next().cloned().unwrap();
+        assert!(!app.lib.is_artist_followed(&artist));
+        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
         assert!(
-            app.lib.is_artist_followed("UCdaftpunk"),
+            app.lib.is_artist_followed(&artist),
             "Follow adds the artist"
         );
         // Persisted to the CRDT — a fresh load from the document sees it.
         assert!(
-            doc::load_library(&doc)
-                .followed_artists
-                .contains("UCdaftpunk"),
+            doc::load_library(&doc).followed_artists.contains(&artist),
             "follow round-trips through the document",
         );
-        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
         assert!(
-            !app.lib.is_artist_followed("UCdaftpunk"),
+            !app.lib.is_artist_followed(&artist),
             "toggling again unfollows"
         );
     }
