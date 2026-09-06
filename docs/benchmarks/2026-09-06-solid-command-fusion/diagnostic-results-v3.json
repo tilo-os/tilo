@@ -1,0 +1,27 @@
+{
+  "scope": "cfg(test) failure reporting only; no production change versus v2",
+  "replays": [
+    {
+      "name": "bounds-fuse-oracle-diagnostic-v3-round-1",
+      "exit_code": 0,
+      "log": "bounds-fuse-oracle-diagnostic-v3-round-1.log",
+      "selected": 11
+    },
+    {
+      "name": "bounds-fuse-oracle-diagnostic-v3-round-2",
+      "exit_code": 0,
+      "log": "bounds-fuse-oracle-diagnostic-v3-round-2.log",
+      "selected": 11
+    },
+    {
+      "name": "bounds-fuse-oracle-diagnostic-v3-round-3",
+      "exit_code": 0,
+      "log": "bounds-fuse-oracle-diagnostic-v3-round-3.log",
+      "selected": 11
+    }
+  ],
+  "originalFailurePreserved": true,
+  "causeProved": false,
+  "acceptance": false,
+  "inputManifest": "validation-inputs-v3.sha256"
+}

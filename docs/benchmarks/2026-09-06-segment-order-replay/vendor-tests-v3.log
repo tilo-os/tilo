@@ -1,0 +1,72 @@
+$ timeout --signal=TERM --kill-after=30s 15m env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK -u QOS_REDRAW_BENCH_SCENE_REUSE cargo test -p vello --lib --locked -- --nocapture --test-threads=1
+   Compiling vello v0.9.0 (/home/xaver/qos/vendor/vello)
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:3201:13
+     |
+3201 |             std::borrow::Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+3201 -             std::borrow::Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+3201 +             Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:3354:13
+     |
+3354 |             std::borrow::Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3354 -             std::borrow::Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+3354 +             Cow::Borrowed(SEGMENT_ORDER_REPLAY_WGSL),
+     |
+
+error[E0283]: type annotations needed
+    --> vendor/vello/src/lib.rs:3270:19
+     |
+3270 |         recording.dispatch(
+     |                   ^^^^^^^^ cannot infer type of the type parameter `R` declared on the method `dispatch`
+     |
+     = note: the type must implement `Into<recording::ResourceProxy>`
+note: required by a bound in `recording::Recording::dispatch`
+    --> vendor/vello/src/recording.rs:178:18
+     |
+ 175 |     pub fn dispatch<R>(&mut self, shader: ShaderId, wg_size: (u32, u32, u32), resources: R)
+     |            -------- required by a bound in this associated function
+...
+ 178 |         R::Item: Into<ResourceProxy>,
+     |                  ^^^^^^^^^^^^^^^^^^^ required by this bound in `Recording::dispatch`
+help: consider specifying a concrete type for the type parameter `R`
+     |
+3270 |         recording.dispatch::</* Type */>(
+     |                           ++++++++++++++
+
+error[E0283]: type annotations needed
+    --> vendor/vello/src/lib.rs:3390:19
+     |
+3390 |         recording.dispatch(
+     |                   ^^^^^^^^ cannot infer type of the type parameter `R` declared on the method `dispatch`
+     |
+     = note: the type must implement `Into<recording::ResourceProxy>`
+note: required by a bound in `recording::Recording::dispatch`
+    --> vendor/vello/src/recording.rs:178:18
+     |
+ 175 |     pub fn dispatch<R>(&mut self, shader: ShaderId, wg_size: (u32, u32, u32), resources: R)
+     |            -------- required by a bound in this associated function
+...
+ 178 |         R::Item: Into<ResourceProxy>,
+     |                  ^^^^^^^^^^^^^^^^^^^ required by this bound in `Recording::dispatch`
+help: consider specifying a concrete type for the type parameter `R`
+     |
+3390 |         recording.dispatch::</* Type */>(
+     |                           ++++++++++++++
+
+For more information about this error, try `rustc --explain E0283`.
+warning: `vello` (lib test) generated 2 warnings
+error: could not compile `vello` (lib test) due to 2 previous errors; 2 warnings emitted
+
+EXIT_CODE=101

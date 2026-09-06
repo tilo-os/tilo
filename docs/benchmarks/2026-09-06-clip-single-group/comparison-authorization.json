@@ -1,0 +1,41 @@
+{
+  "at": "2026-09-06 13:54:56 UTC",
+  "version": "v6",
+  "validated_commands": 20,
+  "source_inputs": 34,
+  "binaries": [
+    {
+      "source": "target/release/examples/redraw_bench",
+      "path": "/home/xaver/qos/target/ui-perf-comparison/shell-redraw-clip-single-20260906",
+      "sha256": "a082e411dd1e08cd6b1d3942b0b238c828b6073be87470f5c0d6abf50b200ddb",
+      "source_sha256": "a082e411dd1e08cd6b1d3942b0b238c828b6073be87470f5c0d6abf50b200ddb",
+      "size": 33735280,
+      "mode": 33261
+    },
+    {
+      "source": "target/release/examples/ui-perf",
+      "path": "/home/xaver/qos/target/ui-perf-comparison/ui-perf-clip-single-20260906",
+      "sha256": "4159a4a0944fbbcea0cc4bcf77f06eb1ed97b101f0aa201072804bff43149cd7",
+      "source_sha256": "4159a4a0944fbbcea0cc4bcf77f06eb1ed97b101f0aa201072804bff43149cd7",
+      "size": 17610016,
+      "mode": 33261
+    }
+  ],
+  "attempts": 30,
+  "source_frozen": true,
+  "all_controlled_compiler_test_jobs_finished": true,
+  "no_extra_runtime_warmup": true,
+  "ordinary_release": true,
+  "planned_diagnostics": false,
+  "gate_thresholds": {
+    "shell_mean_ms": 25,
+    "shell_p99_ms": 50,
+    "ui_p99_ms": 30
+  },
+  "default_promotion": false,
+  "goal_achieved": false,
+  "preflight": {
+    "active_build_test_benchmark_processes": [],
+    "overrides": {}
+  }
+}

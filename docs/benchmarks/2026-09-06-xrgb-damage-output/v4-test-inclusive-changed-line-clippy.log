@@ -1,0 +1,120 @@
+    Checking atomic-file v0.1.0 (/home/xaver/qos/crates/system/atomic-file)
+    Checking runtime-portal v0.1.0 (/home/xaver/qos/crates/runtime/runtime-portal)
+    Checking collab-types v0.1.0 (/home/xaver/qos/crates/collab/collab-types)
+    Checking qdoc v0.1.0 (/home/xaver/qos/crates/doc/qdoc)
+   Compiling runtime-fs v0.1.0 (/home/xaver/qos/crates/runtime/runtime-fs)
+    Checking runtime-identity v0.1.0 (/home/xaver/qos/crates/runtime/runtime-identity)
+    Checking settings-store v0.1.0 (/home/xaver/qos/crates/system/settings-store)
+    Checking threshold-identity v0.1.0 (/home/xaver/qos/crates/collab/threshold-identity)
+   Compiling runtime-collab v0.1.0 (/home/xaver/qos/crates/runtime/runtime-collab)
+    Checking cli v0.1.0 (/home/xaver/qos/crates/runtime/cli)
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Checking app-state v0.1.0 (/home/xaver/qos/crates/system/app-state)
+    Checking tts v0.1.0 (/home/xaver/qos/crates/system/tts)
+    Checking qos-actions v0.1.0 (/home/xaver/qos/crates/collab/actions)
+    Checking media v0.1.0 (/home/xaver/qos/crates/media)
+    Checking qos-headless-schema v0.1.0 (/home/xaver/qos/crates/dev/headless-schema)
+    Checking qos-ui-graph v0.1.0 (/home/xaver/qos/crates/dev/ui-graph)
+    Checking qos-startup-metrics v0.1.0 (/home/xaver/qos/crates/system/qos-startup-metrics)
+    Checking spellcheck v0.1.0 (/home/xaver/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/xaver/qos/crates/packaging/launcher)
+    Checking pkg v0.1.0 (/home/xaver/qos/crates/packaging/pkg)
+    Checking thumbnail v0.1.0 (/home/xaver/qos/crates/thumbnail)
+    Checking runtime-bundle v0.1.0 (/home/xaver/qos/crates/packaging/runtime-bundle)
+    Checking qos-user-identity v0.1.0 (/home/xaver/qos/crates/identity/qos-user-identity)
+    Checking qos-power-mgmt v0.1.0 (/home/xaver/qos/crates/system/power)
+    Checking qos-desktop-entry v0.1.0 (/home/xaver/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/xaver/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/xaver/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/xaver/qos/fs)
+    Checking windows-vm v0.1.0 (/home/xaver/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/xaver/qos/crates/runtime/ush)
+    Checking qdoc-pdf v0.1.0 (/home/xaver/qos/crates/doc/qdoc-pdf)
+    Checking qdoc-rtf v0.1.0 (/home/xaver/qos/crates/doc/qdoc-rtf)
+    Checking qos-bluez v0.1.0 (/home/xaver/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/xaver/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/xaver/qos/crates/windows/compat-service)
+    Checking qos-relay v0.1.0 (/home/xaver/qos/crates/hosting/qos-relay)
+    Checking os-actions v0.1.0 (/home/xaver/qos/crates/system/os-actions)
+    Checking qos-projector v0.1.0 (/home/xaver/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/xaver/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/xaver/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/xaver/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/xaver/qos/crates/collab/collab-fixtures)
+    Checking qos-app v0.1.0 (/home/xaver/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/xaver/qos/crates/session/greeter)
+    Checking file-explorer v0.2.0 (/home/xaver/qos/apps/file-explorer)
+    Checking terminal v0.2.1 (/home/xaver/qos/apps/terminal)
+    Checking word-processor v0.1.0 (/home/xaver/qos/apps/word-processor)
+    Checking shell v0.1.0 (/home/xaver/qos/shell)
+warning: more than 3 bools in a struct
+   --> shell/src/compositor/backend/drm/paint.rs:210:1
+    |
+210 | / pub struct VelloDrmBridge {
+211 | |     context: RenderContext,
+212 | |     dev_id: usize,
+213 | |     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compi...
+...   |
+262 | |     fail_next_tracked_swizzle: bool,
+263 | | }
+    | |_^
+    |
+    = help: consider using a state machine or refactoring bools into two-variant enums
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#struct_excessive_bools
+    = note: `-D clippy::struct-excessive-bools` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::struct_excessive_bools)]`
+
+
+warning: variables can be used directly in the `format!` string
+    --> shell/src/compositor/backend/drm/paint.rs:2917:9
+     |
+2917 | /         assert!(
+2918 | |             mismatch.is_none(),
+2919 | |             "{label}: first mismatch at byte {:?}",
+2920 | |             mismatch
+2921 | |         );
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+     = note: `-D clippy::uninlined-format-args` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::uninlined_format_args)]`
+
+
+warning: this function has too many lines (111/100)
+    --> shell/examples/redraw_bench.rs:1309:1
+     |
+1309 | / fn finish_run(
+1310 | |     samples: &[Option<u128>],
+1311 | |     diagnostic: bool,
+1312 | |     diagnostics: FinishDiagnostics<'_>,
+1313 | | ) -> Result<(), String> {
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+     = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+
+warning: this argument is passed by value, but not consumed in the function body
+    --> shell/examples/redraw_bench.rs:1312:18
+     |
+1312 |     diagnostics: FinishDiagnostics<'_>,
+     |                  ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: or consider marking this type as `Copy`
+    --> shell/examples/redraw_bench.rs:117:1
+     |
+ 117 | struct FinishDiagnostics<'a> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_pass_by_value
+     = note: `-D clippy::needless-pass-by-value` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider taking a reference instead
+     |
+1312 |     diagnostics: &FinishDiagnostics<'_>,
+     |                  +
+
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 13s
+Changed-line/compiler diagnostics: 4
+

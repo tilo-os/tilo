@@ -1,0 +1,341 @@
+{
+  "acceptance": false,
+  "runs": [
+    {
+      "name": "shell-default-dispatch",
+      "exit_code": 1,
+      "stageSamples": [
+        {
+          "stage": "flatten",
+          "id": 7,
+          "samples": 1000,
+          "mean_ns": 1445655,
+          "p99_ns": 5439790,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "clip_leaf",
+          "id": 11,
+          "samples": 1000,
+          "mean_ns": 974346,
+          "p99_ns": 4071600,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "binning",
+          "id": 12,
+          "samples": 1000,
+          "mean_ns": 929259,
+          "p99_ns": 4624574,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "tile_alloc",
+          "id": 13,
+          "samples": 1000,
+          "mean_ns": 1728879,
+          "p99_ns": 6012451,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "backdrop_dyn",
+          "id": 16,
+          "samples": 1000,
+          "mean_ns": 2506700,
+          "p99_ns": 9838268,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "coarse",
+          "id": 17,
+          "samples": 1000,
+          "mean_ns": 11285541,
+          "p99_ns": 38572544,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_area",
+          "id": 20,
+          "samples": 1,
+          "mean_ns": 282740993,
+          "p99_ns": 282740993,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_sparse_area",
+          "id": 23,
+          "samples": 999,
+          "mean_ns": 12476721,
+          "p99_ns": 42522841,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "draw_leaf_prefix",
+          "id": 25,
+          "samples": 1000,
+          "mean_ns": 2078487,
+          "p99_ns": 34423443,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_count_direct",
+          "id": 26,
+          "samples": 1000,
+          "mean_ns": 2250825,
+          "p99_ns": 9627433,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_tiling_direct",
+          "id": 27,
+          "samples": 1000,
+          "mean_ns": 2451109,
+          "p99_ns": 20721233,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        }
+      ],
+      "matched": true
+    },
+    {
+      "name": "shell-adaptive-dispatch",
+      "exit_code": 1,
+      "stageSamples": [
+        {
+          "stage": "flatten",
+          "id": 7,
+          "samples": 1000,
+          "mean_ns": 1829606,
+          "p99_ns": 30878149,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "clip_leaf",
+          "id": 11,
+          "samples": 1000,
+          "mean_ns": 1084529,
+          "p99_ns": 6515424,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "binning",
+          "id": 12,
+          "samples": 1000,
+          "mean_ns": 1006167,
+          "p99_ns": 5684271,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "tile_alloc",
+          "id": 13,
+          "samples": 1000,
+          "mean_ns": 2050017,
+          "p99_ns": 26192741,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "backdrop_dyn",
+          "id": 16,
+          "samples": 1000,
+          "mean_ns": 2805162,
+          "p99_ns": 24769968,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "coarse",
+          "id": 17,
+          "samples": 1,
+          "mean_ns": 36246897,
+          "p99_ns": 36246897,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_area",
+          "id": 20,
+          "samples": 1,
+          "mean_ns": 380427937,
+          "p99_ns": 380427937,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_sparse_area",
+          "id": 23,
+          "samples": 999,
+          "mean_ns": 13570162,
+          "p99_ns": 50266140,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "draw_leaf_prefix",
+          "id": 25,
+          "samples": 1000,
+          "mean_ns": 2745629,
+          "p99_ns": 35308659,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_count_direct",
+          "id": 26,
+          "samples": 1000,
+          "mean_ns": 2645175,
+          "p99_ns": 23507092,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_tiling_direct",
+          "id": 27,
+          "samples": 1000,
+          "mean_ns": 1736911,
+          "p99_ns": 13363613,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "coarse_sparse_active",
+          "id": 28,
+          "samples": 999,
+          "mean_ns": 1970722,
+          "p99_ns": 22783908,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        }
+      ],
+      "matched": true
+    },
+    {
+      "name": "shell-bounds-dispatch",
+      "exit_code": 1,
+      "stageSamples": [
+        {
+          "stage": "flatten",
+          "id": 7,
+          "samples": 1000,
+          "mean_ns": 1474003,
+          "p99_ns": 7839916,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "clip_leaf",
+          "id": 11,
+          "samples": 1000,
+          "mean_ns": 1059401,
+          "p99_ns": 6373600,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "binning",
+          "id": 12,
+          "samples": 1000,
+          "mean_ns": 1018032,
+          "p99_ns": 4576449,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "tile_alloc",
+          "id": 13,
+          "samples": 1000,
+          "mean_ns": 866867,
+          "p99_ns": 3972849,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "backdrop_dyn",
+          "id": 16,
+          "samples": 1000,
+          "mean_ns": 1053130,
+          "p99_ns": 6149484,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "coarse",
+          "id": 17,
+          "samples": 1,
+          "mean_ns": 13610178,
+          "p99_ns": 13610178,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_area",
+          "id": 20,
+          "samples": 1,
+          "mean_ns": 368502202,
+          "p99_ns": 368502202,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "fine_sparse_area",
+          "id": 23,
+          "samples": 999,
+          "mean_ns": 13057820,
+          "p99_ns": 39711408,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "draw_leaf_prefix",
+          "id": 25,
+          "samples": 1000,
+          "mean_ns": 1709377,
+          "p99_ns": 18168553,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_count_direct",
+          "id": 26,
+          "samples": 1000,
+          "mean_ns": 1360135,
+          "p99_ns": 5389685,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "path_tiling_direct",
+          "id": 27,
+          "samples": 1000,
+          "mean_ns": 1247418,
+          "p99_ns": 10296136,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        },
+        {
+          "stage": "coarse_sparse_active",
+          "id": 28,
+          "samples": 999,
+          "mean_ns": 1548567,
+          "p99_ns": 8822842,
+          "dispatch_mean": 1,
+          "dispatch_p99": 1
+        }
+      ],
+      "matched": true
+    }
+  ]
+}

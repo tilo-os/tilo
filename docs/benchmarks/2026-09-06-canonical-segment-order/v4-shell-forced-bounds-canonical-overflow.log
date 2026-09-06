@@ -1,0 +1,16 @@
+   Compiling shell v0.1.0 (/home/xaver/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 19s
+     Running unittests src/lib.rs (target/debug/deps/shell-8f7db88827fd0341)
+
+running 1 test
+test compositor::backend::drm::paint::tests::sparse_overflow_recovers_dense_without_publishing_partial_pixels ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 6208 KB. Set VELLO_BUMP_LOG=1 for detail.
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 6208 KB. Set VELLO_BUMP_LOG=1 for detail.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2268 filtered out; finished in 1.58s
+
+

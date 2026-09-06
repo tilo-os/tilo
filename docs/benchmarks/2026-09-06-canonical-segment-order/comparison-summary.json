@@ -1,0 +1,1853 @@
+{
+  "source_version": "v4",
+  "attempted": 24,
+  "complete": 23,
+  "numeric_passes": 1,
+  "acceptance_eligible": false,
+  "goal_met": false,
+  "groups": [
+    {
+      "workload": "shell",
+      "variant": "default",
+      "attempted": 3,
+      "completed": 2,
+      "numeric_passes": 0,
+      "median_mean_us": 40349.3405,
+      "median_p99_us": 111026,
+      "worst_sample_us": 498628,
+      "median_completed_peak_rss_kib": 580232,
+      "all_attempts_peak_rss_kib": [
+        551324,
+        579024,
+        581440
+      ]
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 26023.329,
+      "median_p99_us": 71020,
+      "worst_sample_us": 614137,
+      "median_completed_peak_rss_kib": 580724,
+      "all_attempts_peak_rss_kib": [
+        632420,
+        580532,
+        580724
+      ]
+    },
+    {
+      "workload": "shell",
+      "variant": "canonical",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 40784.606,
+      "median_p99_us": 88247,
+      "worst_sample_us": 547202,
+      "median_completed_peak_rss_kib": 584536,
+      "all_attempts_peak_rss_kib": [
+        601188,
+        584536,
+        583984
+      ]
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 28759.911,
+      "median_p99_us": 75631,
+      "worst_sample_us": 665195,
+      "median_completed_peak_rss_kib": 589832,
+      "all_attempts_peak_rss_kib": [
+        589308,
+        589876,
+        589832
+      ]
+    },
+    {
+      "workload": "ui",
+      "variant": "default",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 8570,
+      "median_p99_us": 41094,
+      "worst_sample_us": 114436,
+      "median_completed_peak_rss_kib": 377592,
+      "all_attempts_peak_rss_kib": [
+        377564,
+        377976,
+        377592
+      ]
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 7921,
+      "median_p99_us": 32834,
+      "worst_sample_us": 78453,
+      "median_completed_peak_rss_kib": 386376,
+      "all_attempts_peak_rss_kib": [
+        384948,
+        386788,
+        386376
+      ]
+    },
+    {
+      "workload": "ui",
+      "variant": "canonical",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 0,
+      "median_mean_us": 9126,
+      "median_p99_us": 47470,
+      "worst_sample_us": 141439,
+      "median_completed_peak_rss_kib": 386672,
+      "all_attempts_peak_rss_kib": [
+        386480,
+        386756,
+        386672
+      ]
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "attempted": 3,
+      "completed": 3,
+      "numeric_passes": 1,
+      "median_mean_us": 8554,
+      "median_p99_us": 35359,
+      "worst_sample_us": 109602,
+      "median_completed_peak_rss_kib": 392064,
+      "all_attempts_peak_rss_kib": [
+        392128,
+        392064,
+        390208
+      ]
+    }
+  ],
+  "effects": [
+    {
+      "workload": "shell",
+      "variant": "canonical",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        2
+      ],
+      "mean_change_percent": 1.078742538555244,
+      "p99_change_percent": -20.516815880964824,
+      "rss_change_percent": 0.7417722566146034,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "baseline": "bounds",
+      "complete_denominators": [
+        3,
+        3
+      ],
+      "mean_change_percent": 10.515879809228101,
+      "p99_change_percent": 6.492537313432845,
+      "rss_change_percent": 1.5683870478919504,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        2
+      ],
+      "mean_change_percent": -35.5049458615067,
+      "p99_change_percent": -36.033001278979704,
+      "rss_change_percent": 0.08479366873939131,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        2
+      ],
+      "mean_change_percent": -28.722723485406153,
+      "p99_change_percent": -31.879920018734353,
+      "rss_change_percent": 1.6545106095492867,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "ui",
+      "variant": "canonical",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        3
+      ],
+      "mean_change_percent": 6.487747957993006,
+      "p99_change_percent": 15.51564705309778,
+      "rss_change_percent": 2.4047119642365278,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "baseline": "bounds",
+      "complete_denominators": [
+        3,
+        3
+      ],
+      "mean_change_percent": 7.99141522535034,
+      "p99_change_percent": 7.690199183772917,
+      "rss_change_percent": 1.4721411267780704,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        3
+      ],
+      "mean_change_percent": -7.572928821470248,
+      "p99_change_percent": -20.100257945198805,
+      "rss_change_percent": 2.3263204728913855,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    },
+    {
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "baseline": "default",
+      "complete_denominators": [
+        3,
+        3
+      ],
+      "mean_change_percent": -0.18669778296382944,
+      "p99_change_percent": -13.95580863386382,
+      "rss_change_percent": 3.832708320091527,
+      "interpretation": "Observed median differences, not a pure sorter attribution or proof of repeatable benefit; positive is worse."
+    }
+  ],
+  "runs": [
+    {
+      "position": 1,
+      "name": "shell-default-round-1",
+      "workload": "shell",
+      "variant": "default",
+      "round": 1,
+      "exit_code": 1,
+      "report_complete": false,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-default-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": null,
+        "opaque_prune_selected": null,
+        "stats": null,
+        "peak_rss_kib": 551324,
+        "known_gpu_bytes": null,
+        "sparse": null,
+        "quad": null,
+        "attempts": null,
+        "native_extent": null,
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": null,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 0,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": null,
+          "sparse_selected_attempts": null,
+          "total_selected_attempts": null,
+          "counts_consistent": false
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 2,
+      "name": "shell-bounds-round-1",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 1,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 25567,
+          "p99_us": 71020,
+          "min_us": 13064,
+          "max_us": 614137,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 632420,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": 25567524,
+        "exact_count": 1000,
+        "exact_mean_us": 25567.524,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 3,
+      "name": "shell-canonical-round-1",
+      "workload": "shell",
+      "variant": "canonical",
+      "round": 1,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-canonical-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 42512,
+          "p99_us": 109307,
+          "min_us": 22930,
+          "max_us": 547202,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 601188,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 42512484,
+        "exact_count": 1000,
+        "exact_mean_us": 42512.484,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 4,
+      "name": "shell-bounds-canonical-round-1",
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "round": 1,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-canonical-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 27714,
+          "p99_us": 65662,
+          "min_us": 14865,
+          "max_us": 511985,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 589308,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 27714271,
+        "exact_count": 1000,
+        "exact_mean_us": 27714.271,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 5,
+      "name": "ui-default-round-1",
+      "workload": "ui",
+      "variant": "default",
+      "round": 1,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-default-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8570,
+          "p99_us": 40943,
+          "max_us": 79492,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 377564,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 6,
+      "name": "ui-bounds-round-1",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 1,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8178,
+          "p99_us": 32834,
+          "max_us": 75805,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 384948,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 67,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 7,
+      "name": "ui-canonical-round-1",
+      "workload": "ui",
+      "variant": "canonical",
+      "round": 1,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-canonical-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 9587,
+          "p99_us": 47559,
+          "max_us": 141439,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386480,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 8,
+      "name": "ui-bounds-canonical-round-1",
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "round": 1,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-canonical-round-1.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 9561,
+          "p99_us": 43169,
+          "max_us": 109602,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 392128,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 92,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 9,
+      "name": "ui-bounds-canonical-round-2",
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "round": 2,
+      "exit_code": 0,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-canonical-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8114,
+          "p99_us": 28147,
+          "max_us": 77392,
+          "gate": "PASS"
+        },
+        "peak_rss_kib": 392064,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 80,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 10,
+      "name": "ui-canonical-round-2",
+      "workload": "ui",
+      "variant": "canonical",
+      "round": 2,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-canonical-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8288,
+          "p99_us": 31027,
+          "max_us": 46792,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386756,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 11,
+      "name": "ui-bounds-round-2",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 2,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 7921,
+          "p99_us": 30191,
+          "max_us": 78453,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386788,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 99,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 12,
+      "name": "ui-default-round-2",
+      "workload": "ui",
+      "variant": "default",
+      "round": 2,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-default-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8450,
+          "p99_us": 41094,
+          "max_us": 114436,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 377976,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 13,
+      "name": "shell-bounds-canonical-round-2",
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "round": 2,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-canonical-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 29106,
+          "p99_us": 86520,
+          "min_us": 16264,
+          "max_us": 492581,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 589876,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 29106114,
+        "exact_count": 1000,
+        "exact_mean_us": 29106.114,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 14,
+      "name": "shell-canonical-round-2",
+      "workload": "shell",
+      "variant": "canonical",
+      "round": 2,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-canonical-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 40554,
+          "p99_us": 88247,
+          "min_us": 23377,
+          "max_us": 507043,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 584536,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 40554755,
+        "exact_count": 1000,
+        "exact_mean_us": 40554.755,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 15,
+      "name": "shell-bounds-round-2",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 2,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 26023,
+          "p99_us": 65758,
+          "min_us": 13678,
+          "max_us": 452567,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 580532,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": 26023329,
+        "exact_count": 1000,
+        "exact_mean_us": 26023.329,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 16,
+      "name": "shell-default-round-2",
+      "workload": "shell",
+      "variant": "default",
+      "round": 2,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-default-round-2.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 39721,
+          "p99_us": 99048,
+          "min_us": 22711,
+          "max_us": 498628,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 579024,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": 39721431,
+        "exact_count": 1000,
+        "exact_mean_us": 39721.431,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 17,
+      "name": "shell-bounds-round-3",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 3,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 27846,
+          "p99_us": 84921,
+          "min_us": 13668,
+          "max_us": 492348,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 580724,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": 27846570,
+        "exact_count": 1000,
+        "exact_mean_us": 27846.57,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 18,
+      "name": "shell-bounds-canonical-round-3",
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "round": 3,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-bounds-canonical-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 28759,
+          "p99_us": 75631,
+          "min_us": 14970,
+          "max_us": 665195,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 589832,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 28759911,
+        "exact_count": 1000,
+        "exact_mean_us": 28759.911,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 19,
+      "name": "shell-default-round-3",
+      "workload": "shell",
+      "variant": "default",
+      "round": 3,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-default-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 40977,
+          "p99_us": 123004,
+          "min_us": 22406,
+          "max_us": 495938,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 581440,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": 40977250,
+        "exact_count": 1000,
+        "exact_mean_us": 40977.25,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 20,
+      "name": "shell-canonical-round-3",
+      "workload": "shell",
+      "variant": "canonical",
+      "round": 3,
+      "exit_code": 1,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/shell-canonical-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 40784,
+          "p99_us": 82748,
+          "min_us": 24464,
+          "max_us": 473594,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 583984,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 1,
+          "sparse_selected_attempts": 999,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": 40784606,
+        "exact_count": 1000,
+        "exact_mean_us": 40784.606,
+        "exact_gate": "FAIL"
+      }
+    },
+    {
+      "position": 21,
+      "name": "ui-bounds-round-3",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 3,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 7893,
+          "p99_us": 33836,
+          "max_us": 47830,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386376,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 76,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 22,
+      "name": "ui-bounds-canonical-round-3",
+      "workload": "ui",
+      "variant": "bounds-canonical",
+      "round": 3,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-bounds-canonical-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8554,
+          "p99_us": 35359,
+          "max_us": 80202,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 390208,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 86,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 23,
+      "name": "ui-default-round-3",
+      "workload": "ui",
+      "variant": "default",
+      "round": 3,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-default-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 9612,
+          "p99_us": 74733,
+          "max_us": 112412,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 377592,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": false,
+          "renderer_requested": false,
+          "available": false,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 0,
+          "total_selected_attempts": 0,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    },
+    {
+      "position": 24,
+      "name": "ui-canonical-round-3",
+      "workload": "ui",
+      "variant": "canonical",
+      "round": 3,
+      "exit_code": 2,
+      "report_complete": true,
+      "acceptance_eligible": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-canonical-segment-order/ui-canonical-round-3.log",
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 9126,
+          "p99_us": 47470,
+          "max_us": 76890,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386672,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1,
+        "canonical": {
+          "header_count": 1,
+          "counts_count": 1,
+          "env_requested": true,
+          "renderer_requested": true,
+          "available": true,
+          "full_selected_attempts": 0,
+          "sparse_selected_attempts": 1000,
+          "total_selected_attempts": 1000,
+          "counts_consistent": true
+        },
+        "exact_total_us": null,
+        "exact_count": null,
+        "exact_mean_us": null,
+        "exact_gate": null
+      }
+    }
+  ]
+}

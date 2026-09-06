@@ -21,6 +21,7 @@ pub mod scale;
 pub mod scanout;
 pub mod seat_diag;
 pub mod session;
+mod xrgb_history;
 
 use std::sync::mpsc::Receiver;
 
@@ -214,9 +215,15 @@ fn apply_scanout_command(
             // Positions come from the loop thread's re-layout: survivors move too, since the set was re-packed to close the hole an unplugged display left.
             for entry in scanouts.iter_mut() {
                 if let Some(o) = table.iter().find(|o| o.id == entry.id) {
+                    let history_boundary = entry.position != o.position
+                        || entry.transform != o.transform
+                        || entry.color_profile != o.color_profile;
                     entry.position = o.position;
                     entry.transform = o.transform;
                     entry.set_color_profile(o.color_profile.clone());
+                    if history_boundary {
+                        entry.scanout.invalidate_xrgb_history();
+                    }
                 }
             }
             scanouts.sort_by_key(|e| e.id.0);
@@ -256,6 +263,10 @@ fn apply_scanout_command(
 /// [`DrmPresenter::render`] (post-split, render thread) and
 /// [`Backend::submit_frame`] for [`DrmBackend`] (inline path, pre-split) —
 /// same painting logic, different owner of the scanouts and the pointer.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatcher keeps bridge lifetime, sparse eligibility, and the single versus multi-output presentation boundaries together"
+)]
 fn paint_scanouts(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
@@ -280,6 +291,7 @@ fn paint_scanouts(
             }
         }
     }
+    let mut bridge_resized = false;
     {
         // The block above just initialised `*paint` if it was `None`, or
         // already returned on failure — a miss here would mean that
@@ -287,11 +299,19 @@ fn paint_scanouts(
         let Some(bridge) = paint.as_mut() else {
             return;
         };
-        if bridge.size() != target_size
-            && let Err(e) = bridge.resize(target_size.0, target_size.1)
-        {
-            tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-            return;
+        if bridge.size() != target_size {
+            bridge_resized = true;
+            if let Err(e) = bridge.resize(target_size.0, target_size.1) {
+                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                return;
+            }
+        }
+    }
+    if bridge_resized {
+        // A resize replaces bridge resources. The bridge epoch also changes, but clearing every
+        // scanout claim here makes the physical-destination boundary explicit.
+        for entry in scanouts.iter_mut() {
+            entry.scanout.invalidate_xrgb_history();
         }
     }
 
@@ -322,6 +342,22 @@ fn paint_scanouts(
             return;
         };
         let cursor = Some(pointer);
+        if entry.scanout.xrgb_damage_available()
+            && bridge.xrgb_history_available()
+            && sparse_coordinates_match
+            && let Some(damage) = damage
+        {
+            if let Err(error) = entry
+                .scanout
+                .present_scene_damage(cursor, bridge, scene, damage)
+            {
+                tracing::error!("DRM backend: history-aware XRGB paint: {error}");
+            }
+            return;
+        }
+        if entry.scanout.xrgb_damage_requested() {
+            entry.scanout.invalidate_xrgb_history();
+        }
         entry.scanout.present_into(cursor, |dst, pitch| {
             let result = match damage.filter(|_| sparse_coordinates_match) {
                 Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),

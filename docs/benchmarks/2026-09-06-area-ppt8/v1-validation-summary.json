@@ -1,0 +1,32 @@
+{
+  "version": "v1",
+  "completed": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v1-format-diff.log"
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 101,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v1-strict-production-clippy.log"
+    },
+    {
+      "name": "strict-vendor-tests-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-area-ppt8/v1-strict-vendor-tests-clippy.log"
+    }
+  ],
+  "source_unchanged": true,
+  "skipped_not_run": [
+    "test-inclusive-changed-line-clippy",
+    "all_runtime_tests",
+    "release",
+    "benchmarks"
+  ],
+  "finding": "UI diagnostic profile formatter grew to 101 lines; strict production Clippy limit is 100. Vendor test-inclusive strict Clippy passed.",
+  "source_reopen": "Terra may only refactor print_sparse_fine_profile in ui/examples/dashboard_perf_bench.rs; no behavior, timer, workload, or output-field change."
+}

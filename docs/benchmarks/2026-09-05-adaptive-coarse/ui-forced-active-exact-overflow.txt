@@ -1,0 +1,18 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE VELLO_SPARSE_COARSE=1 VELLO_SPARSE_COARSE_ACTIVE_BINS=1 VELLO_GPU_TIMESTAMPS=1 VELLO_GPU_DISPATCH_TIMESTAMPS=1 cargo test -p ui --lib active_sparse_coarse --locked -- --nocapture --test-threads=1
+Exit code: 0
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running unittests src/lib.rs (target/debug/deps/ui-3cddfcbb77ce42a7)
+
+running 2 tests
+test offscreen::tests::active_sparse_coarse_257_native_edges_clips_and_translucency_match_dense ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test offscreen::tests::active_sparse_coarse_overflow_recovers_dense_before_publication ... vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 2864 KB. Set VELLO_BUMP_LOG=1 for detail.
+vello: a frame overflowed its bump buffers (failed=0x2); growing the reservation to 3176 KB. Set VELLO_BUMP_LOG=1 for detail.
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2668 filtered out; finished in 1.86s
+

@@ -1,0 +1,18 @@
+   Compiling ui v0.1.0 (/home/xaver/qos/ui)
+    Checking qos-app v0.1.0 (/home/xaver/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/xaver/qos/crates/session/greeter)
+    Checking terminal v0.2.1 (/home/xaver/qos/apps/terminal)
+    Checking word-processor v0.1.0 (/home/xaver/qos/apps/word-processor)
+error: this argument (288 byte) is passed by value, but might be more efficient if passed by reference (limit: 256 byte)
+    --> ui/examples/dashboard_perf_bench.rs:1678:41
+     |
+1678 | fn print_sparse_path_accounting(totals: SparseCoarseProfileTotals) {
+     |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider passing by reference instead: `&SparseCoarseProfileTotals`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_types_passed_by_value
+     = note: `-D clippy::large-types-passed-by-value` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::large_types_passed_by_value)]`
+
+error: could not compile `ui` (example "ui-perf") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+

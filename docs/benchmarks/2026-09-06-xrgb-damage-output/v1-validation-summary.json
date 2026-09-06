@@ -1,0 +1,20 @@
+{
+  "version": "v1",
+  "source_inputs": 32,
+  "source_hashes_match_after_validation": true,
+  "runtime_tests_started": false,
+  "comparison_started": false,
+  "completed": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 101,
+      "output_truncated": false
+    }
+  ],
+  "next": "Terra fixes the scanout mutable-borrow error and containment Clippy false positive without changing rectangle math; completes pending accumulator/large-invalid tests."
+}

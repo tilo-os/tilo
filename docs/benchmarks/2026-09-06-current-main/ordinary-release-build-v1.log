@@ -1,0 +1,916 @@
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling log v0.4.29
+   Compiling critical-section v1.2.0
+   Compiling memchr v2.8.0
+   Compiling pin-project-lite v0.2.16
+   Compiling zeroize v1.9.0
+   Compiling typenum v1.20.1
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.10.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling thiserror v2.0.18
+   Compiling getrandom v0.4.1
+   Compiling futures-core v0.3.32
+   Compiling serde v1.0.228
+   Compiling bitflags v2.11.0
+   Compiling libm v0.2.16
+   Compiling subtle v2.6.1
+   Compiling either v1.15.0
+   Compiling smallvec v1.15.1
+   Compiling portable-atomic v1.13.1
+   Compiling slab v0.4.12
+   Compiling scopeguard v1.2.0
+   Compiling rand_core v0.6.4
+   Compiling itoa v1.0.17
+   Compiling once_cell v1.21.4
+   Compiling lock_api v0.4.14
+   Compiling futures-io v0.3.32
+   Compiling parking_lot_core v0.9.12
+   Compiling tracing-core v0.1.36
+   Compiling errno v0.3.14
+   Compiling parking_lot v0.12.5
+   Compiling generic-array v0.14.7
+   Compiling signal-hook-registry v1.4.8
+   Compiling bytes v1.11.1
+   Compiling tracing v0.1.44
+   Compiling zerofrom v0.1.6
+   Compiling crypto-common v0.1.7
+   Compiling num-traits v0.2.19
+   Compiling socket2 v0.6.3
+   Compiling equivalent v1.0.2
+   Compiling futures-sink v0.3.32
+   Compiling mio v1.2.0
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling yoke v0.8.3
+   Compiling tokio v1.52.3
+   Compiling futures-channel v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling zerovec v0.11.8
+   Compiling futures-util v0.3.32
+   Compiling cmov v0.5.4
+   Compiling ctutils v0.4.2
+   Compiling zerocopy v0.8.39
+   Compiling hybrid-array v0.4.13
+   Compiling tinystr v0.8.4
+   Compiling hashbrown v0.17.1
+   Compiling const-oid v0.10.2
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling writeable v0.6.4
+   Compiling digest v0.11.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling arrayvec v0.7.6
+   Compiling indexmap v2.14.0
+   Compiling rustix v1.1.4
+   Compiling const-oid v0.9.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling litemap v0.8.1
+   Compiling icu_locale_core v2.3.0
+   Compiling bytemuck v1.25.0
+   Compiling potential_utf v0.1.4
+   Compiling zerotrie v0.2.5
+   Compiling cpufeatures v0.2.17
+   Compiling block-buffer v0.10.4
+   Compiling hex v0.4.3
+   Compiling digest v0.10.7
+   Compiling ppv-lite86 v0.2.21
+   Compiling icu_provider v2.3.1
+   Compiling percent-encoding v2.3.2
+   Compiling parking v2.2.1
+   Compiling byteorder v1.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling tokio-util v0.7.18
+   Compiling libloading v0.8.9
+   Compiling base64ct v1.8.3
+   Compiling fastrand v2.5.0
+   Compiling icu_collections v2.3.0
+   Compiling cpufeatures v0.3.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling tinyvec v1.10.0
+   Compiling zmij v1.0.21
+   Compiling icu_normalizer_data v2.3.0
+   Compiling serde_json v1.0.151
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling form_urlencoded v1.2.2
+   Compiling icu_properties v2.3.0
+   Compiling uuid v1.26.0
+   Compiling atomic-waker v1.1.2
+   Compiling rustls-pki-types v1.14.0
+   Compiling hash32 v0.2.1
+   Compiling untrusted v0.9.0
+   Compiling heapless v0.7.17
+   Compiling idna_adapter v1.2.1
+   Compiling ring v0.17.14
+   Compiling idna v1.1.0
+   Compiling futures-lite v2.6.1
+   Compiling dlib v0.5.3
+   Compiling cobs v0.3.0
+   Compiling chacha20 v0.10.0
+   Compiling url v2.5.8
+   Compiling postcard v1.1.3
+   Compiling rand v0.10.1
+   Compiling sha2 v0.11.0
+   Compiling arrayref v0.3.9
+   Compiling rustls-webpki v0.103.15
+   Compiling wayland-sys v0.31.11
+   Compiling enumflags2 v0.7.12
+   Compiling base64 v0.22.1
+   Compiling rustls v0.23.36
+   Compiling rand_chacha v0.3.1
+   Compiling serde_bytes v0.11.19
+   Compiling rustc-hash v2.1.1
+   Compiling concurrent-queue v2.5.0
+   Compiling futures-executor v0.3.32
+   Compiling inout v0.1.4
+   Compiling downcast-rs v1.2.1
+   Compiling rand v0.8.8
+   Compiling cipher v0.4.4
+   Compiling universal-hash v0.5.1
+   Compiling opaque-debug v0.3.1
+   Compiling anyhow v1.0.103
+   Compiling futures v0.3.32
+   Compiling itertools v0.14.0
+   Compiling simd-adler32 v0.3.8
+   Compiling crc32fast v1.5.0
+   Compiling signature v2.2.0
+   Compiling sha2 v0.10.9
+   Compiling scoped-tls v1.0.1
+   Compiling base16ct v0.2.0
+   Compiling constant_time_eq v0.4.2
+   Compiling unicode-ident v1.0.24
+   Compiling blake3 v1.8.5
+   Compiling wayland-backend v0.3.15
+   Compiling event-listener v5.4.1
+   Compiling polling v3.11.0
+   Compiling http v1.4.0
+   Compiling aead v0.5.2
+   Compiling adler2 v2.0.1
+   Compiling endi v1.1.1
+   Compiling miniz_oxide v0.8.9
+   Compiling event-listener-strategy v0.5.4
+   Compiling curve25519-dalek v4.1.3
+   Compiling memoffset v0.9.1
+   Compiling pem-rfc7468 v1.0.0
+   Compiling zlib-rs v0.6.5
+   Compiling der v0.8.1
+   Compiling crossbeam-epoch v0.9.20
+   Compiling flate2 v1.1.9
+   Compiling getrandom v0.3.4
+   Compiling ipnet v2.12.0
+   Compiling smol_str v0.3.6
+   Compiling spki v0.8.0
+   Compiling static_assertions v1.1.0
+   Compiling powerfmt v0.2.0
+   Compiling option-ext v0.2.0
+   Compiling deranged v0.5.6
+   Compiling pkcs8 v0.11.0
+   Compiling curve25519-dalek v5.0.0
+   Compiling wayland-client v0.31.14
+   Compiling ed25519 v2.2.3
+   Compiling signature v3.0.0
+   Compiling core_maths v0.1.1
+   Compiling time-core v0.1.8
+   Compiling fnv v1.0.7
+   Compiling siphasher v1.0.3
+   Compiling num-conv v0.2.0
+   Compiling ed25519-dalek v2.2.0
+   Compiling time v0.3.47
+   Compiling polyval v0.6.2
+   Compiling ghash v0.5.1
+   Compiling h2 v0.4.19
+   Compiling rand_core v0.9.5
+   Compiling async-broadcast v0.7.2
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling ordered-stream v0.2.0
+   Compiling openssl-probe v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling aes-gcm v0.10.3
+   Compiling rand_chacha v0.9.0
+   Compiling proc-macro2 v1.0.106
+   Compiling tokio-rustls v0.26.4
+   Compiling wayland-server v0.31.13
+   Compiling http-body v1.0.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling quote v1.0.45
+   Compiling thiserror v1.0.69
+   Compiling der v0.7.10
+   Compiling rand v0.9.2
+   Compiling wayland-protocols v0.32.12
+   Compiling httparse v1.10.1
+   Compiling dirs-sys v0.5.0
+   Compiling unicode-segmentation v1.12.0
+   Compiling leb128 v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling atomic-file v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/atomic-file)
+   Compiling try-lock v0.2.5
+   Compiling foldhash v0.1.5
+   Compiling capnp v0.26.2
+   Compiling hashbrown v0.15.5
+   Compiling want v0.3.1
+   Compiling hexane v0.2.1
+   Compiling capnp-futures v0.26.1
+   Compiling dirs v6.0.0
+   Compiling spki v0.7.3
+   Compiling nix v0.30.1
+   Compiling syn v2.0.117
+   Compiling hmac v0.12.1
+   Compiling aho-corasick v1.1.4
+   Compiling httpdate v1.0.3
+   Compiling data-encoding v2.10.0
+   Compiling winnow v1.0.3
+   Compiling linux-raw-sys v0.4.15
+   Compiling pin-utils v0.1.0
+   Compiling hyper v1.8.1
+   Compiling rustix v0.38.44
+   Compiling zvariant_utils v3.4.0
+   Compiling regex-automata v0.4.18
+   Compiling pkcs8 v0.10.2
+   Compiling automerge v0.8.0
+   Compiling capnp-rpc v0.26.1
+   Compiling collab-types v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/collab-types)
+   Compiling ff v0.13.1
+   Compiling memmap2 v0.9.10
+   Compiling lazy_static v1.5.0
+   Compiling group v0.13.0
+   Compiling runtime-portal v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/runtime-portal)
+   Compiling sec1 v0.7.3
+   Compiling zvariant v5.12.0
+   Compiling derive_more v2.1.1
+   Compiling hyper-util v0.1.20
+   Compiling hkdf v0.12.4
+   Compiling serdect v0.2.0
+   Compiling poly1305 v0.8.0
+   Compiling chacha20 v0.9.1
+   Compiling keccak v0.2.2
+   Compiling crypto-bigint v0.5.5
+   Compiling sync_wrapper v1.0.2
+   Compiling raw-window-handle v0.6.2
+   Compiling const-crc32-nostd v1.3.1
+   Compiling bumpalo v3.20.3
+   Compiling async-task v4.7.1
+   Compiling zopfli v0.8.3
+   Compiling frost-core v3.0.0
+   Compiling pin-project v1.1.10
+   Compiling elliptic-curve v0.13.8
+   Compiling chacha20poly1305 v0.10.1
+   Compiling zvariant v4.2.0
+   Compiling zbus_names v4.3.2
+   Compiling wayland-protocols-wlr v0.3.10
+   Compiling async-io v2.6.0
+   Compiling http-body-util v0.1.3
+   Compiling async-channel v2.5.0
+   Compiling fdeflate v0.3.7
+   Compiling xkeysym v0.2.1
+   Compiling font-types v0.11.3
+   Compiling hex-conservative v0.2.2
+   Compiling unicase v2.9.0
+   Compiling rustc-hash v1.1.0
+   Compiling tower-layer v0.3.3
+   Compiling bitcoin_hashes v0.14.101
+   Compiling n0-error v1.0.0
+   Compiling png v0.18.1
+   Compiling async-signal v0.2.13
+   Compiling zbus_names v3.0.0
+   Compiling frost-rerandomized v3.0.0
+   Compiling nix v0.29.0
+   Compiling zip v4.6.1
+   Compiling ttf-parser v0.25.1
+   Compiling async-lock v3.4.2
+   Compiling piper v0.2.4
+   Compiling unicode-normalization v0.1.25
+   Compiling sha1 v0.10.6
+   Compiling hashbrown v0.16.1
+   Compiling pxfm v0.1.27
+   Compiling quick-xml v0.39.4
+   Compiling xdg-home v1.3.0
+   Compiling fixedbitset v0.5.7
+   Compiling color_quant v1.1.0
+   Compiling iana-time-zone v0.1.65
+   Compiling sponge-cursor v0.1.0
+   Compiling unicode-width v0.2.2
+   Compiling byteorder-lite v0.1.0
+   Compiling bit-vec v0.9.1
+   Compiling quick-error v2.0.1
+   Compiling cursor-icon v1.2.0
+   Compiling weezl v0.1.12
+   Compiling xcursor v0.3.10
+   Compiling ryu v1.0.23
+   Compiling zune-core v0.5.1
+   Compiling wayland-cursor v0.31.12
+   Compiling zune-jpeg v0.5.12
+   Compiling gif v0.14.2
+   Compiling wayland-csd-frame v0.3.0
+   Compiling image-webp v0.2.4
+   Compiling bit-set v0.9.1
+   Compiling codespan-reporting v0.13.1
+   Compiling chrono v0.4.45
+   Compiling zbus_xml v5.1.1
+   Compiling tls_codec v0.5.0
+   Compiling hax-lib v0.3.7
+   Compiling zbus v4.4.0
+   Compiling moxcms v0.7.11
+   Compiling bip39 v2.2.2
+   Compiling async-process v2.5.0
+   Compiling blocking v1.6.2
+   Compiling frost-ed25519 v3.0.0
+   Compiling tower v0.5.3
+   Compiling pulldown-cmark v0.12.2
+   Compiling async-executor v1.14.0
+   Compiling rfc6979 v0.4.0
+   Compiling webpki-roots v1.0.6
+   Compiling crossbeam-channel v0.5.15
+   Compiling half v2.7.1
+   Compiling module-lattice v0.2.3
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling quick-xml v0.41.0
+   Compiling self_cell v1.2.2
+   Compiling hexf-parse v0.2.1
+   Compiling cordyceps v0.3.4
+   Compiling iri-string v0.7.10
+   Compiling diatomic-waker v0.2.3
+   Compiling spin v0.10.0
+   Compiling naga v29.0.3
+   Compiling futures-buffered v0.2.12
+   Compiling tower-http v0.6.8
+   Compiling profiling v1.0.17
+   Compiling zbus v5.16.0
+   Compiling qdoc v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/doc/qdoc)
+   Compiling hyper-rustls v0.27.7
+   Compiling ecdsa v0.16.9
+   Compiling threshold-identity v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/threshold-identity)
+   Compiling image v0.25.9
+   Compiling zbus-lockstep v0.5.2
+   Compiling ash v0.38.0+1.3.281
+   Compiling shake v0.1.0
+   Compiling primeorder v0.13.6
+   Compiling wgpu-types v29.0.3
+   Compiling sharded-slab v0.1.7
+   Compiling calloop v0.13.0
+   Compiling matchers v0.2.0
+   Compiling rustls-native-certs v0.8.3
+   Compiling crossbeam-deque v0.8.6
+   Compiling blake2 v0.11.0
+   Compiling unic-langid-impl v0.9.6
+   Compiling tracing-log v0.2.0
+   Compiling gpu-descriptor-types v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling presser v0.3.1
+   Compiling strict-num v0.1.1
+   Compiling roxmltree v0.20.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling base16ct v1.0.0
+   Compiling serdect v0.4.3
+   Compiling tracing-subscriber v0.3.22
+   Compiling tiny-skia-path v0.11.4
+   Compiling gpu-allocator v0.28.0
+   Compiling gpu-descriptor v0.3.2
+   Compiling unic-langid v0.9.6
+   Compiling argon2 v0.6.0
+   Compiling rayon-core v1.13.0
+   Compiling calloop-wayland-source v0.3.0
+   Compiling wgpu-naga-bridge v29.0.3
+   Compiling atspi-common v0.13.0
+   Compiling n0-future v0.3.2
+   Compiling khronos-egl v6.0.0
+   Compiling openmls_traits v0.6.0
+   Compiling libcrux-secrets v0.0.6
+   Compiling owned_ttf_parser v0.25.1
+   Compiling sha3 v0.11.0
+   Compiling prefix-trie v0.8.4
+   Compiling calloop v0.14.4
+   Compiling gethostname v1.1.0
+   Compiling polycool v0.4.0
+   Compiling kem v0.3.0
+   Compiling ordered-float v5.0.0
+   Compiling nom v8.0.0
+   Compiling glow v0.17.0
+   Compiling as-raw-xcb-connection v1.0.1
+   Compiling renderdoc-sys v1.1.0
+   Compiling tagptr v0.2.0
+   Compiling linebender_resource_handle v0.1.1
+   Compiling x11rb-protocol v0.13.2
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling ab_glyph v0.2.32
+   Compiling x11rb v0.13.2
+   Compiling moka v0.12.15
+   Compiling wgpu-hal v29.0.3
+   Compiling yoke v0.7.5
+   Compiling ml-kem v0.3.2
+   Compiling kurbo v0.13.1
+   Compiling hickory-proto v0.26.1
+   Compiling libcrux-traits v0.0.8
+   Compiling runtime-fs v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/runtime-fs)
+   Compiling smithay-client-toolkit v0.19.2
+   Compiling rayon v1.12.0
+   Compiling runtime-identity v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/runtime-identity)
+   Compiling flatbuffers v25.12.19
+   Compiling noq-udp v1.1.0
+   Compiling tiny-skia v0.11.4
+   Compiling libcrux-intrinsics v0.0.8
+   Compiling ed25519 v3.0.0
+   Compiling p384 v0.13.1
+   Compiling p256 v0.13.2
+   Compiling sha3 v0.12.0
+   Compiling netlink-packet-core v0.8.1
+   Compiling read-fonts v0.39.2
+   Compiling settings-store v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/settings-store)
+   Compiling phf_shared v0.14.0
+   Compiling x25519-dalek v3.0.0
+   Compiling x25519-dalek v2.0.1
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling accesskit v0.25.0
+   Compiling tokio-stream v0.1.18
+   Compiling font-types v0.10.1
+   Compiling hmac v0.13.0
+   Compiling euclid v0.22.14
+   Compiling libcrux-platform v0.0.3
+   Compiling svg_fmt v0.4.5
+   Compiling color v0.3.3
+   Compiling guillotiere v0.7.0
+   Compiling libcrux-sha3 v0.0.10
+   Compiling peniko v0.6.1
+   Compiling zerovec v0.10.4
+   Compiling hkdf v0.13.0
+   Compiling read-fonts v0.35.0
+   Compiling accesskit_consumer v0.39.0
+   Compiling skrifa v0.42.1
+   Compiling x-wing v0.1.0
+   Compiling phf v0.14.0
+   Compiling ed25519-dalek v3.0.0
+   Compiling sctk-adwaita v0.10.1
+   Compiling wgpu-core-deps-windows-linux-android v29.0.3
+   Compiling atspi-proxies v0.13.0
+   Compiling ahash v0.8.12
+   Compiling slotmap v1.1.1
+   Compiling x11-dl v2.21.0
+   Compiling data-encoding-macro v0.1.19
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling ml-dsa v0.1.1
+   Compiling petgraph v0.8.3
+   Compiling read-fonts v0.37.0
+   Compiling xkbcommon v0.8.0
+   Compiling xkbcommon-dl v0.4.2
+   Compiling k256 v0.13.4
+   Compiling wayland-protocols-misc v0.3.10
+   Compiling wayland-protocols-plasma v0.3.10
+   Compiling regex v1.13.1
+   Compiling fastbloom v0.17.0
+   Compiling dirs-sys v0.4.1
+   Compiling type-map v0.5.1
+   Compiling rand_chacha v0.10.0
+   Compiling safe_arch v0.7.4
+   Compiling netlink-sys v0.8.8
+   Compiling tinystr v0.7.6
+   Compiling rand_pcg v0.10.2
+   Compiling base32 v0.5.1
+   Compiling sorted-index-buffer v0.2.1
+   Compiling dpi v0.1.2
+   Compiling litemap v0.7.5
+   Compiling writeable v0.5.5
+   Compiling minimal-lexical v0.2.1
+   Compiling lru-slab v0.1.2
+   Compiling psl-types v2.0.11
+   Compiling identity-hash v0.1.0
+   Compiling psl v2.1.190
+   Compiling noq-proto v1.1.0
+   Compiling winit v0.30.13 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/vendor/winit)
+   Compiling nom v7.1.3
+   Compiling icu_locid v1.5.0
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling wide v0.7.33
+   Compiling num_enum v0.7.5
+   Compiling intl-memoizer v0.5.3
+   Compiling dirs v5.0.1
+   Compiling tree_magic_mini v3.2.2
+   Compiling atspi v0.29.0
+   Compiling iroh-base v1.0.3
+   Compiling openh264-sys2 v0.9.6
+   Compiling wgpu-core v29.0.3
+   Compiling accesskit_atspi_common v0.20.0
+   Compiling vello_encoding v0.9.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/vendor/vello_encoding)
+   Compiling skrifa v0.37.0
+   Compiling hpke-rs v0.7.0
+   Compiling netlink-packet-route v0.31.0
+   Compiling hickory-net v0.26.1
+   Compiling calloop-wayland-source v0.4.1
+   Compiling openmls_memory_storage v0.6.0
+   Compiling intl_pluralrules v7.0.2
+   Compiling fluent-langneg v0.13.1
+   Compiling fontconfig-parser v0.5.8
+   Compiling wayland-protocols-experimental v20250721.0.1
+   Compiling arc-swap v1.9.2
+   Compiling is-docker v0.2.0
+   Compiling fluent-syntax v0.12.0
+   Compiling os_pipe v1.2.3
+   Compiling zeno v0.3.3
+   Compiling mac-addr v0.3.0
+   Compiling yazi v0.2.1
+   Compiling strum v0.26.3
+   Compiling foreign-types-shared v0.1.1
+   Compiling resolv-conf v0.7.6
+   Compiling utf8parse v0.2.2
+   Compiling xml-rs v0.8.28
+   Compiling anstyle-parse v1.0.0
+   Compiling xmltree v0.10.3
+   Compiling wgpu v29.0.3
+   Compiling hickory-resolver v0.26.1
+   Compiling netdev v0.45.0
+   Compiling foreign-types v0.3.2
+   Compiling ssip-client v0.10.2
+   Compiling swash v0.2.6
+   Compiling icu_provider v1.5.0
+   Compiling wl-clipboard-rs v0.9.3
+   Compiling fluent-bundle v0.16.0
+   Compiling is-wsl v0.4.0
+   Compiling strum v0.28.0
+   Compiling iroh-metrics v1.0.1
+   Compiling openmls v0.9.0
+   Compiling smithay-client-toolkit v0.20.0
+   Compiling fontdb v0.23.0
+   Compiling openmls_rust_crypto v0.6.0
+   Compiling noq v1.1.0
+   Compiling vello_shaders v0.9.0
+   Compiling accesskit_unix v0.23.0
+   Compiling openh264 v0.9.3
+   Compiling addr v0.15.6
+   Compiling icu_segmenter_data v1.5.1
+   Compiling netlink-proto v0.12.0
+   Compiling skrifa v0.40.0
+   Compiling harfrust v0.5.2
+   Compiling openmls_basic_credential v0.6.0
+   Compiling icu_collections v1.5.0
+   Compiling openssl-sys v0.9.111
+   Compiling cli v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/cli)
+   Compiling n0-watcher v1.0.0
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling attohttpc v0.30.1
+   Compiling futures-intrusive v0.5.0
+   Compiling itertools v0.13.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling simple-dns v0.11.3
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling simdutf8 v0.1.5
+   Compiling sys-locale v0.3.2
+   Compiling anstyle v1.0.13
+   Compiling colorchoice v1.0.4
+   Compiling seahash v4.1.0
+   Compiling unicode-bidi v0.3.18
+   Compiling precomputed-hash v0.1.1
+   Compiling unicode-linebreak v0.1.5
+   Compiling sha1_smol v1.0.1
+   Compiling grid v1.0.0
+   Compiling toml_write v0.1.2
+   Compiling pathdiff v0.2.3
+   Compiling winnow v0.7.14
+   Compiling anstyle-query v1.1.5
+   Compiling unicode-script v0.5.8
+   Compiling rangemap v1.7.1
+   Compiling anstream v1.0.0
+   Compiling cosmic-text v0.19.0
+   Compiling toml_edit v0.22.27
+   Compiling iroh-dns v1.0.3
+   Compiling open v5.3.5
+   Compiling taffy v0.10.1
+   Compiling tokio-websockets v0.13.3
+   Compiling adblock v0.12.1
+   Compiling accesskit_winit v0.34.0
+   Compiling openssl v0.10.75
+   Compiling vello v0.9.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/vendor/vello)
+   Compiling igd-next v0.17.1
+   Compiling reqwest v0.13.2
+   Compiling netwatch v0.19.1
+   Compiling app-state v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/app-state)
+   Compiling icu_segmenter v1.5.0
+   Compiling channel-crypto v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/channel-crypto)
+   Compiling smithay-clipboard v0.7.3
+   Compiling arboard v3.6.1
+   Compiling runtime-collab v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/runtime-collab)
+   Compiling fluent v0.17.0
+   Compiling tts v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/tts)
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling qos-actions v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/actions)
+   Compiling ashpd v0.9.3
+   Compiling media v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/media)
+   Compiling qos-headless-schema v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/dev/headless-schema)
+   Compiling qos-ui-graph v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/dev/ui-graph)
+   Compiling qos-startup-metrics v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/qos-startup-metrics)
+   Compiling lru v0.18.3
+   Compiling seize v0.5.1
+   Compiling clap_lex v1.0.0
+   Compiling pollster v0.4.0
+   Compiling spellcheck v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/text/spellcheck)
+   Compiling strsim v0.11.1
+   Compiling hypher v0.1.7
+   Compiling qrcode v0.14.1
+   Compiling clap_builder v4.6.0
+   Compiling papaya v0.2.3
+   Compiling iroh-relay v1.0.3
+   Compiling icu_locale_fallback v2.3.0
+   Compiling portmapper v0.19.1
+   Compiling ui v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/ui)
+   Compiling native-tls v0.2.16
+   Compiling toml v0.8.23
+   Compiling rusticata-macros v4.1.0
+   Compiling backon v1.6.0
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling asn1-rs v0.7.1
+   Compiling ref-cast v1.0.25
+   Compiling clap v4.6.1
+   Compiling tokio-native-tls v0.3.1
+   Compiling yasna v0.5.2
+   Compiling pem v3.0.6
+   Compiling num-integer v0.1.46
+   Compiling mime v0.3.17
+   Compiling piston-float v1.0.1
+   Compiling vecmath v1.0.0
+   Compiling num-bigint v0.4.6
+   Compiling rcgen v0.14.7
+   Compiling iroh v1.0.3
+   Compiling hyper-tls v0.6.0
+   Compiling crunchy v0.2.4
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling serde_urlencoded v0.7.1
+   Compiling landlock v0.4.5
+   Compiling tempfile v3.27.0
+   Compiling utf16string v0.2.0
+   Compiling inplace-vec-builder v0.1.1
+   Compiling ownedbytes v0.7.0
+   Compiling seccompiler v0.5.0
+   Compiling encoding_rs v0.8.35
+   Compiling genawaiter-macro v0.99.1
+   Compiling binary-merge v0.1.2
+   Compiling maybe-owned v0.3.4
+   Compiling pdfium-render v0.8.37
+   Compiling range-collections v0.4.6
+   Compiling genawaiter v0.99.1
+   Compiling irpc v0.17.0
+   Compiling reqwest v0.12.28
+   Compiling tantivy-common v0.7.0
+   Compiling zstd-safe v7.2.4
+   Compiling bitpacking v0.9.3
+   Compiling der-parser v10.0.0
+   Compiling icu_calendar_data v2.3.0
+   Compiling oid-registry v0.8.1
+   Compiling iroh-io v0.6.2
+   Compiling calendrical_calculations v0.2.4
+   Compiling fixed_decimal v0.7.2
+   Compiling spin v0.9.8
+   Compiling positioned-io v0.3.5
+   Compiling ixdtf v0.6.6
+   Compiling linux-raw-sys v0.6.5
+   Compiling utf8-ranges v1.0.5
+   Compiling semver v1.0.27
+   Compiling pkg v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/packaging/pkg)
+   Compiling tantivy-fst v0.5.0
+   Compiling drm-sys v0.8.0
+   Compiling icu_calendar v2.3.0
+   Compiling bao-tree v0.16.0
+   Compiling flume v0.12.0
+   Compiling x509-parser v0.17.0
+   Compiling tantivy-bitpacker v0.6.0
+   Compiling serde_with v3.21.0
+   Compiling iroh-util v0.6.0
+   Compiling zstd v0.13.3
+   Compiling libudev-sys v0.1.4
+   Compiling icu_decimal_data v2.3.0
+   Compiling io-lifetimes v1.0.11
+   Compiling thumbnail v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/thumbnail)
+   Compiling icu_time_data v2.3.0
+   Compiling icu_plurals_data v2.3.0
+   Compiling redb v4.1.0
+   Compiling libspa-sys v0.10.1
+   Compiling runtime-bundle v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/packaging/runtime-bundle)
+   Compiling iroh-tickets v1.0.0
+   Compiling qos-user-identity v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/identity/qos-user-identity)
+   Compiling qos-power-mgmt v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/power)
+   Compiling prost v0.14.4
+   Compiling futures-concurrency v7.7.1
+   Compiling rand_distr v0.4.3
+   Compiling reflink-copy v0.1.28
+   Compiling socket-pktinfo v0.4.1
+   Compiling qos-desktop-entry v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/desktop-entry)
+   Compiling if-addrs v0.15.0
+   Compiling page_size v0.6.0
+   Compiling smol_str v0.1.24
+   Compiling murmurhash32 v0.3.1
+   Compiling tantivy-stacker v0.3.0
+   Compiling acto v0.8.2
+   Compiling fuser v0.17.0
+   Compiling iroh-gossip v0.101.0
+   Compiling mdns-sd v0.20.3
+   Compiling launcher v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/packaging/launcher)
+   Compiling iroh-blobs v0.103.0
+   Compiling google-cast-protocol v0.1.0
+   Compiling nix v0.28.0
+   Compiling icu_plurals v2.3.0
+   Compiling icu_time v2.3.0
+   Compiling fcast-protocol v0.2.0
+   Compiling udev v0.9.3
+   Compiling icu_decimal v2.3.0
+   Compiling tantivy-sstable v0.3.0
+   Compiling libseat-sys v0.2.0
+   Compiling icu_locale_data v2.3.0
+   Compiling drm-ffi v0.9.0
+   Compiling icu_datetime_data v2.3.0
+   Compiling input-sys v1.18.0
+   Compiling drm-fourcc v2.2.0
+   Compiling qdoc-html v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/doc/qdoc-html)
+   Compiling filedescriptor v0.8.3
+   Compiling icu_pattern v0.5.0
+   Compiling approx v0.4.0
+   Compiling itertools v0.12.1
+   Compiling serial2 v0.2.37
+   Compiling instant v0.1.13
+   Compiling sdd v3.0.10
+   Compiling urlencoding v2.1.3
+   Compiling cookie-factory v0.3.3
+   Compiling fastdivide v0.4.2
+   Compiling shell-words v1.1.1
+   Compiling portable-pty v0.9.0
+   Compiling tantivy-columnar v0.3.0
+   Compiling libspa v0.10.1
+   Compiling fs v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/fs)
+   Compiling trash v5.2.6
+   Compiling scc v2.4.0
+   Compiling measure_time v0.8.3
+   Compiling cgmath v0.18.0
+   Compiling icu_datetime v2.3.0
+   Compiling qdoc-epub v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/doc/qdoc-epub)
+   Compiling drm v0.14.1
+   Compiling input v0.9.1
+   Compiling mime_guess v2.0.5
+   Compiling icu_locale v2.3.1
+   Compiling libseat v0.2.4
+   Compiling fcast-sender-sdk v0.3.0
+   Compiling pipewire-sys v0.10.1
+   Compiling windows-vm v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/windows-vm)
+   Compiling swarm-discovery v0.6.3
+   Compiling qos-app v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/app/qos-app)
+   Compiling ffmpeg-sys-next v8.1.0
+   Compiling ush v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/runtime/ush)
+   Compiling tantivy-query-grammar v0.22.0
+   Compiling qdoc-pdf v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/doc/qdoc-pdf)
+   Compiling qdoc-rtf v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/doc/qdoc-rtf)
+   Compiling qos-bluez v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/qos-bluez)
+   Compiling accounts v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/accounts)
+   Compiling fs4 v0.8.4
+   Compiling lru v0.12.5
+   Compiling greetd_ipc v0.10.3
+   Compiling wayland-egl v0.32.9
+   Compiling compat-catalogue v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/windows/compat-catalogue)
+   Compiling xattr v1.6.1
+   Compiling vte v0.15.0
+   Compiling tantivy-tokenizer-api v0.3.0
+   Compiling rust-stemmers v1.2.0
+   Compiling sketches-ddsketch v0.2.2
+   Compiling num_cpus v1.17.0
+   Compiling sd-notify v0.4.5
+   Compiling glow v0.16.0
+   Compiling atomic_float v1.1.0
+   Compiling oneshot v0.1.13
+   Compiling census v0.4.2
+   Compiling htmlescape v0.3.1
+   Compiling levenshtein_automata v0.2.1
+   Compiling appendlist v1.4.0
+   Compiling smithay v0.7.0
+   Compiling tantivy v0.22.1
+   Compiling qos-relay v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/hosting/qos-relay)
+   Compiling serial_test v3.4.0
+   Compiling compat-service v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/windows/compat-service)
+   Compiling terminal v0.2.1 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/apps/terminal)
+   Compiling file-explorer v0.2.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/apps/file-explorer)
+   Compiling greeter v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/session/greeter)
+   Compiling os-actions v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/os-actions)
+   Compiling word-processor v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/apps/word-processor)
+   Compiling iroh-mdns-address-lookup v0.5.0
+   Compiling ffmpeg-next v8.1.0
+   Compiling browser v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/apps/browser)
+   Compiling pipewire v0.10.1
+   Compiling qos-projector v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/projector)
+   Compiling qos-callstream v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/qos-callstream)
+   Compiling sysinfo v0.32.1
+   Compiling reis v0.7.1
+   Compiling desktop-policy v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/system/desktop-policy)
+   Compiling qcms v0.3.0
+   Compiling bs58 v0.5.1
+   Compiling collab-fixtures v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/crates/collab/collab-fixtures)
+   Compiling shell v0.1.0 (/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/shell)
+error: internal compiler error: /rustc-dev/8bab26f4f68e0e26f0bb7960be334d5b520ea452/compiler/rustc_ty_utils/src/abi.rs:224:14: unexpected type bool in Instance::fn_sig
+
+
+thread 'rustc' (2024026) panicked at /rustc-dev/8bab26f4f68e0e26f0bb7960be334d5b520ea452/compiler/rustc_ty_utils/src/abi.rs:224:14:
+Box<dyn Any>
+stack backtrace:
+   0:     0xffff8200af6c - std[e04eed4b29a65078]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0xffff8200af6c - std[e04eed4b29a65078]::backtrace_rs::backtrace::trace_unsynchronized::<std[e04eed4b29a65078]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0xffff8200af6c - std[e04eed4b29a65078]::sys::backtrace::_print_fmt
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/backtrace.rs:74:9
+   3:     0xffff8200af6c - <<std[e04eed4b29a65078]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[b339b0af432a4263]::fmt::Display>::fmt
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/backtrace.rs:44:26
+   4:     0xffff7efc863c - <core[b339b0af432a4263]::fmt::rt::Argument>::fmt
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/fmt/rt.rs:152:76
+   5:     0xffff7efc863c - core[b339b0af432a4263]::fmt::write
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/fmt/mod.rs:1687:22
+   6:     0xffff82022524 - std[e04eed4b29a65078]::io::default_write_fmt::<std[e04eed4b29a65078]::sys::stdio::unix::Stderr>
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/io/mod.rs:622:11
+   7:     0xffff82022524 - <std[e04eed4b29a65078]::sys::stdio::unix::Stderr as std[e04eed4b29a65078]::io::Write>::write_fmt
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/io/mod.rs:1977:13
+   8:     0xffff81fe5514 - <std[e04eed4b29a65078]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/backtrace.rs:47:9
+   9:     0xffff81fe5514 - std[e04eed4b29a65078]::panicking::default_hook::{closure#0}
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:292:27
+  10:     0xffff81fff0c4 - std[e04eed4b29a65078]::panicking::default_hook
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:319:9
+  11:     0xffff80fe8af4 - std[e04eed4b29a65078]::panicking::update_hook::<alloc[d2298f1b2f652558]::boxed::Box<rustc_driver_impl[785fefa28dd1ac74]::install_ice_hook::{closure#1}>>::{closure#0}
+  12:     0xffff81fff3a8 - <alloc[d2298f1b2f652558]::boxed::Box<dyn for<'a, 'b> core[b339b0af432a4263]::ops::function::Fn<(&'a std[e04eed4b29a65078]::panic::PanicHookInfo<'b>,), Output = ()> + core[b339b0af432a4263]::marker::Send + core[b339b0af432a4263]::marker::Sync> as core[b339b0af432a4263]::ops::function::Fn<(&std[e04eed4b29a65078]::panic::PanicHookInfo,)>>::call
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/boxed.rs:2289:9
+  13:     0xffff81fff3a8 - std[e04eed4b29a65078]::panicking::panic_with_hook
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:833:13
+  14:     0xffff81013fb0 - std[e04eed4b29a65078]::panicking::begin_panic::<rustc_errors[4c443dac15b81d18]::ExplicitBug>::{closure#0}
+  15:     0xffff8100db70 - std[e04eed4b29a65078]::sys::backtrace::__rust_end_short_backtrace::<std[e04eed4b29a65078]::panicking::begin_panic<rustc_errors[4c443dac15b81d18]::ExplicitBug>::{closure#0}, !>
+  16:     0xffff8100d8e8 - std[e04eed4b29a65078]::panicking::begin_panic::<rustc_errors[4c443dac15b81d18]::ExplicitBug>
+  17:     0xffff8101e558 - <rustc_errors[4c443dac15b81d18]::diagnostic::BugAbort as rustc_errors[4c443dac15b81d18]::diagnostic::EmissionGuarantee>::emit_producing_guarantee
+  18:     0xffff815ffc1c - rustc_middle[edc4e2b9ff0b1f74]::util::bug::opt_span_bug_fmt::<rustc_span[4a91a50318558109]::span_encoding::Span>::{closure#0}
+  19:     0xffff815ffd88 - rustc_middle[edc4e2b9ff0b1f74]::ty::context::tls::with_opt::<rustc_middle[edc4e2b9ff0b1f74]::util::bug::opt_span_bug_fmt<rustc_span[4a91a50318558109]::span_encoding::Span>::{closure#0}, !>::{closure#0}
+  20:     0xffff815eee2c - rustc_middle[edc4e2b9ff0b1f74]::ty::context::tls::with_context_opt::<rustc_middle[edc4e2b9ff0b1f74]::ty::context::tls::with_opt<rustc_middle[edc4e2b9ff0b1f74]::util::bug::opt_span_bug_fmt<rustc_span[4a91a50318558109]::span_encoding::Span>::{closure#0}, !>::{closure#0}, !>
+  21:     0xffff7f47e22c - rustc_middle[edc4e2b9ff0b1f74]::util::bug::bug_fmt
+  22:     0xffff7f7ed6a0 - <rustc_ty_utils[e8f88d34b2e98196]::abi::FnAbiDesc>::for_instance
+  23:     0xffff7f7f3068 - rustc_query_impl[a4eb781626ae6df1]::query_impl::fn_abi_of_instance_no_deduced_attrs::invoke_provider_fn::__rust_begin_short_backtrace
+  24:     0xffff7f7f1774 - rustc_query_impl[a4eb781626ae6df1]::execution::try_execute_query::<rustc_middle[edc4e2b9ff0b1f74]::query::caches::DefaultCache<rustc_middle[edc4e2b9ff0b1f74]::ty::PseudoCanonicalInput<(rustc_middle[edc4e2b9ff0b1f74]::ty::instance::Instance, &rustc_middle[edc4e2b9ff0b1f74]::ty::list::RawList<(), rustc_middle[edc4e2b9ff0b1f74]::ty::Ty>)>, rustc_middle[edc4e2b9ff0b1f74]::query::erase::ErasedData<[u8; 16usize]>>, false>
+  25:     0xffff7f7f13b0 - rustc_query_impl[a4eb781626ae6df1]::query_impl::fn_abi_of_instance_no_deduced_attrs::execute_query_non_incr::__rust_end_short_backtrace
+  26:     0xffff7f7e66f0 - rustc_ty_utils[e8f88d34b2e98196]::abi::fn_abi_of_instance_raw
+  27:     0xffff7f7f301c - rustc_query_impl[a4eb781626ae6df1]::query_impl::fn_abi_of_instance_raw::invoke_provider_fn::__rust_begin_short_backtrace
+  28:     0xffff7f7f1bfc - rustc_query_impl[a4eb781626ae6df1]::execution::try_execute_query::<rustc_middle[edc4e2b9ff0b1f74]::query::caches::DefaultCache<rustc_middle[edc4e2b9ff0b1f74]::ty::PseudoCanonicalInput<(rustc_middle[edc4e2b9ff0b1f74]::ty::instance::Instance, &rustc_middle[edc4e2b9ff0b1f74]::ty::list::RawList<(), rustc_middle[edc4e2b9ff0b1f74]::ty::Ty>)>, rustc_middle[edc4e2b9ff0b1f74]::query::erase::ErasedData<[u8; 16usize]>>, false>
+  29:     0xffff7f7f129c - rustc_query_impl[a4eb781626ae6df1]::query_impl::fn_abi_of_instance_raw::execute_query_non_incr::__rust_end_short_backtrace
+  30:     0xffff7f17c148 - <rustc_middle[edc4e2b9ff0b1f74]::ty::context::TyCtxt>::fn_abi_of_instance
+  31:     0xffff7f178090 - rustc_codegen_llvm[bb0c924bad9b2a91]::debuginfo::create_scope_map::make_mir_scope
+  32:     0xffff7f18e998 - rustc_codegen_ssa[48d4ed740fb331b5]::mir::codegen_mir::<rustc_codegen_llvm[bb0c924bad9b2a91]::builder::GenericBuilder<rustc_codegen_llvm[bb0c924bad9b2a91]::context::FullCx>>
+  33:     0xffff8058255c - rustc_codegen_llvm[bb0c924bad9b2a91]::base::compile_codegen_unit::module_codegen
+  34:     0xffff80590e80 - <rustc_codegen_llvm[bb0c924bad9b2a91]::LlvmCodegenBackend as rustc_codegen_ssa[48d4ed740fb331b5]::traits::backend::ExtraBackendMethods>::compile_codegen_unit
+  35:     0xffff80592758 - rustc_codegen_ssa[48d4ed740fb331b5]::base::codegen_crate::<rustc_codegen_llvm[bb0c924bad9b2a91]::LlvmCodegenBackend>
+  36:     0xffff8059175c - <rustc_codegen_llvm[bb0c924bad9b2a91]::LlvmCodegenBackend as rustc_codegen_ssa[48d4ed740fb331b5]::traits::backend::CodegenBackend>::codegen_crate
+  37:     0xffff806750fc - <rustc_interface[272e97b8ebf85151]::queries::Linker>::codegen_and_build_linker
+  38:     0xffff804f8578 - rustc_interface[272e97b8ebf85151]::interface::run_compiler::<(), rustc_driver_impl[785fefa28dd1ac74]::run_compiler::{closure#0}>::{closure#1}
+  39:     0xffff80420b00 - std[e04eed4b29a65078]::sys::backtrace::__rust_begin_short_backtrace::<rustc_interface[272e97b8ebf85151]::util::run_in_thread_with_globals<rustc_interface[272e97b8ebf85151]::util::run_in_thread_pool_with_globals<rustc_interface[272e97b8ebf85151]::interface::run_compiler<(), rustc_driver_impl[785fefa28dd1ac74]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>
+  40:     0xffff80420888 - <std[e04eed4b29a65078]::thread::lifecycle::spawn_unchecked<rustc_interface[272e97b8ebf85151]::util::run_in_thread_with_globals<rustc_interface[272e97b8ebf85151]::util::run_in_thread_pool_with_globals<rustc_interface[272e97b8ebf85151]::interface::run_compiler<(), rustc_driver_impl[785fefa28dd1ac74]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>::{closure#1} as core[b339b0af432a4263]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+  41:     0xffff82008770 - <alloc[d2298f1b2f652558]::boxed::Box<dyn core[b339b0af432a4263]::ops::function::FnOnce<(), Output = ()> + core[b339b0af432a4263]::marker::Send> as core[b339b0af432a4263]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/boxed.rs:2275:9
+  42:     0xffff82008770 - <std[e04eed4b29a65078]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/thread/unix.rs:118:17
+  43:     0xffff7d95e0fc - start_thread
+  44:     0xffff7d9c845c - thread_start
+  45:                0x0 - <unknown>
+
+note: we would appreciate a bug report: https://github.com/rust-lang/rust/issues/new?labels=C-bug%2C+I-ICE%2C+T-compiler&template=ice.md
+
+note: rustc 1.97.1 (8bab26f4f 2026-07-14) running on aarch64-unknown-linux-gnu
+
+note: compiler flags: --crate-type rlib -C opt-level=3 -C panic=abort -C linker-plugin-lto -C codegen-units=1 -C debuginfo=line-tables-only -C strip=symbols -C target-cpu=generic -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack
+
+note: some of the compiler flags provided by cargo are hidden
+
+query stack during panic:
+#0 [fn_abi_of_instance_no_deduced_attrs] computing unadjusted call ABI of `openmls::group::mls_group::MlsGroup::public_group`
+#1 [fn_abi_of_instance_raw] computing call ABI of `openmls::group::mls_group::MlsGroup::public_group`
+end of query stack
+error: could not compile `shell` (lib)
+
+Caused by:
+  process didn't exit successfully: `sccache /home/xaver/.rustup/toolchains/1.97.1-aarch64-unknown-linux-gnu/bin/rustc --crate-name shell --edition=2024 shell/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C panic=abort -C linker-plugin-lto -C codegen-units=1 -C debuginfo=line-tables-only '--deny=clippy::pedantic' '--deny=clippy::while_float' '--deny=clippy::unwrap_used' '--deny=clippy::unused_peekable' '--deny=clippy::unreachable' '--deny=clippy::uninhabited_references' '--deny=clippy::unimplemented' '--deny=clippy::transmute_undefined_repr' '--deny=clippy::trailing_empty_array' '--deny=clippy::todo' '--deny=clippy::suspicious_operation_groupings' '--deny=clippy::string_slice' '--deny=clippy::significant_drop_tightening' '--deny=clippy::significant_drop_in_scrutinee' '--deny=clippy::set_contains_or_insert' '--deny=clippy::redundant_clone' '--deny=clippy::read_zero_byte_vec' '--deny=clippy::path_buf_push_overwrite' '--deny=clippy::panic_in_result_fn' '--deny=clippy::panic' '--deny=clippy::or_fun_call' '--deny=clippy::non_send_fields_in_send_ty' '--deny=clippy::needless_pass_by_ref_mut' '--deny=clippy::needless_collect' '--allow=clippy::must_use_candidate' '--deny=clippy::literal_string_with_formatting_args' '--deny=clippy::iter_with_drain' '--deny=clippy::indexing_slicing' '--deny=clippy::future_not_send' '--deny=clippy::expect_used' '--deny=clippy::exit' '--allow=clippy::duration_suboptimal_units' '--deny=clippy::debug_assert_with_mut_call' '--deny=clippy::collection_is_never_read' '--deny=clippy::clear_with_drain' '--deny=clippy::as_ptr_cast_mut' '--allow=clippy::as_conversions' '--deny=clippy::arithmetic_side_effects' --cfg 'feature="default"' --cfg 'feature="ffmpeg-next"' --cfg 'feature="hdr-decode"' --cfg 'feature="hosted-test-control"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "dev-session", "ffmpeg-next", "hdr-decode", "hevc-codec-tests", "hosted-test-control", "nvenc", "vaapi"))' -C metadata=3999747fab6a4c71 -C extra-filename=-5056a6d618477d22 --out-dir /home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps -C strip=symbols -L dependency=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps --extern accesskit_unix=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libaccesskit_unix-5ad2cb1fc779f924.rmeta --extern app_state=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libapp_state-0ed1c4cf5959f7a6.rmeta --extern atomic_file=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libatomic_file-5a153b6a7fad8a40.rmeta --extern automerge=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libautomerge-7996b6b2769c7e68.rmeta --extern base64=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libbase64-fbfbecbfddecb4bc.rmeta --extern blake3=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libblake3-66bc83b3dd7f18e1.rmeta --extern browser=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libbrowser-a6f4a0ece64150b6.rmeta --extern bs58=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libbs58-d319da6af0a71748.rmeta --extern bytes=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libbytes-2e56ba0c2845c437.rmeta --extern capnp=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libcapnp-5f47f5043ac50a57.rmeta --extern capnp_rpc=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libcapnp_rpc-01e2c7f8e1a21911.rmeta --extern chacha20poly1305=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libchacha20poly1305-b08cd16df4539331.rmeta --extern channel_crypto=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libchannel_crypto-9b20572973797899.rmeta --extern chrono=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libchrono-ac41de273b7544a7.rmeta --extern cli=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libcli-868e93b143be11c2.rmeta --extern collab_types=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libcollab_types-8ce1a3c6eb735aad.rmeta --extern compat_service=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libcompat_service-02cb34a006431f0c.rmeta --extern desktop_policy=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libdesktop_policy-2983fbf7f19cf937.rmeta --extern dirs=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libdirs-2a6c10460ac25bea.rmeta --extern ed25519_dalek=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libed25519_dalek-8e85f1ec7ed70896.rmeta --extern ffmpeg_next=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libffmpeg_next-3635f2e8ce85ba30.rmeta --extern file_explorer=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libfile_explorer-da680f89b3adc067.rmeta --extern futures=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libfutures-66f25df007b5a3b0.rmeta --extern futures_lite=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libfutures_lite-825b65e081b9a3fa.rmeta --extern greeter=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libgreeter-6cb48942638024c8.rmeta --extern hex=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libhex-7db3ca986b89915c.rmeta --extern image=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libimage-0a35bf5c40a22dd4.rmeta --extern iroh=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libiroh-b015ce9095f46c6c.rlib --extern iroh_base=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libiroh_base-9e04c25913b871d5.rmeta --extern iroh_gossip=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libiroh_gossip-c7189dbb47e91453.rlib --extern iroh_mdns_address_lookup=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libiroh_mdns_address_lookup-230ede3352906b8d.rmeta --extern landlock=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/liblandlock-b1f7cfe0bf554fbf.rmeta --extern launcher=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/liblauncher-d5fa5de0cf6f3e77.rmeta --extern libc=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/liblibc-42256afcfac4124c.rmeta --extern media=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libmedia-27517dfe01ce6c09.rmeta --extern mime_guess=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libmime_guess-a9262f50fd31a2c4.rmeta --extern openh264=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libopenh264-1f116705c834e949.rmeta --extern os_actions=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libos_actions-61f404fb4a47b786.rmeta --extern parking_lot=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libparking_lot-1410058b2169e68d.rmeta --extern pipewire=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libpipewire-5eb87523bed6a4d7.rmeta --extern png=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libpng-0cdb51af391743b9.rmeta --extern pollster=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libpollster-bce987661b5761af.rmeta --extern postcard=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libpostcard-9794cf207abe8db7.rmeta --extern qcms=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqcms-ebec0002f6efdb5e.rmeta --extern qdoc=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqdoc-df340aac04a74419.rmeta --extern qos_actions=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_actions-5fafa5c2d35fee58.rmeta --extern qos_bluez=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_bluez-fa4fcad0fbb9faba.rmeta --extern qos_callstream=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_callstream-3100c608c13d9a5a.rmeta --extern desktop_entry=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libdesktop_entry-7910337cee08903b.rmeta --extern qos_power_mgmt=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_power_mgmt-2c47572912e1acf3.rmeta --extern qos_projector=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_projector-46ac4b04e5f30109.rmeta --extern qos_relay=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_relay-581cace371165897.rmeta --extern qos_startup_metrics=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_startup_metrics-b0117e8ae317a83c.rmeta --extern qos_user_identity=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libqos_user_identity-f72ef4b1a1c64bf1.rmeta --extern rand_core=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/librand_core-9a3cebc3989a6612.rmeta --extern rcgen=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/librcgen-11afa7d881c8e086.rmeta --extern reis=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libreis-c6bc148d78d0b95a.rmeta --extern runtime_collab=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libruntime_collab-ed1c9dae0046aff5.rmeta --extern runtime_identity=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libruntime_identity-84ba148729e876a6.rmeta --extern rustls=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/librustls-bc5ebf4fb4e01751.rmeta --extern seccompiler=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libseccompiler-6d45dd7cdd7b8c68.rmeta --extern serde=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libserde-03efd902867bb988.rmeta --extern serde_json=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libserde_json-400a4546e9b35685.rmeta --extern settings_store=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libsettings_store-ea391b03716d44f8.rmeta --extern sha2=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libsha2-8a866a5145add42f.rmeta --extern smithay=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libsmithay-35784804187cc04a.rmeta --extern smithay_client_toolkit=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libsmithay_client_toolkit-4d25b16e878fd9b7.rmeta --extern sysinfo=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libsysinfo-db95dc4d14cb297b.rmeta --extern taffy=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtaffy-033050757fbe2ef7.rmeta --extern tantivy=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtantivy-1096f788349f7954.rmeta --extern terminal=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libterminal-125e259f8b71553b.rmeta --extern thiserror=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libthiserror-9a391744caca6f88.rmeta --extern threshold_identity=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libthreshold_identity-15877ab072351063.rmeta --extern tokio=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtokio-ccd4c59d54724d6d.rmeta --extern tokio_util=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtokio_util-4685b74e9d296245.rmeta --extern toml=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtoml-8ee65fe837ba0dd0.rmeta --extern tracing=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtracing-c9ed8d16ff5b030d.rmeta --extern tracing_subscriber=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libtracing_subscriber-161383431b4a68da.rmeta --extern ui=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libui-64c4d1e3a6162e77.rmeta --extern uuid=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libuuid-d0f5ed0cdf74bc59.rmeta --extern vello=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libvello-a8d49d4ee750faed.rmeta --extern walkdir=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libwalkdir-f87df1005708d62c.rmeta --extern wayland_client=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libwayland_client-8fbffd7e2108abcb.rmeta --extern wayland_protocols=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libwayland_protocols-2e8b3a37670a3d67.rmeta --extern windows_vm=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libwindows_vm-38cc2d6b2b87fa3f.rmeta --extern winit=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libwinit-fa0deffc4c11e3b5.rmeta --extern word_processor=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libword_processor-18b2ef863bc76746.rmeta --extern xattr=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libxattr-da07cf6d130321a0.rmeta --extern zbus=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libzbus-f975b8d7d384cdf1.rmeta --extern zeroize=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libzeroize-13928d76f302e164.rmeta -C target-cpu=generic -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack --remap-path-prefix=/build=. -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/blake3-eff1a89bb07e7056/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/openh264-sys2-1aa07fcf2fe1c449/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/openh264-sys2-1aa07fcf2fe1c449/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/openh264-sys2-1aa07fcf2fe1c449/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/openh264-sys2-1aa07fcf2fe1c449/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/ring-99a2021982710744/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/libspa-c50be5c131be913d/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/libspa-sys-5212533dd7fb774d/out -L native=/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/build/zstd-sys-14606135d3daff04/out -L native=/usr/lib64 -L native=/usr/lib64 -L native=/usr/lib64 -L native=/usr/lib64 -L native=/usr/lib64 -L native=/usr/lib64 -L native=/usr/lib64` (exit status: 101)
+warning: build failed, waiting for other jobs to finish...
+error: failed to build archive from rlib at `/home/xaver/qos-main-benchmark-20260906.nKHtNP/checkout/target/release/deps/libbase32-3a070bb4b8d17775.rlib`: Unsupported archive identifier
+
+error: could not compile `ui` (example "ui-perf") due to 1 previous error
+Command exited with non-zero status 101
+	Command being timed: "cargo build -p shell -p ui --release --locked --example redraw_bench --example ui-perf"
+	User time (seconds): 201.01
+	System time (seconds): 18.08
+	Percent of CPU this job got: 36%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 10:04.19
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5819028
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 5
+	Minor (reclaiming a frame) page faults: 4492166
+	Voluntary context switches: 14819
+	Involuntary context switches: 4760
+	Swaps: 0
+	File system inputs: 4384
+	File system outputs: 1349840
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101

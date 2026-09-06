@@ -999,7 +999,29 @@ fn bicubic_sample(
     return vec4<f32>(clamp(result.rgb, vec3(0.0), vec3(a)), a);
 }
 
+#ifdef area_ppt8
+// Keep the original four-pixel coordinate groups inside each eight-pixel
+// invocation. In particular, Area and linear-gradient arithmetic must not
+// turn `(point.x - group_x) + term` into `(point.x + term) - pixel_x`.
+const PIXELS_PER_THREAD = 8u;
+#else
 const PIXELS_PER_THREAD = 4u;
+#endif
+
+#ifdef area_ppt8
+// Reconstruct the pre-PPT8 four-pixel subgroup expression exactly. Do not
+// replace this with `f32(pixel_x_base + lane)`: the old shader converts the
+// subgroup base before adding its lane.
+fn ppt8_pixel_x(pixel_x_base: u32, i: u32) -> f32 {
+    let subgroup = i >> 2u;
+    let lane = i & 3u;
+    return f32(pixel_x_base + subgroup * 4u) + f32(lane);
+}
+
+fn ppt8_subgroup_x(pixel_x_base: u32, subgroup: u32) -> f32 {
+    return f32(pixel_x_base + subgroup * 4u);
+}
+#endif
 
 #ifndef msaa
 
@@ -1019,6 +1041,14 @@ fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXE
     }
     for (var i = 0u; i < n_segs; i++) {
         let seg_off = fill.seg_data + i;
+#ifdef segment_row_mask
+        // This permutation only receives masks written after final tiling. A
+        // clear bit is a producer proof that both original Area terms are
+        // exactly zero for this native row; do not alter the equations below.
+        if (segments[seg_off].row_mask & (1u << u32(xy.y))) == 0u {
+            continue;
+        }
+#endif
         let segment = segments[seg_off];
         let y = segment.point0.y - xy.y;
         let delta = segment.point1 - segment.point0;
@@ -1065,10 +1095,76 @@ fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXE
     *result = area;
 }
 
+#ifdef area_ppt8
+// This has the same per-pixel scalar sequence as two original four-pixel
+// invocations. Only y-dependent terms are shared; each subgroup retains its
+// original `point0.x - subgroup_x` origin before adding the line term.
+fn fill_path_ppt8(fill: CmdFill, local_x_base: u32, local_y: u32, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
+    let n_segs = fill.size_and_rule >> 1u;
+    let even_odd = (fill.size_and_rule & 1u) != 0u;
+    var area: array<f32, PIXELS_PER_THREAD>;
+    let backdrop_f = f32(fill.backdrop);
+    for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+        area[i] = backdrop_f;
+    }
+    for (var seg_ix = 0u; seg_ix < n_segs; seg_ix += 1u) {
+        let segment = segments[fill.seg_data + seg_ix];
+        let y = segment.point0.y - f32(local_y);
+        let delta = segment.point1 - segment.point0;
+        let y0 = clamp(y, 0.0, 1.0);
+        let y1 = clamp(y + delta.y, 0.0, 1.0);
+        let dy = y0 - y1;
+        if dy != 0.0 {
+            let vec_y_recip = 1.0 / delta.y;
+            let t0 = (y0 - y) * vec_y_recip;
+            let t1 = (y1 - y) * vec_y_recip;
+            for (var subgroup = 0u; subgroup < 2u; subgroup += 1u) {
+                let subgroup_x = f32(local_x_base + subgroup * 4u);
+                let startx = segment.point0.x - subgroup_x;
+                let x0 = startx + t0 * delta.x;
+                let x1 = startx + t1 * delta.x;
+                let xmin0 = min(x0, x1);
+                let xmax0 = max(x0, x1);
+                for (var lane = 0u; lane < 4u; lane += 1u) {
+                    let i = subgroup * 4u + lane;
+                    let i_f = f32(lane);
+                    let xmin = min(xmin0 - i_f, 1.0) - 1.0e-6;
+                    let xmax = xmax0 - i_f;
+                    let b = min(xmax, 1.0);
+                    let c = max(b, 0.0);
+                    let d = max(xmin, 0.0);
+                    let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                    area[i] += a * dy;
+                }
+            }
+        }
+        let y_edge = sign(delta.x) * clamp(f32(local_y) - segment.y_edge + 1.0, 0.0, 1.0);
+        for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+            area[i] += y_edge;
+        }
+    }
+    if even_odd {
+        for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+            let a = area[i];
+            area[i] = abs(a - 2.0 * round(0.5 * a));
+        }
+    } else {
+        for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+            area[i] = min(abs(area[i]), 1.0);
+        }
+    }
+    *result = area;
+}
 #endif
 
-// The X size should be 16 / PIXELS_PER_THREAD
+#endif
+
+// The X size should be 16 / PIXELS_PER_THREAD.
+#ifdef area_ppt8
+@compute @workgroup_size(2, 16)
+#else
 @compute @workgroup_size(4, 16)
+#endif
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
@@ -1081,16 +1177,40 @@ fn main(
     }
 #ifdef sparse
     let damage_base = wg_id.x * 9u;
+#ifndef msaa
+#ifdef quad_skip
+    // Area-only permutation: each invocation owns four consecutive native
+    // pixels. Empty nibbles have no output or blend-spill side effects.
+    let local_pixel = local_id.y * TILE_WIDTH + local_id.x * PIXELS_PER_THREAD;
+    let damage_word = damage_tiles[damage_base + 1u + (local_pixel >> 5u)];
+    if ((damage_word >> (local_pixel & 31u)) & 0xfu) == 0u {
+        return;
+    }
+#endif
+#endif
     let tile_ix = damage_tiles[damage_base];
     let tile_x = tile_ix % config.width_in_tiles;
     let tile_y = tile_ix / config.width_in_tiles;
+#ifdef area_ppt8
+    let pixel_x_base = tile_x * TILE_WIDTH + (local_id.x * 2u) * 4u;
+    let xy = vec2(f32(pixel_x_base), f32(tile_y * TILE_HEIGHT + local_id.y));
+#else
     let xy = vec2(
         f32(tile_x * TILE_WIDTH + local_id.x * PIXELS_PER_THREAD),
         f32(tile_y * TILE_HEIGHT + local_id.y),
     );
+#endif
 #else
     let tile_ix = wg_id.y * config.width_in_tiles + wg_id.x;
+#ifdef area_ppt8
+    let pixel_x_base = (global_id.x * 2u) * 4u;
+    let xy = vec2(f32(pixel_x_base), f32(global_id.y));
+#else
     let xy = vec2(f32(global_id.x * PIXELS_PER_THREAD), f32(global_id.y));
+#endif
+#endif
+#ifdef area_ppt8
+    let local_x_base = (local_id.x * 2u) * 4u;
 #endif
     let local_xy = vec2(f32(local_id.x * PIXELS_PER_THREAD), f32(local_id.y));
     var rgba: array<vec4<f32>, PIXELS_PER_THREAD>;
@@ -1106,17 +1226,37 @@ fn main(
     cmd_ix += 1u;
     // main interpretation loop
     while true {
-        let tag = ptcl[cmd_ix];
+        let raw_tag = ptcl[cmd_ix];
+#ifdef solid_fuse
+        let tag = raw_tag & ~CMD_SOLID_FUSED;
+        let fused_solid = (raw_tag & CMD_SOLID_FUSED) != 0u;
+#else
+        let tag = raw_tag;
+#endif
         if tag == CMD_END {
             break;
         }
+#ifdef solid_fuse
+        // The paired coarse permutation emits this bit only on the immediate
+        // successor of a zero-segment path. Keep the ordinary Area-AA work
+        // and every paint/clip operation below unchanged.
+        if fused_solid {
+            for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+                area[i] = 1.0;
+            }
+        }
+#endif
         switch tag {
             case CMD_FILL: {
                 let fill = read_fill(cmd_ix);
 #ifdef msaa
                 fill_path_ms(fill, local_id.xy, &area);
 #else
+#ifdef area_ppt8
+                fill_path_ppt8(fill, local_x_base, local_id.y, &area);
+#else
                 fill_path(fill, local_xy, &area);
+#endif
 #endif
                 cmd_ix += 4u;
             }
@@ -1218,7 +1358,11 @@ fn main(
 
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
                     // Transform fragment location to local 'uv' space of the rounded rectangle.
+#ifdef area_ppt8
+                    let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i), xy.y);
+#else
                     let my_xy = vec2(xy.x + f32(i), xy.y);
+#endif
                     let local_xy = blur.matrx.xy * my_xy.x + blur.matrx.zw * my_xy.y + blur.xlat;
                     let x = local_xy.x;
                     let y = local_xy.y;
@@ -1242,6 +1386,19 @@ fn main(
             }
             case CMD_LIN_GRAD: {
                 let lin = read_lin_grad(cmd_ix);
+#ifdef area_ppt8
+                for (var subgroup = 0u; subgroup < 2u; subgroup += 1u) {
+                    let d = lin.line_x * ppt8_subgroup_x(pixel_x_base, subgroup) + lin.line_y * xy.y + lin.line_c;
+                    for (var lane = 0u; lane < 4u; lane += 1u) {
+                        let i = subgroup * 4u + lane;
+                        let my_d = d + lin.line_x * f32(lane);
+                        let x = i32(round(extend_mode_normalized(my_d, lin.extend_mode) * f32(GRADIENT_WIDTH - 1)));
+                        let fg_rgba = textureLoad(gradients, vec2(x, i32(lin.index)), 0);
+                        let fg_i = fg_rgba * area[i];
+                        rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
+                    }
+                }
+#else
                 let d = lin.line_x * xy.x + lin.line_y * xy.y + lin.line_c;
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
                     let my_d = d + lin.line_x * f32(i);
@@ -1250,6 +1407,7 @@ fn main(
                     let fg_i = fg_rgba * area[i];
                     rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                 }
+#endif
                 cmd_ix += 3u;
             }
             case CMD_RAD_GRAD: {
@@ -1264,7 +1422,11 @@ fn main(
                 let less_scale = select(1.0, -1.0, is_swapped || (1.0 - focal_x) < 0.0);
                 let t_sign = sign(1.0 - focal_x);
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+#ifdef area_ppt8
+                    let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i), xy.y);
+#else
                     let my_xy = vec2(xy.x + f32(i), xy.y);
+#endif
                     let local_xy = rad.matrx.xy * my_xy.x + rad.matrx.zw * my_xy.y + rad.xlat;
                     let x = local_xy.x;
                     let y = local_xy.y;
@@ -1301,7 +1463,11 @@ fn main(
                 let sweep = read_sweep_grad(cmd_ix);
                 let scale = 1.0 / (sweep.t1 - sweep.t0);
                 for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
+#ifdef area_ppt8
+                    let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i), xy.y);
+#else
                     let my_xy = vec2(xy.x + f32(i), xy.y);
+#endif
                     let local_xy = sweep.matrx.xy * my_xy.x + sweep.matrx.zw * my_xy.y + sweep.xlat;
                     let x = local_xy.x;
                     let y = local_xy.y;
@@ -1339,7 +1505,11 @@ fn main(
                             // We only need to load from the textures if the value will be used.
                             if area[i] != 0.0 {
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
+#ifdef area_ppt8
+                                let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i) + 0.5, xy.y + 0.5);
+#else
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
+#endif
                                 var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
                                 atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
                                 atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);
@@ -1358,7 +1528,11 @@ fn main(
                             // We only need to load from the textures if the value will be used.
                             if area[i] != 0.0 {
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
+#ifdef area_ppt8
+                                let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i) + 0.5, xy.y + 0.5);
+#else
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
+#endif
                                 var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
                                 atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
                                 atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);
@@ -1384,7 +1558,11 @@ fn main(
                         for (var i = 0u; i < PIXELS_PER_THREAD; i += 1u) {
                             if area[i] != 0.0 {
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
+#ifdef area_ppt8
+                                let my_xy = vec2(ppt8_pixel_x(pixel_x_base, i) + 0.5, xy.y + 0.5);
+#else
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
+#endif
                                 var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
                                 atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
                                 atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);

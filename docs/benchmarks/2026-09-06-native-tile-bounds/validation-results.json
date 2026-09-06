@@ -1,0 +1,74 @@
+{
+  "results": [
+    {
+      "name": "vendor-tests-compile-1",
+      "exit_code": 101,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/vendor-tests-compile-1.log"
+    },
+    {
+      "name": "vendor-tests",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/vendor-tests.log"
+    },
+    {
+      "name": "shell-example-tests",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/shell-example-tests.log"
+    },
+    {
+      "name": "ui-example-tests",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/ui-example-tests.log"
+    },
+    {
+      "name": "ui-accounting",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/ui-accounting.log"
+    },
+    {
+      "name": "ui-adaptive-bounds-parity",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/ui-adaptive-bounds-parity.log"
+    },
+    {
+      "name": "ui-forced-bounds-edges",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/ui-forced-bounds-edges.log"
+    },
+    {
+      "name": "shell-forced-bounds-overflow",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/shell-forced-bounds-overflow.log"
+    },
+    {
+      "name": "shell-default-native-oracle",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/shell-default-native-oracle.log"
+    },
+    {
+      "name": "shell-bounds-native-oracle",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/shell-bounds-native-oracle.log"
+    },
+    {
+      "name": "geometry-all-commands-native-1",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/geometry-all-commands-native-1.log"
+    },
+    {
+      "name": "geometry-all-commands-native-2",
+      "exit_code": 101,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/geometry-all-commands-native-2.log"
+    },
+    {
+      "name": "strict-clippy",
+      "exit_code": 0,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-native-tile-bounds/strict-clippy.log"
+    }
+  ],
+  "testInclusiveClippy": {
+    "exit_code": 0,
+    "changedLineDiagnostics": 0
+  },
+  "performanceAcceptance": false
+}

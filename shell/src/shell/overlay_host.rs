@@ -5562,6 +5562,17 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::open();
     }
 
+    /// Fixes the quick-settings visual to an in-flight opening pose for a
+    /// deterministic capture. Ordinary UI paths must use the live transition.
+    #[doc(hidden)]
+    pub fn set_quick_settings_capture_openness(&mut self, permille: u16) {
+        if !self.overlay_flags().quick_settings {
+            return;
+        }
+        self.qs_was_open = true;
+        self.qs_transition = ui::Transition::capture_open_at(permille);
+    }
+
     /// Folds every reading the quick-settings workers delivered into
     /// chrome state. Never blocks — the reads happen on a worker, since
     /// a shell-out on the paint path froze the desktop. Each field

@@ -1,0 +1,135 @@
+{
+  "source_matches_frozen_v1": true,
+  "artifact_matches_pre_run_sha256": true,
+  "format_and_diff": true,
+  "no_compiler_or_benchmark_live_after_run": true,
+  "runs": [
+    {
+      "name": "shell-default-reuse-round-1",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    },
+    {
+      "name": "shell-bounds-reuse-round-1",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    },
+    {
+      "name": "shell-bounds-reuse-round-2",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    },
+    {
+      "name": "shell-default-reuse-round-2",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    },
+    {
+      "name": "shell-default-reuse-round-3",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    },
+    {
+      "name": "shell-bounds-reuse-round-3",
+      "exit_code": 1,
+      "complete_and_valid": true,
+      "checks": {
+        "diagnostic_completed": true,
+        "all_samples": true,
+        "native_4k": true,
+        "expected_adapter": true,
+        "complete_counters": true,
+        "observations": true,
+        "attempts": true,
+        "bounds": true,
+        "unrelated_paths_off": true,
+        "cpu_output_native": true,
+        "history_counts": true,
+        "capacity_counts": true,
+        "bounds_of_storage": true,
+        "metadata_union": true
+      }
+    }
+  ],
+  "note": "Exit 1 is the expected diagnostic-completion status. All six logs report DisabledDiagnostic; none is an acceptance pass."
+}

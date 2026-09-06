@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "parser_error": "Whitespace before generated binding_indices colon was not accepted by the initial field parser.",
+  "raw_output_file": "v1-generated-audit-initial-error.log",
+  "source_changed": false,
+  "corrected_audit": "v1-generated-candidate-audit-corrected.json"
+}

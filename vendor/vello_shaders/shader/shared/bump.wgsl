@@ -7,6 +7,9 @@ const STAGE_TILE_ALLOC: u32 = 0x2u;
 const STAGE_FLATTEN: u32 = 0x4u;
 const STAGE_PATH_COUNT: u32 = 0x8u;
 const STAGE_COARSE: u32 = 0x10u;
+// The optional canonical segment-order pass validates generated PTCL before
+// mutating any segment range. Its failure must suppress the following fine pass.
+const STAGE_CANONICAL_SEGMENT_ORDER: u32 = 0x20u;
 
 // This must be kept in sync with the struct in config.rs in the encoding crate.
 struct BumpAllocators {

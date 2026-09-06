@@ -1,0 +1,30 @@
+{
+  "commands": [
+    {
+      "name": "ui-example-tests-v4",
+      "exit_code": 0
+    },
+    {
+      "name": "ui-strict-clippy-v4",
+      "exit_code": 0
+    },
+    {
+      "name": "ui-adapter-header-smoke-v4",
+      "exit_code": 0
+    },
+    {
+      "name": "ui-format-v4",
+      "exit_code": 0
+    }
+  ],
+  "header": [
+    "UI renderer adapter: name=\"llvmpipe (LLVM 22.1.8, 128 bits)\" backend=Vulkan device_type=Cpu driver=\"llvmpipe\""
+  ],
+  "header_before_warmup": true,
+  "source_match": true,
+  "release_v3_artifacts_unchanged": true,
+  "measured_binaries_source_version": "v3",
+  "current_source_version": "v4",
+  "acceptance_eligible": false,
+  "debug_smoke_is_performance_result": false
+}

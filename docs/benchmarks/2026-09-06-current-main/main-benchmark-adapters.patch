@@ -1,0 +1,436 @@
+diff --git a/shell/src/compositor/backend/drm/paint.rs b/shell/src/compositor/backend/drm/paint.rs
+index ece294553..24bcb298c 100644
+--- a/shell/src/compositor/backend/drm/paint.rs
++++ b/shell/src/compositor/backend/drm/paint.rs
+@@ -131,6 +131,19 @@ impl VelloDrmBridge {
+         self.base_color = color;
+     }
+ 
++    /// Returns the adapter actually backing this bridge without changing renderer state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`BridgeError::InvalidDevice`] if the bridge's stored device entry is absent.
++    #[doc(hidden)]
++    pub fn adapter_info(&self) -> Result<wgpu::AdapterInfo, BridgeError> {
++        let handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
++            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
++        })?;
++        Ok(handle.adapter.get_info())
++    }
++
+     /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
+     /// (`width * height * 4`). The slice's lifetime is tied to `&mut self`; callers must clone bytes out before the next `paint`.
+     ///
+diff --git a/ui/examples/dashboard_perf_bench.rs b/ui/examples/dashboard_perf_bench.rs
+index 82bd6682a..14a95684f 100644
+--- a/ui/examples/dashboard_perf_bench.rs
++++ b/ui/examples/dashboard_perf_bench.rs
+@@ -60,6 +60,18 @@ fn canvas_f32(v: u32) -> f32 {
+     v as f32
+ }
+ 
++/// Benchmark-only extent override. Invalid or zero values leave the native-4K default intact.
++fn benchmark_extent(name: &str, default: u32) -> u32 {
++    benchmark_extent_from_value(std::env::var(name).ok().as_deref(), default)
++}
++
++fn benchmark_extent_from_value(value: Option<&str>, default: u32) -> u32 {
++    value
++        .and_then(|value| value.parse::<u32>().ok())
++        .filter(|value| *value > 0)
++        .unwrap_or(default)
++}
++
+ /// Widens a bench-loop index (bounded by `iters`, far below f64's
+ /// exact-integer range) to `f64` for the per-event cursor wobble.
+ #[allow(
+@@ -192,6 +204,7 @@ struct Phase {
+     draw_us: u128,
+     render_us: u128,
+     total_us: u128,
++    overflowed_submissions: u64,
+ }
+ 
+ /// Everything one bench frame needs to lay out, dispatch events to, and
+@@ -262,9 +275,11 @@ fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
+     phase.draw_us = t_draw.elapsed().as_micros();
+ 
+     let t_render = Instant::now();
+-    let _ = state
++    let overflowed = state
+         .renderer
+-        .render(state.scene, state.theme.tokens.colors.surfaces.base);
++        .render_and_wait(state.scene, state.theme.tokens.colors.surfaces.base)
++        .expect("benchmark GPU render and completion");
++    phase.overflowed_submissions = u64::from(overflowed);
+     phase.render_us = t_render.elapsed().as_micros();
+ 
+     state.root.mark_drawn();
+@@ -534,11 +549,13 @@ fn run_bench_loop(
+ 
+     let mut total_redraws = 0usize;
+     let mut total_skipped = 0usize;
+-    let mut histo: Vec<Phase> = Vec::with_capacity(iters);
++    // Materialize all slots before action zero: growing this vector during the frozen million
++    // event workload would otherwise fault/allocate pages inside measured samples.
++    let mut histo = vec![Phase::default(); iters];
+ 
+-    for i in 0..iters {
++    for (i, phase) in histo.iter_mut().enumerate() {
+         let t_total = Instant::now();
+-        let mut phase = Phase::default();
++        *phase = Phase::default();
+ 
+         let t_handle = Instant::now();
+         dispatch_bench_event(state, doc, i, scroll_mode, frozen, positions);
+@@ -547,12 +564,11 @@ fn run_bench_loop(
+         // App-style gate: only draw if the tree signals dirty.
+         if state.root.needs_redraw() {
+             total_redraws = total_redraws.saturating_add(1);
+-            full_draw(state, &mut phase);
++            full_draw(state, phase);
+         } else {
+             total_skipped = total_skipped.saturating_add(1);
+         }
+         phase.total_us = t_total.elapsed().as_micros();
+-        histo.push(phase);
+     }
+ 
+     (histo, total_redraws, total_skipped)
+@@ -647,6 +663,23 @@ fn print_final_report(
+     println!();
+     print_timing_table(histo);
+     print_throughput_report(histo, total_redraws);
++    let total_us = histo.iter().map(|phase| phase.total_us).sum::<u128>();
++    let overflowed_submissions = histo
++        .iter()
++        .map(|phase| phase.overflowed_submissions)
++        .sum::<u64>();
++    println!(
++        "benchmark timing: samples={} redraws={} total_us={total_us} p99_rounded={}us max={}us cpu_target_readback_bytes=0 overflowed_submissions={overflowed_submissions}",
++        histo.len(),
++        total_redraws,
++        pct(histo, 99.0, |phase| phase.total_us),
++        histo.iter().map(|phase| phase.total_us).max().unwrap_or(0),
++    );
++    if overflowed_submissions == 0 {
++        println!("benchmark validity: complete (no reported bump overflow)");
++    } else {
++        println!("benchmark validity: INVALID (reported bump overflow; pixels were not read back)");
++    }
+ 
+     let (hits_end, misses_end) = state.text_renderer.cache_stats();
+     println!(
+@@ -669,7 +702,8 @@ pub fn run(_args: &[String]) {
+         .unwrap_or(500);
+     let static_mode = std::env::var("QUICK_UI_DASH_STATIC").is_ok();
+     let include_animated = !static_mode;
+-    let (canvas_w, canvas_h) = (1800u32, 1200u32);
++    let canvas_w = benchmark_extent("QUICK_UI_DASH_WIDTH", 3_840);
++    let canvas_h = benchmark_extent("QUICK_UI_DASH_HEIGHT", 2_160);
+     println!(
+         "mode: {}",
+         if static_mode {
+@@ -680,6 +714,13 @@ pub fn run(_args: &[String]) {
+     );
+ 
+     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
++    let adapter = renderer
++        .adapter_info()
++        .expect("benchmark renderer adapter information");
++    println!(
++        "benchmark adapter: name={} backend={:?} device_type={:?} driver={}",
++        adapter.name, adapter.backend, adapter.device_type, adapter.driver
++    );
+     let theme = Theme::dark();
+     let mut text_renderer = TextRenderer::new();
+     let presence = PresenceCtx::default();
+@@ -731,3 +772,16 @@ pub fn run(_args: &[String]) {
+ 
+     print_final_report(&state, &histo, iters, total_redraws, total_skipped);
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::benchmark_extent_from_value;
++
++    #[test]
++    fn benchmark_adapter_extent_parser_keeps_native_default_for_invalid_values() {
++        assert_eq!(benchmark_extent_from_value(None, 3_840), 3_840);
++        assert_eq!(benchmark_extent_from_value(Some("0"), 3_840), 3_840);
++        assert_eq!(benchmark_extent_from_value(Some("bad"), 3_840), 3_840);
++        assert_eq!(benchmark_extent_from_value(Some("2160"), 3_840), 2_160);
++    }
++}
+diff --git a/ui/src/offscreen.rs b/ui/src/offscreen.rs
+index 7654957b0..c87b4291c 100644
+--- a/ui/src/offscreen.rs
++++ b/ui/src/offscreen.rs
+@@ -369,6 +369,58 @@ impl OffscreenRenderer {
+         self.render_with_overflow(scene, bg).0
+     }
+ 
++    /// Submit a full-target Area render and wait for GPU completion without a texture readback.
++    ///
++    /// This is intentionally a benchmark adapter: ordinary screenshot APIs continue to use
++    /// [`Self::render`], including their texture copy and CPU pixel materialization.
++    pub fn render_and_wait(&mut self, scene: &Scene, bg: Color) -> Result<bool, String> {
++        let (device, queue) = {
++            let ctx = self
++                .context
++                .lock()
++                .map_err(|_| "shared RenderContext poisoned".to_owned())?;
++            let handle = ctx
++                .devices
++                .get(self.dev_id)
++                .ok_or_else(|| "renderer device missing".to_owned())?;
++            (handle.device.clone(), handle.queue.clone())
++        };
++        self.renderer
++            .render_to_texture(
++                &device,
++                &queue,
++                scene,
++                &self.view,
++                &RenderParams {
++                    base_color: bg,
++                    width: self.width,
++                    height: self.height,
++                    antialiasing_method: AaConfig::Area,
++                },
++            )
++            .map_err(|error| format!("vello render: {error:?}"))?;
++        device
++            .poll(wgpu::PollType::Wait {
++                submission_index: None,
++                timeout: Some(std::time::Duration::from_secs(1)),
++            })
++            .map_err(|error| format!("GPU completion wait: {error:?}"))?;
++        Ok(self.renderer.settle_bump_budget(&device))
++    }
++
++    /// Adapter actually backing this offscreen renderer, for benchmark reporting only.
++    pub fn adapter_info(&self) -> Result<wgpu::AdapterInfo, OffscreenError> {
++        let context = self
++            .context
++            .lock()
++            .map_err(|_| OffscreenError::ContextPoisoned)?;
++        let handle = context
++            .devices
++            .get(self.dev_id)
++            .ok_or(OffscreenError::NoAdapter)?;
++        Ok(handle.adapter.get_info())
++    }
++
+     /// [`render`](Self::render) with a transparent background.
+     pub fn render_rgba(&mut self, scene: &Scene) -> Vec<u8> {
+         self.render(scene, Color::TRANSPARENT)
+diff --git a/shell/examples/redraw_bench.rs b/shell/examples/redraw_bench.rs
+new file mode 100644
+index 000000000..a70c7a587
+--- /dev/null
++++ b/shell/examples/redraw_bench.rs
+@@ -0,0 +1,202 @@
++//! Native-4K, 1,000-action DRM bridge benchmark for the unmodified main renderer.
++//!
++//! Each sample performs input dispatch, relayout, scene paint, production `paint_into_xrgb8888`,
++//! its texture readback, swizzle, and the bridge's bounded GPU/map waits. There is no DRM/KMS
++//! page flip in this headless adapter. Main's bridge has no bump-settlement retry telemetry.
++
++use std::time::Instant;
++
++use automerge::{AutoCommit, ROOT};
++use shell::compositor::backend::drm::paint::VelloDrmBridge;
++use shell::compositor::frame::FrameBuilder;
++use ui::taffy::NodeId;
++use winit::dpi::PhysicalPosition;
++use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
++
++const WIDTH: u32 = 3_840;
++const HEIGHT: u32 = 2_160;
++const SAMPLES: usize = 1_000;
++const TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
++
++#[derive(Clone, Copy)]
++struct Summary {
++    total_us: u128,
++    mean_us: u128,
++    p99_us: u128,
++    min_us: u128,
++    max_us: u128,
++}
++
++fn summarize(samples: &mut [u128]) -> Result<Summary, String> {
++    if samples.len() != SAMPLES || samples.contains(&0) {
++        return Err("expected 1,000 nonzero completed samples".to_owned());
++    }
++    let total = samples
++        .iter()
++        .try_fold(0_u128, |sum, value| sum.checked_add(*value))
++        .ok_or_else(|| "sample total overflow".to_owned())?;
++    samples.sort_unstable();
++    let p99_index = samples.len().saturating_mul(99).saturating_add(99) / 100 - 1;
++    Ok(Summary {
++        total_us: total,
++        mean_us: total / u128::try_from(samples.len()).map_err(|_| "sample count overflow")?,
++        p99_us: *samples
++            .get(p99_index)
++            .ok_or_else(|| "p99 unavailable".to_owned())?,
++        min_us: *samples
++            .first()
++            .ok_or_else(|| "minimum unavailable".to_owned())?,
++        max_us: *samples
++            .last()
++            .ok_or_else(|| "maximum unavailable".to_owned())?,
++    })
++}
++
++fn click(
++    frame: &mut FrameBuilder,
++    target: &str,
++    document: &mut AutoCommit,
++    focus: &mut Option<NodeId>,
++) -> Result<(), String> {
++    let rect = frame
++        .widget_registry()
++        .get(target)
++        .copied()
++        .filter(|rect| rect.area() > 0.0)
++        .ok_or_else(|| format!("required target {target:?} is absent or empty"))?;
++    let center = rect.center();
++    let modifiers = Modifiers::default();
++    let cursor = WindowEvent::CursorMoved {
++        device_id: DeviceId::dummy(),
++        position: PhysicalPosition::new(center.x, center.y),
++    };
++    let press = WindowEvent::MouseInput {
++        device_id: DeviceId::dummy(),
++        state: ElementState::Pressed,
++        button: MouseButton::Left,
++    };
++    let release = WindowEvent::MouseInput {
++        device_id: DeviceId::dummy(),
++        state: ElementState::Released,
++        button: MouseButton::Left,
++    };
++    let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
++    let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
++    let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
++    (pressed || released)
++        .then_some(())
++        .ok_or_else(|| format!("target {target:?} did not handle click"))
++}
++
++fn destination_checksum(destination: &[u8]) -> u64 {
++    destination
++        .iter()
++        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
++            (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
++        })
++}
++
++fn require_nonuniform_destination(destination: &[u8], label: &str) -> Result<(), String> {
++    let Some(first) = destination.chunks_exact(4).next() else {
++        return Err(format!("{label}: empty XRGB destination"));
++    };
++    if !destination.chunks_exact(4).any(|pixel| pixel != first) {
++        return Err(format!("{label}: XRGB destination is wholly uniform"));
++    }
++    Ok(())
++}
++
++fn require_visible_destination(destination: &[u8], label: &str) -> Result<u64, String> {
++    require_nonuniform_destination(destination, label)?;
++    Ok(destination_checksum(destination))
++}
++
++fn run() -> Result<(), String> {
++    let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
++    let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
++    let pitch = usize::try_from(WIDTH)
++        .map_err(|_| "width overflow")?
++        .checked_mul(4)
++        .ok_or_else(|| "pitch overflow".to_owned())?;
++    let destination_len = pitch
++        .checked_mul(usize::try_from(HEIGHT).map_err(|_| "height overflow")?)
++        .ok_or_else(|| "destination overflow".to_owned())?;
++    let mut destination = vec![0_u8; destination_len];
++    let mut document = AutoCommit::new();
++    let mut focus = None;
++    let mut samples = Vec::with_capacity(SAMPLES);
++    let adapter = bridge.adapter_info().map_err(|error| error.to_string())?;
++    println!(
++        "main benchmark adapter: name={} backend={:?} device_type={:?} driver={}",
++        adapter.name, adapter.backend, adapter.device_type, adapter.driver
++    );
++    bridge
++        .paint_into_xrgb8888(&frame.paint(), &mut destination, pitch)
++        .map_err(|error| format!("initial desktop paint: {error}"))?;
++    // Check only until a distinct pixel is found before the timed animation sequence; a full
++    // 33-MB checksum here would perturb time-driven widget state relative to the branch run.
++    require_nonuniform_destination(&destination, "initial desktop")?;
++    for index in 0..SAMPLES {
++        let start = Instant::now();
++        click(
++            &mut frame,
++            TARGETS[index % TARGETS.len()],
++            &mut document,
++            &mut focus,
++        )?;
++        frame.relayout();
++        let scene = frame.paint();
++        bridge
++            .paint_into_xrgb8888(&scene, &mut destination, pitch)
++            .map_err(|error| format!("sample {index}: {error}"))?;
++        let elapsed_us = start.elapsed().as_micros();
++        samples.push(elapsed_us);
++    }
++    let summary = summarize(&mut samples)?;
++    let final_checksum = require_visible_destination(&destination, "timed desktop")?;
++    println!(
++        "main DRM render/readback {WIDTH}x{HEIGHT}: samples={SAMPLES} total_us={} mean={}us p99={}us min={}us max={}us",
++        summary.total_us, summary.mean_us, summary.p99_us, summary.min_us, summary.max_us
++    );
++    println!("main XRGB destination checksum after timed actions: {final_checksum:#018x}");
++    println!(
++        "main bridge limitation: no bump settlement/recovery telemetry; each paint is its production single submission plus bounded map waits"
++    );
++    println!("presentation: unavailable (no DRM/KMS page flip or scanout in this adapter)");
++    Ok(())
++}
++
++fn main() -> Result<(), String> {
++    run()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{SAMPLES, require_nonuniform_destination, summarize};
++
++    #[test]
++    fn benchmark_adapter_aggregation_uses_exact_nearest_rank_p99() {
++        let mut samples = vec![1_000; 989];
++        samples.push(30_000);
++        samples.extend(std::iter::repeat_n(50_000, 10));
++        let summary = summarize(&mut samples).expect("complete samples");
++        assert_eq!(summary.p99_us, 30_000);
++        assert_eq!(summary.min_us, 1_000);
++        assert_eq!(summary.max_us, 50_000);
++        assert_eq!(summary.total_us, 1_519_000);
++    }
++
++    #[test]
++    fn benchmark_adapter_rejects_missing_or_zero_samples() {
++        assert!(summarize(&mut []).is_err());
++        assert!(summarize(&mut vec![1; 999]).is_err());
++        assert!(summarize(&mut vec![0; SAMPLES]).is_err());
++    }
++
++    #[test]
++    fn benchmark_adapter_destination_sanity_rejects_uniform_pixels() {
++        assert!(require_nonuniform_destination(&[0, 0, 0, 255, 0, 0, 0, 255], "black").is_err());
++        assert!(require_nonuniform_destination(&[3, 4, 5, 255, 3, 4, 5, 255], "colored").is_err());
++        assert!(require_nonuniform_destination(&[0, 0, 0, 255, 1, 0, 0, 255], "visible").is_ok());
++    }
++}

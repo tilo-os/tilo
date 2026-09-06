@@ -1,0 +1,78 @@
+{
+  "timings": 24,
+  "repetitions": 3,
+  "variants": {
+    "default": "",
+    "bounds": "VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1",
+    "canonical": "VELLO_CANONICAL_SEGMENT_ORDER=1",
+    "bounds-canonical": "VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_CANONICAL_SEGMENT_ORDER=1"
+  },
+  "workload_order": [
+    [
+      "shell",
+      "ui"
+    ],
+    [
+      "ui",
+      "shell"
+    ],
+    [
+      "shell",
+      "ui"
+    ]
+  ],
+  "variant_orders": [
+    [
+      "default",
+      "bounds",
+      "canonical",
+      "bounds-canonical"
+    ],
+    [
+      "bounds-canonical",
+      "canonical",
+      "bounds",
+      "default"
+    ],
+    [
+      "bounds",
+      "bounds-canonical",
+      "default",
+      "canonical"
+    ]
+  ],
+  "prerequisites": [
+    "Approved implementation frozen and hashed",
+    "All candidate correctness/lint checks passed; one explicitly retained default-off baseline failure is allowed for this exploratory comparison only, as documented in pre-timing-baseline-exception.md",
+    "Ordinary release build without build/hardware overrides",
+    "Copied executables hashed",
+    "No compiler/test/diagnostic/competing benchmark live"
+  ],
+  "keep_all_attempts": true,
+  "replace_failures": false,
+  "discard_outliers": false,
+  "interpretation": [
+    "C/D measures the canonical candidate with default coarse policy, including required deferral of the existing bump readback; it is not the sorter alone.",
+    "BC/B measures the canonical candidate with bounds, including required deferral of the existing bump readback; it is not the sorter alone.",
+    "BC/D measures combined candidate, not sorting benefit alone.",
+    "Requested flag is not selected-work evidence; exact returned full/sparse selection and failure/recovery counts must be recorded.",
+    "Reported medians do not replace per-run absolute gates or exact shell mean.",
+    "No promotion on flagged timing alone; final default rebuild and fresh unflagged acceptance remain required.",
+    "Pre-execution attribution clarification: default VELLO_DEFER_BUMP_READBACK is off, whereas selected canonical submissions must defer that same readback. No command, variant order, repetition count or target was changed.",
+    "v4 default oracle failure stays a failure and the current default is not merge-ready. Timings against that control are exploratory only; final default correctness and fresh unflagged performance acceptance remain mandatory."
+  ],
+  "goal_gates": {
+    "ui_p99_us": 30000,
+    "shell_exact_mean_us": 25000,
+    "shell_p99_us": 50000,
+    "native_extent": [
+      3840,
+      2160
+    ],
+    "real_actions": 1000
+  },
+  "limitations": [
+    "Existing clock-location mismatch must not be erased.",
+    "No proof of2010 hardware/physicalbus/KMS/constant60fps."
+  ]
+}
