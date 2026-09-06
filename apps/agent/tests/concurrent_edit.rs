@@ -138,6 +138,9 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
             caret_block: anchor.clone(),
             caret_offset: 0,
             target_blocks: (!anchor.is_empty()).then_some(anchor).into_iter().collect(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: word_processor::actions::RegionKind::Body,
         },
         doc,
     )

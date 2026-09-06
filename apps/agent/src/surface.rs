@@ -136,6 +136,10 @@ pub struct View {
     /// semantic view lets the agent discover the same inline-format actions
     /// as an on-screen selection instead of silently losing that surface.
     pub format_spans: Vec<word_processor::actions::Span>,
+    /// The ordered semantic selection used by operations which replace text.
+    /// Keeping it separate from formatting spans preserves a single stable
+    /// resource address for a selection that crosses block boundaries.
+    pub selection: Option<word_processor::actions::SelectionTarget>,
     /// Page region containing the caret/selection.
     pub region: word_processor::actions::RegionKind,
     /// The resource a request named, when it named one. An address, like
@@ -155,6 +159,7 @@ impl Default for View {
             focus_offset: 0,
             target_blocks: Vec::new(),
             format_spans: Vec::new(),
+            selection: None,
             region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: None,
@@ -294,6 +299,7 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             caret_offset: view.focus_offset,
             target_blocks: targets,
             format_spans: view.format_spans.clone(),
+            selection: view.selection.clone(),
             region: view.region,
         },
         doc,

@@ -90,6 +90,9 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
             caret_block: caret.clone(),
             caret_offset: 0,
             target_blocks: (!caret.is_empty()).then_some(caret).into_iter().collect(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: word_processor::actions::RegionKind::Body,
         },
         doc,
     )
