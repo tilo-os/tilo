@@ -365,4 +365,89 @@ mod tests {
             "a client-owned window cannot be cloned by the compositor"
         );
     }
+
+    #[test]
+    fn opening_a_hosted_app_is_durable_for_restart_and_peer_export() {
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let chrome = chrome_with_default_tree();
+        let mut st = chrome.borrow_mut();
+        let baseline = {
+            let mut tree = st.tree_mut();
+            tree.persist_path = Some(state_path.clone());
+            tree.current_heads()
+        };
+        let mut replica = st.tree().clone();
+
+        let tab_id = open_terminal(&mut st, Destination::Beside);
+        let (changes, restarted) = {
+            let mut tree = st.tree_mut();
+            let changes = tree.export_changes_since(&baseline);
+            tree.flush_to_disk();
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("opening a hosted app must leave a loadable state file");
+            (changes, restarted)
+        };
+
+        replica
+            .apply_changes(&changes)
+            .expect("hosted app creation must be present in peer export");
+
+        for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
+            assert!(
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .flat_map(|group| group.tabs.iter())
+                    .any(|tab| tab.id == tab_id),
+                "a hosted app opened in the chrome must survive the {authority} authority read"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_workspace_is_durable_across_restart() {
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.workspaces
+            .first_mut()
+            .expect("demo has a first workspace")
+            .name = "Home (workspace persistence test)".into();
+        tree.persist_path = Some(state_path.clone());
+        let first = tree
+            .workspaces
+            .first()
+            .expect("demo has a first workspace")
+            .id;
+        let target = tree
+            .workspaces
+            .get(1)
+            .expect("demo has a second workspace")
+            .id;
+
+        tree.set_active(target);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("workspace selection must leave a loadable state file");
+        assert_eq!(
+            restarted.active, target,
+            "the workspace selected by the user must be the one reopened"
+        );
+
+        let mut moved_up = restarted;
+        moved_up.persist_path = Some(state_path.clone());
+        assert!(moved_up.switch_up());
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("moving to the previous workspace must persist immediately");
+        assert_eq!(restarted.active, first);
+
+        let mut moved_down = restarted;
+        moved_down.persist_path = Some(state_path.clone());
+        assert!(moved_down.switch_down());
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("moving to the next workspace must persist immediately");
+        assert_eq!(restarted.active, target);
+    }
 }

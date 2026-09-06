@@ -137,7 +137,15 @@ pub fn open_hosted_app(
         title: title.clone(),
         tile: TileContent::AppPlaceholder { kind, label: title },
     };
-    place_tab(tree, new_tab, placement)
+    let tab_id = place_tab(tree, new_tab, placement);
+    // Hosted apps have no Wayland surface whose later adoption can write the
+    // tab back.  Persist both authorities at the point of creation, or a
+    // restart/peer export that happens before the next unrelated mutation
+    // loses the newly-opened native window.  Foreign adoption deliberately
+    // stays process-local and therefore only calls `place_tab` directly.
+    tree.seed_doc_from_cache();
+    tree.flush_to_disk();
+    tab_id
 }
 
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
