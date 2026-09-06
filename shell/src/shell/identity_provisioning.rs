@@ -1335,13 +1335,20 @@ mod tests {
             let mut screen = ui::widget::identity_flow::pair_device::PairDeviceScreen::new();
             screen.perform_pairing_from_payload(&payload).unwrap()
         });
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let completed = loop {
             if host.poll_handshake(&authority).unwrap() {
-                break;
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
             }
             std::thread::sleep(Duration::from_millis(2));
-        }
-        let host_identity = host.take_completed_identity().unwrap();
+        };
+        assert!(completed, "pinned TLS broker DKG did not finish within 10s");
+        let host_identity = host
+            .take_completed_identity()
+            .expect("completed broker DKG must retain the host identity");
         let pairer_identity = pairer.join().unwrap();
         assert_eq!(
             host_identity.group_public_key(),
