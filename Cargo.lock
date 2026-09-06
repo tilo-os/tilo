@@ -4258,6 +4258,7 @@ version = "0.2.0"
 dependencies = [
  "accounts",
  "automerge",
+ "blake3",
  "chrono",
  "collab-types",
  "dirs 6.0.0",
