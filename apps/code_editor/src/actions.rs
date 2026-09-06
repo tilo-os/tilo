@@ -1589,8 +1589,14 @@ fn nest_project_resources(
 ///
 /// [`CreateFile`]: CodeEditorAction::CreateFile
 ///
+/// Stable project root for bounded remote hierarchy. Files, folders, and
+/// search results stay behind Code's retained, revisioned providers.
+pub fn project_root(ctx: &CodeEditorResourceCtx) -> Resource {
+    add_project_actions(project_resource(ctx), ctx)
+}
+
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut project = add_project_actions(project_resource(ctx), ctx);
+    let mut project = project_root(ctx);
     let root_folder = root_folder_id(ctx).map(str::to_owned);
     let snapshot = bounded_resource_snapshot(ctx);
 

@@ -2887,7 +2887,7 @@ mod tests {
             }
             let batched_reuse_profile = !matches!(
                 std::env::var("VELLO_COMPUTE_BATCH").as_deref(),
-                Ok("0") | Ok("1")
+                Ok("0" | "1")
             ) && env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE");
             if batched_reuse_profile && retained.gpu_timestamp_buffer_bytes() != 0 {
                 assert_eq!(timing.sparse_submissions, 1);
