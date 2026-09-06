@@ -82,7 +82,16 @@ pub fn app_root() -> Box<dyn Widget> {
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
 /// them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &["empty", "loading", "error", "opened", "cropping", "edited"];
+pub const SHOT_SCENARIOS: &[&str] = &[
+    "empty",
+    "loading",
+    "error",
+    "opened",
+    "library",
+    "album-manage",
+    "cropping",
+    "edited",
+];
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
@@ -194,6 +203,41 @@ pub fn seed_scenario(
     app.open_path(doc, &path.to_string_lossy());
 
     match scenario {
+        // A library has useful context only when it contains more than the
+        // active image.  These rows intentionally share the generated image
+        // bytes: the gallery exercises the card layout and bounded
+        // materialisation without smuggling sample assets into the live app.
+        "library" | "album-manage" => {
+            let mut library = PhotosDoc::library(doc);
+            let mut travel = Vec::new();
+            for name in [
+                "Harbour dusk",
+                "Summer trail",
+                "Museum light",
+                "Rainy market",
+            ] {
+                let sample_path = dir.join(format!("{name}.png"));
+                if let Some(bytes) = pixels::encode_png(&pattern) {
+                    let _ = std::fs::write(&sample_path, bytes);
+                }
+                let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
+                let mut photo = crate::model::LibraryPhoto::from_image(image);
+                photo.favorite = name == "Summer trail";
+                travel.push(photo.id.clone());
+                library.add_photo(photo);
+            }
+            library.albums.push(crate::model::Album {
+                id: "photos.album:travel".into(),
+                name: "Travel".into(),
+                photo_ids: travel,
+            });
+            PhotosDoc::set_library(doc, &library);
+            if scenario == "album-manage" {
+                app.show_album_editor_for_shot(doc);
+            } else {
+                app.show_library();
+            }
+        }
         // A completed crop, rendered fit-to-canvas. A screenshot must show a
         // truthful edit, not a deliberately zoomed inspection state that can
         // be mistaken for a broken initial fit on a narrow viewport.
