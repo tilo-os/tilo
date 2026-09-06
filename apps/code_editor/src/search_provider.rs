@@ -1,11 +1,14 @@
-//! Code global search backed exclusively by canonical resource view actions.
+//! Code's global-search projection over canonical resource view actions.
 //!
-//! Files, symbols discovered in collaborative buffers, and the current
-//! project-search results all name an action in Code's exported resource tree.
+//! The palette is allowed to be fast, but it must not quietly become a view of
+//! the first N files in a project. This provider snapshots every resource Code
+//! exports, builds a compact Unicode-scalar 1/2/3-gram index once, and uses the
+//! index to bound full-string verification for one query.
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    SearchTextIndex, normalize_search_text,
 };
 
 use crate::actions::{SearchResultRef, SymbolRef};
@@ -16,19 +19,33 @@ pub const PROJECT_KIND: &str = "Project files";
 pub const SYMBOL_KIND: &str = "Symbols";
 pub const RESULT_KIND: &str = "Search results";
 
+/// The index is complete, while verification is deliberately bounded. A common
+/// query must never inspect unbounded source previews on the UI thread.
+const MAX_QUERY_CANDIDATES: usize = DEFAULT_SEARCH_CANDIDATE_LIMIT;
+
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub node: NodeId,
+    pub resource_id: String,
     pub name: String,
     pub path: String,
     pub open: bool,
 }
 
-/// A bounded snapshot of everything Code contributes to global search.
+struct SearchEntry {
+    result: SearchResult,
+    title: String,
+}
+
+/// A complete snapshot of every Code resource which participates in global
+/// search. `entries` is intentionally never capped: an omitted resource cannot
+/// be found.
 pub struct FileSearchProvider {
-    files: Vec<FileEntry>,
-    symbols: Vec<SymbolRef>,
-    results: Vec<SearchResultRef>,
+    entries: Vec<SearchEntry>,
+    /// qOS's shared Unicode-aware complete-corpus text index. Keeping this in
+    /// the toolkit makes search semantics, memory behavior and candidate
+    /// bounds consistent for every app.
+    index: SearchTextIndex,
 }
 
 impl FileSearchProvider {
@@ -37,25 +54,53 @@ impl FileSearchProvider {
         symbols: Vec<SymbolRef>,
         results: Vec<SearchResultRef>,
     ) -> Self {
-        let files = files
-            .into_iter()
-            .take(DEFAULT_SEARCH_INDEX_LIMIT)
-            .collect::<Vec<_>>();
-        let remaining = DEFAULT_SEARCH_INDEX_LIMIT.saturating_sub(files.len());
-        let symbols = symbols.into_iter().take(remaining).collect::<Vec<_>>();
-        let remaining = remaining.saturating_sub(symbols.len());
-        Self {
-            files,
-            symbols,
-            results: results.into_iter().take(remaining).collect(),
+        let capacity = files.len() + symbols.len() + results.len();
+        let mut entries = Vec::with_capacity(capacity);
+        let mut texts = Vec::with_capacity(capacity);
+        for file in files {
+            let kind = if file.open { OPEN_KIND } else { PROJECT_KIND };
+            let mut result = SearchResult::for_action(
+                kind,
+                file.name.clone(),
+                crate::actions::open_file_address(&file.resource_id),
+            )
+            .with_icon(Icon::FileCode);
+            if file.path != file.name && !file.path.is_empty() {
+                result = result.with_subtitle(file.path.clone());
+            }
+            if file.open {
+                result = result.with_score(1);
+            }
+            entries.push(SearchEntry {
+                title: normalize_search_text(&file.name),
+                result,
+            });
+            texts.push(format!("{}\n{}", file.name, file.path));
         }
-    }
-
-    fn matches(query: &str, values: &[&str]) -> bool {
-        query.is_empty()
-            || values
-                .iter()
-                .any(|value| value.to_lowercase().contains(query))
+        for symbol in symbols {
+            let address = crate::actions::open_symbol_address(&symbol);
+            let subtitle = format!("{}:{}", symbol.path, symbol.line + 1);
+            texts.push(format!("{}\n{}", symbol.name, symbol.path));
+            entries.push(SearchEntry {
+                title: normalize_search_text(&symbol.name),
+                result: SearchResult::for_action(SYMBOL_KIND, symbol.name, address)
+                    .with_subtitle(subtitle)
+                    .with_icon(Icon::Code),
+            });
+        }
+        for result_ref in results {
+            let address = crate::actions::reveal_result_address(&result_ref);
+            let subtitle = format!("{}:{}", result_ref.path, result_ref.line + 1);
+            texts.push(format!("{}\n{}", result_ref.preview, result_ref.path));
+            entries.push(SearchEntry {
+                title: normalize_search_text(&result_ref.preview),
+                result: SearchResult::for_action(RESULT_KIND, result_ref.preview, address)
+                    .with_subtitle(subtitle)
+                    .with_icon(Icon::Search),
+            });
+        }
+        let index = SearchTextIndex::new(texts);
+        Self { entries, index }
     }
 }
 
@@ -69,77 +114,45 @@ impl SearchProvider for FileSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let q = query.trim().to_lowercase();
+        let query = normalize_search_text(query.trim());
         let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        let mut rows = self
-            .files
-            .iter()
-            .filter(|file| Self::matches(&q, &[&file.name, &file.path]))
-            .map(|file| {
-                let kind = if file.open { OPEN_KIND } else { PROJECT_KIND };
-                let mut row = SearchResult::for_action(
-                    kind,
-                    file.name.clone(),
-                    crate::actions::open_file_address(file.node as u64),
-                )
-                .with_icon(Icon::FileCode);
-                if file.path != file.name && !file.path.is_empty() {
-                    row = row.with_subtitle(file.path.clone());
-                }
-                if file.open {
-                    row = row.with_score(1);
-                }
-                row
-            })
-            .take(limit)
+        if limit == 0 {
+            return Vec::new();
+        }
+        if query.is_empty() {
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|entry| entry.result.clone())
+                .collect();
+        }
+        let mut matches = self
+            .index
+            .matching_ids(&query, MAX_QUERY_CANDIDATES)
+            .into_iter()
+            .filter_map(|index| self.entries.get(index))
             .collect::<Vec<_>>();
-
-        if rows.len() == limit {
-            return rows;
-        }
-        let remaining = limit - rows.len();
-
-        rows.extend(
-            self.symbols
-                .iter()
-                .filter(|symbol| Self::matches(&q, &[&symbol.name, &symbol.path]))
-                .map(|symbol| {
-                    SearchResult::for_action(
-                        SYMBOL_KIND,
-                        symbol.name.clone(),
-                        crate::actions::open_symbol_address(symbol),
-                    )
-                    .with_subtitle(format!("{}:{}", symbol.path, symbol.line + 1))
-                    .with_icon(Icon::Code)
-                })
-                .take(remaining),
-        );
-        if rows.len() == limit {
-            return rows;
-        }
-        let remaining = limit - rows.len();
-        rows.extend(
-            self.results
-                .iter()
-                .filter(|result| Self::matches(&q, &[&result.preview, &result.path]))
-                .map(|result| {
-                    SearchResult::for_action(
-                        RESULT_KIND,
-                        result.preview.clone(),
-                        crate::actions::reveal_result_address(result),
-                    )
-                    .with_subtitle(format!("{}:{}", result.path, result.line + 1))
-                    .with_icon(Icon::Search)
-                })
-                .take(remaining),
-        );
-        rows
+        // The shared index deliberately keeps partial matches. Within its hard
+        // candidate bound, a title-prefix match is the most direct file/symbol
+        // intent and should beat a path-only partial.
+        matches.sort_by_key(|entry| {
+            (
+                !entry.title.starts_with(&query),
+                !entry.title.contains(&query),
+            )
+        });
+        matches
+            .into_iter()
+            .take(limit)
+            .map(|entry| entry.result.clone())
+            .collect()
     }
 }
 
 /// Extract common declaration forms without requiring an optional LSP. The
 /// coordinates are character-based, like the editor and Automerge text model.
-pub fn symbols_in(node: NodeId, path: &str, text: &str) -> Vec<SymbolRef> {
+pub fn symbols_in(file_id: &str, path: &str, text: &str) -> Vec<SymbolRef> {
     text.lines()
         .enumerate()
         .filter_map(|(line, source)| {
@@ -173,7 +186,7 @@ pub fn symbols_in(node: NodeId, path: &str, text: &str) -> Vec<SymbolRef> {
             let col = source.chars().take_while(|ch| ch.is_whitespace()).count()
                 + trimmed.find(name).unwrap_or(0);
             Some(SymbolRef {
-                node: node as u64,
+                file_id: file_id.to_string(),
                 name: name.to_string(),
                 path: path.to_string(),
                 line,
@@ -187,27 +200,94 @@ pub fn symbols_in(node: NodeId, path: &str, text: &str) -> Vec<SymbolRef> {
 mod tests {
     use super::*;
 
+    fn file(node: usize, name: &str, path: &str) -> FileEntry {
+        FileEntry {
+            node,
+            resource_id: format!("test-file-{node}"),
+            name: name.into(),
+            path: path.into(),
+            open: false,
+        }
+    }
+
     #[test]
     fn symbol_extraction_keeps_exact_character_location() {
-        let symbols = symbols_in(7, "src/main.rs", "  pub fn crab() {}\nlet x = 1;\n");
+        let symbols = symbols_in(
+            "test-file",
+            "src/main.rs",
+            "  pub fn crab() {}\nlet x = 1;\n",
+        );
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "crab");
         assert_eq!((symbols[0].line, symbols[0].col), (0, 9));
     }
 
     #[test]
-    fn large_projection_is_bounded_before_queries_materialise_rows() {
-        let files = (0..(DEFAULT_SEARCH_INDEX_LIMIT + 1_000))
-            .map(|node| FileEntry {
-                node,
-                name: format!("file-{node}.rs"),
-                path: format!("src/file-{node}.rs"),
-                open: false,
+    fn complete_projection_keeps_a_late_file_findable() {
+        let mut files = (0..20_000)
+            .map(|node| {
+                file(
+                    node,
+                    &format!("file-{node}.rs"),
+                    &format!("src/file-{node}.rs"),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.push(file(20_000, "needle.rs", "deep/needle.rs"));
+        let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
+        let found = provider.search_limited("deep/needle", 10);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "needle.rs");
+    }
+
+    #[test]
+    fn partial_matches_are_not_hidden_by_exact_file_names() {
+        let provider = FileSearchProvider::new(
+            vec![
+                file(1, "needle.rs", "src/needle.rs"),
+                file(2, "main.rs", "src/contains-needle-here.rs"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let found = provider.search_limited("needle", 10);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].title, "needle.rs");
+        assert_eq!(found[1].title, "main.rs");
+    }
+
+    #[test]
+    fn unicode_and_embedded_nul_grams_are_unambiguous() {
+        let provider = FileSearchProvider::new(
+            vec![
+                file(1, "éclair.rs", "src/éclair.rs"),
+                file(2, "nul.rs", "src/a\0b.rs"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(provider.search_limited("ÉCL", 10).len(), 1);
+        assert_eq!(provider.search_limited("a\0b", 10).len(), 1);
+    }
+
+    #[test]
+    fn queries_are_bounded_and_zero_limit_never_materialises_rows() {
+        let files = (0..(MAX_QUERY_CANDIDATES * 4))
+            .map(|node| {
+                file(
+                    node,
+                    &format!("aaaa-{node}.rs"),
+                    &format!("src/aaaa-{node}.rs"),
+                )
             })
             .collect();
         let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
-        assert_eq!(provider.files.len(), DEFAULT_SEARCH_INDEX_LIMIT);
-        assert_eq!(provider.search_limited("file", 9).len(), 9);
-        assert!(provider.search_limited("file", 0).is_empty());
+        assert!(provider.search_limited("a", 0).is_empty());
+        assert_eq!(
+            provider
+                .search_limited("a", DEFAULT_SEARCH_RESULT_LIMIT)
+                .len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
     }
 }

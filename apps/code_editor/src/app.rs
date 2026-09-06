@@ -39,7 +39,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId, ReadDoc};
+#[cfg(test)]
+use automerge::ReadDoc;
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
@@ -48,6 +50,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, TabBar, TabDescriptor, Widget};
+use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -112,6 +115,28 @@ fn lang_accent(language: Language, theme: &Theme) -> Color {
     }
 }
 
+fn language_from_label(label: &str) -> Option<Language> {
+    [
+        Language::Rust,
+        Language::Toml,
+        Language::Markdown,
+        Language::Json,
+        Language::Yaml,
+        Language::Python,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Html,
+        Language::Css,
+        Language::Shell,
+        Language::C,
+        Language::Cpp,
+        Language::Go,
+        Language::PlainText,
+    ]
+    .into_iter()
+    .find(|language| language.label().eq_ignore_ascii_case(label))
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (shots forcing, panel visibility, one-time seed guard, terminal focus, search truncation) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
@@ -150,6 +175,15 @@ pub struct CodeApp {
     /// operations intentionally receive an immutable document snapshot; the
     /// next sync applies the command with mutable CRDT access.
     pending_resource_command: Option<(String, Option<String>)>,
+    /// Tentative UUID used before the first sync persists it in the shared
+    /// document; afterwards this is always the document's project identity.
+    project_id: String,
+    /// The UUID captured in the exported New-file resource. It is rotated only
+    /// after dispatch, ensuring palette and on-screen activation use one
+    /// byte-identical canonical action without deriving identity from a local
+    /// tree arena slot.
+    next_new_file_id: String,
+    next_new_folder_id: String,
 
     /// Adaptive open/closed state of the file-tree sidebar (the shared flap
     /// kernel). Docked-open when wide, overlay-closed when narrow.
@@ -515,6 +549,9 @@ impl CodeApp {
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
             pending_resource_command: None,
+            project_id: Uuid::new_v4().to_string(),
+            next_new_file_id: Uuid::new_v4().to_string(),
+            next_new_folder_id: Uuid::new_v4().to_string(),
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -729,19 +766,18 @@ impl CodeApp {
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        // The document is the source of truth for which buffers exist. Any buffer
-        // it holds that the in-memory session does not track — created by a Ctrl+K
-        // "New file" action or by a peer — is surfaced as an untitled file so it
-        // appears in the tree. The buffer's text stays in the CRDT; this only
-        // materialises the in-memory shell the tree and tabs read from.
-        for node in EditorDoc::buffer_keys(doc) {
-            if self.session.project.get(node).is_none() {
-                let name = format!("untitled-{node}.txt");
-                self.session.project.adopt_file(node, &name);
-                self.sidebar.set_project(&self.session.project);
-            }
+        self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
+        self.import_project_file_records(doc);
+        self.sync_collaborative_files(doc);
+        // A Ctrl+K resource action can create the captured UUID without going
+        // through `apply_command`. Rotate only after its record is observable,
+        // so a palette refresh never re-publishes a duplicate CreateFile.
+        if EditorDoc::file(doc, &self.next_new_file_id).is_some() {
+            self.next_new_file_id = Uuid::new_v4().to_string();
         }
-
+        if EditorDoc::file(doc, &self.next_new_folder_id).is_some() {
+            self.next_new_folder_id = Uuid::new_v4().to_string();
+        }
         // Seed each open buffer's text into the document, reading the real file
         // for a disk-backed node. This is the read half of "open a file": until
         // it runs, a tab is bound to an empty Text.
@@ -769,7 +805,8 @@ impl CodeApp {
             // on-disk comparison text come from the file, so the buffer shows
             // as modified and the next save goes through the conflict check
             // like any other.
-            let has_text = EditorDoc::buffer_text(doc, node).is_some();
+            let key = self.buffer_key(node);
+            let has_text = EditorDoc::buffer_text_key(doc, &key).is_some();
             let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
             let disk_backed = self.session.project.disk_path_of(node).is_some();
             if has_text && (reconciled || !disk_backed) {
@@ -777,7 +814,7 @@ impl CodeApp {
             }
             match self.session.project.file_seed(node) {
                 Ok((text, stamp)) => {
-                    EditorDoc::ensure_buffer(doc, node, &text);
+                    EditorDoc::ensure_buffer_key(doc, &key, &text);
                     let Some(buf) = self.session.open.get_mut(i) else {
                         continue;
                     };
@@ -810,7 +847,8 @@ impl CodeApp {
             let Some(node) = self.session.open.get(i).map(|b| b.node) else {
                 continue;
             };
-            let current = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+            let current =
+                EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
             let Some(buf) = self.session.open.get_mut(i) else {
                 continue;
             };
@@ -822,7 +860,7 @@ impl CodeApp {
         match active {
             Some((node, lang)) => {
                 if (self.bound_node != Some(node) || !self.editor.is_bound())
-                    && let Some(text) = EditorDoc::buffer_text(doc, node)
+                    && let Some(text) = EditorDoc::buffer_text_key(doc, &self.buffer_key(node))
                 {
                     self.editor.bind(text, lang);
                     self.bound_node = Some(node);
@@ -835,6 +873,160 @@ impl CodeApp {
                 }
             }
         }
+    }
+
+    /// Project opening is an external filesystem import, not a user/agent
+    /// mutation. Project it once into durable records so every existing file,
+    /// not only newly-created scratch files, has an addressable resource and a
+    /// validated action target. IDs are UUIDs persisted in the shared document;
+    /// absolute disk locations stay solely in `disk_path` local provenance.
+    fn import_project_file_records(&self, doc: &mut AutoCommit) {
+        let records: Vec<_> = self
+            .session
+            .project
+            .nodes
+            .values()
+            .map(|node| match &node.kind {
+                NodeKind::File { language, .. } => crate::doc::CollaborativeFile {
+                    id: node.resource_id.clone(),
+                    kind: "file".into(),
+                    name: node.name.clone(),
+                    path: self.session.project.path_of(node.id),
+                    parent: node.parent.and_then(|parent| {
+                        self.session
+                            .project
+                            .get(parent)
+                            .map(|parent| parent.resource_id.clone())
+                    }),
+                    language: language.label().to_string(),
+                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
+                    deleted: false,
+                    name_revision: 0,
+                    structure_revision: 0,
+                    language_revision: 0,
+                    deletion_revision: 0,
+                },
+                NodeKind::Folder { .. } => crate::doc::CollaborativeFile {
+                    id: node.resource_id.clone(),
+                    kind: "folder".into(),
+                    name: node.name.clone(),
+                    path: self.session.project.path_of(node.id),
+                    parent: node.parent.and_then(|parent| {
+                        self.session
+                            .project
+                            .get(parent)
+                            .map(|parent| parent.resource_id.clone())
+                    }),
+                    language: String::new(),
+                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
+                    deleted: false,
+                    name_revision: 0,
+                    structure_revision: 0,
+                    language_revision: 0,
+                    deletion_revision: 0,
+                },
+            })
+            .collect();
+        for record in records {
+            if EditorDoc::file(doc, &record.id).is_none() {
+                EditorDoc::create_file_record(doc, &record);
+            }
+        }
+    }
+
+    /// Project-tree synchronization is a pure projection from the durable
+    /// resource records. The local arena id may vary by replica; every record
+    /// is matched through its UUID and deleted records stay tombstoned in the
+    /// CRDT rather than being silently resurrected by a local cache.
+    fn sync_collaborative_files(&mut self, doc: &AutoCommit) {
+        let mut files = EditorDoc::files(doc);
+        files.sort_by_key(|file| file.path.matches('/').count());
+        let ordering: Vec<_> = files
+            .iter()
+            .filter(|file| !file.deleted)
+            .map(|file| (file.id.clone(), file.order))
+            .collect();
+        for file in files {
+            if file.deleted {
+                if let Some(node) = self.session.project.remove_collaborative_file(&file.id)
+                    && let Some(tab) = self
+                        .session
+                        .open
+                        .iter()
+                        .position(|buffer| buffer.node == node)
+                {
+                    self.session.close_tab(tab);
+                }
+                continue;
+            }
+            if file.kind == "folder" {
+                self.session.project.adopt_collaborative_folder(
+                    &file.id,
+                    file.parent.as_deref(),
+                    &file.name,
+                );
+            } else {
+                // An explicitly selected language is durable metadata and wins
+                // over extension inference; the extension is only a fallback
+                // for legacy imported records.
+                let language = language_from_label(&file.language)
+                    .unwrap_or_else(|| Language::from_path(&file.name));
+                self.session.project.adopt_collaborative_file(
+                    &file.id,
+                    file.parent.as_deref(),
+                    &file.name,
+                    language,
+                );
+            }
+        }
+        self.session.project.order_collaborative_children(&ordering);
+        self.sidebar.set_project(&self.session.project);
+    }
+
+    fn buffer_key(&self, node: TreeId) -> String {
+        self.session.project.get(node).map_or_else(
+            || format!("legacy-node-{node}"),
+            |file| file.resource_id.clone(),
+        )
+    }
+
+    /// The only UI-to-document route for editor text. `EditorView` merely
+    /// prepares a before/after request; this boundary derives the compact
+    /// character splice, dispatches the public action, and reconciles the
+    /// optimistic paint cache if validation refuses it.
+    fn dispatch_editor_text_edits(&mut self, doc: &mut AutoCommit) {
+        let Some(edit) = self.editor.take_text_edit() else {
+            return;
+        };
+        let Some(buffer) = self.session.active_buffer() else {
+            self.editor.reconcile_from_doc(doc);
+            self.note("Text edit was refused: no active file", true);
+            return;
+        };
+        let file_id = self.buffer_key(buffer.node);
+        let name = buffer.name.clone();
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &edit.base, &edit.next) {
+            self.editor.reconcile_from_doc(doc);
+            self.note(format!("Text edit was refused: {error}"), true);
+        }
+    }
+
+    fn dispatch_text_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        file_id: String,
+        name: &str,
+        base: &str,
+        next: &str,
+    ) -> Result<(), qos_actions::ActionError> {
+        let action = actions::text_edit_action(file_id, base, next);
+        let context = actions::history_context(&action, name, &self.project_id);
+        self.actions.try_dispatch_with_context(
+            doc,
+            actions::CODE_EDITOR_ACTION_TYPE,
+            &action,
+            context,
+        )
     }
 
     /// Reconcile the shared tab bar's pills against `session.open`, by node
@@ -939,7 +1131,8 @@ impl CodeApp {
 
         let mut diagnostics = match self.session.active_buffer() {
             Some(buf) => {
-                let text = EditorDoc::read_buffer(doc, buf.node).unwrap_or_default();
+                let text =
+                    EditorDoc::read_buffer_key(doc, &self.buffer_key(buf.node)).unwrap_or_default();
                 lint::lint(&text, buf.language, scope)
             }
             None => Vec::new(),
@@ -1069,34 +1262,37 @@ impl CodeApp {
                     .rsplit_once('/')
                     .map_or("", |x| x.0)
                     .to_string();
-                entries.push(Entry {
-                    detail,
-                    kind: PaletteKind::File(*id),
-                    action: native_rows
-                        .remove(&(format!("code_editor.file:{id}"), "open".into()))
-                        .expect("every project file is published with an open action"),
-                });
+                if let Some(action) = native_rows
+                    .remove(&(actions::file_resource_id(&node.resource_id), "open".into()))
+                {
+                    entries.push(Entry {
+                        detail,
+                        kind: PaletteKind::File(*id),
+                        action,
+                    });
+                }
             }
         }
         // Commands.
         for (cmd, _) in Command::all() {
-            entries.push(Entry {
-                detail: String::new(),
-                kind: PaletteKind::Command(cmd),
-                action: native_rows
-                    .remove(&(
-                        "code_editor.project".into(),
-                        format!("command-{}", cmd.id()),
-                    ))
-                    .expect("every editor command is a published resource action"),
-            });
+            if let Some(action) = native_rows.remove(&(
+                actions::project_resource_id(&self.project_id),
+                format!("command-{}", cmd.id()),
+            )) {
+                entries.push(Entry {
+                    detail: String::new(),
+                    kind: PaletteKind::Command(cmd),
+                    action,
+                });
+            }
         }
         self.palette.set_entries(entries);
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the
-    /// project name, the id the next created buffer will take, and the open
-    /// buffers. Everything here mirrors state the app already holds.
+    /// project name, the UUID the next created file will take, and every
+    /// materialised project file/folder. Everything here mirrors state the app
+    /// already holds; local arena IDs are never exported as identities.
     pub(crate) fn code_resource_ctx(&self) -> actions::CodeEditorResourceCtx {
         let open_files = self
             .session
@@ -1106,7 +1302,16 @@ impl CodeApp {
             .filter(|(_, node)| matches!(node.kind, NodeKind::File { .. }))
             .map(|(id, node)| actions::OpenFileRef {
                 node: *id as u64,
+                id: node.resource_id.clone(),
                 name: node.name.clone(),
+                parent: node.parent.and_then(|parent| {
+                    self.session
+                        .project
+                        .get(parent)
+                        .map(|parent| parent.resource_id.clone())
+                }),
+                path: self.session.project.path_of(*id),
+                order: *id as i64,
                 can_save: self
                     .session
                     .buffer_of(*id)
@@ -1115,8 +1320,31 @@ impl CodeApp {
             .collect();
         actions::CodeEditorResourceCtx {
             project_name: self.session.project.name.clone(),
-            next_id: self.session.project.peek_next_id() as u64,
+            project_id: self.project_id.clone(),
+            next_file_id: self.next_new_file_id.clone(),
+            next_file_name: format!("untitled-{}.txt", self.session.project.nodes.len()),
+            next_folder_id: self.next_new_folder_id.clone(),
+            next_folder_name: format!("untitled-folder-{}", self.session.project.nodes.len()),
             open_files,
+            folders: self
+                .session
+                .project
+                .nodes
+                .values()
+                .filter(|node| matches!(node.kind, NodeKind::Folder { .. }))
+                .map(|node| actions::FolderRef {
+                    id: node.resource_id.clone(),
+                    name: node.name.clone(),
+                    parent: node.parent.and_then(|parent| {
+                        self.session
+                            .project
+                            .get(parent)
+                            .map(|parent| parent.resource_id.clone())
+                    }),
+                    path: self.session.project.path_of(node.id),
+                    order: node.id as i64,
+                })
+                .collect(),
             symbols: self.search_symbols.clone(),
             search_results: self.search_result_refs(),
         }
@@ -1131,6 +1359,7 @@ impl CodeApp {
             .filter(|(_, item)| matches!(item.kind, NodeKind::File { .. }))
             .map(|(node, item)| crate::search_provider::FileEntry {
                 node: *node,
+                resource_id: item.resource_id.clone(),
                 name: item.name.clone(),
                 path: self.session.project.path_of(*node),
                 open: open.contains(node),
@@ -1142,11 +1371,11 @@ impl CodeApp {
         self.search_hits
             .iter()
             .map(|hit| actions::SearchResultRef {
-                node: self.session.project.nodes.iter().find_map(|(node, _)| {
+                file_id: self.session.project.nodes.iter().find_map(|(node, item)| {
                     (self.session.project.disk_path_of(*node).as_deref()
                         == Some(hit.path.as_path())
                         || self.session.project.path_of(*node) == hit.rel)
-                        .then_some(*node as u64)
+                        .then_some(item.resource_id.clone())
                 }),
                 path: hit.rel.clone(),
                 disk_path: Some(hit.path.display().to_string()),
@@ -1162,9 +1391,10 @@ impl CodeApp {
             .search_file_entries()
             .into_iter()
             .flat_map(|file| {
-                EditorDoc::read_buffer(doc, file.node).map_or_else(Vec::new, |text| {
-                    crate::search_provider::symbols_in(file.node, &file.path, &text)
-                })
+                EditorDoc::read_buffer_key(doc, &self.buffer_key(file.node))
+                    .map_or_else(Vec::new, |text| {
+                        crate::search_provider::symbols_in(&file.resource_id, &file.path, &text)
+                    })
             })
             .collect();
     }
@@ -1186,7 +1416,7 @@ impl CodeApp {
             self.request_save_as(node);
             return false;
         };
-        let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+        let text = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
         let expected = if force {
             None
         } else {
@@ -1287,11 +1517,14 @@ impl CodeApp {
                     .open
                     .get(idx)
                     .map_or_else(String::new, |b| b.name.clone());
-                // Replace the buffer's whole text through the CRDT so the edit
-                // is one undoable action and peers converge on it.
-                if let Some(obj) = EditorDoc::buffer_text(doc, node) {
-                    let old_len = doc.text(&obj).map_or(0, |t| t.chars().count());
-                    EditorDoc::splice(doc, &obj, 0, old_len, &text);
+                // Disk reload is still a visible buffer edit, so it uses the
+                // same action-owned splice path as a keystroke or replace.
+                let file_id = self.buffer_key(node);
+                let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
+                if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &base, &text) {
+                    self.editor.reconcile_from_doc(doc);
+                    self.note(format!("Reload was refused: {error}"), true);
+                    return;
                 }
                 if let Some(buf) = self.session.open.get_mut(idx) {
                     buf.mark_saved(text, stamp);
@@ -1941,18 +2174,27 @@ impl CodeApp {
                 // one action Code exports, dispatched here through the host so it
                 // brackets one undo boundary and replays on peers. The Ctrl+K
                 // "New file" spec builds the byte-identical action.
-                let root = self.session.project.root;
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
-                let id = self.session.project.add_file(root, &name, "");
-                self.sidebar.set_project(&self.session.project);
-                self.open_node(id);
-                let action = actions::create_buffer_action(id as u64, "");
+                let action = actions::create_file_action(
+                    self.next_new_file_id.clone(),
+                    name.clone(),
+                    None,
+                    i64::MAX / 2,
+                    String::new(),
+                );
                 self.actions.dispatch_with_context(
                     doc,
                     actions::CODE_EDITOR_ACTION_TYPE,
                     &action,
-                    actions::history_context(&action, &name),
+                    actions::history_context(&action, &name, &self.project_id),
                 );
+                self.next_new_file_id = Uuid::new_v4().to_string();
+                self.sync_collaborative_files(doc);
+                if let actions::CodeEditorAction::CreateFile { id, .. } = &action
+                    && let Some(node) = self.session.project.node_for_resource(id)
+                {
+                    self.open_node(node);
+                }
             }
             Command::OpenFolder => self.request_open_folder(),
             Command::OpenFile => self.request_open_file(),
@@ -2022,12 +2264,13 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
+        self.dispatch_editor_text_edits(doc);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
-    fn drain_child_events(&mut self, doc: &mut AutoCommit) {
+    fn drain_child_events(&mut self, doc: &AutoCommit) {
         let tree_events = self.sidebar.take_events();
         for ev in tree_events {
             self.apply_tree_event(ev);
@@ -2052,7 +2295,9 @@ impl CodeApp {
             return;
         }
         let text = match self.session.active_buffer().map(|b| b.node) {
-            Some(node) => EditorDoc::read_buffer(doc, node).unwrap_or_default(),
+            Some(node) => {
+                EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default()
+            }
             None => String::new(),
         };
         self.find_matches = crate::find::matches_in(&text, &self.find.query());
@@ -2095,15 +2340,23 @@ impl CodeApp {
         else {
             return;
         };
-        let Some(obj) = EditorDoc::buffer_text(doc, node) else {
-            return;
-        };
-        let text = doc.text(&obj).unwrap_or_default();
+        let file_id = self.buffer_key(node);
+        let name = self
+            .session
+            .active_buffer()
+            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
+        let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let Some(at) = flat_index(&text, m.line, m.col) else {
             return;
         };
         let replacement = self.find.replacement().to_string();
-        EditorDoc::splice(doc, &obj, at, m.len, &replacement);
+        let mut next = text.clone();
+        replace_chars(&mut next, at, m.len, &replacement);
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+            self.editor.reconcile_from_doc(doc);
+            self.note(format!("Text edit was refused: {error}"), true);
+            return;
+        }
         self.editor
             .move_caret_to(m.line, m.col + replacement.chars().count());
         self.refresh_find(doc);
@@ -2120,16 +2373,24 @@ impl CodeApp {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
-        let Some(obj) = EditorDoc::buffer_text(doc, node) else {
-            return;
-        };
-        let text = doc.text(&obj).unwrap_or_default();
+        let file_id = self.buffer_key(node);
+        let name = self
+            .session
+            .active_buffer()
+            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
+        let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let replacement = self.find.replacement().to_string();
         let count = self.find_matches.len();
+        let mut next = text.clone();
         for m in self.find_matches.clone().into_iter().rev() {
             if let Some(at) = flat_index(&text, m.line, m.col) {
-                EditorDoc::splice(doc, &obj, at, m.len, &replacement);
+                replace_chars(&mut next, at, m.len, &replacement);
             }
+        }
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+            self.editor.reconcile_from_doc(doc);
+            self.note(format!("Text edit was refused: {error}"), true);
+            return;
         }
         self.find_current = None;
         self.refresh_find(doc);
@@ -2402,7 +2663,8 @@ impl CodeApp {
             // is open on it.
             let uri = self.node_uri(node);
             if self.lsp_uri.as_deref() != Some(uri.as_str()) {
-                let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+                let text =
+                    EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
                 self.lsp_version += 1;
                 let version = self.lsp_version;
                 if let Some(c) = self.lsp.as_mut() {
@@ -2426,7 +2688,8 @@ impl CodeApp {
         match crate::lsp::LspClient::start(lang, &root) {
             Ok(mut client) => {
                 let uri = self.node_uri(node);
-                let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+                let text =
+                    EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
                 let server = client.server_name().to_string();
                 tracing::info!(
                     "started language server {server} for {} at {}",
@@ -2641,6 +2904,9 @@ impl CodeApp {
         } else {
             Some(0)
         });
+        if std::env::var_os("QOS_SHOTS_FIND_OPTIONS").is_some() {
+            self.find.show_options_for_shots();
+        }
     }
 
     /// Run a real project-wide search and wait for it, so a single offscreen
@@ -2744,7 +3010,7 @@ impl CodeApp {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
-        let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+        let text = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
         let uri = self.node_uri(node);
         self.lsp_uri = Some(uri.clone());
 
@@ -3308,6 +3574,7 @@ impl CodeApp {
                 n,
                 taffy,
             );
+            self.dispatch_editor_text_edits(state);
         }
     }
 }
@@ -3328,6 +3595,23 @@ fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
         idx += len + 1; // the newline itself
     }
     None
+}
+
+/// Character-addressed replacement used to prepare a text action from editor
+/// UI state. It intentionally operates on an ordinary temporary `String`;
+/// the following action dispatch is the only CRDT mutation path.
+fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
+    let total = text.chars().count();
+    let start = start.min(total);
+    let end = start.saturating_add(delete).min(total);
+    let byte_at = |index: usize| {
+        text.char_indices()
+            .nth(index)
+            .map_or_else(|| text.len(), |(byte, _)| byte)
+    };
+    let first = byte_at(start);
+    let last = byte_at(end);
+    text.replace_range(first..last, replacement);
 }
 
 /// The file-type filter the open and save choosers offer, plus the "All files"
@@ -3361,6 +3645,10 @@ impl Widget for CodeApp {
         &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if let Some((id, argument)) = self.pending_resource_command.take()
             && let Some(command) = Command::from_id(&id)
@@ -3425,6 +3713,7 @@ impl Widget for CodeApp {
         self.ensure_buffers(state);
         self.refresh_search_symbols(state);
         self.editor.sync(state, path);
+        self.dispatch_editor_text_edits(state);
         self.find.sync(state, path);
         self.drain_find_events(state);
 
@@ -3457,7 +3746,8 @@ impl Widget for CodeApp {
                 .map(|b| b.node)
                 .zip(self.lsp_uri.clone())
         {
-            let text = EditorDoc::read_buffer(state, node).unwrap_or_default();
+            let text =
+                EditorDoc::read_buffer_key(state, &self.buffer_key(node)).unwrap_or_default();
             if text != self.lsp_sent_text {
                 self.lsp_version += 1;
                 let version = self.lsp_version;
@@ -3856,6 +4146,59 @@ impl Widget for CodeApp {
         Some("code-editor")
     }
 
+    /// The editor is a custom-painted multi-pane surface. Its retained child
+    /// widgets expose their own controls, while this node gives a screen reader
+    /// the missing document-level context: project, active buffer, open-tab
+    /// count, and live analysis/file-operation state. Without it an AT user
+    /// lands in a generic canvas before discovering the editor's actual
+    /// document.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+        let tab_count = self.session.open.len();
+        let active = self
+            .session
+            .active_buffer()
+            .map_or("No file open", |buffer| buffer.name.as_str());
+        let mut children = vec![
+            AccessNode::new(Role::Heading { level: 1 })
+                .with_name(self.session.project.name.clone()),
+            AccessNode::new(Role::StaticText).with_name(format!(
+                "{active}; {tab_count} open {}",
+                if tab_count == 1 { "file" } else { "files" }
+            )),
+        ];
+        if let Some(notice) = &self.notice {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(notice.text.clone())
+                    .with_live(if notice.is_error {
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    }),
+            );
+        }
+        let analysis = self.lsp_status.label();
+        if !analysis.is_empty() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(analysis)
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name(format!("Code — {}", self.session.project.name))
+                .with_description(
+                    "Code editor. Use the file tree, tab bar, editor document, and bottom panel to navigate the project.",
+                )
+                .with_value(active)
+                .with_state(AccessState::new().focusable(true))
+                .with_children(children),
+        )
+    }
+
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.palette.take_control_invocation().or_else(|| {
             self.children_mut()
@@ -3940,25 +4283,33 @@ impl Widget for CodeApp {
         match (kind, operation) {
             (
                 qos_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::Open { node },
+                crate::actions::CodeEditorOperation::Open { file_id },
             ) => {
-                self.open_node(node as TreeId);
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                self.open_node(node);
             }
             (
                 qos_actions::OperationKind::View,
                 crate::actions::CodeEditorOperation::RevealLocation {
-                    node,
+                    file_id,
                     path,
                     line,
                     col,
                     show_search,
                 },
             ) => {
-                let target = node.map(|node| node as TreeId).or_else(|| {
-                    path.as_deref().and_then(|path| {
-                        self.session.project.reveal_path(std::path::Path::new(path))
-                    })
-                });
+                let target = file_id
+                    .as_deref()
+                    .and_then(|file| self.session.project.node_for_resource(file))
+                    .or_else(|| {
+                        path.as_deref().and_then(|path| {
+                            self.session.project.reveal_path(std::path::Path::new(path))
+                        })
+                    });
                 let Some(target) = target else {
                     return Err("Code location no longer exists".to_string());
                 };
@@ -3972,9 +4323,14 @@ impl Widget for CodeApp {
             }
             (
                 qos_actions::OperationKind::Effect,
-                crate::actions::CodeEditorOperation::Save { node, .. },
+                crate::actions::CodeEditorOperation::Save { file_id, .. },
             ) => {
-                if !self.save_buffer(doc, node as TreeId, false) {
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                if !self.save_buffer(doc, node, false) {
                     return Err("file could not be saved without user input".to_string());
                 }
             }
@@ -3995,6 +4351,8 @@ impl Widget for CodeApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::CodeEditorOperation;
+
         if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
             return Ok(None);
         }
@@ -4009,7 +4367,6 @@ impl Widget for CodeApp {
         if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
             return Err("another file operation is already running".into());
         }
-        use crate::actions::CodeEditorOperation;
         let resource = match operation {
             CodeEditorOperation::OpenFile { path: Some(path) } => {
                 Some(ResourceFileOperation::OpenFile(path.into()))
@@ -4017,18 +4374,31 @@ impl Widget for CodeApp {
             CodeEditorOperation::OpenFolder { path: Some(path) } => {
                 Some(ResourceFileOperation::OpenFolder(path.into()))
             }
-            CodeEditorOperation::Save { node, path: None }
-                if self
-                    .session
-                    .buffer_of(node as TreeId)
-                    .and_then(|b| b.path.as_ref())
-                    .is_none() =>
+            CodeEditorOperation::Save {
+                file_id,
+                path: None,
+            } if self
+                .session
+                .project
+                .node_for_resource(&file_id)
+                .and_then(|node| self.session.buffer_of(node))
+                .and_then(|b| b.path.as_ref())
+                .is_none() =>
             {
-                self.request_save_as(node as TreeId);
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                self.request_save_as(node);
                 None
             }
-            CodeEditorOperation::Save { node, path } => Some(ResourceFileOperation::Save {
-                node: node as TreeId,
+            CodeEditorOperation::Save { file_id, path } => Some(ResourceFileOperation::Save {
+                node: self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?,
                 path: path.map(Into::into),
             }),
             CodeEditorOperation::OpenFile { path: None } => {
@@ -4207,9 +4577,10 @@ mod tests {
             .find(|node| Some(node.id) != active && matches!(node.kind, NodeKind::File { .. }))
             .expect("sample has another file")
             .id;
-        let open =
-            serde_json::to_vec(&crate::actions::CodeEditorOperation::Open { node: other as u64 })
-                .unwrap();
+        let open = serde_json::to_vec(&crate::actions::CodeEditorOperation::Open {
+            file_id: app.session.project.get(other).unwrap().resource_id.clone(),
+        })
+        .unwrap();
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
@@ -4248,6 +4619,25 @@ mod tests {
         let app = CodeApp::with_sample();
         let active = app.session.active_buffer().unwrap();
         assert_eq!(active.name, "main.rs");
+    }
+
+    #[test]
+    fn accessibility_exposes_project_and_active_document_context() {
+        let app = CodeApp::with_sample();
+        let node = Widget::accessibility(&app).expect("Code has a semantic root");
+        assert_eq!(node.role, ui::a11y::Role::Document);
+        assert!(
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Code — "))
+        );
+        assert_eq!(node.value.as_deref(), Some("main.rs"));
+        assert!(node.children.iter().any(|child| {
+            child
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("open file"))
+        }));
     }
 
     fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
@@ -4298,7 +4688,7 @@ mod tests {
     fn symbol_search_resolves_and_reproduces_the_exact_caret() {
         let (mut app, mut doc) = synced_sample();
         let node = app.active_file_node().unwrap();
-        let text = EditorDoc::read_buffer(&doc, node).unwrap();
+        let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
         let expected_line = text
             .lines()
             .position(|line| line.contains("fn parse_limit"))
@@ -4399,7 +4789,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
         let node = app.session.active_buffer().unwrap().node;
-        let text = EditorDoc::read_buffer(&doc, node).unwrap();
+        let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
         assert!(text.contains("fn main"));
         assert!(app.editor.is_bound());
     }
@@ -4460,6 +4850,7 @@ mod tests {
         );
 
         app.editor.insert_for_test(&mut doc, "X");
+        app.dispatch_editor_text_edits(&mut doc);
         app.ensure_buffers(&mut doc);
         app.reconcile_tabs();
         assert!(
@@ -4517,8 +4908,8 @@ mod tests {
         // it and publishes the id via `take_close`, independent of position.
         app.tabs.start_closing(prime_id);
 
-        let mut doc = AutoCommit::new();
-        app.drain_child_events(&mut doc);
+        let doc = AutoCommit::new();
+        app.drain_child_events(&doc);
 
         let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(
@@ -4550,8 +4941,8 @@ mod tests {
         app.tabs.set_active(main_node as u64);
         app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
 
-        let mut doc = AutoCommit::new();
-        app.drain_child_events(&mut doc);
+        let doc = AutoCommit::new();
+        app.drain_child_events(&doc);
 
         assert_eq!(
             app.session.active,
@@ -4566,14 +4957,48 @@ mod tests {
 
     #[test]
     fn editing_routes_through_crdt() {
-        let mut app = CodeApp::with_sample();
-        let mut doc = AutoCommit::new();
-        app.ensure_buffers(&mut doc);
+        let (mut app, mut doc) = synced_sample();
         let node = app.session.active_buffer().unwrap().node;
-        let before = EditorDoc::read_buffer(&doc, node).unwrap();
+        let before = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
         app.editor.insert_for_test(&mut doc, "X");
-        let after = EditorDoc::read_buffer(&doc, node).unwrap();
+        app.dispatch_editor_text_edits(&mut doc);
+        let after = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
         assert_eq!(after.chars().count(), before.chars().count() + 1);
+    }
+
+    #[test]
+    fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let base = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        app.editor.move_caret_to(0, 0);
+        app.editor.insert_for_test(&mut doc, "λ");
+        let next = format!("λ{base}");
+        let expected = app
+            .resources(&doc)
+            .iter()
+            .find_map(|resource| {
+                find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))
+            })
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "replace-text")
+                    .cloned()
+            })
+            .expect("active file publishes Replace text")
+            .build_args([("text".to_string(), qos_actions::ArgValue::Text(next))])
+            .expect("valid replace text argument");
+        app.dispatch_editor_text_edits(&mut doc);
+        let actual = app
+            .actions
+            .last_dispatched()
+            .expect("gesture dispatched action");
+        assert_eq!(
+            actual, &expected,
+            "gesture and resource action are identical"
+        );
     }
 
     #[test]
@@ -4589,16 +5014,16 @@ mod tests {
     }
 
     #[test]
-    fn new_file_command_dispatches_the_create_buffer_action() {
+    fn new_file_command_dispatches_the_durable_create_file_action() {
         // The on-screen "New file" command and the Ctrl+K "New file" spec must
-        // build the byte-identical action — one source of truth. Both target the
-        // node id the project will allocate next.
+        // build the byte-identical action — one source of truth. Both carry the
+        // UUID captured at authoring time, never a local project-arena id.
         let mut app = CodeApp::with_sample();
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc); // seed the sample project's open buffers
 
         let ctx = app.code_resource_ctx();
-        let expected_node = ctx.next_id;
+        let expected_file_id = ctx.next_file_id.clone();
         let resources = crate::actions::provide_resources(&ctx, &doc);
         let spec = resources[0]
             .actions
@@ -4621,26 +5046,43 @@ mod tests {
             "the command and the Ctrl+K spec build the identical action"
         );
         // The action actually materialised the buffer in the document.
-        assert!(EditorDoc::read_buffer(&doc, expected_node as usize).is_some());
+        assert!(EditorDoc::read_buffer_key(&doc, &expected_file_id).is_some());
     }
 
     #[test]
-    fn a_document_buffer_is_adopted_as_a_tracked_file() {
-        // A buffer created directly in the document (a Ctrl+K "New file" or a
-        // peer) is surfaced by the next sync as an untitled file in the tree,
-        // without inventing a persisted file model.
+    fn a_collaborative_file_is_adopted_as_a_tracked_file() {
+        // A peer's durable file record is surfaced by the next sync. The
+        // resource UUID, rather than a coincidental local arena number, is the
+        // thing the projection follows.
         let mut app = CodeApp::with_sample();
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
         let before = app.session.project.nodes.len();
 
-        let orphan = 9999;
-        EditorDoc::ensure_buffer(&mut doc, orphan, "// created out of band\n");
-        assert!(app.session.project.get(orphan).is_none());
+        let orphan = "peer-file-uuid";
+        EditorDoc::create_file(
+            &mut doc,
+            &crate::doc::CollaborativeFile {
+                id: orphan.into(),
+                kind: "file".into(),
+                name: "peer.rs".into(),
+                path: "peer.rs".into(),
+                parent: None,
+                language: "Rust".into(),
+                order: 1,
+                deleted: false,
+                name_revision: 0,
+                structure_revision: 0,
+                language_revision: 0,
+                deletion_revision: 0,
+            },
+            "// created out of band\n",
+        );
+        assert!(app.session.project.node_for_resource(orphan).is_none());
 
         app.ensure_buffers(&mut doc);
         assert!(
-            app.session.project.get(orphan).is_some(),
+            app.session.project.node_for_resource(orphan).is_some(),
             "the document buffer was adopted as a file"
         );
         assert_eq!(app.session.project.nodes.len(), before + 1);
@@ -4721,8 +5163,10 @@ mod tests {
     }
 
     /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
-    fn replace_buffer_text(doc: &mut AutoCommit, node: crate::model::NodeId, text: &str) {
-        let obj = EditorDoc::ensure_buffer(doc, node, "");
+    fn replace_buffer_text(doc: &mut AutoCommit, key: &str, text: &str) {
+        let Some(obj) = EditorDoc::ensure_buffer_key(doc, key, "") else {
+            return;
+        };
         let len = doc.text(&obj).map_or(0, |t| t.chars().count());
         EditorDoc::splice(doc, &obj, 0, len, text);
     }
@@ -4736,7 +5180,11 @@ mod tests {
         // so this asserts that the pipeline carries a real finding through to
         // the panel rather than merely that it does not panic.
         let node = app.session.active_buffer().expect("a buffer is open").node;
-        replace_buffer_text(&mut doc, node, "// TODO: prove the pipeline\n");
+        replace_buffer_text(
+            &mut doc,
+            &app.buffer_key(node),
+            "// TODO: prove the pipeline\n",
+        );
         app.refresh_diagnostics(&doc);
         assert!(
             app.panel.problem_count() > 0,
@@ -4847,7 +5295,11 @@ mod tests {
         // A document that already carries this buffer, as a restored one does,
         // holding text that is not what the file says.
         let mut doc = AutoCommit::new();
-        EditorDoc::ensure_buffer(&mut doc, node, "fn main() { from_last_session() }\n");
+        EditorDoc::ensure_buffer_key(
+            &mut doc,
+            &app.buffer_key(node),
+            "fn main() { from_last_session() }\n",
+        );
 
         app.ensure_buffers(&mut doc);
 
@@ -4878,7 +5330,7 @@ mod tests {
         // The restored text is kept — a previous session's unsaved work, or a
         // peer's in-flight edits, are not ours to throw away.
         assert_eq!(
-            EditorDoc::read_buffer(&doc, node).as_deref(),
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
             Some("fn main() { from_last_session() }\n")
         );
     }
@@ -4891,7 +5343,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
         let node = app.session.active_buffer().expect("a buffer is open").node;
-        replace_buffer_text(&mut doc, node, "fn main( {\n");
+        replace_buffer_text(&mut doc, &app.buffer_key(node), "fn main( {\n");
 
         app.refresh_diagnostics(&doc);
         assert!(
@@ -4936,12 +5388,26 @@ mod tests {
         (app, doc)
     }
 
-    fn buffer_lines(doc: &AutoCommit, node: TreeId) -> Vec<String> {
-        EditorDoc::read_buffer(doc, node)
+    fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
+        EditorDoc::read_buffer_key(doc, &app.buffer_key(node))
             .unwrap()
             .split('\n')
             .map(str::to_string)
             .collect()
+    }
+
+    fn find_resource<'a>(
+        resource: &'a qos_actions::Resource,
+        id: &str,
+    ) -> Option<&'a qos_actions::Resource> {
+        (resource.id.as_str() == id)
+            .then_some(resource)
+            .or_else(|| {
+                resource
+                    .children
+                    .iter()
+                    .find_map(|child| find_resource(child, id))
+            })
     }
 
     /// A real file picked from disk loads its bytes into a tab.
@@ -4957,7 +5423,7 @@ mod tests {
 
         let node = app.session.active_buffer().expect("a tab opened").node;
         assert_eq!(
-            EditorDoc::read_buffer(&doc, node).as_deref(),
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
             Some("fn greet() { let x = 1; }\n"),
             "the file's real bytes were read into the buffer"
         );
@@ -4977,7 +5443,7 @@ mod tests {
 
         let node = app.session.active_buffer().expect("a tab opened").node;
         // Edit through the same CRDT splice path the editor uses.
-        let obj = EditorDoc::buffer_text(&doc, node).unwrap();
+        let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
         let at = "first line".chars().count();
         EditorDoc::splice(&mut doc, &obj, at, 0, " EDITED");
 
@@ -5049,12 +5515,13 @@ mod tests {
     fn duplicate_line_repeats_it_below() {
         let (mut app, mut doc) = synced_sample();
         let node = app.session.active_buffer().unwrap().node;
-        let before = buffer_lines(&doc, node);
+        let before = buffer_lines(&app, &doc, node);
 
         app.editor.move_caret_to(0, 0);
         app.editor.duplicate_lines(&mut doc, true);
+        app.dispatch_editor_text_edits(&mut doc);
 
-        let after = buffer_lines(&doc, node);
+        let after = buffer_lines(&app, &doc, node);
         assert_eq!(after.len(), before.len() + 1, "one line added");
         assert_eq!(after[0], before[0]);
         assert_eq!(after[1], before[0], "the copy sits directly below");
@@ -5065,12 +5532,13 @@ mod tests {
     fn move_line_down_swaps_with_the_next() {
         let (mut app, mut doc) = synced_sample();
         let node = app.session.active_buffer().unwrap().node;
-        let before = buffer_lines(&doc, node);
+        let before = buffer_lines(&app, &doc, node);
 
         app.editor.move_caret_to(0, 0);
         app.editor.move_lines(&mut doc, false);
+        app.dispatch_editor_text_edits(&mut doc);
 
-        let after = buffer_lines(&doc, node);
+        let after = buffer_lines(&app, &doc, node);
         assert_eq!(after.len(), before.len(), "no lines gained or lost");
         assert_eq!(after[0], before[1], "line 1 moved up");
         assert_eq!(after[1], before[0], "line 0 moved down");
@@ -5081,12 +5549,13 @@ mod tests {
     fn delete_line_removes_it() {
         let (mut app, mut doc) = synced_sample();
         let node = app.session.active_buffer().unwrap().node;
-        let before = buffer_lines(&doc, node);
+        let before = buffer_lines(&app, &doc, node);
 
         app.editor.move_caret_to(0, 0);
         app.editor.delete_lines(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
 
-        let after = buffer_lines(&doc, node);
+        let after = buffer_lines(&app, &doc, node);
         assert_eq!(after.len(), before.len() - 1, "one line removed");
         assert_eq!(after[0], before[1], "the following line is now first");
     }
@@ -5096,23 +5565,25 @@ mod tests {
         let (mut app, mut doc) = synced_sample();
         let node = app.session.active_buffer().unwrap().node;
         // Replace the buffer with a content-stable single line of Rust.
-        let obj = EditorDoc::buffer_text(&doc, node).unwrap();
+        let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
         let len = doc.text(&obj).unwrap().chars().count();
         EditorDoc::splice(&mut doc, &obj, 0, len, "let x = 1;\n");
         app.editor.sync(&mut doc, &automerge::ROOT);
 
         app.editor.move_caret_to(0, 0);
         app.editor.toggle_line_comment(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
         assert_eq!(
-            EditorDoc::read_buffer(&doc, node).as_deref(),
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
             Some("// let x = 1;\n"),
             "the line gained a Rust line comment"
         );
 
         app.editor.move_caret_to(0, 0);
         app.editor.toggle_line_comment(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
         assert_eq!(
-            EditorDoc::read_buffer(&doc, node).as_deref(),
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
             Some("let x = 1;\n"),
             "toggling again removed it"
         );
@@ -5125,6 +5596,7 @@ mod tests {
         // Edit the buffer so it has unsaved changes, then let a frame recompute
         // the dirty flag the way `sync` does.
         app.editor.insert_for_test(&mut doc, "X");
+        app.dispatch_editor_text_edits(&mut doc);
         app.ensure_buffers(&mut doc);
         assert!(
             app.session.buffer_of(node).unwrap().dirty,
