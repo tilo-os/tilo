@@ -460,6 +460,10 @@ fn probe_decode(_url: &str) {
 
 /// Without the `live` feature the probe cannot run — say so honestly.
 #[cfg(not(feature = "live"))]
+#[allow(
+    clippy::exit,
+    reason = "the probe's documented feature-missing outcome uses exit status 2 so scripts can distinguish it from a probe failure"
+)]
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "music --probe needs the `live` feature (real YouTube-Music backend).\n\
@@ -489,9 +493,9 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-/// The OS theme a `--shots` frame renders in: `--theme light|dark` (or the
-/// `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario be
-/// captured in both themes to prove the app looks right either way.
+/// The OS theme a `--shots` frame renders in: `--theme light|dark|high-contrast`
+/// (or the `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario
+/// be captured in every supported contrast mode without altering live state.
 fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     let sel = args
         .value("--theme")
@@ -500,6 +504,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         .unwrap_or_default();
     match sel.to_lowercase().as_str() {
         "light" => Theme::light(),
+        "high-contrast" | "high_contrast" => Theme::high_contrast(),
         _ => Theme::dark(),
     }
 }
