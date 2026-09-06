@@ -107,12 +107,13 @@ pub struct SyncState {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PeerId(pub String);
 
-/// Errors a transport can surface. Stubbed transports return
-/// [`SyncError::NotImplemented`] so callers can degrade gracefully.
+/// Errors a transport can surface. A build without the transport reports an
+/// explicit unavailable capability; it never pretends a missing backend is a
+/// temporary pairing or network failure.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncError {
-    /// The seam is wired but no real transport is compiled in.
-    NotImplemented,
+    /// This build intentionally omits the real Grayjay transport.
+    Unavailable(String),
     /// Pairing was refused / timed out.
     Pairing(String),
     /// Transport-level failure (handshake, framing, relay).
@@ -129,7 +130,7 @@ pub enum SyncError {
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SyncError::NotImplemented => write!(f, "Grayjay sync is not implemented in this build"),
+            SyncError::Unavailable(message) => write!(f, "Grayjay sync unavailable: {message}"),
             SyncError::Pairing(m) => write!(f, "pairing failed: {m}"),
             SyncError::Transport(m) => write!(f, "transport error: {m}"),
             SyncError::KeyUnavailable(m) => write!(f, "device key unavailable: {m}"),
@@ -220,7 +221,9 @@ pub trait SyncTransport: Send {
     ///
     /// Returns `Err` when the transport cannot restore the peer's route.
     fn restore_peer(&mut self, _peer: &PeerDescriptor) -> SyncResult<()> {
-        Err(SyncError::NotImplemented)
+        Err(SyncError::Unavailable(
+            "this sync transport cannot restore peer routes".into(),
+        ))
     }
 
     /// Remove all in-memory routes for a revoked peer.
@@ -241,19 +244,25 @@ pub struct StubTransport;
 
 impl SyncTransport for StubTransport {
     fn name(&self) -> &'static str {
-        "stub (Grayjay sync not implemented)"
+        "unavailable (Grayjay sync omitted from this build)"
     }
 
     fn pair(&mut self, _pairing_blob: &str) -> SyncResult<PeerId> {
-        Err(SyncError::NotImplemented)
+        Err(SyncError::Unavailable(
+            "this build does not include Grayjay device sync".into(),
+        ))
     }
 
     fn push(&mut self, _peer: &PeerId, _state: &SyncState) -> SyncResult<()> {
-        Err(SyncError::NotImplemented)
+        Err(SyncError::Unavailable(
+            "this build does not include Grayjay device sync".into(),
+        ))
     }
 
     fn pull(&mut self, _peer: &PeerId) -> SyncResult<SyncState> {
-        Err(SyncError::NotImplemented)
+        Err(SyncError::Unavailable(
+            "this build does not include Grayjay device sync".into(),
+        ))
     }
 }
 
@@ -268,15 +277,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stub_reports_unavailable_and_not_implemented() {
+    fn stub_reports_the_explicitly_omitted_capability() {
         let mut t = StubTransport;
         assert!(!t.is_available());
-        assert_eq!(t.pair("blob"), Err(SyncError::NotImplemented));
+        let unavailable =
+            || SyncError::Unavailable("this build does not include Grayjay device sync".into());
+        assert_eq!(t.pair("blob"), Err(unavailable()));
         assert_eq!(
             t.push(&PeerId("k".into()), &SyncState::default()),
-            Err(SyncError::NotImplemented)
+            Err(unavailable())
         );
-        assert_eq!(t.pull(&PeerId("k".into())), Err(SyncError::NotImplemented));
+        assert_eq!(t.pull(&PeerId("k".into())), Err(unavailable()));
     }
 
     #[test]
