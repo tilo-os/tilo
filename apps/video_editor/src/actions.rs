@@ -139,6 +139,10 @@ pub fn operation_kind(operation: &VideoEditorOperation) -> OperationKind {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the passed enum is a serde-derived local value, so ActionSpec encoding is infallible by construction"
+)]
 fn operation(
     id: &str,
     label: &str,
@@ -726,6 +730,10 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`VideoEditorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns the
 /// editor's actions into replayable envelopes.
+#[allow(
+    clippy::expect_used,
+    reason = "the serde-derived action is encoded immediately after construction and has no fallible fields"
+)]
 pub fn encode(action: &VideoEditorAction) -> EncodedAction {
     EncodedAction::encode(VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("VideoEditorAction is always serializable")
@@ -847,6 +855,10 @@ pub struct VideoResourceCtx {
     pub mix: crate::audio::MixSnapshot,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the serde-derived document action is the value just supplied to the immediate action builder"
+)]
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("encode video-editor action")
@@ -937,9 +949,9 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
         .split(',')
         .filter_map(|p| p.trim().parse::<f64>().ok())
         .collect();
-    match parts.len() {
-        3 => Some([parts[0], parts[1], parts[2], 1.0]),
-        4 => Some([parts[0], parts[1], parts[2], parts[3]]),
+    match parts.as_slice() {
+        [red, green, blue] => Some([*red, *green, *blue, 1.0]),
+        [red, green, blue, alpha] => Some([*red, *green, *blue, *alpha]),
         _ => None,
     }
 }
@@ -947,6 +959,11 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
 /// document-mutating operation exported as an action.
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
+)]
 pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
@@ -995,47 +1012,43 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             .returns(ResultSpec::Job),
         );
     }
-    if let Ok(spec) = ActionSpec::operation(
+    // The action's identity, parameters, and job contract do not disappear
+    // when this build lacks an encoder. Consumers can still discover the
+    // canonical operation and explain its availability consistently; only
+    // invocation is refused until an encoder-capable build is present.
+    let export = ActionSpec::typed_operation(
         "export",
         "Export video",
+        "path (omit to use the system picker)",
         OperationKind::Effect,
         VIDEO_EDITOR_OPERATION_TYPE,
-        &VideoEditorOperation::Export { path: None },
-    ) {
-        root = root.with_action(if crate::export::unavailable_reason().is_some() {
-            spec.unavailable(
-                "export_unavailable",
-                "Video export is unavailable on this system",
-            )
-        } else {
-            ActionSpec::typed_operation(
-                "export",
-                "Export video",
-                "path (omit to use the system picker)",
-                OperationKind::Effect,
+        vec![ActionParam::optional_owned(
+            "path",
+            ParamType::Text,
+            "Direct export path",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
                 VIDEO_EDITOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct export path",
-                )],
-                |args: &ActionArgs| {
-                    EncodedAction::encode_operation(
-                        VIDEO_EDITOR_OPERATION_TYPE,
-                        &VideoEditorOperation::Export {
-                            path: args
-                                .text("path")
-                                .filter(|p| !p.trim().is_empty())
-                                .map(str::to_string),
-                        },
-                    )
-                    .expect("export operation serializes")
+                &VideoEditorOperation::Export {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string),
                 },
             )
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job)
-        });
-    }
+            .expect("export operation serializes")
+        },
+    )
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
+    root = root.with_action(match crate::export::unavailable_reason() {
+        Some(_) => export.unavailable(
+            "export_unavailable",
+            "Video export is unavailable on this system",
+        ),
+        None => export,
+    });
     if let Ok(spec) = ActionSpec::operation(
         "cancel-export",
         "Cancel export",

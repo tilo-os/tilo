@@ -396,7 +396,7 @@ impl WaveformCache {
             path: source.abs_path.clone(),
         };
         let (lock, cv) = &*self.work;
-        let mut w = lock.lock().unwrap();
+        let mut w = lock.lock().unwrap_or_else(|poison| poison.into_inner());
         w.queue.push_back(task);
         if !w.running {
             w.running = true;
@@ -454,7 +454,7 @@ impl WaveformCache {
 impl Drop for WaveformCache {
     fn drop(&mut self) {
         let (lock, cv) = &*self.work;
-        let mut w = lock.lock().unwrap();
+        let mut w = lock.lock().unwrap_or_else(|poison| poison.into_inner());
         w.shutdown = true;
         w.queue.clear();
         drop(w);
@@ -468,7 +468,7 @@ fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec
     let (lock, cv) = &*work;
     loop {
         let task = {
-            let mut w = lock.lock().unwrap();
+            let mut w = lock.lock().unwrap_or_else(|poison| poison.into_inner());
             if w.shutdown {
                 w.running = false;
                 return;
@@ -476,7 +476,9 @@ fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec
             match w.queue.pop_front() {
                 Some(t) => t,
                 None => {
-                    let (mut w, res) = cv.wait_timeout(w, WORKER_IDLE).unwrap();
+                    let (mut w, res) = cv
+                        .wait_timeout(w, WORKER_IDLE)
+                        .unwrap_or_else(|poison| poison.into_inner());
                     if w.shutdown {
                         w.running = false;
                         return;
@@ -496,7 +498,7 @@ fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec
         };
         let peaks = peaks_from_file(&task.path, WAVE_BUCKETS);
         if tx.send((task.id, peaks)).is_err() {
-            let mut w = lock.lock().unwrap();
+            let mut w = lock.lock().unwrap_or_else(|poison| poison.into_inner());
             w.running = false;
             return; // the cache is gone
         }
