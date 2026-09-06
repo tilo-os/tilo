@@ -65,6 +65,21 @@ stop_target() {
     fi
 }
 
+# Failures before the compositor starts would otherwise go only to whatever
+# transient stderr handling the display manager happens to provide.  Keep this
+# message fixed and credential-free: it is the breadcrumb needed to distinguish
+# a qOS grey screen caused by session handoff from one caused by the compositor.
+# Do not exec through systemd-cat here; the normal compositor path below owns
+# its single long-lived stdout/stderr relay.
+journal_startup_failure() {
+    phase=$1
+    status=$2
+    printf 'qos-session: startup failed during %s (exit status %s)\n' \
+        "$phase" "$status" |
+        "$SYSTEMD_CAT" --identifier=qos-session --priority=err \
+            --level-prefix=false >/dev/null 2>&1 || true
+}
+
 forward_signal() {
     signal=$1
     status=$2
@@ -95,11 +110,32 @@ trap 'forward_signal TERM 143' TERM
 "$SYSTEMCTL" --user unset-environment \
     DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
     XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
-"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null
+# From here on, an unsuccessful handoff still attempts cleanup.  The D-Bus
+# update is a single request, but treating it as potentially partial makes the
+# failure path safe if a future implementation changes that detail.
 environment_imported=1
-"$SYSTEMCTL" --user import-environment \
-    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-"$SYSTEMCTL" --user start "$SESSION_TARGET"
+if "$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1; then
+    :
+else
+    status=$?
+    journal_startup_failure 'D-Bus activation environment update' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user import-environment \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE; then
+    :
+else
+    status=$?
+    journal_startup_failure 'systemd user environment import' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user start "$SESSION_TARGET"; then
+    :
+else
+    status=$?
+    journal_startup_failure 'qOS graphical session target start' "$status"
+    exit "$status"
+fi
 target_started=1
 
 # --host-desktop-session is the package-owned, distro-neutral declaration that
