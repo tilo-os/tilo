@@ -135,32 +135,36 @@ impl SearchProvider for MailSearchProvider {
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
-        let id = address
-            .resource
-            .strip_prefix("mail.message:")?
-            .parse()
-            .ok()?;
-        let message = self.mailbox.get(id)?;
-        Some(crate::actions::message_resource(
-            &crate::actions::MessageRow {
-                id: message.id.to_string(),
-                subject: message.subject.clone(),
-                thread_subject: message.thread_subject(),
-                folder: message.folder,
-                read: message.read,
-                starred: message.starred,
-                labels: message.labels.clone(),
-                attachments: message
-                    .attachments
-                    .iter()
-                    .map(|attachment| crate::actions::AttachmentRow {
-                        filename: attachment.filename.clone(),
-                        size: attachment.size,
-                        downloadable: attachment.is_downloadable(),
-                    })
-                    .collect(),
-            },
-        ))
+        if let Some(id) = address.resource.strip_prefix("mail.message:") {
+            let id = id.parse().ok()?;
+            let message = self.mailbox.get(id)?;
+            return Some(crate::actions::message_resource(
+                &crate::actions::MessageRow {
+                    id: message.id.to_string(),
+                    subject: message.subject.clone(),
+                    thread_subject: message.thread_subject(),
+                    folder: message.folder,
+                    read: message.read,
+                    starred: message.starred,
+                    labels: message.labels.clone(),
+                    attachments: message
+                        .attachments
+                        .iter()
+                        .map(|attachment| crate::actions::AttachmentRow {
+                            filename: attachment.filename.clone(),
+                            size: attachment.size,
+                            downloadable: attachment.is_downloadable(),
+                        })
+                        .collect(),
+                },
+            ));
+        }
+        let folder = Folder::from_key(address.resource.strip_prefix("mail.folder:")?)?;
+        // Mail's global search snapshot has no Automerge document, so it cannot
+        // know whether a saved draft exists. The stable folder/action contract
+        // remains identical; the draft-only child materializes when the app's
+        // full resource provider is queried.
+        Some(crate::actions::system_folder_resource(folder, false))
     }
 }
 
@@ -245,6 +249,22 @@ mod tests {
                 .iter()
                 .any(|hit| { hit.kind == FOLDER_KIND && hit.action_address().is_some() })
         );
+    }
+
+    #[test]
+    fn folder_hits_materialize_their_own_canonical_open_resource() {
+        let provider = MailSearchProvider::new(&sample());
+        let hit = provider
+            .search("Archive")
+            .into_iter()
+            .find(|hit| hit.kind == FOLDER_KIND)
+            .expect("Archive folder is searchable");
+        let address = hit.action_address().expect("canonical folder address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("a folder search hit resolves without requiring the full tree");
+        assert_eq!(resource.id.as_str(), address.resource);
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
     }
 
     #[test]

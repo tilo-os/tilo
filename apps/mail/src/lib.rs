@@ -123,6 +123,7 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         "setup_add" => app.prime_setup_add_shot(),
         "setup_oauth" => app.prime_setup_oauth_shot(),
         "html_mail" => app.prime_html_mail_shot(),
+        "preview" => app.prime_preview_shot(),
         "empty" => app.prime_empty_shot(),
         "loading" => app.prime_loading_shot(),
         "offline" => app.prime_offline_shot(),
