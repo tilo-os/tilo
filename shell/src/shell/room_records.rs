@@ -1,9 +1,11 @@
 //! Which records a room holds, and which records exist at all — the two
 //! facts search needs to move a record into a room in one gesture.
 //!
-//! A room holds **references, not copies**: bringing a record in adds its
-//! id and moves no bytes, so an edit through either room edits the one
-//! document. Copying is the separately-named [`ui::record::room::duplicate`].
+//! A room holds **references, not copies**: bringing a record name in adds its
+//! id without granting another room's document. Hydration resolves the name
+//! under this room's storage and collaboration scope, so equal ids cannot
+//! alias state across rooms. Copying is the separately-named
+//! [`ui::record::room::duplicate`].
 //!
 //! The corpus has two halves: **held** is the rooms' own index documents;
 //! **observed** is what apps have written, found by a background scan
@@ -93,12 +95,36 @@ struct ScanState {
     /// Canonical, scan-root-confined document locations. Kept separate from
     /// public search metadata so callers cannot manufacture arbitrary paths.
     locations: BTreeMap<RecordId, ValidatedRecordLocation>,
+    /// Equal record ids found in distinct scoped documents.  The legacy
+    /// history loader is keyed only by id, so it must refuse this ambiguous
+    /// shape rather than choosing one room's content for another.
+    ambiguous: BTreeSet<RecordId>,
     /// A query before the walk finishes gets whatever is known so far
     /// rather than blocking a keystroke on the disk.
     done: bool,
+    /// Incremented whenever the retained scan corpus changes.  A count is
+    /// insufficient: replacing one record with another must invalidate a
+    /// pagination cursor even though the cardinality did not move.
+    revision: u64,
 }
 
-#[derive(Clone, Debug)]
+impl ScanState {
+    fn replace(&mut self, found: ScanResult) {
+        let changed = self.records != found.records
+            || self.locations != found.locations
+            || self.ambiguous != found.ambiguous
+            || !self.done;
+        self.records = found.records;
+        self.locations = found.locations;
+        self.ambiguous = found.ambiguous;
+        self.done = true;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ValidatedRecordLocation {
     document: PathBuf,
     scan_root: PathBuf,
@@ -108,12 +134,13 @@ struct ValidatedRecordLocation {
 struct ScanResult {
     records: Vec<ObservedRecord>,
     locations: BTreeMap<RecordId, ValidatedRecordLocation>,
+    ambiguous: BTreeSet<RecordId>,
 }
 
 /// What [`RoomRecords::known`] last computed, and what from.
 struct KnownCache {
-    /// `(index generation, scanned record count, scan finished)`.
-    key: (u64, usize, bool),
+    /// `(index generation, scanned corpus revision)`.
+    key: (u64, u64),
     records: std::rc::Rc<Vec<KnownRecord>>,
 }
 
@@ -141,6 +168,24 @@ pub struct RoomRecords {
 }
 
 impl RoomRecords {
+    /// Monotonic revision of the retained record corpus. Search cursors use
+    /// this value rather than an allocation address, which could be reused
+    /// after a cache refresh (ABA) and incorrectly look current.
+    pub fn search_generation(&self) -> String {
+        let scan_revision = self
+            .scan
+            .as_ref()
+            .and_then(|scan| scan.lock().ok().map(|state| state.revision))
+            .unwrap_or(0);
+        // Domain-separated deterministic projection of every input to
+        // `known()`'s cache key. `generation` changes on local mutations;
+        // scan_revision changes for every effective retained corpus update.
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"qos-room-record-search-generation\0");
+        hash.update(&self.generation.to_le_bytes());
+        hash.update(&scan_revision.to_le_bytes());
+        hash.finalize().to_hex().to_string()
+    }
     /// An index that never touches the disk. Durability is opt-in via
     /// [`Self::attach_store`].
     pub fn in_memory() -> Self {
@@ -153,6 +198,22 @@ impl RoomRecords {
             generation: 0,
             replicated_generation: None,
             known: std::cell::RefCell::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_scanned_records_for_test(&mut self, records: Vec<ObservedRecord>) {
+        if self.scan.is_none() {
+            self.scan = Some(Arc::new(Mutex::new(ScanState::default())));
+        }
+        if let Some(scan) = &self.scan
+            && let Ok(mut scan) = scan.lock()
+        {
+            scan.replace(ScanResult {
+                records,
+                locations: BTreeMap::new(),
+                ambiguous: BTreeSet::new(),
+            });
         }
     }
 
@@ -240,12 +301,12 @@ impl RoomRecords {
     /// CRDT reads: walking a room's index measured 19ms over 300 records.
     /// Cached, keyed on generation plus scan progress.
     pub fn known(&self) -> std::rc::Rc<Vec<KnownRecord>> {
-        let scan_key = self
+        let scan_revision = self
             .scan
             .as_ref()
-            .and_then(|s| s.lock().ok().map(|st| (st.records.len(), st.done)))
-            .unwrap_or((0, true));
-        let key = (self.generation, scan_key.0, scan_key.1);
+            .and_then(|s| s.lock().ok().map(|st| st.revision))
+            .unwrap_or(0);
+        let key = (self.generation, scan_revision);
         if let Some(cached) = self.known.borrow().as_ref()
             && cached.key == key
         {
@@ -260,16 +321,22 @@ impl RoomRecords {
     }
 
     fn compute_known(&self) -> Vec<KnownRecord> {
-        let mut by_id: BTreeMap<RecordId, KnownRecord> = BTreeMap::new();
+        // A record id is not globally authoritative.  Key the retained
+        // search corpus by `(room scope, id)` so an equal id observed in two
+        // rooms becomes two rows rather than silently borrowing one room's
+        // metadata and location.
+        let mut by_id: BTreeMap<(Option<RoomId>, RecordId), KnownRecord> = BTreeMap::new();
 
         let mut observe = |o: &ObservedRecord| {
-            let entry = by_id.entry(o.id.clone()).or_insert_with(|| KnownRecord {
-                id: o.id.clone(),
-                kind: o.kind.clone(),
-                home: None,
-                held_by: Vec::new(),
-                package_id: None,
-            });
+            let entry = by_id
+                .entry((o.home, o.id.clone()))
+                .or_insert_with(|| KnownRecord {
+                    id: o.id.clone(),
+                    kind: o.kind.clone(),
+                    home: None,
+                    held_by: Vec::new(),
+                    package_id: None,
+                });
             if entry.home.is_none() {
                 entry.home = o.home;
             }
@@ -290,11 +357,11 @@ impl RoomRecords {
         for (room, held) in &self.held {
             for checkout in room::references(&held.doc) {
                 let entry = by_id
-                    .entry(checkout.id.clone())
+                    .entry((Some(*room), checkout.id.clone()))
                     .or_insert_with(|| KnownRecord {
                         id: checkout.id.clone(),
                         kind: RecordKind::new(""),
-                        home: None,
+                        home: Some(*room),
                         held_by: Vec::new(),
                         package_id: None,
                     });
@@ -303,7 +370,7 @@ impl RoomRecords {
                 }
             }
         }
-        for (id, r) in &mut by_id {
+        for ((_, id), r) in &mut by_id {
             if r.kind.as_str().is_empty()
                 && let Some(k) = self.labelled.get(id)
             {
@@ -326,14 +393,12 @@ impl RoomRecords {
     /// The canonical path and size bound are revalidated on every read so a
     /// stale or replaced scan result fails closed.
     pub fn load_local_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        let location = self
-            .scan
-            .as_ref()?
-            .lock()
-            .ok()?
-            .locations
-            .get(id)
-            .cloned()?;
+        let scan = self.scan.as_ref()?.lock().ok()?;
+        if scan.ambiguous.contains(id) {
+            tracing::warn!(record = %id, "refusing ambiguous cross-room record hydration");
+            return None;
+        }
+        let location = scan.locations.get(id).cloned()?;
         read_validated_record_document(id, &location)
     }
 
@@ -480,9 +545,7 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
             .spawn(move || {
                 let found = scan_record_stores(&root);
                 if let Ok(mut st) = handle.lock() {
-                    st.records = found.records;
-                    st.locations = found.locations;
-                    st.done = true;
+                    st.replace(found);
                 }
             })
             .ok();
@@ -514,32 +577,43 @@ fn scan_record_stores(root: &Path) -> ScanResult {
             if package_id == SHELL_PACKAGE_ID {
                 continue;
             }
-            let records = package
-                .path()
-                .join(&*SANDBOX_DATA_SUBDIR)
-                .join(&package_id)
-                .join(app_state::RECORDS_DIR);
-            let Ok(entries) = std::fs::read_dir(&records) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let Some(location) = validate_record_location(
-                    &scan_root,
-                    &entry.path().join(app_state::DOCUMENT_FILE),
-                ) else {
+            let state = package.path().join(&*SANDBOX_DATA_SUBDIR).join(&package_id);
+            // Keep the legacy root readable during migration, then walk the
+            // explicit room scopes.  The latter is bounded by room/record
+            // directories, never by arbitrary app data.
+            let mut record_roots = vec![state.join(app_state::RECORDS_DIR)];
+            if let Ok(rooms) = std::fs::read_dir(state.join(app_state::ROOMS_DIR)) {
+                record_roots.extend(
+                    rooms
+                        .flatten()
+                        .map(|room| room.path().join(app_state::RECORDS_DIR)),
+                );
+            }
+            for records in record_roots {
+                let Ok(entries) = std::fs::read_dir(&records) else {
                     continue;
                 };
-                let Some(observed) = read_record_header(&location.document, &package_id) else {
-                    continue;
-                };
-                let replace = out
-                    .locations
-                    .get(&observed.id)
-                    .is_none_or(|current| location.document < current.document);
-                if replace {
-                    out.locations.insert(observed.id.clone(), location);
+                for entry in entries.flatten() {
+                    let Some(location) = validate_record_location(
+                        &scan_root,
+                        &entry.path().join(app_state::DOCUMENT_FILE),
+                    ) else {
+                        continue;
+                    };
+                    let Some(observed) = read_record_header(&location.document, &package_id) else {
+                        continue;
+                    };
+                    match out.locations.get(&observed.id) {
+                        Some(current) if current.document != location.document => {
+                            out.ambiguous.insert(observed.id.clone());
+                        }
+                        Some(_) => {}
+                        None => {
+                            out.locations.insert(observed.id.clone(), location);
+                        }
+                    }
+                    out.records.push(observed);
                 }
-                out.records.push(observed);
             }
         }
     }
@@ -707,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn known_merges_what_rooms_hold_with_what_apps_wrote() {
+    fn known_keeps_equal_record_ids_in_different_rooms_distinct() {
         let mut rr = RoomRecords::in_memory();
         let home = room();
         let other = room();
@@ -721,14 +795,28 @@ mod tests {
         rr.reference(other, &scanned, &RecordKind::new("document"));
 
         let known = rr.known();
-        assert_eq!(known.len(), 1, "one record, two facts about it: {known:?}");
-        let r = &known[0];
-        assert_eq!(r.id, scanned);
-        assert_eq!(r.home, Some(home));
-        assert_eq!(r.held_by, vec![other]);
-        assert!(r.is_in(home) && r.is_in(other));
-        assert_eq!(r.package_id.as_deref(), Some("dev.qos.word-processor"));
-        assert_eq!(r.title(), "report.odt");
+        assert_eq!(
+            known.len(),
+            2,
+            "one id names two room-scoped records: {known:?}"
+        );
+        let observed = known
+            .iter()
+            .find(|record| record.home == Some(home))
+            .expect("scanned home record");
+        assert_eq!(observed.id, scanned);
+        assert!(observed.held_by.is_empty());
+        assert_eq!(
+            observed.package_id.as_deref(),
+            Some("dev.qos.word-processor")
+        );
+        let referenced = known
+            .iter()
+            .find(|record| record.home == Some(other))
+            .expect("other room reference");
+        assert_eq!(referenced.id, scanned);
+        assert_eq!(referenced.held_by, vec![other]);
+        assert_eq!(referenced.title(), "report.odt");
     }
 
     #[test]
@@ -762,18 +850,18 @@ mod tests {
         assert_eq!(rr.known()[0].held_by, vec![a]);
 
         rr.reference(b, &id, &kind);
-        assert_eq!(
-            rr.known()[0].rooms(),
-            {
-                let mut r = vec![a, b];
-                r.sort();
-                r
-            },
-            "the second room is visible immediately"
-        );
+        assert_eq!(rr.known().len(), 2, "the second room is a separate scope");
+        assert!(rr.known().iter().any(|record| record.home == Some(a)));
+        assert!(rr.known().iter().any(|record| record.home == Some(b)));
 
         rr.reference(b, &id, &RecordKind::new("field-guide"));
-        assert_eq!(rr.known()[0].kind.as_str(), "field-guide");
+        assert_eq!(
+            rr.known()
+                .iter()
+                .find(|record| record.home == Some(b))
+                .map(|record| record.kind.as_str()),
+            Some("field-guide")
+        );
 
         rr.unreference(a, &id);
         assert_eq!(
