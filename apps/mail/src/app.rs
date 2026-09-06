@@ -155,6 +155,9 @@ impl AccountsPersist {
 )]
 pub struct MailApp {
     shared: Shared,
+    /// One retained catalogue per mailbox revision. Palette providers clone
+    /// this Arc-backed handle; typing never rebuilds the loaded-mail index.
+    mail_search_provider: crate::search_provider::MailSearchProvider,
     nav: NavShell,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
@@ -254,6 +257,10 @@ impl MailApp {
         engine: Option<EngineHandle>,
         accounts_persist: AccountsPersist,
     ) -> Self {
+        let mail_search_provider = {
+            let state = shared.borrow();
+            crate::search_provider::MailSearchProvider::new(&state.mailbox)
+        };
         let sidebar = Pane::boxed(Role::Sidebar, shared.clone());
         let overview = Pane::boxed(Role::List, shared.clone());
         let detail = Pane::boxed(Role::Reader, shared.clone());
@@ -266,6 +273,7 @@ impl MailApp {
         let cfg = shared.borrow().accounts.active_config();
         Self {
             shared,
+            mail_search_provider,
             nav,
             first_run: EmptyState::new("Welcome to Mail")
                 .with_icon(Icon::Mail)
@@ -1594,24 +1602,10 @@ impl MailApp {
             .order
             .iter()
             .filter_map(|id| st.mailbox.messages.get(id))
-            .map(|m| crate::actions::MessageRow {
-                id: m.id.to_string(),
-                subject: m.subject.clone(),
-                thread_subject: m.thread_subject(),
-                folder: m.folder,
-                read: m.read,
-                starred: m.starred,
-                labels: m.labels.clone(),
-                attachments: m
-                    .attachments
-                    .iter()
-                    .map(|attachment| crate::actions::AttachmentRow {
-                        filename: attachment.filename.clone(),
-                        size: attachment.size,
-                        downloadable: attachment.is_downloadable(),
-                    })
-                    .collect(),
-            })
+            .filter(|message| message.folder == current_folder)
+            .rev()
+            .take(crate::actions::OPEN_MESSAGE_LIMIT)
+            .map(crate::actions::message_row)
             .collect();
         let custom_folders = MailDoc::list_folders(doc);
         let draft = MailDoc::load_draft(doc);
@@ -1626,6 +1620,48 @@ impl MailApp {
             has_draft,
             can_sync,
         }
+    }
+
+    /// Materialise one message resource row on demand. The public resource
+    /// tree deliberately carries only a bounded current-folder prefix, but a
+    /// stable message id must still resolve for agents and search activation.
+    pub(crate) fn resource_message_row(&self, id: &str) -> Option<crate::actions::MessageRow> {
+        self.shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .find(|message| message.id.to_string() == id)
+            .map(crate::actions::message_row)
+    }
+
+    /// Lazily materialise a bounded thread resource by its stable key. This
+    /// keeps every loaded thread addressable even when the open-resource tree
+    /// only carries the first `OPEN_MESSAGE_LIMIT` messages.
+    pub(crate) fn resource_thread_rows(
+        &self,
+        stable: &str,
+    ) -> Option<(String, Vec<crate::actions::MessageRow>)> {
+        let state = self.shared.borrow();
+        let mut messages = state
+            .mailbox
+            .messages
+            .values()
+            .filter(|message| message.folder != Folder::Trash)
+            .filter(|message| {
+                crate::actions::thread_resource_key(&message.thread_subject()) == stable
+            })
+            .collect::<Vec<_>>();
+        messages.sort_by_key(|message| message.timestamp_min);
+        let subject = messages.first()?.thread_subject();
+        Some((
+            subject,
+            messages
+                .into_iter()
+                .take(crate::actions::OPEN_MESSAGE_LIMIT)
+                .map(crate::actions::message_row)
+                .collect(),
+        ))
     }
 
     // ---- drawing the app-owned overlays ----------------------------------
@@ -2584,6 +2620,8 @@ impl Widget for MailApp {
             self.shared.borrow_mut().now_min = crate::state::now_minutes();
             self.maybe_auto_refresh();
         }
+        self.mail_search_provider
+            .refresh(&self.shared.borrow().mailbox);
         self.nav.sync(state, path);
     }
 
@@ -2779,9 +2817,9 @@ impl Widget for MailApp {
     /// alongside the actions the app exports. The provider never touches the
     /// IMAP engine, so a Ctrl+K query stays synchronous.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::MailSearchProvider::new(
-            &self.shared.borrow().mailbox,
-        ))]
+        self.mail_search_provider
+            .refresh(&self.shared.borrow().mailbox);
+        vec![Box::new(self.mail_search_provider.clone())]
     }
 
     fn build_layout(
