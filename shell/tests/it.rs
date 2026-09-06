@@ -103,6 +103,8 @@ mod maximize_persist_wireup_test;
 mod nirios_e2e_test;
 #[path = "nvenc_hardware_encode.rs"]
 mod nvenc_hardware_encode;
+#[path = "onboarding_visual.rs"]
+mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
 #[path = "peer_join_toast_batches.rs"]
