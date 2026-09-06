@@ -1503,6 +1503,9 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     if record.schema_version == 1 {
         return identity_from_record(record, None);
     }
+    if is_public_member_projection(&record) {
+        return identity_from_record(record, None);
+    }
     let reference = record
         .secret_ref
         .as_ref()
@@ -1671,6 +1674,17 @@ fn identity_from_record(
 
     if !ti.single_device {
         if secret.is_empty() {
+            if ti.threshold == 1 && ti.total_shares == 1 && ti.share_index == 0 {
+                return Ok(SigningIdentity::from_local_parts(
+                    record.display_name,
+                    record.avatar_color,
+                    ti.group_public_key,
+                    ti.threshold,
+                    ti.total_shares,
+                    ti.share_index,
+                    None,
+                ));
+            }
             return Err(LoadFailure::SecuredRecordNeedsProvider.into_not_available());
         }
         let identity =
@@ -1734,6 +1748,16 @@ fn identity_from_record(
         ti.share_index,
         signing_key,
     ))
+}
+
+fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
+    let identity = &record.threshold_identity;
+    !identity.single_device
+        && identity.secret_bytes.is_empty()
+        && record.secret_ref.is_none()
+        && identity.threshold == 1
+        && identity.total_shares == 1
+        && identity.share_index == 0
 }
 
 // Compile-time assertion that we haven't accidentally derived Clone/
@@ -2101,14 +2125,17 @@ mod tests {
         assert!(!identity.is_single_device());
 
         let message = b"confirmed operation";
-        let round_a = identity.threshold_sign_round1(&mut rng).unwrap();
-        let round_b = b.sign_round1(&mut rng).unwrap();
-        let commitments = vec![round_a.commitment.clone(), round_b.commitment.clone()];
+        let signing_round_a = identity.threshold_sign_round1(&mut rng).unwrap();
+        let signing_round_b = b.sign_round1(&mut rng).unwrap();
+        let commitments = vec![
+            signing_round_a.commitment.clone(),
+            signing_round_b.commitment.clone(),
+        ];
         let partial_a = identity
-            .threshold_sign_round2(round_a.nonces, message, &commitments)
+            .threshold_sign_round2(signing_round_a.nonces, message, &commitments)
             .unwrap();
         let partial_b = b
-            .sign_round2_raw(round_b.nonces, message, &commitments)
+            .sign_round2_raw(signing_round_b.nonces, message, &commitments)
             .unwrap();
         let signature = identity
             .aggregate_threshold_signature(&[partial_a, partial_b])
@@ -2284,6 +2311,41 @@ mod tests {
         import_identity(dir.path(), "personal", &bytes).unwrap();
         let error = import_identity(dir.path(), "duplicate", &bytes).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn schema_two_public_member_projection_loads_without_becoming_a_signer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record: ondisk::IdentityRecord =
+            serde_json::from_slice(&public_member_record("Member", [1, 2, 3], [9; 32]).unwrap())
+                .unwrap();
+        record.schema_version = 2;
+        let path = dir.path().join("member.json");
+        write_private_atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let identity = load_from_path(path).unwrap();
+        assert_eq!(identity.group_public_key(), [9; 32]);
+        assert!(identity.sign(b"must stay public-only").is_err());
+    }
+
+    #[test]
+    fn schema_two_missing_reference_rejects_private_or_malformed_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+        let mut single: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
+        single.schema_version = 2;
+        single.threshold_identity.single_device = true;
+        let single_path = dir.path().join("single.json");
+        write_private_atomic(&single_path, &serde_json::to_vec(&single).unwrap()).unwrap();
+        assert!(load_from_path(single_path).is_err());
+
+        let mut malformed: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
+        malformed.schema_version = 2;
+        malformed.threshold_identity.threshold = 2;
+        malformed.threshold_identity.total_shares = 2;
+        let malformed_path = dir.path().join("malformed.json");
+        write_private_atomic(&malformed_path, &serde_json::to_vec(&malformed).unwrap()).unwrap();
+        assert!(load_from_path(malformed_path).is_err());
     }
 
     #[test]
