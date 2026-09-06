@@ -378,18 +378,34 @@ impl FrameBuilder {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
 
-    /// Optional theme override for offscreen `shots` capture:
-    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset keeps the dark
-    /// default — lets a theme-driven chrome change be proven in light +
-    /// high-contrast, not just dark.
+    /// Optional presentation overrides for offscreen `shots` capture:
+    /// `QOS_SHOTS_THEME=light|high-contrast|dark` and
+    /// `QOS_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
+    /// a theme-driven chrome change be proven in high contrast and at large
+    /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let raw = std::env::var("QOS_SHOTS_THEME").ok()?;
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "light" => Some(Theme::light()),
-            "high-contrast" | "high_contrast" | "hc" => Some(Theme::high_contrast()),
-            "dark" => Some(Theme::dark()),
-            _ => None,
+        let requested_theme = std::env::var("QOS_SHOTS_THEME").ok();
+        let requested_scale = std::env::var("QOS_SHOTS_TEXT_SCALE")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite());
+        if requested_theme.is_none() && requested_scale.is_none() {
+            return None;
         }
+        let theme = match requested_theme
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("light") => Theme::light(),
+            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
+            _ => Theme::dark(),
+        };
+        Some(if let Some(scale) = requested_scale {
+            theme.with_text_scale(scale)
+        } else {
+            theme
+        })
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`], with
@@ -1280,6 +1296,7 @@ impl FrameBuilder {
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
             || std::env::var_os("QOS_SHOTS_THEME").is_some()
+            || std::env::var_os("QOS_SHOTS_TEXT_SCALE").is_some()
             || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
