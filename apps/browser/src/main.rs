@@ -92,6 +92,7 @@ pub fn main() {
                 "--shots-overlay",
                 "--shots-pip-empty",
                 "--shots-settings",
+                "--shots-loading",
                 "--shots-error",
                 "--shots-library",
                 "--library-section",
@@ -209,6 +210,18 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .value("--size")
             .and_then(parse_size)
             .unwrap_or((900, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-loading") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_loading();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 620));
         widget.debug_set_viewport_width(size.0);
         render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
             .map_err(|error| LaunchError::Operation(error.to_string()))?;

@@ -32,6 +32,11 @@
 
 use std::path::PathBuf;
 
+/// Keep history useful without letting a long-lived profile turn every
+/// address-bar query, resource snapshot, or persisted JSON write into an
+/// unbounded operation.
+pub const MAX_HISTORY_ENTRIES: usize = 10_000;
+
 /// One visited page. De-duplicated by [`HistoryEntry::url`] in the store.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
@@ -47,9 +52,20 @@ pub struct HistoryEntry {
 }
 
 /// The full browsing history: a flat, URL-keyed list of [`HistoryEntry`].
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct History {
     entries: Vec<HistoryEntry>,
+    /// Changes only when the durable corpus changes.  Consumers such as the
+    /// global-search index can therefore make an unchanged sync O(1).
+    revision: u64,
+}
+
+// The revision is an in-memory cache token rather than part of history's
+// durable model value.
+impl PartialEq for History {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
 }
 
 // --- Ranking weights ----------------------------------------------------
@@ -70,12 +86,16 @@ impl History {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            revision: 0,
         }
     }
 
     /// Drop all history (the settings "clear history" action).
     pub fn clear(&mut self) {
-        self.entries.clear();
+        if !self.entries.is_empty() {
+            self.entries.clear();
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 
     /// All entries, unordered (insertion order). Mostly for inspection
@@ -92,6 +112,11 @@ impl History {
     /// Whether no page has been recorded yet.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Monotonic-in-practice change token for cached projections.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Record a visit to `url` with `title`, stamped at the current wall
@@ -127,6 +152,8 @@ impl History {
                 visit_count: 1,
             });
         }
+        self.trim_to_limit();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Fuzzy-ranked address-bar suggestions for `query`, best first,
@@ -279,7 +306,27 @@ impl History {
                 });
             }
         }
-        History { entries }
+        let mut history = History {
+            entries,
+            revision: 0,
+        };
+        history.trim_to_limit();
+        history
+    }
+
+    fn trim_to_limit(&mut self) {
+        if self.entries.len() <= MAX_HISTORY_ENTRIES {
+            return;
+        }
+        // Drop the least useful entry first.  The URL tie-break keeps the
+        // retained corpus deterministic even when timestamps are identical.
+        self.entries.sort_by(|a, b| {
+            b.last_visit
+                .cmp(&a.last_visit)
+                .then_with(|| b.visit_count.cmp(&a.visit_count))
+                .then_with(|| a.url.cmp(&b.url))
+        });
+        self.entries.truncate(MAX_HISTORY_ENTRIES);
     }
 }
 
@@ -456,6 +503,25 @@ mod tests {
         h.record_at("https://a.test", "A", 100);
         h.record_at("https://b.test", "B", 100);
         assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn history_evicts_oldest_rows_at_the_resource_bound() {
+        let mut h = History::new();
+        for index in 0..=MAX_HISTORY_ENTRIES {
+            h.record_at(
+                &format!("https://{index}.example.test"),
+                "Page",
+                u64::try_from(index).unwrap_or(u64::MAX),
+            );
+        }
+        assert_eq!(h.len(), MAX_HISTORY_ENTRIES);
+        assert!(
+            !h.entries()
+                .iter()
+                .any(|entry| entry.url == "https://0.example.test"),
+            "the least recent row is evicted first"
+        );
     }
 
     #[test]
