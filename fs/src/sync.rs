@@ -981,6 +981,7 @@ fn blob_guard(
 #[derive(Clone)]
 pub struct SyncHandle {
     local_tx: mpsc::UnboundedSender<Bytes>,
+    record_index_generation: tokio::sync::watch::Sender<u64>,
 }
 
 impl SyncHandle {
@@ -989,6 +990,29 @@ impl SyncHandle {
         if !delta.is_empty() {
             let _ = self.local_tx.send(Bytes::from(delta));
         }
+    }
+
+    /// Subscribe to coalesced completed namespace mutations.  Consumers only
+    /// need the latest generation: rebuilding an ACL view for every member of
+    /// a remote burst would be wasted work and could publish an intermediate
+    /// projection.
+    pub fn subscribe_record_index_generation(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.record_index_generation.subscribe()
+    }
+
+    pub(crate) fn notify_record_index_changed(&self) {
+        self.record_index_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_handle() -> Arc<Self> {
+        let (local_tx, _local_rx) = mpsc::unbounded_channel();
+        let (record_index_generation, _) = tokio::sync::watch::channel(0_u64);
+        Arc::new(Self {
+            local_tx,
+            record_index_generation,
+        })
     }
 }
 
@@ -1621,6 +1645,11 @@ impl Workspace {
         };
 
         let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let (record_index_generation, _) = tokio::sync::watch::channel(0_u64);
+        let sync = Arc::new(SyncHandle {
+            local_tx,
+            record_index_generation,
+        });
         let mut tasks = Vec::new();
         let (gossip_sender, reconcile_rx) = if policy.is_none() {
             let topic = TopicId::from_bytes(topic_bytes);
@@ -1636,6 +1665,7 @@ impl Workspace {
                 local_rx,
                 namespace.clone(),
                 hydrator.clone(),
+                Arc::clone(&sync),
             ))));
             (Some(sender), None)
         } else {
@@ -1657,11 +1687,12 @@ impl Workspace {
             policy,
             records: record_plane,
             local_rx: reconcile_rx,
+            sync: Arc::clone(&sync),
         }))));
 
         Ok(Workspace {
             namespace,
-            sync: Arc::new(SyncHandle { local_tx }),
+            sync,
             _router: router,
             _tasks: tasks,
         })
@@ -1702,6 +1733,7 @@ async fn pump_loop(
     mut local_rx: mpsc::UnboundedReceiver<Bytes>,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
+    sync: Arc<SyncHandle>,
 ) {
     loop {
         tokio::select! {
@@ -1724,6 +1756,7 @@ async fn pump_loop(
                             ns.apply_remote_and_resolve(msg.content.as_ref())
                                 .unwrap_or_default()
                         };
+                        sync.notify_record_index_changed();
                         if !resolve_delta.is_empty() {
                             let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
                         }
@@ -2127,6 +2160,7 @@ struct ReconcileLoop {
     policy: PeerPolicy,
     records: Option<RecordPlane>,
     local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    sync: Arc<SyncHandle>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2140,6 +2174,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         policy,
         records,
         mut local_rx,
+        sync,
     } = reconcile;
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
@@ -2256,6 +2291,10 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 )
                 .await;
             }
+        }
+
+        if namespace_changed {
+            sync.notify_record_index_changed();
         }
 
         if let Err(error) = prefetch_namespace_thumbnails(
