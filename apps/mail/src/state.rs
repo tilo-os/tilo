@@ -111,6 +111,11 @@ pub struct MailState {
     pub now_min: i64,
     pub folder: Folder,
     pub selected: Option<MessageId>,
+    /// The selected message was explicitly inspected rather than opened. This
+    /// is transient presentation state (never collaborative data): it makes
+    /// the no-side-effect mode visible in the reader and prevents the normal
+    /// read-on-open action from being queued.
+    pub inspection: Option<MessageId>,
     pub search: String,
     pub status: Option<String>,
 
@@ -184,6 +189,7 @@ impl MailState {
             now_min,
             folder: Folder::Inbox,
             selected: None,
+            inspection: None,
             search: String::new(),
             status: None,
             images,
@@ -291,6 +297,7 @@ impl MailState {
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
         self.selected = Some(id);
+        self.inspection = None;
         // Opening is the user-visible read boundary. Use the exact same typed,
         // replayable flag action as the row/reader/palette instead of a private
         // direct write; `set_read` also mirrors \Seen to IMAP. Indexing and
@@ -385,15 +392,17 @@ impl MailState {
     }
 
     /// Reveal a loaded message as presentation state. The owning app follows a
-    /// successful resource-operation reveal with the normal collaborative
-    /// mark-read action at its next mutable document boundary.
-    pub fn reveal_message(&mut self, id: MessageId) -> bool {
+    /// *normal open* with the collaborative mark-read action at its next
+    /// mutable document boundary; an explicit inspection remains read-state
+    /// neutral and is visibly tagged in the reader.
+    pub fn reveal_message(&mut self, id: MessageId, inspect_without_marking_read: bool) -> bool {
         let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
             return false;
         };
         self.folder = folder;
         self.search.clear();
         self.selected = Some(id);
+        self.inspection = inspect_without_marking_read.then_some(id);
         self.push_intent(Intent::ShowDetail);
         self.dirty = true;
         true
