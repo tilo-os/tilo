@@ -128,6 +128,44 @@ impl CalDoc {
         Self::write_event_fields(doc, &m, e);
     }
 
+    /// Apply only the event registers named in a sparse action patch. The
+    /// event must already exist: a field edit racing a delete is a harmless
+    /// no-op, never an accidental recreation with half a schema.
+    pub fn patch_event(doc: &mut AutoCommit, id: Id, patch: &crate::actions::EventPatch) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&events, id.to_string().as_str())
+        else {
+            return;
+        };
+        if let Some(value) = &patch.title {
+            let _ = doc.put(&item, "title", value.as_str());
+        }
+        if let Some(value) = &patch.start {
+            let _ = doc.put(&item, "start", value.as_str());
+        }
+        if let Some(value) = &patch.end {
+            let _ = doc.put(&item, "end", value.as_str());
+        }
+        if let Some(value) = patch.all_day {
+            let _ = doc.put(&item, "all_day", value);
+        }
+        if let Some(value) = &patch.location {
+            let _ = doc.put(&item, "location", value.as_str());
+        }
+        if let Some(value) = patch.color {
+            let _ = doc.put(&item, "color", value as i64);
+        }
+        if let Some(value) = &patch.rrule {
+            let _ = doc.put(&item, "rrule", value.as_str());
+        }
+        if let Some(value) = patch.reminder {
+            let _ = doc.put(&item, "reminder", value);
+        }
+        if let Some(value) = &patch.calendar_id {
+            let _ = doc.put(&item, "cal", value.as_str());
+        }
+    }
+
     /// Update just a task's scalar fields (e.g. toggling `done`).
     pub fn update_task(doc: &mut AutoCommit, t: &Task) {
         let tasks = Self::map_at(doc, "tasks");
@@ -300,6 +338,24 @@ impl CalDoc {
             return None;
         };
         Some(Self::ensure_notes_list(doc, &m))
+    }
+
+    /// Whether an event has any collaborative note blocks, without creating a
+    /// missing list as a side effect. Used by the new-event draft policy: Back
+    /// may discard only a draft with no meaningful text anywhere in it.
+    pub fn event_has_notes(doc: &AutoCommit, id: Id) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), events))) = doc.get(&ROOT, "events") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, id.to_string().as_str())
+        else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::List), notes))) = doc.get(&event, "notes") else {
+            return false;
+        };
+        doc.length(&notes) > 0
     }
 
     /// The `notes` block list for a task, get-or-create.

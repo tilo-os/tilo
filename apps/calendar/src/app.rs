@@ -313,6 +313,10 @@ pub struct CalendarApp {
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
     status: Option<String>,
+    /// A just-created blank event is a provisional draft until the user edits
+    /// any event field or adds notes. Back/Escape may discard *only* this exact
+    /// pristine object; every other event follows normal autosave semantics.
+    fresh_draft: Option<Event>,
     dirty: bool,
 
     // --- timeline (week/day) scroll + drag -------------------------------
@@ -366,6 +370,14 @@ impl CalendarApp {
     /// content, in-memory only (never touches disk).
     pub fn new_demo() -> Self {
         Self::build(true, None)
+    }
+
+    /// A hermetic first-run instance used only by the offscreen visual suite.
+    /// Unlike [`Self::new`], it deliberately does not open the user's real
+    /// saved calendar: a “No events yet” shot must prove empty-state UX rather
+    /// than accidentally rendering whatever a previous local run persisted.
+    pub fn new_empty_for_shots() -> Self {
+        Self::build(false, None)
     }
 
     #[cfg(test)]
@@ -441,6 +453,7 @@ impl CalendarApp {
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: None,
+            fresh_draft: None,
             dirty: true,
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
@@ -1084,15 +1097,22 @@ impl CalendarApp {
         }
         let title = self.title_input.value().to_string();
         let location = self.location_input.value().to_string();
-        let snap = if let Some(e) = self.model.event_mut(id) {
-            e.title = title;
-            e.location = location;
-            Some(e.clone())
+        let patch = if let Some(e) = self.model.event_mut(id) {
+            let mut patch = crate::actions::EventPatch::default();
+            if title_dirty.is_some() && e.title != title {
+                e.title = title;
+                patch.title = Some(e.title.clone());
+            }
+            if loc_dirty.is_some() && e.location != location {
+                e.location = location;
+                patch.location = Some(e.location.clone());
+            }
+            (!patch.is_empty()).then_some(patch)
         } else {
             None
         };
-        if let Some(snap) = snap {
-            self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
+        if let Some(patch) = patch {
+            self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
             self.force_persist = true;
             self.dirty = true;
         }
@@ -1231,10 +1251,28 @@ impl CalendarApp {
                     .collect(),
             })
             .collect();
+        // Keep the resource tree's available destinations identical to the
+        // editor's selector: a local calendar plus real collections discovered
+        // in the shared accounts store. Account configuration remains in
+        // Settings; this is the live, agent-addressable projection Calendar
+        // can actually file an event into.
+        let mut calendar_targets = vec![crate::actions::CalendarTargetResource {
+            id: "local".to_string(),
+            label: "On this device".to_string(),
+            color: None,
+        }];
+        calendar_targets.extend(self.accounts.all_calendars().map(|(account, calendar)| {
+            crate::actions::CalendarTargetResource {
+                id: calendar.id.clone(),
+                label: format!("{} · {}", account.label(), calendar.name),
+                color: Some(calendar.palette().index()),
+            }
+        }));
         crate::actions::CalendarResourceCtx {
             new_event: crate::actions::EventData::from_event(&template),
             events,
             tasks,
+            calendar_targets,
             can_sync: self.demo || !self.accounts.is_empty(),
             syncing: self.syncing,
             can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
@@ -1431,6 +1469,7 @@ impl CalendarApp {
     fn spawn_event(&mut self, ev: Event, doc: &mut AutoCommit) {
         let id = ev.id;
         self.perform_action(doc, &crate::actions::upsert_event_action(&ev));
+        self.fresh_draft = Some(ev.clone());
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
         self.select_event(id);
@@ -1438,6 +1477,29 @@ impl CalendarApp {
         self.location_input.set_text("");
         self.focus_field(FormField::Title);
         self.status = Some("New event".into());
+    }
+
+    /// Delete an untouched new draft when its editor is dismissed. This is
+    /// deliberately narrower than “cancel event”: a user-created event with a
+    /// title, any changed field, or notes is already useful work and remains
+    /// autosaved. The delete travels through the normal replayable action path,
+    /// so collaborators and history see the same discard.
+    fn discard_pristine_draft(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(initial) = self.fresh_draft.take() else {
+            return false;
+        };
+        let id = initial.id;
+        let Some(current) = self.model.event(id).cloned() else {
+            return false;
+        };
+        if !crate::actions::EventPatch::between(&initial, &current).is_empty()
+            || CalDoc::event_has_notes(doc, id)
+        {
+            return false;
+        }
+        self.delete_event(id, doc);
+        self.status = Some("Discarded empty draft".into());
+        true
     }
 
     /// Create a timed event spanning `[start_min, end_min]` minutes-of-day on
@@ -1488,20 +1550,22 @@ impl CalendarApp {
     ) {
         let start = day.and_time(min_to_time(start_min));
         let end = start + Duration::minutes(dur_min.max(TIMELINE_SNAP_MIN));
-        let snap = if let Some(e) = self.model.event_mut(id) {
+        let patch = if let Some(e) = self.model.event_mut(id) {
             // An all-day event has no place on the timed grid; leave it alone.
             if e.all_day {
                 None
             } else {
+                let before = e.clone();
                 e.start = start;
                 e.end = end;
-                Some(e.clone())
+                let patch = crate::actions::EventPatch::between(&before, e);
+                (!patch.is_empty()).then_some(patch)
             }
         } else {
             None
         };
-        if let Some(snap) = snap {
-            self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
+        if let Some(patch) = patch {
+            self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
             self.status = Some("Event rescheduled".into());
             self.force_persist = true;
             self.dirty = true;
@@ -1973,14 +2037,16 @@ impl CalendarApp {
 
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut AutoCommit, f: F) {
         if let Some(Sel::Event(id)) = self.selection {
-            let snap = if let Some(e) = self.model.event_mut(id) {
+            let patch = if let Some(e) = self.model.event_mut(id) {
+                let before = e.clone();
                 f(e);
-                Some(e.clone())
+                let patch = crate::actions::EventPatch::between(&before, e);
+                (!patch.is_empty()).then_some(patch)
             } else {
                 None
             };
-            if let Some(snap) = snap {
-                self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
+            if let Some(patch) = patch {
+                self.perform_action(doc, &crate::actions::patch_event_action(id, patch));
                 self.dirty = true;
             }
         }
@@ -2289,6 +2355,7 @@ impl CalendarApp {
                 }
             }
             Action::CloseDetail => {
+                self.discard_pristine_draft(doc);
                 self.detail_open = false;
                 self.selection = None;
                 self.narrow_screen = NarrowScreen::Calendar;
@@ -2298,6 +2365,7 @@ impl CalendarApp {
             Action::DismissSidebar => self.sidebar.set_open(false),
             Action::ToggleSidebarCollapsed => self.sidebar.toggle_collapsed(),
             Action::BackToCalendar => {
+                self.discard_pristine_draft(doc);
                 self.narrow_screen = NarrowScreen::Calendar;
                 // The calendar screen owns the keyboard once the editor is off
                 // it; release the form fields so keystrokes don't leak into the
@@ -4055,7 +4123,7 @@ impl CalendarApp {
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
         if matches!(logical_key, Key::Named(NamedKey::Escape))
-            && self.handle_keyboard_escape(field_focused, handled)
+            && self.handle_keyboard_escape(state, field_focused, handled)
         {
             return true;
         }
@@ -4093,7 +4161,12 @@ impl CalendarApp {
     /// blur a focused field, then dismiss the overlay flap, then pop the
     /// narrow detail screen, then close the detail. Split out of
     /// `handle_keyboard` to keep that under the line cap.
-    fn handle_keyboard_escape(&mut self, field_focused: bool, handled: &mut bool) -> bool {
+    fn handle_keyboard_escape(
+        &mut self,
+        state: &mut AutoCommit,
+        field_focused: bool,
+        handled: &mut bool,
+    ) -> bool {
         if self.timeline.cancel_drag() {
             *handled = true;
             self.dirty = true;
@@ -4115,6 +4188,7 @@ impl CalendarApp {
         if matches!(self.detail_mode, DetailMode::FullScreen)
             && matches!(self.narrow_screen, NarrowScreen::Detail)
         {
+            self.discard_pristine_draft(state);
             self.narrow_screen = NarrowScreen::Calendar;
             self.notes_editor.set_focus(false);
             *handled = true;
@@ -4122,6 +4196,7 @@ impl CalendarApp {
             return true;
         }
         if self.detail_open {
+            self.discard_pristine_draft(state);
             self.detail_open = false;
             self.selection = None;
             self.narrow_screen = NarrowScreen::Calendar;
@@ -5863,6 +5938,44 @@ mod tests {
         app.apply_action(Action::NewEvent, &mut state);
         assert_eq!(app.model.events.len(), before + 1);
         assert!(matches!(app.selection, Some(Sel::Event(_))));
+    }
+
+    #[test]
+    fn dismissing_a_pristine_new_event_discards_it_through_the_delete_action() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let before = app.model.events.len();
+        app.apply_action(Action::NewEvent, &mut state);
+        let id = app.selected_event().expect("new event selected");
+
+        app.apply_action(Action::BackToCalendar, &mut state);
+
+        assert_eq!(app.model.events.len(), before, "untouched draft is gone");
+        assert!(app.model.event(id).is_none());
+        assert!(CalDoc::read_model(&state).event(id).is_none());
+        let dispatched = app.last_dispatched().expect("discard action dispatched");
+        assert!(matches!(
+            serde_json::from_slice::<crate::actions::CalendarAction>(&dispatched.payload)
+                .expect("calendar delete action"),
+            crate::actions::CalendarAction::DeleteEvent { id: deleted, .. } if deleted == id.to_string()
+        ));
+    }
+
+    #[test]
+    fn dismissing_an_edited_new_event_keeps_its_autosaved_changes() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.apply_action(Action::NewEvent, &mut state);
+        let id = app.selected_event().expect("new event selected");
+        app.apply_action(Action::CycleColor, &mut state);
+
+        app.apply_action(Action::BackToCalendar, &mut state);
+
+        assert!(app.model.event(id).is_some(), "edited draft remains");
+        assert!(CalDoc::read_model(&state).event(id).is_some());
+        assert!(app.fresh_draft.is_none(), "it is now an ordinary autosaved event");
     }
 
     #[test]

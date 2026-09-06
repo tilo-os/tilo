@@ -93,8 +93,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--collapse` collapses the persistent sidebar (wide layout) so a shot
         // can prove the three-abreast layout folds down to calendar + detail.
         let collapse = args.iter().any(|a| a == "--collapse");
-        // `--empty` renders the real live app (persisted document + configured
-        // accounts, i.e. empty on a fresh machine) rather than the sample seed.
+        // `--empty` is a hermetic first-run state, never the developer's saved
+        // calendar. This makes empty/error screenshots meaningful and avoids
+        // a prior local draft leaking into visual review.
         let empty = args.iter().any(|a| a == "--empty");
         let sync_state = parse_flag_value(&args, "--sync-state")
             .and_then(|value| value.to_str().map(ToOwned::to_owned));
@@ -111,7 +112,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|p| p.to_str().and_then(|s| s.trim().parse::<f64>().ok()));
         let build = || {
             if empty {
-                let mut app = CalendarApp::new();
+                let mut app = CalendarApp::new_empty_for_shots();
                 if let Some(v) = view {
                     app.shots_set_view(v);
                 }
