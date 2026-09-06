@@ -21,9 +21,9 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 pub const PANEL_HEIGHT: f64 = 160.0;
-/// Search results get a taller dock: a list of file-and-line hits is only
-/// useful if you can see more than a handful at once.
-pub const PANEL_HEIGHT_SEARCH: f64 = 300.0;
+/// Search gets a little more room than diagnostics without taking over the
+/// editor. The wheel and result count make deeper result sets discoverable.
+pub const PANEL_HEIGHT_SEARCH: f64 = 216.0;
 const _: () = assert!(
     PANEL_HEIGHT_SEARCH > PANEL_HEIGHT,
     "the search dock must be the taller of the two"
@@ -550,12 +550,17 @@ impl BottomPanel {
                 self.rect.x1,
                 self.rect.y1,
             );
+            let compact = self.rect.width() < 520.0;
             let (icon, title, message) = match &self.analysis {
                 Some(note) => (
                     ui::icons::Icon::RotateCw,
                     note.as_str(),
-                    "Nothing has been analysed yet. Problems appear here as \
-                     the language server reports them.",
+                    if compact {
+                        "Problems appear here as analysis completes."
+                    } else {
+                        "Nothing has been analysed yet. Problems appear here as \
+                         the language server reports them."
+                    },
                 ),
                 // Scoped to the open file, because that is what was
                 // actually checked — the linter reads the active buffer,
@@ -563,8 +568,12 @@ impl BottomPanel {
                 None => (
                     ui::icons::Icon::Check,
                     "No problems in this file",
-                    "Diagnostics from the language server and the built-in \
-                     checks both land here.",
+                    if compact {
+                        "Diagnostics and built-in checks appear here."
+                    } else {
+                        "Diagnostics from the language server and the built-in \
+                         checks both land here."
+                    },
                 ),
             };
             EmptyState::paint(
