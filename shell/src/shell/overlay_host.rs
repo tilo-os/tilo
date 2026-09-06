@@ -1848,6 +1848,19 @@ impl ShellOverlayHost {
         self.capture_studio.is_open()
     }
 
+    /// Whether an inner shell surface currently owns the seat even though it
+    /// is not represented by one of the ordinary chrome overlay flags.
+    ///
+    /// Capture Studio deliberately stops being modal after recording starts,
+    /// so `capture_studio_open` is too broad for this boundary: the recording
+    /// pill must leave applications interactive. Screenshot markup and the
+    /// power confirmation remain modal for their whole lifetime.
+    pub(crate) fn inner_surface_captures_input(&self) -> bool {
+        self.power_menu.is_open()
+            || self.screenshot_markup.is_some()
+            || self.capture_studio.modal_capture().is_some()
+    }
+
     pub fn open_screenshot_markup(
         &mut self,
         rgba: Arc<[u8]>,
@@ -4472,6 +4485,27 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let tree = st.tree();
             crate::compositor::client_input::step_active_window(&tree, steps)
+        };
+        let Some((strip, group, tab)) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Alt+Tab-style traversal of the active strip. Unlike spatial
+    /// Super+Arrow movement, a conventional switcher is a ring: continuing
+    /// past either end returns to the opposite end.
+    pub fn cycle_focus_along_strip(&mut self, direction: i32) -> bool {
+        if direction == 0 {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            crate::compositor::client_input::cycle_active_window(&tree, direction)
         };
         let Some((strip, group, tab)) = target else {
             return false;
@@ -7289,8 +7323,8 @@ impl ShellOverlayHost {
     /// (`Alt+Space` is the nested-Wayland-client substitute, since a
     /// host DE running qOS as a client swallows Super first).
     /// `Super+H` toggles workspace history; `Alt+Tab` changes windows,
-    /// `Ctrl+Tab` changes tabs, `Super+Tab` toggles the overview; Esc closes the top
-    /// overlay. Only called for a `Pressed` `KeyboardInput`.
+    /// `Ctrl+Tab` changes tabs, `Super+Tab` toggles the overview; Esc closes
+    /// the top overlay. Only called for a `Pressed` `KeyboardInput`.
     fn capture_shortcut_chord(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
@@ -7323,6 +7357,23 @@ impl ShellOverlayHost {
                     Some("Could not save that shortcut. Press another shortcut.".into());
             }
         }
+    }
+
+    /// Whether the current user-edited shortcut table claims this key.
+    ///
+    /// The compositor asks before offering a press to a focused Wayland
+    /// client. Reloading here makes a binding changed in Settings effective
+    /// without restarting the session, matching the dispatcher below.
+    pub(crate) fn configured_shortcut_matches(
+        &self,
+        logical_key: &Key,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        configured_shortcut_matches(
+            &settings_store::hardware::ShortcutConfig::load(),
+            logical_key,
+            modifiers,
+        )
     }
 
     fn reset_shortcut_pair(
@@ -7463,6 +7514,15 @@ impl ShellOverlayHost {
         let alt_down = mstate.alt_key();
         let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
+        // The session action sheet is modal. It owns every key while open so
+        // typing cannot leak into a hosted or Wayland app behind it; the
+        // conventional navigation keys make every action reachable.
+        if self.power_menu.is_open() {
+            let outcome = self.power_menu.key(logical_key, shift_down);
+            self.apply_power_menu_outcome(outcome);
+            *handled = true;
+            return true;
+        }
         // Print Screen is a desktop key, not application input. Keep it as a
         // direct route into the same trusted Capture Studio used by
         // Super+Shift+S and screenshot portal requests.
@@ -7636,10 +7696,10 @@ impl ShellOverlayHost {
                     let _ = self.reorder_focused_group(1);
                 }
                 ShortcutAction::FocusPreviousWindow => {
-                    let _ = self.step_focus_along_strip(-1);
+                    let _ = self.cycle_focus_along_strip(-1);
                 }
                 ShortcutAction::FocusNextWindow => {
-                    let _ = self.step_focus_along_strip(1);
+                    let _ = self.cycle_focus_along_strip(1);
                 }
                 ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
                     let direction = if action == ShortcutAction::PreviousStrip {
@@ -7680,7 +7740,7 @@ impl ShellOverlayHost {
         // also makes an old/partial settings file harmless after upgrade.
         if alt_down && matches!(logical_key, Key::Named(NamedKey::Tab)) {
             let direction = if shift_down { -1 } else { 1 };
-            let _ = self.step_focus_along_strip(direction);
+            let _ = self.cycle_focus_along_strip(direction);
             *handled = true;
             return true;
         }
@@ -8577,7 +8637,12 @@ impl ShellOverlayHost {
     }
 
     fn handle_power_menu_click(&mut self, p: Point) -> bool {
-        match self.power_menu.click(self.rect, p) {
+        let outcome = self.power_menu.click(self.rect, p);
+        self.apply_power_menu_outcome(outcome)
+    }
+
+    fn apply_power_menu_outcome(&self, outcome: PowerMenuClick) -> bool {
+        match outcome {
             PowerMenuClick::Ignored => false,
             PowerMenuClick::Consumed => true,
             PowerMenuClick::Execute(action) => {
@@ -9643,6 +9708,17 @@ fn shortcut_chord_matches(
         && chord.modifiers.contains("Ctrl") == state.control_key()
         && chord.modifiers.contains("Alt") == state.alt_key()
         && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+fn configured_shortcut_matches(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> bool {
+    shortcuts
+        .bindings
+        .values()
+        .any(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
 }
 
 fn shortcut_key_name(logical_key: &Key) -> Option<String> {
@@ -15879,6 +15955,28 @@ mod palette_dispatch_tests {
         let rows = shortcut_reference_rows(&shortcuts);
         assert!(rows.contains(&("Global search", "Alt+G".into())));
         assert!(!rows.contains(&("Global search", "Super+K".into())));
+    }
+
+    #[test]
+    fn a_rebound_shortcut_is_claimed_before_a_focused_client() {
+        let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+        shortcuts
+            .set(
+                settings_store::hardware::ShortcutAction::Search,
+                settings_store::hardware::KeyChord::parse("Alt+G").unwrap(),
+            )
+            .unwrap();
+        let alt = winit::event::Modifiers::from(ModifiersState::ALT);
+        assert!(configured_shortcut_matches(
+            &shortcuts,
+            &Key::Character("g".into()),
+            alt,
+        ));
+        assert!(!configured_shortcut_matches(
+            &shortcuts,
+            &Key::Character("g".into()),
+            winit::event::Modifiers::default(),
+        ));
     }
 
     #[test]
