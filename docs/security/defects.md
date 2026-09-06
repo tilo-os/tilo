@@ -441,6 +441,18 @@ in `shell/`, `ui/`, or `apps/`. Roles are therefore advisory in practice.
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
 tests. `ui/src/widget/channel_browser.rs` is a complete widget with no shell call site.
 
+**Resolved.** Both production ingress paths now call
+`validate_admitted_inbound_op` before recording or fanning out an operation.
+The network broker validates the certified route and current workspace role;
+the Cap'n Proto broker uses the independently admitted join identity and the
+same artifact state. Invalid signatures, stale/replayed operations, route
+mismatches, role violations and already-redacted targets are rejected before
+publication. The old `register_channel_state` observation described a previous
+bootstrap shape; current authority is populated from admitted workspace state
+at the ingress boundary instead of trusting an app-supplied role attestation.
+Held by the broker ingress tests in `collab_broker.rs` and
+`collab_broker_capnp.rs` plus `collab-types/tests/validator.rs`.
+
 ---
 
 ## P1-5 — No lock on suspend; idle auto-lock off by default
@@ -452,6 +464,13 @@ can lock before the machine sleeps"* — which is not implemented.
 
 `shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `QOS_IDLE_LOCK_SECS`.
+
+**Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
+`PowerSignal::Lock` before sleep, while the resume edge resets idle state.
+The compositor defaults both blanking and locking to five minutes; an explicit
+`QOS_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
+sleep-edge mapping and secure default, and `shell/tests/session_lock_e2e.rs`
+drives idle lock plus failed and successful unlock through the live loop.
 
 ---
 
