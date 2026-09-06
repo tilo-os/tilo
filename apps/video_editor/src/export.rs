@@ -359,14 +359,14 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
 /// render that had taken minutes. What actually distinguishes a wedged
 /// pipeline from a slow one is whether anything is *happening*, so this
 /// watches for the output growing and gives up only on silence.
+#[cfg(any(feature = "gst", test))]
 #[derive(Debug)]
-#[cfg(feature = "gst")]
 struct FlushWatch {
     last_len: u64,
     last_progress: std::time::Instant,
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", test))]
 impl FlushWatch {
     fn new(len: u64, now: std::time::Instant) -> Self {
         Self {
@@ -2381,6 +2381,7 @@ mod tests {
         };
         let mut grey = neutral.clone();
         grey.clip_mut(cid).unwrap().effects = vec![crate::model::ClipEffect {
+            id: uuid::Uuid::new_v4(),
             kind: crate::model::EffectKind::Grayscale,
             amount: 1.0,
         }];
@@ -2458,6 +2459,7 @@ mod tests {
                 c.out_point = 41.0;
                 c.transition = kind;
                 c.effects = vec![crate::model::ClipEffect {
+                    id: uuid::Uuid::new_v4(),
                     kind: crate::model::EffectKind::Invert,
                     amount: 1.0,
                 }];

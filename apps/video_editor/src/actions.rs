@@ -66,6 +66,13 @@ pub fn clip_resource_id(id: Uuid) -> String {
     format!("video.clip:{id}")
 }
 
+/// A stack entry is an authored value, not its current ordinal. Pairing the
+/// immutable effect id with its owner keeps duplicate effects distinct and
+/// makes a stale row fail closed after a reorder or delete.
+pub fn effect_resource_id(clip: Uuid, effect: Uuid) -> String {
+    format!("video.effect:{clip}:{effect}")
+}
+
 pub fn marker_resource_id(id: Uuid) -> String {
     format!("video.marker:{id}")
 }
@@ -80,6 +87,10 @@ pub fn reveal_track_address(id: Uuid) -> ActionAddress {
 
 pub fn reveal_clip_address(id: Uuid) -> ActionAddress {
     ActionAddress::new(clip_resource_id(id), "open")
+}
+
+pub fn reveal_effect_address(clip: Uuid, effect: Uuid) -> ActionAddress {
+    ActionAddress::new(effect_resource_id(clip, effect), "open")
 }
 
 pub fn reveal_marker_address(id: Uuid) -> ActionAddress {
@@ -97,6 +108,10 @@ pub enum VideoEditorOperation {
     },
     RevealClip {
         clip: String,
+    },
+    RevealEffect {
+        clip: String,
+        effect: String,
     },
     RevealMarker {
         marker: String,
@@ -128,6 +143,7 @@ pub fn operation_kind(operation: &VideoEditorOperation) -> OperationKind {
     match operation {
         VideoEditorOperation::RevealTrack { .. }
         | VideoEditorOperation::RevealClip { .. }
+        | VideoEditorOperation::RevealEffect { .. }
         | VideoEditorOperation::RevealMarker { .. }
         | VideoEditorOperation::RevealMedia { .. } => OperationKind::View,
         VideoEditorOperation::ImportMedia { .. }
@@ -154,6 +170,7 @@ fn operation(
     match value {
         VideoEditorOperation::RevealTrack { .. }
         | VideoEditorOperation::RevealClip { .. }
+        | VideoEditorOperation::RevealEffect { .. }
         | VideoEditorOperation::RevealMarker { .. }
         | VideoEditorOperation::RevealMedia { .. } => spec
             .with_contract(ActionContract::view())
@@ -201,8 +218,8 @@ pub struct ClipData {
     /// [`Clip::transition_len`] resolves to the default.
     #[serde(default)]
     pub transition_duration: f64,
-    /// The ordered effects stack, carried verbatim so a whole-clip write
-    /// (add / remove / reorder an effect) replays byte-identically.
+    /// The ordered effects stack, carried verbatim by explicit full
+    /// replacements; ordinary effect edits patch only this stored key.
     #[serde(default)]
     pub effects: Vec<crate::model::ClipEffect>,
     /// Geometry: crop, scale, rotation, position, anchor. Absent on the
@@ -254,6 +271,12 @@ pub struct ClipData {
 
 impl ClipData {
     pub fn from_clip(c: &Clip) -> Self {
+        // An older in-memory project can still enter through file import or a
+        // test fixture. Normalise its stack before it crosses the action
+        // boundary so the next ordinary collaborative write persists ids;
+        // never rely on random identity during `Action::apply`.
+        let mut normalised = c.clone();
+        normalised.ensure_effect_ids();
         Self {
             id: c.id.to_string(),
             track: c.track.to_string(),
@@ -271,7 +294,7 @@ impl ClipData {
             fade_in: c.fade_in,
             fade_out: c.fade_out,
             transition_duration: c.transition_duration,
-            effects: c.effects.clone(),
+            effects: normalised.effects,
             transform: c.transform,
             speed: c.speed,
             curves: c.curves.clone(),
@@ -289,7 +312,7 @@ impl ClipData {
     /// unparseable id) so `apply` can no-op instead of fabricating a value,
     /// which would break replay determinism.
     fn to_clip(&self) -> Option<Clip> {
-        Some(Clip {
+        let mut clip = Clip {
             id: self.id.parse::<Uuid>().ok()?,
             track: self.track.parse::<Uuid>().ok()?,
             media: self.media.parse::<Uuid>().ok()?,
@@ -322,7 +345,9 @@ impl ClipData {
             link: self.link.as_ref().and_then(|l| l.parse::<Uuid>().ok()),
             sound_split: self.sound_split,
             link_follows: self.link_follows,
-        })
+        };
+        clip.ensure_effect_ids();
+        Some(clip)
     }
 }
 
@@ -502,26 +527,74 @@ impl ProjectMeta {
 
 /// Every collaborative operation the editor exports on its timeline.
 ///
-/// One `UpsertClip` covers create, move, trim and every per-clip field edit —
-/// a whole-clip write carrying the final shape. The multi-clip operations
+/// `UpsertClip` is the durable first write for a newly-created clip. Existing
+/// clips use optimistic field patches, so an ordinary UI edit cannot restore
+/// unrelated state from an old snapshot. The structural multi-clip operations
 /// (`RippleDeleteClip`, `SplitClip`) carry every affected clip so they replay
 /// atomically as a single change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VideoEditorAction {
-    /// Create or replace a clip's fields: covers add, move (a new `start`),
-    /// trim (new `in`/`out`), grade, opacity/volume, fades, transition and
-    /// palette — all are just a new whole-clip write.
+    /// Create a newly-authored clip, or explicitly replace one with a complete
+    /// externally supplied snapshot. Normal editor interactions use a patch.
     UpsertClip(ClipData),
-    /// Create or replace **several** clips in one change, together with any
-    /// tracks the change needs that do not exist yet.
-    ///
-    /// What an edit that follows a link is: re-timing, trimming or moving one
-    /// half of a linked pair has to write both halves, and writing them as two
-    /// actions would let a peer replay one without the other and hear the
-    /// sound slide off the picture. One action, one undo boundary, both
-    /// clips. `tracks` is empty for every edit of clips that are already
-    /// placed; it carries a lane only when the change *makes* one — giving a
-    /// shot its own audio clip in a project that has no audio lane yet.
+    /// Update only the independently stored clip properties named by the
+    /// action, after checking the values the caller observed. Resource
+    /// commands use this instead of `UpsertClip` so stale palette specs have
+    /// no unrelated fields they could restore.
+    PatchClipFields {
+        clip: String,
+        changes: Vec<ClipFieldPatch>,
+    },
+    /// Several existing clips patched as one optimistic action. Preconditions
+    /// for every member are checked before any member is written.
+    PatchClipsFields { patches: Vec<ClipPatchData> },
+    /// Append one freshly-authored effect only while the stack still has the
+    /// identity order the caller saw. It changes no other clip field.
+    AddEffect {
+        clip: String,
+        expected_stack: Vec<Uuid>,
+        effect: crate::model::ClipEffect,
+    },
+    /// Change one named effect only if its amount still matches the state the
+    /// caller saw. This is intentionally not an `UpsertClip`: a stale slider
+    /// must refuse instead of restoring old trims, markers, or a reordered
+    /// stack over a collaborator's current document.
+    SetEffectAmount {
+        clip: String,
+        effect: String,
+        expected_amount_bits: u64,
+        amount: f64,
+    },
+    /// Remove the exact effect instance the caller saw. Kind and amount are
+    /// an optimistic precondition so an intervening edit refuses cleanly.
+    RemoveEffect {
+        clip: String,
+        effect: String,
+        expected_kind: EffectKind,
+        expected_amount_bits: u64,
+    },
+    /// Reorder a named instance only while it has the same index and neighbour
+    /// that made this movement meaningful. `neighbour` is the entry it swaps
+    /// with, so duplicate effect kinds never make an old arrow ambiguous.
+    MoveEffect {
+        clip: String,
+        effect: String,
+        expected_index: usize,
+        neighbour: String,
+        up: bool,
+    },
+    /// Clear a stack only while every current effect matches the snapshot.
+    /// This is deliberately a narrow effects write, never an old whole clip.
+    ClearEffects {
+        clip: String,
+        expected: Vec<crate::model::ClipEffect>,
+    },
+    /// Create or explicitly replace **several** clips in one change, together
+    /// with any tracks the change needs that do not exist yet. Ordinary edits
+    /// of existing linked clips use `PatchClipsFields`, so a stale snapshot
+    /// cannot restore unrelated fields. `tracks` carries a lane only when the
+    /// change makes one — for example, giving a shot its own audio clip in a
+    /// project that has no audio lane yet.
     UpsertClips {
         #[serde(default)]
         tracks: Vec<TrackData>,
@@ -586,6 +659,12 @@ pub enum VideoEditorAction {
     LoadProject(ProjectData),
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipPatchData {
+    pub clip: String,
+    pub changes: Vec<ClipFieldPatch>,
+}
+
 /// A whole project, in the shape [`Action::apply`] can write without
 /// re-deriving anything. Composed from the existing per-entity payloads so
 /// there is exactly one definition of "a clip on the wire".
@@ -598,6 +677,444 @@ pub struct ProjectData {
     pub tracks: Vec<TrackData>,
     #[serde(default)]
     pub clips: Vec<ClipData>,
+}
+
+/// Equality for optimistic effect mutations. `f64::to_bits` deliberately
+/// distinguishes a malformed NaN payload from an authored amount instead of
+/// letting two incomparable values look like a safe concurrent match.
+fn same_effect_stack(
+    current: &[crate::model::ClipEffect],
+    expected: &[crate::model::ClipEffect],
+) -> bool {
+    current.len() == expected.len()
+        && current.iter().zip(expected).all(|(current, expected)| {
+            current.id == expected.id
+                && current.kind == expected.kind
+                && current.amount.to_bits() == expected.amount.to_bits()
+        })
+}
+
+fn same_effect_ids(current: &[crate::model::ClipEffect], expected: &[Uuid]) -> bool {
+    current.len() == expected.len()
+        && current
+            .iter()
+            .zip(expected)
+            .all(|(current, expected)| current.id == *expected)
+}
+
+/// A single durable clip property written by an externally invokable resource
+/// action.  It intentionally carries only the observed property, never a
+/// `ClipData` snapshot: a saved palette command must not put back an old trim,
+/// lane, marker list, or effect stack after another editor changed it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClipFieldPatch {
+    Number {
+        field: ClipNumberField,
+        expected_bits: u64,
+        value: f64,
+    },
+    Text {
+        field: ClipTextField,
+        expected: String,
+        value: String,
+    },
+    Json {
+        field: ClipJsonField,
+        expected: String,
+        value: String,
+    },
+    Bool {
+        field: ClipBoolField,
+        expected: bool,
+        value: bool,
+    },
+    Byte {
+        field: ClipByteField,
+        expected: u8,
+        value: u8,
+    },
+    /// Link membership is intentionally typed instead of being folded into a
+    /// whole clip snapshot. A group action carries one such patch per member
+    /// and validates all observed memberships before it writes any of them.
+    Link {
+        expected: Option<String>,
+        value: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipBoolField {
+    SpeedReverse,
+    SoundSplit,
+    LinkFollows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipByteField {
+    Palette,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipNumberField {
+    Start,
+    InPoint,
+    OutPoint,
+    Opacity,
+    Volume,
+    Brightness,
+    Contrast,
+    Saturation,
+    FadeIn,
+    FadeOut,
+    TransitionDuration,
+    SpeedRate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipTextField {
+    Track,
+    Transition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipJsonField {
+    Transform,
+    Curves,
+    Key,
+    Mask,
+    Animation,
+    Markers,
+}
+
+pub fn clip_field_patch_action(before: &Clip, after: &Clip) -> VideoEditorAction {
+    let mut changes = Vec::new();
+    for (field, expected, value) in [
+        (ClipNumberField::Start, before.start, after.start),
+        (ClipNumberField::InPoint, before.in_point, after.in_point),
+        (ClipNumberField::OutPoint, before.out_point, after.out_point),
+        (ClipNumberField::Opacity, before.opacity, after.opacity),
+        (ClipNumberField::Volume, before.volume, after.volume),
+        (
+            ClipNumberField::Brightness,
+            before.filters.brightness,
+            after.filters.brightness,
+        ),
+        (
+            ClipNumberField::Contrast,
+            before.filters.contrast,
+            after.filters.contrast,
+        ),
+        (
+            ClipNumberField::Saturation,
+            before.filters.saturation,
+            after.filters.saturation,
+        ),
+        (ClipNumberField::FadeIn, before.fade_in, after.fade_in),
+        (ClipNumberField::FadeOut, before.fade_out, after.fade_out),
+        (
+            ClipNumberField::TransitionDuration,
+            before.transition_duration,
+            after.transition_duration,
+        ),
+        (
+            ClipNumberField::SpeedRate,
+            before.speed.rate,
+            after.speed.rate,
+        ),
+    ] {
+        if expected.to_bits() != value.to_bits() {
+            changes.push(ClipFieldPatch::Number {
+                field,
+                expected_bits: expected.to_bits(),
+                value,
+            });
+        }
+    }
+    if before.palette != after.palette {
+        changes.push(ClipFieldPatch::Byte {
+            field: ClipByteField::Palette,
+            expected: before.palette,
+            value: after.palette,
+        });
+    }
+    if before.link != after.link {
+        changes.push(ClipFieldPatch::Link {
+            expected: before.link.map(|link| link.to_string()),
+            value: after.link.map(|link| link.to_string()),
+        });
+    }
+    if before.track != after.track {
+        changes.push(ClipFieldPatch::Text {
+            field: ClipTextField::Track,
+            expected: before.track.to_string(),
+            value: after.track.to_string(),
+        });
+    }
+    for (field, expected, value) in [
+        (
+            ClipBoolField::SpeedReverse,
+            before.speed.reverse,
+            after.speed.reverse,
+        ),
+        (
+            ClipBoolField::SoundSplit,
+            before.sound_split,
+            after.sound_split,
+        ),
+        (
+            ClipBoolField::LinkFollows,
+            before.link_follows,
+            after.link_follows,
+        ),
+    ] {
+        if expected != value {
+            changes.push(ClipFieldPatch::Bool {
+                field,
+                expected,
+                value,
+            });
+        }
+    }
+    if before.transition != after.transition {
+        changes.push(ClipFieldPatch::Text {
+            field: ClipTextField::Transition,
+            expected: before.transition.as_str().to_string(),
+            value: after.transition.as_str().to_string(),
+        });
+    }
+    for (field, expected, value) in [
+        (
+            ClipJsonField::Transform,
+            serde_json::to_string(&before.transform),
+            serde_json::to_string(&after.transform),
+        ),
+        (
+            ClipJsonField::Curves,
+            serde_json::to_string(&before.curves),
+            serde_json::to_string(&after.curves),
+        ),
+        (
+            ClipJsonField::Key,
+            serde_json::to_string(&before.key),
+            serde_json::to_string(&after.key),
+        ),
+        (
+            ClipJsonField::Mask,
+            serde_json::to_string(&before.mask),
+            serde_json::to_string(&after.mask),
+        ),
+        (
+            ClipJsonField::Animation,
+            serde_json::to_string(&before.anim),
+            serde_json::to_string(&after.anim),
+        ),
+        (
+            ClipJsonField::Markers,
+            serde_json::to_string(&before.markers),
+            serde_json::to_string(&after.markers),
+        ),
+    ] {
+        let (Ok(expected), Ok(value)) = (expected, value) else {
+            continue;
+        };
+        if expected != value {
+            changes.push(ClipFieldPatch::Json {
+                field,
+                expected,
+                value,
+            });
+        }
+    }
+    VideoEditorAction::PatchClipFields {
+        clip: before.id.to_string(),
+        changes,
+    }
+}
+
+fn patch_matches(clip: &Clip, patch: &ClipFieldPatch) -> bool {
+    match patch {
+        ClipFieldPatch::Number {
+            field,
+            expected_bits,
+            ..
+        } => {
+            let current = match field {
+                ClipNumberField::Start => clip.start,
+                ClipNumberField::InPoint => clip.in_point,
+                ClipNumberField::OutPoint => clip.out_point,
+                ClipNumberField::Opacity => clip.opacity,
+                ClipNumberField::Volume => clip.volume,
+                ClipNumberField::Brightness => clip.filters.brightness,
+                ClipNumberField::Contrast => clip.filters.contrast,
+                ClipNumberField::Saturation => clip.filters.saturation,
+                ClipNumberField::FadeIn => clip.fade_in,
+                ClipNumberField::FadeOut => clip.fade_out,
+                ClipNumberField::TransitionDuration => clip.transition_duration,
+                ClipNumberField::SpeedRate => clip.speed.rate,
+            };
+            current.to_bits() == *expected_bits
+        }
+        ClipFieldPatch::Text {
+            field, expected, ..
+        } => match field {
+            ClipTextField::Track => clip.track.to_string() == *expected,
+            ClipTextField::Transition => clip.transition.as_str() == expected,
+        },
+        ClipFieldPatch::Json {
+            field, expected, ..
+        } => {
+            let current = match field {
+                ClipJsonField::Transform => serde_json::to_string(&clip.transform),
+                ClipJsonField::Curves => serde_json::to_string(&clip.curves),
+                ClipJsonField::Key => serde_json::to_string(&clip.key),
+                ClipJsonField::Mask => serde_json::to_string(&clip.mask),
+                ClipJsonField::Animation => serde_json::to_string(&clip.anim),
+                ClipJsonField::Markers => serde_json::to_string(&clip.markers),
+            };
+            current.is_ok_and(|current| current == *expected)
+        }
+        ClipFieldPatch::Bool {
+            field, expected, ..
+        } => match field {
+            ClipBoolField::SpeedReverse => clip.speed.reverse == *expected,
+            ClipBoolField::SoundSplit => clip.sound_split == *expected,
+            ClipBoolField::LinkFollows => clip.link_follows == *expected,
+        },
+        ClipFieldPatch::Byte {
+            field: ClipByteField::Palette,
+            expected,
+            ..
+        } => clip.palette == *expected,
+        ClipFieldPatch::Link { expected, .. } => {
+            clip.link.map(|link| link.to_string()) == *expected
+        }
+    }
+}
+
+fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
+    match patch {
+        ClipFieldPatch::Number { field, value, .. } => VideoDoc::set_existing_clip_number(
+            doc,
+            id,
+            match field {
+                ClipNumberField::Start => "start",
+                ClipNumberField::InPoint => "in",
+                ClipNumberField::OutPoint => "out",
+                ClipNumberField::Opacity => "opacity",
+                ClipNumberField::Volume => "volume",
+                ClipNumberField::Brightness => "brightness",
+                ClipNumberField::Contrast => "contrast",
+                ClipNumberField::Saturation => "saturation",
+                ClipNumberField::FadeIn => "fade_in",
+                ClipNumberField::FadeOut => "fade_out",
+                ClipNumberField::TransitionDuration => "transition_duration",
+                ClipNumberField::SpeedRate => "speed_rate",
+            },
+            *value,
+        ),
+        ClipFieldPatch::Text { field, value, .. } => VideoDoc::set_existing_clip_text(
+            doc,
+            id,
+            match field {
+                ClipTextField::Track => "track",
+                ClipTextField::Transition => "transition",
+            },
+            value,
+        ),
+        ClipFieldPatch::Json { field, value, .. } => VideoDoc::set_existing_clip_text(
+            doc,
+            id,
+            match field {
+                ClipJsonField::Transform => "transform",
+                ClipJsonField::Curves => "curves",
+                ClipJsonField::Key => "key",
+                ClipJsonField::Mask => "mask",
+                ClipJsonField::Animation => "anim",
+                ClipJsonField::Markers => "markers",
+            },
+            value,
+        ),
+        ClipFieldPatch::Bool { field, value, .. } => VideoDoc::set_existing_clip_bool(
+            doc,
+            id,
+            match field {
+                ClipBoolField::SpeedReverse => "speed_reverse",
+                ClipBoolField::SoundSplit => "sound_split",
+                ClipBoolField::LinkFollows => "link_follows",
+            },
+            *value,
+        ),
+        ClipFieldPatch::Byte { field, value, .. } => VideoDoc::set_existing_clip_u8(
+            doc,
+            id,
+            match field {
+                ClipByteField::Palette => "palette",
+            },
+            *value,
+        ),
+        ClipFieldPatch::Link { value, .. } => {
+            VideoDoc::set_existing_clip_link(doc, id, value.as_deref())
+        }
+    }
+}
+
+/// Reject ambiguous or malformed patch payloads before looking at or changing
+/// the document. In particular, two writes to one key would make a bulk link
+/// action depend on payload order instead of the state each collaborator saw.
+fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
+    let key = |patch: &ClipFieldPatch| match patch {
+        ClipFieldPatch::Number { field, .. } => match field {
+            ClipNumberField::Start => "start",
+            ClipNumberField::InPoint => "in",
+            ClipNumberField::OutPoint => "out",
+            ClipNumberField::Opacity => "opacity",
+            ClipNumberField::Volume => "volume",
+            ClipNumberField::Brightness => "brightness",
+            ClipNumberField::Contrast => "contrast",
+            ClipNumberField::Saturation => "saturation",
+            ClipNumberField::FadeIn => "fade_in",
+            ClipNumberField::FadeOut => "fade_out",
+            ClipNumberField::TransitionDuration => "transition_duration",
+            ClipNumberField::SpeedRate => "speed_rate",
+        },
+        ClipFieldPatch::Text { field, .. } => match field {
+            ClipTextField::Track => "track",
+            ClipTextField::Transition => "transition",
+        },
+        ClipFieldPatch::Json { field, .. } => match field {
+            ClipJsonField::Transform => "transform",
+            ClipJsonField::Curves => "curves",
+            ClipJsonField::Key => "key",
+            ClipJsonField::Mask => "mask",
+            ClipJsonField::Animation => "anim",
+            ClipJsonField::Markers => "markers",
+        },
+        ClipFieldPatch::Bool { field, .. } => match field {
+            ClipBoolField::SpeedReverse => "speed_reverse",
+            ClipBoolField::SoundSplit => "sound_split",
+            ClipBoolField::LinkFollows => "link_follows",
+        },
+        ClipFieldPatch::Byte { field, .. } => match field {
+            ClipByteField::Palette => "palette",
+        },
+        ClipFieldPatch::Link { .. } => "link",
+    };
+    if changes.iter().enumerate().any(|(index, patch)| {
+        changes[..index]
+            .iter()
+            .any(|previous| key(previous) == key(patch))
+    }) {
+        return Err(ActionError::Refused(
+            "patch writes one clip property more than once".into(),
+        ));
+    }
+    if changes.iter().any(|patch| {
+        matches!(patch, ClipFieldPatch::Number { value, .. } if !value.is_finite())
+            || matches!(patch, ClipFieldPatch::Link { value: Some(value), .. } if value.parse::<Uuid>().is_err())
+    }) {
+        return Err(ActionError::Refused("invalid clip patch value".into()));
+    }
+    Ok(())
 }
 
 impl ProjectData {
@@ -628,6 +1145,256 @@ impl Action for VideoEditorAction {
             VideoEditorAction::UpsertClip(data) => {
                 if let Some(c) = data.to_clip() {
                     VideoDoc::upsert_clip(doc, &c);
+                }
+            }
+            VideoEditorAction::PatchClipFields { clip, changes } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid patch clip id".into()))?;
+                // A typed builder with no bound value intentionally encodes a
+                // no-op rather than inventing a default edit. It carries no
+                // stale state and therefore needs no target lookup.
+                if changes.is_empty() {
+                    return Ok(());
+                }
+                validate_patch_set(changes)?;
+                let project = VideoDoc::load_project(doc);
+                let current = project
+                    .clip(clip_id)
+                    .ok_or_else(|| ActionError::Refused("clip is no longer available".into()))?;
+                if !changes.iter().all(|patch| patch_matches(current, patch)) {
+                    return Err(ActionError::Refused(
+                        "clip property changed before this action could apply".into(),
+                    ));
+                }
+                if changes
+                    .iter()
+                    .any(|patch| !write_patch(doc, clip_id, patch))
+                {
+                    return Err(ActionError::Refused("clip is no longer available".into()));
+                }
+            }
+            VideoEditorAction::PatchClipsFields { patches } => {
+                // Validate the *complete* grouped payload before reading the
+                // document. The following collect then checks every member
+                // against one projection before the first CRDT write.
+                for patch in patches {
+                    validate_patch_set(&patch.changes)?;
+                }
+                if patches.iter().enumerate().any(|(index, patch)| {
+                    patches[..index]
+                        .iter()
+                        .any(|previous| previous.clip == patch.clip)
+                }) {
+                    return Err(ActionError::Refused(
+                        "bulk patch names one clip more than once".into(),
+                    ));
+                }
+                let project = VideoDoc::load_project(doc);
+                let parsed: Result<Vec<_>, _> = patches
+                    .iter()
+                    .map(|patch| {
+                        let id = patch
+                            .clip
+                            .parse::<Uuid>()
+                            .map_err(|_| ActionError::Refused("invalid patch clip id".into()))?;
+                        let current = project.clip(id).ok_or_else(|| {
+                            ActionError::Refused("clip is no longer available".into())
+                        })?;
+                        if !patch
+                            .changes
+                            .iter()
+                            .all(|change| patch_matches(current, change))
+                        {
+                            return Err(ActionError::Refused(
+                                "clip property changed before this action could apply".into(),
+                            ));
+                        }
+                        Ok((id, &patch.changes))
+                    })
+                    .collect();
+                for (id, changes) in parsed? {
+                    if changes.iter().any(|change| !write_patch(doc, id, change)) {
+                        return Err(ActionError::Refused("clip is no longer available".into()));
+                    }
+                }
+            }
+            VideoEditorAction::AddEffect {
+                clip,
+                expected_stack,
+                effect,
+            } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
+                let mut project = VideoDoc::load_project(doc);
+                let effects = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                        ActionError::Refused("effect clip is no longer available".into())
+                    })?;
+                    if !same_effect_ids(&clip.effects, expected_stack)
+                        || effect.id.is_nil()
+                        || clip.effect_index(effect.id).is_some()
+                    {
+                        return Err(ActionError::Refused(
+                            "effect stack changed before this add could apply".into(),
+                        ));
+                    }
+                    clip.effects.push(*effect);
+                    clip.effects.clone()
+                };
+                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                    return Err(ActionError::Refused(
+                        "effect clip is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::SetEffectAmount {
+                clip,
+                effect,
+                expected_amount_bits,
+                amount,
+            } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
+                let effect_id = effect
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect id".into()))?;
+                if !amount.is_finite() || !(0.0..=1.0).contains(amount) {
+                    return Err(ActionError::Refused(
+                        "effect amount is outside 0 to 1".into(),
+                    ));
+                }
+                let mut project = VideoDoc::load_project(doc);
+                let effects = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                        ActionError::Refused("effect clip is no longer available".into())
+                    })?;
+                    let instance = clip
+                        .effects
+                        .iter_mut()
+                        .find(|instance| instance.id == effect_id)
+                        .ok_or_else(|| {
+                            ActionError::Refused("effect is no longer available".into())
+                        })?;
+                    if instance.amount.to_bits() != *expected_amount_bits {
+                        return Err(ActionError::Refused(
+                            "effect amount changed before this edit could apply".into(),
+                        ));
+                    }
+                    instance.amount = *amount;
+                    clip.effects.clone()
+                };
+                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                    return Err(ActionError::Refused(
+                        "effect clip is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::RemoveEffect {
+                clip,
+                effect,
+                expected_kind,
+                expected_amount_bits,
+            } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
+                let effect_id = effect
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect id".into()))?;
+                let mut project = VideoDoc::load_project(doc);
+                let effects = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                        ActionError::Refused("effect clip is no longer available".into())
+                    })?;
+                    let index = clip.effect_index(effect_id).ok_or_else(|| {
+                        ActionError::Refused("effect is no longer available".into())
+                    })?;
+                    let instance = clip.effects[index];
+                    if instance.kind != *expected_kind
+                        || instance.amount.to_bits() != *expected_amount_bits
+                    {
+                        return Err(ActionError::Refused(
+                            "effect changed before it could be removed".into(),
+                        ));
+                    }
+                    clip.effects.remove(index);
+                    clip.effects.clone()
+                };
+                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                    return Err(ActionError::Refused(
+                        "effect clip is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::MoveEffect {
+                clip,
+                effect,
+                expected_index,
+                neighbour,
+                up,
+            } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
+                let effect_id = effect
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect id".into()))?;
+                let neighbour_id = neighbour
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect neighbour id".into()))?;
+                let mut project = VideoDoc::load_project(doc);
+                let effects = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                        ActionError::Refused("effect clip is no longer available".into())
+                    })?;
+                    let index = clip.effect_index(effect_id).ok_or_else(|| {
+                        ActionError::Refused("effect is no longer available".into())
+                    })?;
+                    let Some(target) = (if *up {
+                        index.checked_sub(1)
+                    } else {
+                        (index + 1 < clip.effects.len()).then_some(index + 1)
+                    }) else {
+                        return Err(ActionError::Refused(
+                            "effect can no longer move in that direction".into(),
+                        ));
+                    };
+                    if index != *expected_index || clip.effects[target].id != neighbour_id {
+                        return Err(ActionError::Refused(
+                            "effect order changed before this move could apply".into(),
+                        ));
+                    }
+                    clip.effects.swap(index, target);
+                    clip.effects.clone()
+                };
+                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                    return Err(ActionError::Refused(
+                        "effect clip is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::ClearEffects { clip, expected } => {
+                let clip_id = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
+                let project = VideoDoc::load_project(doc);
+                {
+                    let current = project.clip(clip_id).ok_or_else(|| {
+                        ActionError::Refused("effect clip is no longer available".into())
+                    })?;
+                    if !same_effect_stack(&current.effects, expected) {
+                        return Err(ActionError::Refused(
+                            "effect stack changed before it could be cleared".into(),
+                        ));
+                    }
+                }
+                if !VideoDoc::set_clip_effects(doc, clip_id, &[]) {
+                    return Err(ActionError::Refused(
+                        "effect clip is no longer available".into(),
+                    ));
                 }
             }
             VideoEditorAction::UpsertClips { tracks, clips } => {
@@ -748,10 +1515,34 @@ pub fn upsert_clip_action(c: &Clip) -> VideoEditorAction {
     VideoEditorAction::UpsertClip(ClipData::from_clip(c))
 }
 
-/// Write several clips as one change — what an edit that follows a link
-/// dispatches. See [`VideoEditorAction::UpsertClips`].
+/// Write several newly-authored clips as one change. Existing linked edits
+/// use [`patch_clips_fields_action`] instead.
 pub fn upsert_clips_action(clips: &[Clip]) -> VideoEditorAction {
     upsert_tracks_and_clips_action(&[], clips)
+}
+
+/// Build one optimistic, all-or-nothing patch for existing clips that changed
+/// between two local project snapshots. The caller supplies the original
+/// snapshot, never a live merged CRDT projection, so remote changes to other
+/// fields cannot become accidental reverse patches.
+pub fn patch_clips_fields_action(
+    before: &Project,
+    after: &Project,
+    ids: &[Uuid],
+) -> VideoEditorAction {
+    let patches = ids
+        .iter()
+        .filter_map(|id| {
+            let (before, after) = (before.clip(*id)?, after.clip(*id)?);
+            match clip_field_patch_action(before, after) {
+                VideoEditorAction::PatchClipFields { clip, changes } => {
+                    (!changes.is_empty()).then_some(ClipPatchData { clip, changes })
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    VideoEditorAction::PatchClipsFields { patches }
 }
 
 /// Write several clips *and* the tracks they need, as one change.
@@ -759,16 +1550,6 @@ pub fn upsert_tracks_and_clips_action(tracks: &[Track], clips: &[Clip]) -> Video
     VideoEditorAction::UpsertClips {
         tracks: tracks.iter().map(TrackData::from_track).collect(),
         clips: clips.iter().map(ClipData::from_clip).collect(),
-    }
-}
-
-/// One clip is written as a single-clip write, several as a multi-clip one —
-/// so an edit on an unlinked clip stays byte-identical to what it always was,
-/// and only an edit that really does follow a link changes shape on the wire.
-pub fn write_clips_action(clips: &[Clip]) -> VideoEditorAction {
-    match clips {
-        [one] => upsert_clip_action(one),
-        many => upsert_clips_action(many),
     }
 }
 
@@ -1583,35 +2364,27 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 let mut ti = p.clone();
                 let din = ctx.playhead - clip.start;
                 ti.trim_in_linked(cid, din);
-                let trimmed: Vec<Clip> = group
-                    .iter()
-                    .filter_map(|id| ti.clip(*id).cloned())
-                    .collect();
-                if !trimmed.is_empty() {
+                if group.iter().any(|id| ti.clip(*id).is_some()) {
                     cr = cr.with_action(immediate(
                         "trim-in",
                         "Trim in to playhead",
-                        &write_clips_action(&trimmed),
+                        &patch_clips_fields_action(p, &ti, &group),
                     ));
                 }
                 let mut to = p.clone();
                 let dout = ctx.playhead - clip.end();
                 to.trim_out_linked(cid, dout);
-                let trimmed: Vec<Clip> = group
-                    .iter()
-                    .filter_map(|id| to.clip(*id).cloned())
-                    .collect();
-                if !trimmed.is_empty() {
+                if group.iter().any(|id| to.clip(*id).is_some()) {
                     cr = cr.with_action(immediate(
                         "trim-out",
                         "Trim out to playhead",
-                        &write_clips_action(&trimmed),
+                        &patch_clips_fields_action(p, &to, &group),
                     ));
                 }
             }
 
-            // Colour grade — prompted `0..1` sliders folded into a whole-clip
-            // write.
+            // Colour grade — prompted `0..1` sliders folded into optimistic
+            // clip-field patches.
             for (id, label, field) in [
                 ("set-brightness", "Set brightness", FilterAxis::Brightness),
                 ("set-contrast", "Set contrast", FilterAxis::Contrast),
@@ -1649,7 +2422,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // drag worked. An action and a click must not
                         // disagree about what they did.
                         next.set_param_at(field.param(), at, v);
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
@@ -1685,7 +2458,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // As the inspector's slider does — see the grade
                         // actions above for why the constant is not enough.
                         next.set_param_at(axis.param(), at, v);
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
@@ -1717,7 +2490,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         } else {
                             next.fade_out = v;
                         }
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
@@ -1735,7 +2508,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 } else {
                     "Switch chroma key on"
                 },
-                &upsert_clip_action(&keyed),
+                &clip_field_patch_action(clip, &keyed),
             ));
             let mask_base = clip.clone();
             cr = cr.with_action(ActionSpec::typed(
@@ -1760,7 +2533,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     if let Some(name) = args.text("shape") {
                         next.mask.shape = MaskShape::from_str(name);
                     }
-                    encode(&upsert_clip_action(&next))
+                    encode(&clip_field_patch_action(&mask_base, &next))
                 },
             ));
 
@@ -1860,13 +2633,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // at all leaves the knob where it was.
                         let v = args.number(param).unwrap_or_else(|| axis.get(&next));
                         axis.set(&mut next, v);
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
 
             // Effects stack — add one by name, or clear them all.
-            let add_base = clip.clone();
+            let add_clip = cid;
+            let add_expected_stack: Vec<Uuid> =
+                clip.effects.iter().map(|effect| effect.id).collect();
             // The vocabulary is declared, not narrated. `EffectKind::from_str`
             // answers `None` for a name it does not know, which the old
             // prompt turned into "the action ran and added nothing" — a
@@ -1885,23 +2660,120 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     .with_choices(EFFECT_CHOICES),
                 ],
                 move |args: &ActionArgs| {
-                    let mut next = add_base.clone();
                     // A bound value is one of `EFFECT_CHOICES`, so `from_str`
-                    // cannot fail here; an unbound one adds nothing.
-                    if let Some(k) = args.text("effect").and_then(EffectKind::from_str) {
-                        next.add_effect(k);
-                    }
-                    encode(&upsert_clip_action(&next))
+                    // cannot fail here. An unbound builder produces a
+                    // deliberately invalid id, which `apply` refuses rather
+                    // than quietly inventing a default effect.
+                    let effect = args.text("effect").and_then(EffectKind::from_str).map_or(
+                        crate::model::ClipEffect {
+                            id: Uuid::nil(),
+                            kind: EffectKind::Grayscale,
+                            amount: EffectKind::Grayscale.default_amount(),
+                        },
+                        crate::model::ClipEffect::new,
+                    );
+                    encode(&VideoEditorAction::AddEffect {
+                        clip: add_clip.to_string(),
+                        expected_stack: add_expected_stack.clone(),
+                        effect,
+                    })
                 },
             ));
             if !clip.effects.is_empty() {
-                let mut cleared = clip.clone();
-                cleared.effects.clear();
                 cr = cr.with_action(immediate(
                     "clear-effects",
                     "Clear effects",
-                    &upsert_clip_action(&cleared),
+                    &VideoEditorAction::ClearEffects {
+                        clip: cid.to_string(),
+                        expected: clip.effects.clone(),
+                    },
                 ));
+            }
+
+            // Each effect is a durable stack instance, not a label or an
+            // index. A duplicate Sepia can therefore be found, changed,
+            // moved, or removed without a concurrent reorder turning a saved
+            // target into its neighbour.
+            for effect in &clip.effects {
+                let effect_id = effect.id;
+                let effect_amount = effect.amount;
+                let mut er = Resource::new(
+                    effect_resource_id(cid, effect_id),
+                    "video.effect",
+                    effect.kind.label(),
+                )
+                .with_action(operation(
+                    "open",
+                    "Reveal effect",
+                    OperationKind::View,
+                    VideoEditorOperation::RevealEffect {
+                        clip: cid.to_string(),
+                        effect: effect_id.to_string(),
+                    },
+                ));
+
+                er = er.with_action(ActionSpec::typed(
+                    "set-amount",
+                    "Set effect amount",
+                    "0.8",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(
+                        "amount",
+                        ParamType::Number,
+                        "effect intensity, from 0 to 1",
+                    )],
+                    move |args: &ActionArgs| {
+                        encode(&VideoEditorAction::SetEffectAmount {
+                            clip: cid.to_string(),
+                            effect: effect_id.to_string(),
+                            expected_amount_bits: effect_amount.to_bits(),
+                            amount: args
+                                .number("amount")
+                                .unwrap_or(effect_amount)
+                                .clamp(0.0, 1.0),
+                        })
+                    },
+                ));
+
+                er = er.with_action(immediate(
+                    "remove",
+                    "Remove effect",
+                    &VideoEditorAction::RemoveEffect {
+                        clip: cid.to_string(),
+                        effect: effect_id.to_string(),
+                        expected_kind: effect.kind,
+                        expected_amount_bits: effect.amount.to_bits(),
+                    },
+                ));
+
+                let index = clip.effect_index(effect_id).unwrap_or(0);
+                if index > 0 {
+                    er = er.with_action(immediate(
+                        "move-up",
+                        "Move effect up",
+                        &VideoEditorAction::MoveEffect {
+                            clip: cid.to_string(),
+                            effect: effect_id.to_string(),
+                            expected_index: index,
+                            neighbour: clip.effects[index - 1].id.to_string(),
+                            up: true,
+                        },
+                    ));
+                }
+                if index + 1 < clip.effects.len() {
+                    er = er.with_action(immediate(
+                        "move-down",
+                        "Move effect down",
+                        &VideoEditorAction::MoveEffect {
+                            clip: cid.to_string(),
+                            effect: effect_id.to_string(),
+                            expected_index: index,
+                            neighbour: clip.effects[index + 1].id.to_string(),
+                            up: false,
+                        },
+                    ));
+                }
+                cr = cr.with_child(er);
             }
 
             // Speed. The rate is prompted; reverse is a toggle, because
@@ -1938,19 +2810,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         .map_or((1.0, false), |c| (c.speed.rate(), c.speed.reverse));
                     let rate = args.number("rate").unwrap_or(was);
                     next.set_speed_linked(speed_cid, rate, reverse);
-                    let clips: Vec<Clip> = speed_group
-                        .iter()
-                        .filter_map(|id| next.clip(*id).cloned())
-                        .collect();
-                    encode(&write_clips_action(&clips))
+                    encode(&patch_clips_fields_action(
+                        &speed_project,
+                        &next,
+                        &speed_group,
+                    ))
                 },
             ));
             let mut reversed = p.clone();
             reversed.set_speed_linked(cid, clip.speed.rate(), !clip.speed.reverse);
-            let reversed_clips: Vec<Clip> = group
-                .iter()
-                .filter_map(|id| reversed.clip(*id).cloned())
-                .collect();
             cr = cr.with_action(immediate(
                 "toggle-reverse",
                 if clip.speed.reverse {
@@ -1958,19 +2826,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 } else {
                     "Play backwards"
                 },
-                &write_clips_action(&reversed_clips),
+                &patch_clips_fields_action(p, &reversed, &group),
             ));
             if !clip.speed.is_normal() {
                 let mut normal = p.clone();
                 normal.set_speed_linked(cid, 1.0, false);
-                let normal_clips: Vec<Clip> = group
-                    .iter()
-                    .filter_map(|id| normal.clip(*id).cloned())
-                    .collect();
                 cr = cr.with_action(immediate(
                     "reset-speed",
                     "Reset speed to normal",
-                    &write_clips_action(&normal_clips),
+                    &patch_clips_fields_action(p, &normal, &group),
                 ));
             }
 
@@ -1983,14 +2847,10 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             if linked {
                 let mut cut = p.clone();
                 cut.unlink_clips(&group);
-                let cut_clips: Vec<Clip> = group
-                    .iter()
-                    .filter_map(|id| cut.clip(*id).cloned())
-                    .collect();
                 cr = cr.with_action(immediate(
                     "unlink",
                     "Unlink audio and video",
-                    &write_clips_action(&cut_clips),
+                    &patch_clips_fields_action(p, &cut, &group),
                 ));
             }
             {
@@ -2074,7 +2934,9 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // than linking this clip to itself — and writes
                         // nothing, rather than a clip made of defaults.
                         let Some(other) = other.filter(|o| next.clip(*o).is_some()) else {
-                            return encode(&upsert_clips_action(&[]));
+                            return encode(&VideoEditorAction::PatchClipsFields {
+                                patches: vec![],
+                            });
                         };
                         // Both sides join one fresh group, and anything either
                         // of them was already linked to comes along -- a link
@@ -2086,11 +2948,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                             }
                         }
                         next.link_clips(&members);
-                        let clips: Vec<Clip> = members
-                            .iter()
-                            .filter_map(|id| next.clip(*id).cloned())
-                            .collect();
-                        encode(&write_clips_action(&clips))
+                        encode(&patch_clips_fields_action(&link_project, &next, &members))
                     },
                 ));
             }
@@ -2105,7 +2963,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             ] {
                 let mut inset = clip.clone();
                 inset.transform = crate::model::Transform::pip(0.3, corner, 0.04);
-                cr = cr.with_action(immediate(id, label, &upsert_clip_action(&inset)));
+                cr = cr.with_action(immediate(id, label, &clip_field_patch_action(clip, &inset)));
             }
             for (id, label, axis) in [
                 ("set-scale", "Set scale", GeomAxis::Scale),
@@ -2160,7 +3018,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                                     args.number("degrees").unwrap_or(next.transform.rotation);
                             }
                         }
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
@@ -2197,7 +3055,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // asked for — is unreachable now that the parameter
                         // is a declared number, so the edge keeps its value.
                         *cut = args.number("fraction").unwrap_or(*cut).clamp(0.0, 1.0);
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
             }
@@ -2207,7 +3065,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 cr = cr.with_action(immediate(
                     "reset-transform",
                     "Reset position and scale",
-                    &upsert_clip_action(&flat),
+                    &clip_field_patch_action(clip, &flat),
                 ));
             }
 
@@ -2227,7 +3085,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     cr = cr.with_action(immediate(
                         &format!("key-{}", param.as_str()),
                         &format!("Key {} here ({now:.2})", param.label().to_lowercase()),
-                        &upsert_clip_action(&keyed),
+                        &clip_field_patch_action(&base, &keyed),
                     ));
                 }
                 for param in clip.anim.animated_params() {
@@ -2236,7 +3094,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     cr = cr.with_action(immediate(
                         &format!("unkey-{}", param.as_str()),
                         &format!("Remove {} animation", param.label().to_lowercase()),
-                        &upsert_clip_action(&cleared),
+                        &clip_field_patch_action(clip, &cleared),
                     ));
                 }
                 // A marker on the clip, named.
@@ -2256,7 +3114,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         let name = args.text("name").unwrap_or("").trim();
                         let name = if name.is_empty() { "Marker" } else { name };
                         next.add_marker(at, name, next.palette);
-                        encode(&upsert_clip_action(&next))
+                        encode(&clip_field_patch_action(&marker_base, &next))
                     },
                 ));
             }
@@ -2286,7 +3144,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     if let Some(name) = args.text("transition") {
                         next.transition = parse_transition(name);
                     }
-                    encode(&upsert_clip_action(&next))
+                    encode(&clip_field_patch_action(&base, &next))
                 },
             ));
 
@@ -2577,7 +3435,7 @@ enum GeomAxis {
 /// their inspector rows and had no action at all, so a script could switch a
 /// key on by name and then had no way to say how much of the plate to take
 /// out. The two blocks share an enum because they share a shape: a named
-/// scalar on the selected clip, folded into a whole-clip write.
+/// scalar on the selected clip, folded into an optimistic field patch.
 #[derive(Clone, Copy)]
 enum KeyMaskAxis {
     Tolerance,
@@ -2872,9 +3730,9 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_clip_write_carries_geometry_speed_curves_and_markers() {
-        // `UpsertClip` is the one door every per-clip edit goes through, so
-        // anything it drops is an edit that silently does not replicate.
+    fn explicit_full_clip_replacement_carries_geometry_speed_curves_and_markers() {
+        // Import and explicit replacement still carry all persisted fields;
+        // ordinary editor interactions cover them with narrow patches below.
         let (mut p, cid) = {
             let (ctx, cid) = ctx_fixture();
             (ctx.project, cid)
@@ -3326,11 +4184,12 @@ mod tests {
             "precondition: same base state"
         );
 
-        // Move a clip: a whole-clip upsert with a new start.
+        // Move a clip through the same narrow optimistic field patch as the
+        // ordinary editor interaction.
         let project = VideoDoc::load_project(&a);
         let mut clip = project.clips[0].clone();
         clip.start += 5.0;
-        let action = upsert_clip_action(&clip);
+        let action = clip_field_patch_action(project.clip(clip.id).unwrap(), &clip);
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
@@ -3370,7 +4229,7 @@ mod tests {
         );
     }
 
-    /// The prompted brightness spec builds the same whole-clip upsert an
+    /// The prompted brightness spec builds the same narrow field patch an
     /// inspector edit to 0.9 would — a slider value folded into one action.
     #[test]
     fn prompted_brightness_builds_the_expected_clip_write() {
@@ -3395,12 +4254,13 @@ mod tests {
             .unwrap();
         let from_spec = prompted_encode(spec, "0.9");
 
-        let mut expected = VideoDoc::load_project(&doc).clip(cid).unwrap().clone();
+        let before = VideoDoc::load_project(&doc).clip(cid).unwrap().clone();
+        let mut expected = before.clone();
         expected.filters.brightness = 0.9;
-        let from_builder = encode(&upsert_clip_action(&expected));
+        let from_builder = encode(&clip_field_patch_action(&before, &expected));
         assert_eq!(
             from_spec.payload, from_builder.payload,
-            "slider folds into one clip write"
+            "slider folds into one narrow clip-field action"
         );
     }
 
@@ -3870,19 +4730,21 @@ mod tests {
         assert!(trimmed.clip(sound).expect("sound").in_point > 0.0);
     }
 
-    /// A clip that is not linked writes exactly the payload it always did.
-    /// Following the link must not change the wire shape of an ordinary edit.
+    /// An unlinked clip uses the same narrow action shape as a linked group:
+    /// one optimistic member patch rather than an old full snapshot.
     #[test]
-    fn an_unlinked_clips_edits_keep_their_single_clip_payload() {
+    fn unlinked_clip_edits_use_one_optimistic_member_patch() {
         let (ctx, cid) = ctx_fixture();
         let sp = spec(&ctx, "set-speed");
         let from_spec = prompted_encode(&sp, "2");
         let mut expected = ctx.project.clip(cid).expect("the clip").clone();
         expected.set_speed(2.0, false);
+        let mut after = ctx.project.clone();
+        *after.clip_mut(cid).unwrap() = expected.clone();
         assert_eq!(
             from_spec.payload,
-            encode(&upsert_clip_action(&expected)).payload,
-            "one clip is still one whole-clip write",
+            encode(&patch_clips_fields_action(&ctx.project, &after, &[cid])).payload,
+            "one clip is one narrow member patch",
         );
         let del = immediate_encode(&spec(&ctx, "delete"));
         assert_eq!(
@@ -4264,7 +5126,7 @@ mod tests {
     }
 
     /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
-    /// stack through the same whole-clip write the inspector uses.
+    /// stack through the same narrow effects action the inspector uses.
     #[test]
     fn add_effect_action_appends_to_the_stack() {
         let (app, mut doc) = seeded();
@@ -4308,6 +5170,297 @@ mod tests {
         assert_eq!(after.last().unwrap().kind, EffectKind::Sepia);
     }
 
+    #[test]
+    fn an_effect_resource_edits_the_named_instance_and_carries_it_through_replay() {
+        let (mut ctx, clip_id) = ctx_fixture();
+        let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
+        clip.add_effect(EffectKind::Sepia);
+        clip.add_effect(EffectKind::Sepia);
+        let first = clip.effects[0].id;
+        let second = clip.effects[1].id;
+        let resource = effect_resource_id(clip_id, second);
+
+        let amount = run(
+            &ctx.project,
+            &spec_on(&ctx, &resource, "set-amount"),
+            Some("0.25"),
+        );
+        let changed = amount.clip(clip_id).expect("written clip");
+        assert_eq!(
+            changed
+                .effects
+                .iter()
+                .find(|effect| effect.id == second)
+                .map(|e| e.amount),
+            Some(0.25),
+            "the duplicate named by id changed",
+        );
+        assert_eq!(
+            changed
+                .effects
+                .iter()
+                .find(|effect| effect.id == first)
+                .map(|e| e.amount),
+            Some(EffectKind::Sepia.default_amount()),
+            "its neighbour was not selected by index",
+        );
+
+        ctx.project = amount;
+        let moved = run(&ctx.project, &spec_on(&ctx, &resource, "move-up"), None);
+        assert_eq!(
+            moved.clip(clip_id).expect("moved clip").effects[0].id,
+            second
+        );
+
+        ctx.project = moved;
+        let removed = run(&ctx.project, &spec_on(&ctx, &resource, "remove"), None);
+        assert!(
+            removed
+                .clip(clip_id)
+                .expect("removed clip")
+                .effect_index(second)
+                .is_none(),
+            "the exact addressed instance was removed",
+        );
+    }
+
+    #[test]
+    fn captured_effect_actions_refuse_stale_stack_changes_without_overwriting_other_fields() {
+        let (mut ctx, clip_id) = ctx_fixture();
+        let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
+        clip.add_effect(EffectKind::Sepia);
+        clip.add_effect(EffectKind::Invert);
+        let first = clip.effects[0].id;
+        let second = clip.effects[1].id;
+        let second_resource = effect_resource_id(clip_id, second);
+
+        // A captured amount action applies after an unrelated opacity edit,
+        // and only writes `effects` — it must not restore old opacity.
+        let amount: VideoEditorAction = serde_json::from_slice(
+            &prompted_encode(&spec_on(&ctx, &second_resource, "set-amount"), "0.25").payload,
+        )
+        .expect("effect action decodes");
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+        let mut other_field = ctx.project.clone();
+        other_field.clip_mut(clip_id).expect("clip").opacity = 0.37;
+        VideoDoc::upsert_clip(&mut doc, other_field.clip(clip_id).expect("changed clip"));
+        amount
+            .apply(&mut doc)
+            .expect("unrelated write does not stale effect");
+        let after = VideoDoc::load_project(&doc);
+        let after_clip = after.clip(clip_id).expect("clip remains");
+        assert_eq!(
+            after_clip.opacity, 0.37,
+            "old snapshot did not overwrite opacity"
+        );
+        assert_eq!(
+            after_clip
+                .effects
+                .iter()
+                .find(|effect| effect.id == second)
+                .map(|effect| effect.amount),
+            Some(0.25),
+        );
+
+        // A move captured against [first, second] refuses after a peer has
+        // already reordered it; it cannot swap whatever happens to be there.
+        let move_up: VideoEditorAction = serde_json::from_slice(
+            &immediate_encode(&spec_on(&ctx, &second_resource, "move-up")).payload,
+        )
+        .expect("move action decodes");
+        let mut reordered = ctx.project.clone();
+        reordered
+            .clip_mut(clip_id)
+            .expect("clip")
+            .effects
+            .swap(0, 1);
+        VideoDoc::upsert_clip(&mut doc, reordered.clip(clip_id).expect("reordered clip"));
+        assert!(
+            move_up.apply(&mut doc).is_err(),
+            "changed neighbour is stale"
+        );
+        assert_eq!(
+            VideoDoc::load_project(&doc)
+                .clip(clip_id)
+                .expect("clip")
+                .effects[0]
+                .id,
+            second,
+            "the peer order survived the refused action",
+        );
+
+        // Removal also carries the value it saw. A peer changing that value
+        // makes delete refuse, and a peer deleting it makes set refuse.
+        let first_resource = effect_resource_id(clip_id, first);
+        let remove: VideoEditorAction = serde_json::from_slice(
+            &immediate_encode(&spec_on(&ctx, &first_resource, "remove")).payload,
+        )
+        .expect("remove action decodes");
+        let mut changed = ctx.project.clone();
+        changed.clip_mut(clip_id).expect("clip").effects[0].amount = 0.1;
+        VideoDoc::upsert_clip(&mut doc, changed.clip(clip_id).expect("changed clip"));
+        assert!(remove.apply(&mut doc).is_err(), "changed instance is stale");
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(clip_id)
+                .expect("clip")
+                .effect_index(first)
+                .is_some(),
+            "refusal did not delete a changed effect",
+        );
+    }
+
+    #[test]
+    fn captured_clip_field_action_updates_only_its_field_and_refuses_a_stale_value() {
+        let (ctx, clip_id) = ctx_fixture();
+        let action: VideoEditorAction =
+            serde_json::from_slice(&prompted_encode(&spec(&ctx, "set-brightness"), "0.9").payload)
+                .expect("field action decodes");
+        assert!(
+            matches!(&action, VideoEditorAction::PatchClipFields { .. }),
+            "resource edits are narrow patches, never whole clip snapshots",
+        );
+
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+        let mut peer = ctx.project.clone();
+        let peer_clip = peer.clip_mut(clip_id).expect("fixture clip");
+        peer_clip.start += 3.0;
+        peer_clip.opacity = 0.42;
+        VideoDoc::upsert_clip(&mut doc, peer.clip(clip_id).expect("peer clip"));
+        action
+            .apply(&mut doc)
+            .expect("unrelated peer fields do not stale the patch");
+        let written = VideoDoc::load_project(&doc)
+            .clip(clip_id)
+            .expect("clip")
+            .clone();
+        assert_eq!(written.start, peer.clip(clip_id).expect("peer clip").start);
+        assert_eq!(written.opacity, 0.42);
+        assert_eq!(written.filters.brightness, 0.9);
+
+        let mut stale = ctx.project.clone();
+        stale
+            .clip_mut(clip_id)
+            .expect("fixture clip")
+            .filters
+            .brightness = 0.1;
+        VideoDoc::upsert_clip(&mut doc, stale.clip(clip_id).expect("stale clip"));
+        assert!(
+            action.apply(&mut doc).is_err(),
+            "a changed property refuses"
+        );
+        let after_project = VideoDoc::load_project(&doc);
+        let after_refusal = after_project.clip(clip_id).expect("clip");
+        assert_eq!(after_refusal.filters.brightness, 0.1);
+    }
+
+    #[test]
+    fn linked_membership_patch_is_atomic_and_refuses_a_stale_group_member() {
+        let (ctx, first) = ctx_fixture();
+        let mut project = ctx.project;
+        let second = Uuid::new_v4();
+        let mut sibling = project.clip(first).expect("fixture clip").clone();
+        sibling.id = second;
+        let old_group = Uuid::new_v4();
+        let primary = project.clip_mut(first).expect("first");
+        primary.link = Some(old_group);
+        primary.link_follows = true;
+        sibling.link = Some(old_group);
+        sibling.link_follows = true;
+        project.clips.push(sibling);
+
+        let new_group = Uuid::new_v4();
+        let action = VideoEditorAction::PatchClipsFields {
+            patches: vec![
+                ClipPatchData {
+                    clip: first.to_string(),
+                    changes: vec![ClipFieldPatch::Link {
+                        expected: Some(old_group.to_string()),
+                        value: Some(new_group.to_string()),
+                    }],
+                },
+                ClipPatchData {
+                    clip: second.to_string(),
+                    changes: vec![ClipFieldPatch::Link {
+                        expected: Some(old_group.to_string()),
+                        value: Some(new_group.to_string()),
+                    }],
+                },
+            ],
+        };
+
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &project);
+        action.apply(&mut doc).expect("both members still match");
+        let linked = VideoDoc::load_project(&doc);
+        assert_eq!(linked.clip(first).expect("first").link, Some(new_group));
+        assert_eq!(linked.clip(second).expect("second").link, Some(new_group));
+
+        // Rewind the fixture and let a peer alter only one member. The action
+        // must validate both before it writes either, so the first cannot be
+        // moved into a group whose second half rejected the replay.
+        VideoDoc::write_project(&mut doc, &project);
+        let changed_group = Uuid::new_v4();
+        let mut peer = project.clone();
+        peer.clip_mut(second).expect("second").link = Some(changed_group);
+        VideoDoc::upsert_clip(&mut doc, peer.clip(second).expect("second"));
+        assert!(
+            action.apply(&mut doc).is_err(),
+            "stale member refuses group"
+        );
+        let refused = VideoDoc::load_project(&doc);
+        assert_eq!(refused.clip(first).expect("first").link, Some(old_group));
+        assert_eq!(
+            refused.clip(second).expect("second").link,
+            Some(changed_group)
+        );
+    }
+
+    #[test]
+    fn palette_and_curves_are_narrow_existing_clip_fields() {
+        let (ctx, clip_id) = ctx_fixture();
+        let before = ctx.project.clip(clip_id).expect("fixture clip").clone();
+        let mut after = before.clone();
+        after.palette = 6;
+        after.curves.master.set_point(0.5, 0.8);
+        let VideoEditorAction::PatchClipFields { changes, .. } =
+            clip_field_patch_action(&before, &after)
+        else {
+            panic!("existing clip diff is narrow");
+        };
+        assert!(changes.iter().any(|patch| matches!(
+            patch,
+            ClipFieldPatch::Byte {
+                field: ClipByteField::Palette,
+                ..
+            }
+        )));
+        assert!(changes.iter().any(|patch| matches!(
+            patch,
+            ClipFieldPatch::Json {
+                field: ClipJsonField::Curves,
+                ..
+            }
+        )));
+
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+        VideoEditorAction::PatchClipFields {
+            clip: clip_id.to_string(),
+            changes,
+        }
+        .apply(&mut doc)
+        .expect("narrow palette and curve patch applies");
+        let written = VideoDoc::load_project(&doc)
+            .clip(clip_id)
+            .expect("clip")
+            .clone();
+        assert_eq!(written.palette, 6);
+        assert!((written.curves.master.eval(0.5) - 0.8).abs() < 1e-9);
+    }
+
     /// The full undo covenant on one action: dispatched through the executor it
     /// mutates the doc and records exactly one undo boundary, and Ctrl+Z
     /// (the host's `undo`) reverts precisely that action.
@@ -4324,7 +5477,7 @@ mod tests {
         // Move the clip via the action + host undo recording.
         let mut moved = project.clip(id).unwrap().clone();
         moved.start = before_start + 7.0;
-        let action = upsert_clip_action(&moved);
+        let action = clip_field_patch_action(project.clip(id).unwrap(), &moved);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();

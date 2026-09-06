@@ -11,6 +11,8 @@ benchmark flag, defaults, value parsing, dependencies, and diagnostic caveats.
 The [2026-09-06 current-main comparison](benchmarks/2026-09-06-current-main/RESULTS.md)
 supersedes the older matrices below for that recorded source/binary snapshot;
 it is not a measurement of the subsequent latest-main integration.
+The [integration validation record](performance-integration-validation.md)
+separates current correctness checks and outstanding gates from those timings.
 
 ## Acceptance commands
 
