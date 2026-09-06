@@ -176,11 +176,11 @@ pub fn import_vpn_config(kind: &str, path: &str) -> Result<(), String> {
     )
 }
 
-/// Remove one NetworkManager VPN profile by its exact connection name.
+/// Remove one `NetworkManager` VPN profile by its exact connection name.
 ///
 /// # Errors
 ///
-/// Returns an error for an invalid name or when NetworkManager refuses the
+/// Returns an error for an invalid name or when `NetworkManager` refuses the
 /// deletion. The fixed argument vector cannot invoke an arbitrary command.
 pub fn delete_vpn_connection(name: &str) -> Result<(), String> {
     if name.is_empty() || name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
