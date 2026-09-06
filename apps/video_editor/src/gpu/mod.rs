@@ -1301,7 +1301,7 @@ mod tests {
             Some(CpuFrame {
                 width: 4,
                 height: 4,
-                rgba: Arc::new(vec![255, 0, 255, 255].repeat(16)),
+                rgba: Arc::new([255, 0, 255, 255].repeat(16)),
                 identity: 0,
             })
         });
