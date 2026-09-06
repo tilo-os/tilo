@@ -188,8 +188,10 @@ impl Default for InputSettings {
     fn default() -> Self {
         Self {
             natural_scroll: false,
-            touchpad_natural_scroll: None,
-            mouse_natural_scroll: None,
+            touchpad_natural_scroll: Some(
+                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            ),
+            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -212,6 +214,9 @@ impl InputSettings {
     /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
+        let legacy_natural_scroll = section
+            .get(NATURAL_SCROLL_KEY)
+            .and_then(serde_json::Value::as_bool);
         let bool_at = |k: &str, fallback: bool| {
             section
                 .get(k)
@@ -226,13 +231,17 @@ impl InputSettings {
                 .map_or(fallback, |v| v.clamp(0.0, 1.0))
         };
         Self {
-            natural_scroll: bool_at(NATURAL_SCROLL_KEY, d.natural_scroll),
+            natural_scroll: legacy_natural_scroll.unwrap_or(d.natural_scroll),
             touchpad_natural_scroll: section
                 .get("touchpad_natural_scroll")
-                .and_then(serde_json::Value::as_bool),
+                .and_then(serde_json::Value::as_bool)
+                .or(legacy_natural_scroll)
+                .or(d.touchpad_natural_scroll),
             mouse_natural_scroll: section
                 .get("mouse_natural_scroll")
-                .and_then(serde_json::Value::as_bool),
+                .and_then(serde_json::Value::as_bool)
+                .or(legacy_natural_scroll)
+                .or(d.mouse_natural_scroll),
             tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
             pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
             touchpad_pointer_speed: section
@@ -556,8 +565,28 @@ mod tests {
     fn the_other_defaults_match_what_the_settings_pane_starts_from() {
         let d = InputSettings::default();
         assert!(!d.natural_scroll);
+        assert_eq!(d.touchpad_natural_scroll, Some(true));
+        assert_eq!(d.mouse_natural_scroll, Some(false));
         assert_eq!(d.pointer_speed, 0.5);
         assert_eq!(d.key_repeat, 0.5);
+    }
+
+    #[test]
+    fn unset_scroll_preferences_keep_touchpad_natural_and_wheel_conventional() {
+        let settings = InputSettings::from_section(&section(json!({})));
+        assert!(settings.natural_scroll_for(true));
+        assert!(!settings.natural_scroll_for(false));
+        assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
+        assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
+    }
+
+    #[test]
+    fn legacy_global_scroll_preference_still_applies_to_both_device_classes() {
+        let settings = InputSettings::from_section(&section(json!({
+            "natural_scroll": false,
+        })));
+        assert!(!settings.natural_scroll_for(true));
+        assert!(!settings.natural_scroll_for(false));
     }
 
     #[test]
