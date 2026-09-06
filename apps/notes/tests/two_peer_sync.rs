@@ -50,7 +50,7 @@ fn sync_seeds_welcome_page_into_doc() {
     let sel = app
         .selected_for_test()
         .expect("a page is selected after sync");
-    let list = NotesDoc::page_blocks_list(&mut doc, sel).unwrap();
+    let list = NotesDoc::page_blocks_list(&doc, sel).unwrap();
     assert!(
         doc.length(&list) > 0,
         "the selected page is seeded with blocks"
@@ -115,7 +115,7 @@ fn text_edit_in_peer_a_converges_to_peer_b() {
     // A "types": splice into the selected page's first block Text in A's
     // doc — exactly the CRDT op A's keystroke produces through the bound
     // editor.
-    let list = NotesDoc::page_blocks_list(&mut doc_a, sel).unwrap();
+    let list = NotesDoc::page_blocks_list(&doc_a, sel).unwrap();
     let t0 = NotesDoc::block_text_obj(&doc_a, &list, 0).expect("block 0 has text");
     doc_a.splice_text(&t0, 0, 0, "ZZZ-").unwrap();
 
