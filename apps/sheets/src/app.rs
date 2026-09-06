@@ -352,6 +352,13 @@ pub struct SheetsApp {
     /// Query-ready workbook projection, rebuilt only when document heads
     /// change so global search never reads the CRDT synchronously.
     searchable_sheets: Vec<actions::SearchableSheet>,
+    /// The heads that produced `searchable_sheets`. This is intentionally
+    /// separate from `cache`: changing the active tab must not walk every
+    /// workbook body or rebuild global-search postings.
+    search_projection_heads: Option<Vec<ChangeHash>>,
+    /// Retained, Arc-backed catalogue handed to each Ctrl+K session by clone.
+    /// It is refreshed only with a new search projection, never per query.
+    search_provider: crate::search_provider::SheetSearchProvider,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
@@ -476,6 +483,8 @@ impl SheetsApp {
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
             searchable_sheets: Vec::new(),
+            search_projection_heads: None,
+            search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
@@ -762,11 +771,6 @@ impl SheetsApp {
         self.active_sheet
     }
 
-    #[cfg(test)]
-    pub(crate) fn active_cell(&self) -> Addr {
-        self.grid.active()
-    }
-
     /// `--shots`: force the floating status bubble fully visible so a single
     /// headless frame captures the floating Sum / Avg / Count pill (otherwise
     /// it would have faded, or never surfaced, by the time the frame renders).
@@ -1030,43 +1034,51 @@ impl SheetsApp {
         }
 
         self.active_sheet = sheet;
-        self.sheet_names = SheetsDoc::sheet_names(doc);
-        self.sheet_colors = SheetsDoc::sheet_colors(doc);
-        self.doc_settings = SheetsDoc::doc_settings(doc);
-        let cur = self.default_currency();
-        self.searchable_sheets = (0..self.sheet_names.len())
-            .filter_map(|idx| {
-                let id = SheetsDoc::sheet_resource_id(doc, idx)?;
-                let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
-                let values = formula::recalculate(&snap.raw);
-                let mut cells = snap
-                    .raw
-                    .iter()
-                    .map(|(&(col, row), raw)| {
-                        let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
-                            raw.strip_prefix('=')
-                                .and_then(|body| formula::infer_result_format(body, &snap.fmt))
-                                .unwrap_or(CellFormat::General)
-                        });
-                        let display = values
-                            .get(&(col, row))
-                            .map_or_else(String::new, |value| format_value(value, fmt));
-                        actions::SearchableCell {
-                            col,
-                            row,
-                            raw: raw.clone(),
-                            display,
-                        }
+        // A tab switch still needs an active-sheet recalculation below, but it
+        // must not traverse every other sheet body. The complete search
+        // projection and its postings change only with Automerge heads.
+        if self.search_projection_heads.as_ref() != Some(&heads) {
+            self.sheet_names = SheetsDoc::sheet_names(doc);
+            self.sheet_colors = SheetsDoc::sheet_colors(doc);
+            self.doc_settings = SheetsDoc::doc_settings(doc);
+            let cur = self.default_currency();
+            self.searchable_sheets = (0..self.sheet_names.len())
+                .filter_map(|idx| {
+                    let id = SheetsDoc::sheet_resource_id(doc, idx)?;
+                    let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
+                    let values = formula::recalculate(&snap.raw);
+                    let mut cells = snap
+                        .raw
+                        .iter()
+                        .map(|(&(col, row), raw)| {
+                            let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
+                                raw.strip_prefix('=')
+                                    .and_then(|body| formula::infer_result_format(body, &snap.fmt))
+                                    .unwrap_or(CellFormat::General)
+                            });
+                            let display = values
+                                .get(&(col, row))
+                                .map_or_else(String::new, |value| format_value(value, fmt));
+                            actions::SearchableCell {
+                                col,
+                                row,
+                                raw: raw.clone(),
+                                display,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    cells.sort_by_key(|cell| (cell.row, cell.col));
+                    Some(actions::SearchableSheet {
+                        id,
+                        name: snap.name,
+                        cells,
                     })
-                    .collect::<Vec<_>>();
-                cells.sort_by_key(|cell| (cell.row, cell.col));
-                Some(actions::SearchableSheet {
-                    id,
-                    name: snap.name,
-                    cells,
                 })
-            })
-            .collect();
+                .collect();
+            self.search_provider.refresh(&self.searchable_sheets);
+            self.search_projection_heads = Some(heads.clone());
+        }
+        let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
         let values = formula::recalculate(&snap.raw);
 
@@ -1850,8 +1862,16 @@ impl SheetsApp {
     fn switch_sheet(&mut self, doc: &mut AutoCommit, idx: usize) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
+        let presentation_only = out.is_empty();
         self.apply_cmds(doc, out);
         SheetsDoc::set_active_index(doc, idx);
+        // The persisted active tab is a collaboration-friendly view hint, not
+        // workbook content. When this switch did not first flush an edit, its
+        // new head has exactly the same search corpus; carry the projection
+        // forward so a tab click never re-walks every sheet body.
+        if presentation_only {
+            self.search_projection_heads = Some(doc.get_heads());
+        }
         self.grid.select_only((0, 0));
         self.reload(doc);
         self.status = format!(
@@ -3967,9 +3987,7 @@ impl Widget for SheetsApp {
     /// Fold sheets and populated cells into unified search. Every hit names an
     /// exported resource View action; no app-owned activation callback exists.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SheetSearchProvider::new(
-            &self.searchable_sheets,
-        ))]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn handle_event(
@@ -5210,6 +5228,26 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    #[test]
+    fn unchanged_sync_and_tab_switch_retain_the_search_catalogue() {
+        let (mut app, mut doc) = seeded_app();
+        // Automerge commits the startup seed at the first following sync;
+        // establish the steady-state revision before asserting idle work.
+        app.sync(&mut doc, &automerge::ROOT);
+        let first_heads = app.search_projection_heads.clone();
+        let first_projection = app.searchable_sheets.as_ptr();
+        let first_catalogue = app.search_provider.stats();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.search_projection_heads, first_heads);
+        assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
+        assert_eq!(app.search_provider.stats(), first_catalogue);
+
+        app.switch_sheet(&mut doc, 1);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
+        assert_eq!(app.search_provider.stats(), first_catalogue);
     }
 
     #[test]
