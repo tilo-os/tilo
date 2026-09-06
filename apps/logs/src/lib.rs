@@ -5,10 +5,11 @@
 //! scrollable, severity-coloured entry list; a detail pane that surfaces
 //! every field of the selected record; and a filter bar (free-text
 //! search, unit, boot, and a syslog-priority threshold) plus a
-//! live-tail toggle. All *view state* lives in the Automerge
-//! document (see [`doc::LogsDoc`]) so selection, filters, and search sync
-//! across collaborators and participate in undo/redo for free; the
-//! journal entries themselves are an external render cache.
+//! live-tail toggle. Selection, filters, and search live in the Automerge
+//! document (see [`doc::LogsDoc`]) so they sync across collaborators and
+//! participate in undo/redo for free. Live tail is a deliberately local
+//! effect because it starts the local process's journal poller; journal
+//! entries themselves are an external render cache.
 //!
 //! Data sources:
 //! - **Live**: parses `journalctl -o json` ([`journal::load_live`]).
@@ -47,6 +48,7 @@
     )
 )]
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod journal;

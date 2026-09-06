@@ -26,9 +26,11 @@ ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+blake3.workspace = true
 
 [lints]
 workspace = true
