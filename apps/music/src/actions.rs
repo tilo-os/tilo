@@ -42,8 +42,8 @@ use uuid::Uuid;
 use qos_actions::resource::INVALID_ARGUMENTS_TYPE;
 use qos_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
+    ResourceProvider, RetryPolicy,
 };
 
 use crate::doc as mdoc;
@@ -55,6 +55,16 @@ pub const MUSIC_OPERATION_TYPE: &str = "music.operation";
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
 pub const MAX_PORTABLE_COVER_EDGE: u32 = 512;
+/// The contextual Ctrl+K snapshot is deliberately small. The full library is
+/// still discoverable through the paged search provider and every returned
+/// canonical address is resolved through [`ResourceProvider::resource`].
+/// Keeping this bounded prevents opening the palette from cloning a large
+/// library (or every membership in every long playlist) on the UI thread.
+pub const OPEN_RESOURCE_CATEGORY_LIMIT: usize = 16;
+/// A playlist shown in the contextual snapshot exposes its first few ordered
+/// memberships. The complete playlist remains reachable by its stable
+/// resource id, and the visible app has its own virtualised list.
+pub const OPEN_PLAYLIST_TRACK_LIMIT: usize = 32;
 
 pub fn track_resource_id(id: &str) -> String {
     format!("music.track:{id}")
@@ -76,7 +86,31 @@ pub fn playlist_resource_id(id: &str) -> String {
 /// playlist-specific remove and reorder actions without duplicating a track's
 /// library-level identity in the resource tree.
 pub fn playlist_track_resource_id(playlist: &str, track: &str) -> String {
-    format!("music.playlist-track:{playlist}:{track}")
+    // URL-safe base64 without padding is an unambiguous, Unicode-preserving
+    // component encoding (unlike joining raw ids with `:`). The stable v1
+    // prefix leaves room for a future representation without changing the
+    // namespace of existing resources.
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "music.playlist-track:v1:{}:{}",
+        engine.encode(playlist.as_bytes()),
+        engine.encode(track.as_bytes())
+    )
+}
+
+/// Decode a canonical playlist-membership resource identity. Invalid UTF-8,
+/// missing fields, and malformed base64 values never become an addressable
+/// resource.
+pub fn parse_playlist_track_resource_id(id: &str) -> Option<(String, String)> {
+    let value = id.strip_prefix("music.playlist-track:v1:")?;
+    let (playlist, track) = value.split_once(':')?;
+    if playlist.is_empty() || track.is_empty() {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let playlist = String::from_utf8(engine.decode(playlist).ok()?).ok()?;
+    let track = String::from_utf8(engine.decode(track).ok()?).ok()?;
+    (!playlist.is_empty() && !track.is_empty()).then_some((playlist, track))
 }
 
 pub fn play_track_address(id: &str) -> ActionAddress {
@@ -95,16 +129,35 @@ pub fn open_playlist_address(id: &str) -> ActionAddress {
     ActionAddress::new(playlist_resource_id(id), "open")
 }
 
+/// Open a particular playlist membership in its owning playlist. Unlike
+/// `remove`, this is the safe default action for a membership search result.
+pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAddress {
+    ActionAddress::new(playlist_track_resource_id(playlist, track), "open")
+}
+
 /// Non-document operations exported by Music. Navigation changes only the
 /// local presentation. Playback is intentionally absent: its durable controls
 /// are collaborative [`MusicAction`] values, while stream resolution and audio
 /// output remain device effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
-    PlayTrack { id: String },
-    OpenAlbum { id: String },
-    OpenArtist { id: String },
-    OpenPlaylist { id: String },
+    PlayTrack {
+        id: String,
+    },
+    OpenAlbum {
+        id: String,
+    },
+    OpenArtist {
+        id: String,
+    },
+    OpenPlaylist {
+        id: String,
+    },
+    /// Navigate to a playlist and reveal the still-current membership row.
+    OpenPlaylistMembership {
+        playlist: String,
+        track: String,
+    },
 }
 
 /// Decode a host-routed Music operation.
@@ -166,6 +219,9 @@ pub enum MusicAction {
     /// Reorder a track within a playlist from `from` to `to` (clamped).
     MoveTrackInPlaylist {
         playlist: String,
+        /// Identity of the membership expected at `from`. This prevents a
+        /// stale resource from moving whichever row later occupied its index.
+        track: String,
         from: usize,
         to: usize,
     },
@@ -257,6 +313,10 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
 }
 
 impl Action for MusicAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive action matcher keeps every durable mutation's stale-target validation at the one replay authority boundary"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MusicAction::SetPlayback(playback) => {
@@ -311,12 +371,25 @@ impl Action for MusicAction {
                     mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
                     "playlist or track is no longer in the library",
                 )?;
+                require(
+                    mdoc::playlist_contains_track(doc, playlist, track),
+                    "playlist membership is no longer present",
+                )?;
                 mdoc::remove_track_from_playlist(doc, playlist, track);
             }
-            MusicAction::MoveTrackInPlaylist { playlist, from, to } => {
+            MusicAction::MoveTrackInPlaylist {
+                playlist,
+                track,
+                from,
+                to,
+            } => {
                 require(
                     mdoc::has_playlist(doc, playlist),
                     "playlist is no longer in the library",
+                )?;
+                require(
+                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
+                    "playlist membership moved or is no longer present",
                 )?;
                 mdoc::move_track_in_playlist(doc, playlist, *from, *to);
             }
@@ -529,9 +602,10 @@ pub fn remove_track_action(playlist: &str, track: &str) -> MusicAction {
     }
 }
 
-pub fn move_track_action(playlist: &str, from: usize, to: usize) -> MusicAction {
+pub fn move_track_action(playlist: &str, track: &str, from: usize, to: usize) -> MusicAction {
     MusicAction::MoveTrackInPlaylist {
         playlist: playlist.to_string(),
+        track: track.to_string(),
         from,
         to,
     }
@@ -614,6 +688,17 @@ pub struct CatalogArtistResource {
     pub followed: bool,
 }
 
+/// One playlist row addressable independently from the bounded resource page.
+/// `index`/`total` are captured together with the track identity, letting the
+/// action refuse a stale reorder instead of operating on a recycled position.
+#[derive(Debug, Clone)]
+pub struct PlaylistMembershipResource {
+    pub playlist: String,
+    pub track: TrackRef,
+    pub index: usize,
+    pub total: usize,
+}
+
 /// The presentation context Music hands [`provide_resources`]: the user's
 /// playlists and their tracks currently in the model cache. Everything here is
 /// derived from state the document already holds; nothing is fabricated.
@@ -623,6 +708,7 @@ pub struct MusicResourceCtx {
     pub tracks: Vec<CatalogTrackResource>,
     pub albums: Vec<CatalogAlbumResource>,
     pub artists: Vec<CatalogArtistResource>,
+    pub membership: Option<PlaylistMembershipResource>,
     pub playback: crate::model::Playback,
 }
 
@@ -633,6 +719,7 @@ pub struct MusicResourceCtx {
 fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
     ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action)
         .expect("encode music action")
+        .requiring(PermissionRequirement::Write)
         .reversible()
 }
 
@@ -649,7 +736,8 @@ fn operation_spec(
     let spec = ActionSpec::operation(id, label, kind, MUSIC_OPERATION_TYPE, operation)
         .expect("encode music operation");
     if kind == OperationKind::View {
-        spec.retry_policy(RetryPolicy::Idempotent)
+        spec.requiring(PermissionRequirement::Read)
+            .retry_policy(RetryPolicy::Idempotent)
     } else {
         spec
     }
@@ -701,6 +789,7 @@ fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback
                     encode(&MusicAction::SetPlayback(next))
                 },
             )
+            .requiring(PermissionRequirement::Write)
             .reversible(),
         );
     }
@@ -724,6 +813,7 @@ fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback
                 encode(&MusicAction::SetPlayback(next))
             },
         )
+        .requiring(PermissionRequirement::Write)
         .reversible(),
     );
     let mut muted = playback.clone();
@@ -826,28 +916,31 @@ fn with_queue_actions(
 ) -> Resource {
     let add_queue = playback.clone();
     let queue_track_ids = known_tracks.clone();
-    root = root.with_action(ActionSpec::typed(
-        "queue-add",
-        "Add track to queue",
-        "track id…",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "track",
-            ParamType::Resource,
-            "stable music.track resource address",
-        )],
-        move |args: &ActionArgs| {
-            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
-                return invalid_arguments("track must be a music.track resource");
-            };
-            if !queue_track_ids.contains(track) {
-                return invalid_arguments("track is no longer in the library");
-            }
-            let mut next = add_queue.clone();
-            next.queue.push(track.to_string());
-            encode(&MusicAction::SetPlayback(next))
-        },
-    ));
+    root = root.with_action(
+        ActionSpec::typed(
+            "queue-add",
+            "Add track to queue",
+            "track id…",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "track",
+                ParamType::Resource,
+                "stable music.track resource address",
+            )],
+            move |args: &ActionArgs| {
+                let Some(track) = args.text("track").and_then(track_id_from_resource) else {
+                    return invalid_arguments("track must be a music.track resource");
+                };
+                if !queue_track_ids.contains(track) {
+                    return invalid_arguments("track is no longer in the library");
+                }
+                let mut next = add_queue.clone();
+                next.queue.push(track.to_string());
+                encode(&MusicAction::SetPlayback(next))
+            },
+        )
+        .requiring(PermissionRequirement::Write),
+    );
     let remove_queue = playback.clone();
     let remove_track_ids = known_tracks.clone();
     let remove = ActionSpec::typed(
@@ -889,6 +982,7 @@ fn with_queue_actions(
             encode(&MusicAction::SetPlayback(next))
         },
     )
+    .requiring(PermissionRequirement::Write)
     .destructive()
     .reversible();
     root = root.with_action(if playback.queue.is_empty() {
@@ -899,7 +993,11 @@ fn with_queue_actions(
     root
 }
 
-fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String>) -> Resource {
+fn playlist_resource(
+    playlist: &PlaylistResource,
+    known_tracks: &BTreeSet<String>,
+    track_limit: usize,
+) -> Resource {
     let mut resource = Resource::new(
         playlist_resource_id(&playlist.id),
         "music.playlist",
@@ -923,6 +1021,7 @@ fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String
             ExecutionLocus::ClientLocal,
             move |name: &str| encode(&rename_playlist_action(&playlist_id, name.trim())),
         )
+        .requiring(PermissionRequirement::Write)
         .reversible(),
     );
     resource = resource.with_action(
@@ -935,26 +1034,29 @@ fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String
     );
     let add_playlist = playlist.id.clone();
     let add_track_ids = known_tracks.clone();
-    resource = resource.with_action(ActionSpec::typed(
-        "add-track",
-        "Add track to playlist",
-        "track resource…",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "track",
-            ParamType::Resource,
-            "stable music.track resource address",
-        )],
-        move |args: &ActionArgs| {
-            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
-                return invalid_arguments("track must be a music.track resource");
-            };
-            if !add_track_ids.contains(track) {
-                return invalid_arguments("track is no longer in the library");
-            }
-            encode(&add_track_action(&add_playlist, track))
-        },
-    ));
+    resource = resource.with_action(
+        ActionSpec::typed(
+            "add-track",
+            "Add track to playlist",
+            "track resource…",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "track",
+                ParamType::Resource,
+                "stable music.track resource address",
+            )],
+            move |args: &ActionArgs| {
+                let Some(track) = args.text("track").and_then(track_id_from_resource) else {
+                    return invalid_arguments("track must be a music.track resource");
+                };
+                if !add_track_ids.contains(track) {
+                    return invalid_arguments("track is no longer in the library");
+                }
+                encode(&add_track_action(&add_playlist, track))
+            },
+        )
+        .requiring(PermissionRequirement::Write),
+    );
     let cover_playlist = playlist.id.clone();
     resource = resource.with_action(
         ActionSpec::prompted(
@@ -965,11 +1067,12 @@ fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String
             ExecutionLocus::ClientLocal,
             move |cover| encode(&set_cover_action(&cover_playlist, cover.trim())),
         )
+        .requiring(PermissionRequirement::Write)
         .reversible(),
     );
-    for (index, track) in playlist.tracks.iter().enumerate() {
+    for (index, track) in playlist.tracks.iter().take(track_limit).enumerate() {
         resource = resource.with_child(playlist_track_resource(
-            playlist,
+            &playlist.id,
             track,
             index,
             playlist.tracks.len(),
@@ -979,20 +1082,29 @@ fn playlist_resource(playlist: &PlaylistResource, known_tracks: &BTreeSet<String
 }
 
 fn playlist_track_resource(
-    playlist: &PlaylistResource,
+    playlist: &str,
     track: &TrackRef,
     index: usize,
     total: usize,
 ) -> Resource {
     Resource::new(
-        playlist_track_resource_id(&playlist.id, &track.id),
+        playlist_track_resource_id(playlist, &track.id),
         "music.playlist-track",
         track.label.clone(),
     )
+    .with_action(operation_spec(
+        "open",
+        "Open in playlist",
+        OperationKind::View,
+        &MusicOperation::OpenPlaylistMembership {
+            playlist: playlist.to_string(),
+            track: track.id.clone(),
+        },
+    ))
     .with_action(immediate_spec(
         "remove",
         "Remove from playlist",
-        &remove_track_action(&playlist.id, &track.id),
+        &remove_track_action(playlist, &track.id),
     ))
     .with_action(immediate_spec(
         "toggle-like",
@@ -1007,14 +1119,14 @@ fn playlist_track_resource(
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(&playlist.id, index, index - 1),
+            &move_track_action(playlist, &track.id, index, index - 1),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(&playlist.id, index, index),
+            &move_track_action(playlist, &track.id, index, index),
         )
         .unavailable("first_track", "This track is already first in the playlist")
     })
@@ -1022,20 +1134,20 @@ fn playlist_track_resource(
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(&playlist.id, index, index + 1),
+            &move_track_action(playlist, &track.id, index, index + 1),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(&playlist.id, index, index),
+            &move_track_action(playlist, &track.id, index, index),
         )
         .unavailable("last_track", "This track is already last in the playlist")
     })
 }
 
-fn catalog_track_resource(
+pub(crate) fn catalog_track_resource(
     track: &CatalogTrackResource,
     playback: &crate::model::Playback,
 ) -> Resource {
@@ -1102,6 +1214,56 @@ fn catalog_track_resource(
     })
 }
 
+fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
+    Resource::new(
+        album_resource_id(&album.id),
+        "music.album",
+        album.label.clone(),
+    )
+    .with_action(operation_spec(
+        "open",
+        "Open album",
+        OperationKind::View,
+        &MusicOperation::OpenAlbum {
+            id: album.id.clone(),
+        },
+    ))
+    .with_action(immediate_spec(
+        "toggle-save",
+        if album.saved {
+            "Remove album from library"
+        } else {
+            "Save album to library"
+        },
+        &toggle_saved_album_action(&album.id),
+    ))
+}
+
+fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
+    Resource::new(
+        artist_resource_id(&artist.id),
+        "music.artist",
+        artist.label.clone(),
+    )
+    .with_action(operation_spec(
+        "open",
+        "Open artist",
+        OperationKind::View,
+        &MusicOperation::OpenArtist {
+            id: artist.id.clone(),
+        },
+    ))
+    .with_action(immediate_spec(
+        "toggle-follow",
+        if artist.followed {
+            "Unfollow artist"
+        } else {
+            "Follow artist"
+        },
+        &toggle_followed_artist_action(&artist.id),
+    ))
+}
+
 /// Build the resource tree Music currently has open: the library (with a "New
 /// playlist" action), each playlist (rename + delete), and each track within a
 /// playlist (remove + toggle-like). Every document-mutating operation is
@@ -1138,75 +1300,110 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 encode(&create_playlist_action(&new_playlist_id(), name))
             },
         )
+        .requiring(PermissionRequirement::Write)
         .reversible(),
     );
 
-    for playlist in &ctx.playlists {
-        root = root.with_child(playlist_resource(playlist, &known_tracks));
+    let mut playlists = ctx.playlists.iter().collect::<Vec<_>>();
+    playlists.sort_by(|a, b| a.id.cmp(&b.id));
+    for playlist in playlists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        root = root.with_child(playlist_resource(
+            playlist,
+            &known_tracks,
+            OPEN_PLAYLIST_TRACK_LIMIT,
+        ));
     }
 
-    for track in &ctx.tracks {
+    let mut tracks = ctx.tracks.iter().collect::<Vec<_>>();
+    tracks.sort_by(|a, b| a.id.cmp(&b.id));
+    for track in tracks.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
         root = root.with_child(catalog_track_resource(track, &ctx.playback));
     }
-    for album in &ctx.albums {
-        root = root.with_child(
-            Resource::new(
-                album_resource_id(&album.id),
-                "music.album",
-                album.label.clone(),
-            )
-            .with_action(operation_spec(
-                "open",
-                "Open album",
-                OperationKind::View,
-                &MusicOperation::OpenAlbum {
-                    id: album.id.clone(),
-                },
-            ))
-            .with_action(immediate_spec(
-                "toggle-save",
-                if album.saved {
-                    "Remove album from library"
-                } else {
-                    "Save album to library"
-                },
-                &toggle_saved_album_action(&album.id),
-            )),
-        );
+    let mut albums = ctx.albums.iter().collect::<Vec<_>>();
+    albums.sort_by(|a, b| a.id.cmp(&b.id));
+    for album in albums.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        root = root.with_child(catalog_album_resource(album));
     }
-    for artist in &ctx.artists {
-        root = root.with_child(
-            Resource::new(
-                artist_resource_id(&artist.id),
-                "music.artist",
-                artist.label.clone(),
-            )
-            .with_action(operation_spec(
-                "open",
-                "Open artist",
-                OperationKind::View,
-                &MusicOperation::OpenArtist {
-                    id: artist.id.clone(),
-                },
-            ))
-            .with_action(immediate_spec(
-                "toggle-follow",
-                if artist.followed {
-                    "Unfollow artist"
-                } else {
-                    "Follow artist"
-                },
-                &toggle_followed_artist_action(&artist.id),
-            )),
-        );
+    let mut artists = ctx.artists.iter().collect::<Vec<_>>();
+    artists.sort_by(|a, b| a.id.cmp(&b.id));
+    for artist in artists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        root = root.with_child(catalog_artist_resource(artist));
     }
 
     vec![root]
 }
 
+/// Resolve one catalog resource without first constructing the entire library
+/// tree. Search rows carry canonical resource/action addresses; at invocation
+/// time the host calls this method against the current model, so deleted or
+/// otherwise stale targets disappear instead of gaining authority from an old
+/// palette snapshot.
+pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
+    if let Some(membership) = &ctx.membership
+        && id == playlist_track_resource_id(&membership.playlist, &membership.track.id)
+    {
+        return Some(playlist_track_resource(
+            &membership.playlist,
+            &membership.track,
+            membership.index,
+            membership.total,
+        ));
+    }
+    let known_tracks = ctx
+        .tracks
+        .iter()
+        .map(|track| track.id.clone())
+        .collect::<BTreeSet<_>>();
+    if id == "music.library" {
+        return provide_resources(ctx, &AutoCommit::new())
+            .into_iter()
+            .next();
+    }
+    if id == "music.player:player" {
+        return Some(with_playback_actions(
+            Resource::new("music.player:player", "music.player", "Player"),
+            &ctx.playback,
+            &known_tracks,
+        ));
+    }
+    if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
+        return ctx
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .map(|track| catalog_track_resource(track, &ctx.playback));
+    }
+    if let Some(album_id) = id.strip_prefix("music.album:").filter(|id| !id.is_empty()) {
+        return ctx
+            .albums
+            .iter()
+            .find(|album| album.id == album_id)
+            .map(catalog_album_resource);
+    }
+    if let Some(artist_id) = id.strip_prefix("music.artist:").filter(|id| !id.is_empty()) {
+        return ctx
+            .artists
+            .iter()
+            .find(|artist| artist.id == artist_id)
+            .map(catalog_artist_resource);
+    }
+    let playlist_id = id
+        .strip_prefix("music.playlist:")
+        .filter(|id| !id.is_empty())?;
+    ctx.playlists
+        .iter()
+        .find(|playlist| playlist.id == playlist_id)
+        .map(|playlist| playlist_resource(playlist, &known_tracks, 0))
+}
+
 impl ResourceProvider for crate::app::MusicApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.music_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let ctx = self.music_resource_ctx_for_id(id)?;
+        resource_by_id(&ctx, id)
     }
 }
 
@@ -1596,10 +1793,11 @@ mod tests {
             .as_str()
             .trim_start_matches("music.playlist:");
         let track = &with_tracks.children[0];
-        let tid = track.id.as_str().rsplit(':').next().unwrap();
+        let (_, tid) = parse_playlist_track_resource_id(track.id.as_str())
+            .expect("nested playlist tracks use canonical membership IDs");
         let remove_spec = track.actions.iter().find(|a| a.id == "remove").unwrap();
         let from_spec = immediate_encode(remove_spec);
-        let from_builder = encode(&remove_track_action(pid, tid));
+        let from_builder = encode(&remove_track_action(pid, &tid));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "remove is one source of truth"
@@ -1751,6 +1949,168 @@ mod tests {
         });
         assert!(matches!(
             invalid_volume.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn contextual_resources_are_bounded_but_late_catalog_items_resolve_lazily() {
+        let mut ctx = MusicResourceCtx::default();
+        for number in 0..(OPEN_RESOURCE_CATEGORY_LIMIT + 9) {
+            let id = format!("track-{number:03}");
+            ctx.tracks.push(CatalogTrackResource {
+                label: format!("Track {number}"),
+                id,
+                offline: false,
+                liked: false,
+            });
+        }
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let root = &resources[0];
+        assert_eq!(
+            root.children
+                .iter()
+                .filter(|resource| resource.kind == "music.track")
+                .count(),
+            OPEN_RESOURCE_CATEGORY_LIMIT,
+            "opening Ctrl+K never clones every catalog track"
+        );
+
+        let late_id = track_resource_id("track-024");
+        assert!(
+            !root
+                .children
+                .iter()
+                .any(|resource| resource.id.as_str() == late_id),
+            "the late track is intentionally absent from the contextual page"
+        );
+        let late = resource_by_id(&ctx, &late_id).expect("late track resolves by stable id");
+        assert_eq!(late.id.as_str(), late_id);
+        assert!(late.actions.iter().any(|action| action.id == "play"));
+        assert!(
+            resource_by_id(&ctx, "music.track:deleted").is_none(),
+            "a stale address never resolves into new authority"
+        );
+    }
+
+    #[test]
+    fn document_mutations_advertise_write_permission_and_views_advertise_read() {
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        for flat in qos_actions::flatten(&resources) {
+            let permission = flat.action.contract.permission;
+            match flat.action.kind {
+                OperationKind::Document => assert_eq!(
+                    permission,
+                    PermissionRequirement::Write,
+                    "{} must require write permission",
+                    flat.key
+                ),
+                OperationKind::View => assert_eq!(
+                    permission,
+                    PermissionRequirement::Read,
+                    "{} must require read permission",
+                    flat.key
+                ),
+                OperationKind::Effect => {}
+            }
+        }
+    }
+
+    #[test]
+    fn published_resource_action_surface_validates_with_music_handlers() {
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let operation_handlers =
+            std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
+        let violations =
+            qos_actions::validate_surface(&resources, &registry(), &operation_handlers);
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn late_playlist_membership_resolves_lazily_with_canonical_actions() {
+        let playlist = PlaylistResource {
+            id: "playlist:日本語".into(),
+            name: "Long playlist".into(),
+            tracks: (0..(OPEN_PLAYLIST_TRACK_LIMIT + 8))
+                .map(|number| TrackRef {
+                    id: format!("track:{number}:🎧"),
+                    label: format!("Track {number}"),
+                    liked: false,
+                })
+                .collect(),
+        };
+        let target = playlist.tracks.last().cloned().expect("late membership");
+        let index = playlist.tracks.len() - 1;
+        let ctx = MusicResourceCtx {
+            playlists: vec![playlist.clone()],
+            membership: Some(PlaylistMembershipResource {
+                playlist: playlist.id.clone(),
+                track: target.clone(),
+                index,
+                total: playlist.tracks.len(),
+            }),
+            ..Default::default()
+        };
+        let snapshot = provide_resources(&ctx, &AutoCommit::new());
+        assert_eq!(
+            snapshot[0].children[1].children.len(),
+            OPEN_PLAYLIST_TRACK_LIMIT,
+            "the contextual page does not materialize every membership"
+        );
+        let id = playlist_track_resource_id(&playlist.id, &target.id);
+        assert_eq!(
+            parse_playlist_track_resource_id(&id),
+            Some((playlist.id.clone(), target.id.clone())),
+            "membership identity is Unicode-safe and reversible"
+        );
+        let direct = resource_by_id(&ctx, &id).expect("late membership resolves directly");
+        let remove = direct
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .unwrap();
+        assert_eq!(
+            immediate_encode(remove),
+            encode(&remove_track_action(&playlist.id, &target.id)),
+            "the lazy resource uses the exact same canonical remove action"
+        );
+        let up = direct
+            .actions
+            .iter()
+            .find(|action| action.id == "move-up")
+            .unwrap();
+        assert_eq!(
+            immediate_encode(up),
+            encode(&move_track_action(
+                &playlist.id,
+                &target.id,
+                index,
+                index - 1
+            )),
+            "the lazy resource preserves the original membership index"
+        );
+    }
+
+    #[test]
+    fn stale_membership_remove_and_reorder_are_refused() {
+        let (_app, mut doc) = seeded();
+        let playlist = crate::doc::load_library(&doc).playlists[0].clone();
+        let track = playlist.track_ids[0].clone();
+        let remove = remove_track_action(&playlist.id, &track);
+        remove.apply(&mut doc).expect("live membership removes");
+        assert!(matches!(
+            remove.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+
+        let playlist = crate::doc::load_library(&doc).playlists[0].clone();
+        let track = playlist.track_ids[0].clone();
+        let move_action = move_track_action(&playlist.id, &track, 0, 1);
+        move_action.apply(&mut doc).expect("live membership moves");
+        assert!(matches!(
+            move_action.apply(&mut doc),
             Err(ActionError::Refused(_))
         ));
     }
