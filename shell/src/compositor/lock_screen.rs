@@ -61,18 +61,17 @@ pub struct LockView<'a> {
 }
 
 /// One output the lock overlay must cover, in the compositor's combined
-/// coordinate space. The overlay draws its interactive widget centred
-/// within each output's rectangle, so a two-monitor setup shows a usable
-/// lock on every screen rather than one stranded across the bezel.
+/// coordinate space. The compositor's first output is the primary lock
+/// target; secondary displays retain a private, useful indication without
+/// duplicating a password target.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LockOutput {
     /// Top-left of this output in the combined space.
     pub origin: (f64, f64),
-    /// Output size in pixels.
+    /// Output size in compositor logical pixels.
     pub size: (f64, f64),
     /// Device scale reported for this output. Lock chrome is compositor-owned,
-    /// so it must apply this itself rather than relying on a Wayland client to
-    /// render at the requested scale.
+    /// while geometry itself is already in compositor logical coordinates.
     pub scale: f64,
 }
 
@@ -187,9 +186,10 @@ pub struct LockLayout {
 }
 
 impl LockLayout {
-    /// Resolve a bounded lock layout for one output. The device/theme scale is
-    /// honoured when it fits and reduced on compact outputs, so a high-DPI
-    /// laptop never clips the password/error controls below the panel.
+    /// Resolve a bounded primary-output layout. The backend already gives the
+    /// compositor logical output geometry, therefore device scale must not be
+    /// multiplied into the card a second time. Only qOS's explicit UI scale
+    /// participates here, then is capped by available space.
     pub fn for_output(output: LockOutput, theme: &Theme) -> Self {
         let width = output.size.0.max(1.0);
         let height = output.size.1.max(1.0);
@@ -199,18 +199,23 @@ impl LockLayout {
             output.origin.0 + width,
             output.origin.1 + height,
         );
-        let edge = (width.min(height) * 0.035).clamp(1.0, 28.0);
-        let desired_scale = (output.scale * f64::from(theme.ui_scale)).clamp(0.5, 3.0);
-        let width_fit = ((width - edge * 2.0) / 420.0).max(0.05);
-        let height_fit = ((height - edge * 2.0) / 470.0).max(0.05);
-        let scale = desired_scale.min(width_fit).min(height_fit).max(0.05);
+        let edge = (width.min(height) * 0.035)
+            .clamp(1.0, 28.0)
+            .min(width / 2.0)
+            .min(height / 2.0);
+        let desired_scale = f64::from(theme.ui_scale).clamp(0.8, 1.6);
+        let width_fit = ((width - edge * 2.0) / 408.0).max(0.0);
+        let height_fit = ((height - edge * 2.0) / 372.0).max(0.0);
+        // Startup can briefly report a 1×1 output before the first modeset.
+        // Keep every rect contained even then; this is not a user-facing scale.
+        let scale = desired_scale.min(width_fit).min(height_fit).max(0.001);
 
-        let panel_width = 400.0 * scale;
-        let panel_height = 270.0 * scale;
-        let clock_height = 78.0 * scale;
-        let date_height = 28.0 * scale;
-        let clock_date_gap = 4.0 * scale;
-        let panel_gap = 34.0 * scale;
+        let panel_width = 384.0 * scale;
+        let panel_height = 222.0 * scale;
+        let clock_height = 68.0 * scale;
+        let date_height = 26.0 * scale;
+        let clock_date_gap = 2.0 * scale;
+        let panel_gap = 24.0 * scale;
         let stack_height = clock_height + clock_date_gap + date_height + panel_gap + panel_height;
         let top = output.origin.1 + (height - stack_height) / 2.0;
         let cx = output.origin.0 + width / 2.0;
@@ -231,36 +236,36 @@ impl LockLayout {
             panel_y + panel_height,
         );
 
-        let icon_size = 42.0 * scale;
+        let icon_size = 34.0 * scale;
         let icon = Rect::new(
             cx - icon_size / 2.0,
-            panel.y0 + 22.0 * scale,
+            panel.y0 + 18.0 * scale,
             cx + icon_size / 2.0,
-            panel.y0 + (22.0 * scale) + icon_size,
+            panel.y0 + (18.0 * scale) + icon_size,
         );
         let title = Rect::new(
-            panel.x0 + 28.0 * scale,
-            icon.y1 + 8.0 * scale,
-            panel.x1 - 28.0 * scale,
-            icon.y1 + 40.0 * scale,
+            panel.x0 + 24.0 * scale,
+            icon.y1 + 6.0 * scale,
+            panel.x1 - 24.0 * scale,
+            icon.y1 + 34.0 * scale,
         );
         let password = Rect::new(
             panel.x0 + 30.0 * scale,
-            title.y1 + 14.0 * scale,
+            title.y1 + 12.0 * scale,
             panel.x1 - 30.0 * scale,
-            title.y1 + 64.0 * scale,
+            title.y1 + 58.0 * scale,
         );
         let status = Rect::new(
             password.x0,
-            password.y1 + 10.0 * scale,
+            password.y1 + 8.0 * scale,
             password.x1,
-            password.y1 + 42.0 * scale,
+            password.y1 + 34.0 * scale,
         );
         let notifications = Rect::new(
             password.x0,
-            status.y1 + 4.0 * scale,
+            status.y1 + 2.0 * scale,
             password.x1,
-            panel.y1 - 14.0 * scale,
+            panel.y1 - 10.0 * scale,
         );
 
         Self {
@@ -276,6 +281,95 @@ impl LockLayout {
             scale,
         }
     }
+}
+
+/// Resolve the one output that carries the credential surface. A hot-unplug
+/// can remove the previous primary connector while locked; then the first
+/// surviving output takes over rather than leaving the password unreachable.
+/// Backend output ordering is the compositor's primary-output policy.
+fn primary_output(outputs: &[LockOutput]) -> Option<LockOutput> {
+    outputs.first().copied()
+}
+
+/// The locked semantic tree has one password target, matching the primary
+/// output. It never publishes a password or masked value to assistive tech.
+pub fn build_accessibility_tree(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    view: &LockView<'_>,
+) -> TreeUpdate {
+    let (width, height) = combined_extent(outputs);
+    let output = primary_output(outputs).unwrap_or(LockOutput {
+        origin: (0.0, 0.0),
+        size: (width.max(1.0), height.max(1.0)),
+        scale: 1.0,
+    });
+    let layout = LockLayout::for_output(output, theme);
+
+    let mut root = AccessNode::new(AccessRole::Window);
+    root.set_label("qOS lock screen");
+    root.set_bounds(AccessRect::new(0.0, 0.0, width.max(1.0), height.max(1.0)));
+
+    let mut clock = AccessNode::new(AccessRole::Label);
+    clock.set_label(match (view.clock.is_empty(), view.date.is_empty()) {
+        (true, _) => "Session locked".to_string(),
+        (false, true) => format!("Session locked, {}", view.clock),
+        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
+    });
+    clock.set_bounds(access_rect(layout.clock));
+
+    let mut password = AccessNode::new(AccessRole::TextInput);
+    password.set_label("Password");
+    password.set_bounds(access_rect(layout.password));
+    password.add_action(AccessAction::Focus);
+    if view.verifying {
+        password.set_disabled();
+    } else {
+        password.add_action(AccessAction::SetValue);
+    }
+
+    let mut help = AccessNode::new(AccessRole::Label);
+    help.set_label("Type your password and press Enter");
+    help.set_bounds(access_rect(layout.status));
+
+    let mut children = vec![LOCK_CLOCK_ID, LOCK_PASSWORD_ID, LOCK_HELP_ID];
+    let mut nodes = vec![
+        (LOCK_CLOCK_ID, clock),
+        (LOCK_PASSWORD_ID, password),
+        (LOCK_HELP_ID, help),
+    ];
+    let status = if view.verifying {
+        Some("Verifying password".to_string())
+    } else if let Some(error) = view.error {
+        Some(error.to_string())
+    } else if view.notification_count > 0 {
+        Some(count_label(view.notification_count))
+    } else {
+        None
+    };
+    if let Some(status) = status {
+        let mut node = AccessNode::new(AccessRole::Label);
+        node.set_label(status);
+        node.set_bounds(access_rect(layout.notifications));
+        children.push(LOCK_STATUS_ID);
+        nodes.push((LOCK_STATUS_ID, node));
+    }
+    root.set_children(children);
+    nodes.push((LOCK_ROOT_ID, root));
+    TreeUpdate {
+        nodes,
+        tree: Some(TreeInfo::new(LOCK_ROOT_ID)),
+        tree_id: TreeId::ROOT,
+        focus: if view.verifying {
+            LOCK_ROOT_ID
+        } else {
+            LOCK_PASSWORD_ID
+        },
+    }
+}
+
+fn access_rect(rect: Rect) -> AccessRect {
+    AccessRect::new(rect.x0, rect.y0, rect.x1, rect.y1)
 }
 
 /// Bounding box `(w, h)` covering every output, i.e. the size of the single
@@ -297,8 +391,8 @@ fn combined_extent(outputs: &[LockOutput]) -> (f64, f64) {
 /// The overlay fills the **combined** geometry of all outputs so app/chrome
 /// content is hidden everywhere (see
 /// [`crate::compositor::backend::combined_geometry`]); the interactive
-/// widget is drawn once per output, centred on that output (see
-/// [`LockOutput`]).
+/// credential widget is drawn on the designated primary output. Secondary
+/// displays stay private and informative, but do not duplicate password UI.
 ///
 /// `view.notification_count`, when non-zero, shows "N notifications" —
 /// never any app name, summary, or body.
@@ -373,15 +467,16 @@ pub fn draw_lock_scene_with_wallpaper(
         }
     }
 
-    // 2. One interactive lock widget per output, centred on that output.
+    // 2. One credential surface on the primary display. Secondary displays
+    // deliberately have a quieter non-interactive indication.
+    let primary = primary_output(outputs);
     for output in outputs {
-        draw_lock_widget(
-            &mut scene,
-            LockLayout::for_output(*output, theme),
-            theme,
-            text,
-            view,
-        );
+        let layout = LockLayout::for_output(*output, theme);
+        if Some(*output) == primary {
+            draw_lock_widget(&mut scene, layout, theme, text, view);
+        } else {
+            draw_secondary_lock_widget(&mut scene, layout, theme, text, view);
+        }
     }
 
     scene
@@ -400,7 +495,7 @@ fn draw_lock_widget(
             scene,
             text,
             view.clock,
-            scaled_text_size(64.0, layout.scale, theme),
+            scaled_text_size(56.0, layout.scale, theme),
             theme.text_primary,
             layout.clock,
         );
@@ -437,7 +532,7 @@ fn draw_lock_widget(
         scene,
         text,
         "Session locked",
-        scaled_text_size(22.0, layout.scale, theme),
+        scaled_text_size(20.0, layout.scale, theme),
         theme.text_primary,
         layout.title,
     );
@@ -454,6 +549,69 @@ fn draw_lock_widget(
             layout.notifications,
         );
     }
+}
+
+/// Quiet secondary-display indication. It must never paint a second password
+/// affordance: focus and assistive technology point at the sole primary field.
+fn draw_secondary_lock_widget(
+    scene: &mut Scene,
+    layout: LockLayout,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) {
+    if !view.clock.is_empty() {
+        draw_centered_text(
+            scene,
+            text,
+            view.clock,
+            scaled_text_size(52.0, layout.scale, theme),
+            theme.text_primary,
+            layout.clock,
+        );
+    }
+    if !view.date.is_empty() {
+        draw_centered_text(
+            scene,
+            text,
+            view.date,
+            scaled_text_size(16.0, layout.scale, theme),
+            theme.text_dim,
+            layout.date,
+        );
+    }
+    let message = Rect::new(
+        layout.output.x0 + 24.0 * layout.scale,
+        layout.date.y1 + 26.0 * layout.scale,
+        layout.output.x1 - 24.0 * layout.scale,
+        layout.date.y1 + 78.0 * layout.scale,
+    );
+    draw_centered_text(
+        scene,
+        text,
+        "Session locked",
+        scaled_text_size(18.0, layout.scale, theme),
+        theme.text_primary,
+        Rect::new(
+            message.x0,
+            message.y0,
+            message.x1,
+            message.y0 + 24.0 * layout.scale,
+        ),
+    );
+    draw_centered_text(
+        scene,
+        text,
+        "Password prompt is on the primary display",
+        scaled_text_size(13.0, layout.scale, theme),
+        theme.text_dim,
+        Rect::new(
+            message.x0,
+            message.y0 + 28.0 * layout.scale,
+            message.x1,
+            message.y1,
+        ),
+    );
 }
 
 fn scaled_text_size(base: f32, scale: f64, theme: &Theme) -> f32 {
@@ -649,28 +807,29 @@ mod tests {
     }
 
     #[test]
-    fn lock_accessibility_tree_is_actionable_and_never_exposes_password() {
+    fn lock_accessibility_tree_has_one_actionable_password_and_hides_its_value() {
         let v = LockView {
             password_len: 12,
             notification_count: 4,
             ..view()
         };
-        let update = build_accessibility_tree(&single(1600.0, 900.0), &v);
+        let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &v);
         assert_eq!(update.focus, LOCK_PASSWORD_ID);
-        let (_, password) = update
+        let passwords = update
             .nodes
             .iter()
-            .find(|(id, _)| *id == LOCK_PASSWORD_ID)
-            .expect("password field is present");
-        assert_eq!(password.role(), AccessRole::TextInput);
+            .filter(|(_, node)| node.role() == AccessRole::TextInput)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            passwords.len(),
+            1,
+            "only the primary lock field is semantic"
+        );
+        let (_, password) = passwords[0];
         assert_eq!(password.label(), Some("Password"));
         assert!(password.supports_action(AccessAction::Focus));
         assert!(password.supports_action(AccessAction::SetValue));
-        assert_eq!(
-            password.value(),
-            None,
-            "masked credentials are not semantic values"
-        );
+        assert_eq!(password.value(), None, "credential values never enter AT");
         assert!(
             update.nodes.iter().all(|(_, node)| {
                 node.label()
@@ -686,7 +845,7 @@ mod tests {
             verifying: true,
             ..view()
         };
-        let update = build_accessibility_tree(&single(800.0, 600.0), &v);
+        let update = build_accessibility_tree(&single(800.0, 600.0), &Theme::dark(), &v);
         assert_eq!(update.focus, LOCK_ROOT_ID);
         let (_, password) = update
             .nodes
@@ -869,6 +1028,50 @@ mod tests {
     }
 
     #[test]
+    fn density_scale_does_not_double_scale_logical_lock_geometry() {
+        let theme = Theme::dark();
+        let logical = LockOutput {
+            origin: (0.0, 0.0),
+            size: (1600.0, 900.0),
+            scale: 1.0,
+        };
+        let hidpi = LockOutput {
+            scale: 2.0,
+            ..logical
+        };
+        let normal = LockLayout::for_output(logical, &theme);
+        let high_density = LockLayout::for_output(hidpi, &theme);
+        assert_eq!(
+            normal, high_density,
+            "output scale is presentation density, not UI zoom"
+        );
+    }
+
+    #[test]
+    fn startup_sized_output_keeps_every_lock_rect_contained() {
+        let layout = LockLayout::for_output(
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1.0, 1.0),
+                scale: 1.0,
+            },
+            &Theme::dark(),
+        );
+        for (name, rect) in [
+            ("clock", layout.clock),
+            ("date", layout.date),
+            ("panel", layout.panel),
+            ("icon", layout.icon),
+            ("title", layout.title),
+            ("password", layout.password),
+            ("status", layout.status),
+            ("notifications", layout.notifications),
+        ] {
+            assert_inside(rect, layout.output, name);
+        }
+    }
+
+    #[test]
     fn asymmetric_outputs_get_independent_bounded_layouts() {
         let theme = Theme::dark();
         for output in [
@@ -894,24 +1097,24 @@ mod tests {
 
     // ---- multi-output ---------------------------------------------------
 
-    /// Each output's widget is anchored at that output's centre. A second
-    /// monitor at `(1920, 0)` centres its widget at `(2560, 512)`, not at the
-    /// combined-space centre — so the lock is usable on every screen instead
-    /// of being stranded across the bezel.
+    /// The primary output is the first backend output. That deterministic
+    /// policy is also the hot-unplug fallback: once the primary disappears,
+    /// the first remaining display receives the one credential surface.
     #[test]
-    fn output_center_is_the_middle_of_each_output() {
+    fn primary_output_is_deterministic_and_falls_back_after_hotplug() {
         let primary = LockOutput {
             origin: (0.0, 0.0),
             size: (1920.0, 1080.0),
             scale: 1.0,
         };
-        assert_eq!(primary.center(), (960.0, 540.0));
         let secondary = LockOutput {
             origin: (1920.0, 0.0),
             size: (1280.0, 1024.0),
             scale: 1.0,
         };
-        assert_eq!(secondary.center(), (2560.0, 512.0));
+        assert_eq!(primary_output(&[primary, secondary]), Some(primary));
+        assert_eq!(primary_output(&[secondary]), Some(secondary));
+        assert_eq!(primary_output(&[]), None);
     }
 
     /// The backdrop spans the bounding box of every output, so no gap between
@@ -935,11 +1138,11 @@ mod tests {
         assert_eq!(combined_extent(&[]), (0.0, 0.0));
     }
 
-    /// Two outputs must stamp a widget on **each** — proven by strictly more
-    /// draw operations than the single-output scene (a per-output widget adds
-    /// its glyphs + shapes on top of the shared backdrop).
+    /// A secondary output must paint a useful indication, but not a second
+    /// full credential card. Its scene therefore adds operations, while fewer
+    /// than another primary widget would add.
     #[test]
-    fn multi_output_draws_a_widget_per_output() {
+    fn multi_output_paints_quiet_secondary_without_duplicate_credential_card() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
 
@@ -960,9 +1163,12 @@ mod tests {
 
         let one_ops = one.encoding().draw_tags.len();
         let two_ops = two.encoding().draw_tags.len();
+        assert!(two_ops > one_ops, "secondary output must be visibly locked");
+        // A full primary card has fill/stroke/icon/field/status operations;
+        // the secondary status is intentionally much smaller than that.
         assert!(
-            two_ops > one_ops,
-            "two outputs must draw more than one (per-output widget): {two_ops} vs {one_ops}"
+            two_ops < one_ops * 2,
+            "secondary must not mirror a second full password card: {two_ops} vs {one_ops}"
         );
     }
 }
