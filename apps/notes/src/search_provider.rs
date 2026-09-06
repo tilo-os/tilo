@@ -51,7 +51,7 @@ impl NoteSearchProvider {
     /// Snapshot page metadata together with searchable plain-text blocks.
     pub fn with_blocks(
         workspace: &Workspace,
-        blocks: std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+        blocks: &std::collections::HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
     ) -> Self {
         let pages = workspace
             .pages()
@@ -240,7 +240,7 @@ mod tests {
             .unwrap();
         let provider = NoteSearchProvider::with_blocks(
             &ws,
-            std::collections::HashMap::from([(
+            &std::collections::HashMap::from([(
                 page.id,
                 vec![crate::actions::NoteBlockResource {
                     id: "block-object".into(),

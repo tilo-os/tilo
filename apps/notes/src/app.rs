@@ -1066,6 +1066,34 @@ impl NotesApp {
         true
     }
 
+    /// Commit either a keyboard/pointer title edit or an accessibility value
+    /// change through the one page-tree action route. Kept callable from sync
+    /// because semantic actions target `MainPanel` directly and naturally
+    /// request a subsequent sync rather than travelling through `handle_event`.
+    fn drain_title_rename(&mut self, state: &mut AutoCommit) {
+        let Some(new_title) = self.main.take_title_rename() else {
+            return;
+        };
+        let Some(id) = self.workspace.selected() else {
+            return;
+        };
+        let trimmed = new_title.trim();
+        let changed = self
+            .workspace
+            .get(id)
+            .is_some_and(|meta| meta.title != trimmed);
+        if !trimmed.is_empty() && changed {
+            self.apply_and_dispatch(
+                state,
+                OutEvent::Rename {
+                    id,
+                    new_title: trimmed.to_string(),
+                },
+            );
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
+    }
+
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
         if let Some(s) = &self.saver {
@@ -1443,6 +1471,7 @@ impl Widget for NotesApp {
         // seed/adopt the page tree, then bind the editor to the selected
         // page so its text syncs between instances.
         self.sync_workspace_tree(state);
+        self.drain_title_rename(state);
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
@@ -1486,7 +1515,7 @@ impl Widget for NotesApp {
         vec![Box::new(
             crate::search_provider::NoteSearchProvider::with_blocks(
                 &self.workspace,
-                self.searchable_blocks(),
+                &self.searchable_blocks(),
             ),
         )]
     }
@@ -1824,11 +1853,47 @@ impl Widget for NotesApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = Vec::new();
+        if self.built_narrow && self.menu_btn_rect.area() > 0.0 {
+            children.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Pages drawer")
+                    .with_action_target("notes.drawer")
+                    .with_bounds(self.menu_btn_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.drawer.is_open()),
+                    ),
+            );
+        }
         Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+            AccessNode::new(Role::Group)
                 .with_name("Notes")
-                .with_description("Workspace notes and page editor"),
+                .with_description("Workspace notes and page editor")
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "notes.drawer"
+            && self.built_narrow
+            && matches!(
+                action,
+                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+            )
+        {
+            self.set_drawer_open(!self.drawer.is_open());
+            return true;
+        }
+        false
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2329,22 +2394,7 @@ impl NotesApp {
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        if let Some(new_title) = self.main.take_title_rename()
-            && let Some(id) = self.workspace.selected()
-        {
-            let trimmed = new_title.trim();
-            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
-            if !trimmed.is_empty() && changed {
-                self.apply_and_dispatch(
-                    state,
-                    OutEvent::Rename {
-                        id,
-                        new_title: trimmed.to_string(),
-                    },
-                );
-                self.sidebar.sync_from_workspace(&self.workspace);
-            }
-        }
+        self.drain_title_rename(state);
         // A fresh workspace has no selected page, so its central first-use
         // action creates a root note. Route it through the same replayable
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
@@ -2609,18 +2659,9 @@ mod tests {
         state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
         app.sync(&mut state.doc, &state.root);
 
-        let exported = Widget::resources(&app, &state.doc);
-        let page = exported[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == crate::actions::page_resource_id(welcome))
-            .unwrap();
-        assert!(
-            page.children
-                .iter()
-                .any(|resource| resource.id.0 == old_address.resource),
-            "the original block's address survives the insertion"
-        );
+        let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
+            .expect("the original block's resource resolves lazily");
+        assert_eq!(resolved.id.0, old_address.resource);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
