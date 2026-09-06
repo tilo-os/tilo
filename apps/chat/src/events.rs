@@ -550,7 +550,7 @@ impl ChatApp {
         clippy::too_many_lines,
         reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
     )]
-    fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
+    pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
         // Search reveal accents are transient selection affordances. Once the
         // person interacts with Chat directly, ordinary navigation takes over.
         self.revealed_message = None;
@@ -2237,6 +2237,10 @@ mod tests {
         app.dispatch_event(ev, 1.0, mods, doc, &mut handled);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the floating-surface regression deliberately follows the complete app-to-shell presentation lifecycle"
+    )]
     #[test]
     fn detached_call_keeps_live_controls_in_the_shell_presentation_pass() {
         use ui::Widget;
@@ -2653,6 +2657,153 @@ mod tests {
             .find(|node| node.name.as_deref() == Some("Messages"))
             .expect("conversation content is exposed as a list");
         assert!(!messages.children.is_empty());
+    }
+
+    #[test]
+    fn reaction_chips_have_unique_toggle_semantics_and_use_the_shared_action_route() {
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+
+        let (_, reaction, _, role, checked) = app
+            .semantic_hits()
+            .into_iter()
+            .find(|(_, hit, ..)| matches!(hit, Hit::Reaction { .. }))
+            .expect("a painted reaction chip is a semantic control");
+        assert_eq!(role, ui::a11y::Role::ToggleButton);
+        let target = reaction.semantic_id();
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        let targets: std::collections::HashSet<_> = root
+            .children
+            .iter()
+            .filter_map(|node| node.action_target.as_deref())
+            .collect();
+        assert_eq!(
+            targets.len(),
+            root.children
+                .iter()
+                .filter(|node| node.action_target.is_some())
+                .count(),
+            "visible controls do not publish duplicate semantic targets"
+        );
+        let reaction_node = root
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+            .expect("the reaction target is retained in the accessibility tree");
+        assert_eq!(reaction_node.role, ui::a11y::Role::ToggleButton);
+        assert_eq!(reaction_node.state.checked, Some(checked));
+
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        let (_, _, _, _, after) = app
+            .semantic_hits()
+            .into_iter()
+            .find(|(_, hit, ..)| hit.semantic_id() == target)
+            .expect("the reaction remains visible after toggling");
+        assert_ne!(after, checked, "semantic activation toggles my reaction");
+        let action: crate::actions::ChatAction = serde_json::from_slice(
+            &app.last_dispatched()
+                .expect("the semantic control dispatches through ActionHost")
+                .payload,
+        )
+        .expect("the dispatched envelope contains a ChatAction");
+        assert!(matches!(
+            action,
+            crate::actions::ChatAction::AddReaction { .. }
+                | crate::actions::ChatAction::RemoveReaction { .. }
+        ));
+    }
+
+    #[test]
+    fn semantic_text_inputs_accept_focus_value_and_selection_without_sending() {
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let target = app
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| matches!(hit, Hit::FocusMain).then(|| hit.semantic_id()))
+            .expect("the painted main composer has a semantic target");
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        let composer = root
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+            .expect("the composer is retained");
+        assert_eq!(composer.role, ui::a11y::Role::MultilineTextInput);
+        assert_eq!(composer.value.as_deref(), Some(""));
+
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::SetValue("🦀 Accessible draft".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            ChatDoc::draft_text(&doc, &app.active_channel),
+            "🦀 Accessible draft",
+            "semantic editing updates the same unsent collaborative draft"
+        );
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::SetSelection {
+                anchor: 0,
+                focus: 1,
+            },
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.composer_main.selection_range_public(),
+            Some((0, "🦀".len())),
+            "grapheme-indexed semantic endpoints become UTF-8 offsets only inside TextInput"
+        );
+        assert!(
+            app.last_dispatched().is_none(),
+            "draft remains unsent until Send"
+        );
+    }
+
+    #[test]
+    fn every_visible_scenario_has_unique_semantic_targets() {
+        for (scenario, width, height) in [
+            ("", 1280.0, 720.0),
+            ("narrow", 390.0, 844.0),
+            ("thread-narrow", 390.0, 844.0),
+            ("context", 1280.0, 720.0),
+            ("attach", 1280.0, 720.0),
+            ("edit", 1280.0, 720.0),
+            ("composer", 1280.0, 720.0),
+            ("collaboration", 1280.0, 720.0),
+        ] {
+            let (mut app, _doc) = app_with_doc();
+            app.seed_shot_scenario(scenario);
+            render_frame(&mut app, width, height);
+            let targets: Vec<_> = app
+                .semantic_hits()
+                .into_iter()
+                .map(|(_, hit, ..)| hit.semantic_id())
+                .collect();
+            let unique: std::collections::HashSet<_> = targets.iter().collect();
+            assert_eq!(
+                unique.len(),
+                targets.len(),
+                "scenario {scenario:?} publishes stable unique semantic targets"
+            );
+        }
     }
 
     // --- members roster (right flap "members" half was unimplemented) ---

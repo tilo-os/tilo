@@ -98,6 +98,12 @@ pub enum ChatOperation {
     },
 }
 
+/// Decode a Chat-local view operation addressed through a resource action.
+///
+/// # Errors
+///
+/// Returns an error when `type_id` belongs to Chat but `payload` is not a
+/// serialized [`ChatOperation`].
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ChatOperation>, String> {
     if type_id != CHAT_OPERATION_TYPE {
         return Ok(None);
@@ -107,6 +113,10 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ChatOper
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "ChatOperation is serde-derived from only serializable fields; ActionSpec requires an immediate value rather than a fallible builder"
+)]
 fn view_operation(id: &str, label: &str, operation: &ChatOperation) -> ActionSpec {
     ActionSpec::operation(
         id,
@@ -1124,9 +1134,11 @@ fn message_label(
         .map_or(author_id, |user| user.name.as_str());
     let body = if text.trim().is_empty() {
         match attachment {
-            Some(crate::model::Attachment::File { name, .. })
-            | Some(crate::model::Attachment::Image { name, .. })
-            | Some(crate::model::Attachment::Video { name, .. }) => name.as_str(),
+            Some(
+                crate::model::Attachment::File { name, .. }
+                | crate::model::Attachment::Image { name, .. }
+                | crate::model::Attachment::Video { name, .. },
+            ) => name.as_str(),
             None => "Attachment",
         }
     } else {
