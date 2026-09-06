@@ -818,6 +818,9 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         .borrow_mut()
         .handle_file_drop(std::path::Path::new("/tmp/layout-session.ts"))
         .expect("file-drop open resolves to an app tab");
+    // File-drop owns the durable insertion; the ordinary chrome revision
+    // below is the frame boundary that mounts its new tab affordance.
+    h.chrome.borrow_mut().bump();
     h.tick();
     let close = h
         .host
