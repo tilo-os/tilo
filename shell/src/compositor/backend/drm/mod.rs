@@ -215,6 +215,7 @@ fn apply_scanout_command(
             remove,
             add,
             outputs: table,
+            removal_ack,
         } => {
             // Dropping a scanout closes its dup of the card fd and releases the CRTC — full teardown for
             // an unplugged display. No per-device page-flip source to register/withdraw: every scanout on
@@ -238,6 +239,12 @@ fn apply_scanout_command(
             }
             scanouts.sort_by_key(|e| e.id.0);
             *outputs = table;
+            if let Some((device_id, ack)) = removal_ack {
+                // The loop thread may now call `Session::close` on the
+                // card's original fd: all presenter-owned scanout duplicates
+                // for this device were dropped by `retain` above.
+                let _ = ack.send(device_id);
+            }
             tracing::info!(
                 outputs = scanouts.len(),
                 "DRM present: adopted the new output set"
@@ -380,22 +387,13 @@ fn paint_scanouts(
         return;
     }
 
-    // Multi-output path: all per-connector scanouts dup the one card fd, so
-    // every crtc's flip completion lands on a single event stream — drain it
-    // ONCE (on the primary) and route by crtc; draining per scanout would
-    // let the primary swallow its siblings' completions and wedge their
-    // `flip_pending`.
-    let Some(completed) = scanouts
-        .first_mut()
-        .map(|e| e.scanout.poll_flip_completions())
-    else {
-        return;
-    };
-    for c in &completed {
-        for e in scanouts.iter_mut() {
-            e.scanout.mark_flip_complete(*c);
-        }
-    }
+    // Multi-output path: scanouts on one card share an open file
+    // description, so their page-flip completions arrive on one event stream.
+    // Hybrid systems have *one stream per card*, and CRTC handles are only
+    // meaningful inside that card.  Drain exactly one representative per
+    // device and route only to siblings from the same device; draining just
+    // `scanouts[0]` would wedge every secondary GPU after its first flip.
+    drain_page_flip_completions(scanouts);
 
     // Render the combined scene ONCE into a tight RGBA buffer, then swizzle
     // each output's sub-rect into its own scanout's dumb buffer (fused
@@ -414,6 +412,67 @@ fn paint_scanouts(
     for e in scanouts.iter_mut() {
         paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
+}
+
+/// Drain one page-flip event stream per KMS device and route each completion
+/// only to scanouts on that device. Extracted so the selection policy can be
+/// tested without opening DRM hardware.
+fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) {
+    let representatives = page_flip_representatives(scanouts.iter().map(|entry| entry.device_id));
+    let mut completed = Vec::new();
+    for (device_id, index) in representatives {
+        let Some(entry) = scanouts.get_mut(index) else {
+            continue;
+        };
+        completed.extend(
+            entry
+                .scanout
+                .poll_flip_completions()
+                .into_iter()
+                .map(|crtc| (device_id, crtc)),
+        );
+    }
+    let topology: Vec<_> = scanouts
+        .iter()
+        .map(|entry| (entry.device_id, entry.scanout.crtc()))
+        .collect();
+    for (index, crtc) in page_flip_completion_recipients(&topology, &completed) {
+        if let Some(entry) = scanouts.get_mut(index) {
+            entry.scanout.mark_flip_complete(crtc);
+        }
+    }
+}
+
+/// The first scanout for every card is the one safe reader of that card's
+/// shared DRM event stream. Returned indices preserve output order, making
+/// the drain order deterministic without coupling independent GPU events.
+fn page_flip_representatives(devices: impl IntoIterator<Item = u64>) -> Vec<(u64, usize)> {
+    let mut seen = std::collections::BTreeSet::new();
+    devices
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, device_id)| seen.insert(device_id).then_some((device_id, index)))
+        .collect()
+}
+
+/// Match each card-scoped completion to the one scanout on that same card and
+/// CRTC. CRTC handles may repeat on a different DRM device, so matching the
+/// handle alone would clear the wrong `flip_pending` flag after a hybrid-GPU
+/// frame. Generic handles keep this routing rule testable without DRM fds.
+fn page_flip_completion_recipients<T: Copy + Eq>(
+    scanouts: &[(u64, T)],
+    completed: &[(u64, T)],
+) -> Vec<(usize, T)> {
+    completed
+        .iter()
+        .flat_map(|&(device_id, crtc)| {
+            scanouts.iter().enumerate().filter_map(
+                move |(index, &(scanout_device, scanout_crtc))| {
+                    (scanout_device == device_id && scanout_crtc == crtc).then_some((index, crtc))
+                },
+            )
+        })
+        .collect()
 }
 
 /// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
@@ -689,6 +748,32 @@ impl Backend for DrmBackend {
 mod tests {
     use super::*;
 
+    #[test]
+    fn page_flip_drain_uses_one_representative_per_card() {
+        // A fake scanout inventory: card0 has two CRTCs, card1 has two more
+        // whose handle values may overlap card0's.  No real compositor or
+        // DRM node is involved; this pins the grouping rule used before the
+        // hardware-facing drain.
+        assert_eq!(
+            page_flip_representatives([100, 100, 200, 100, 200]),
+            vec![(100, 0), (200, 2)],
+            "each card must drain its own shared event stream exactly once"
+        );
+    }
+
+    #[test]
+    fn overlapping_crtcs_route_flip_completion_only_within_its_card() {
+        // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
+        // it can in DRM. A completion from card 200 must not clear card 100's
+        // pending flip merely because their local handle values match.
+        let scanouts = [(100, 7u32), (100, 8), (200, 7), (200, 8)];
+        assert_eq!(
+            page_flip_completion_recipients(&scanouts, &[(200, 7)]),
+            vec![(2, 7)],
+            "only the same card's CRTC receives the completion"
+        );
+    }
+
     /// The reconfiguration path with no live scanouts.
     ///
     /// Building a `ScanoutEntry` needs a modeset connector, so the scanout-touching half of
@@ -761,6 +846,7 @@ mod tests {
                 remove: vec![OutputId(0)],
                 add: Vec::new(),
                 outputs: vec![Output::new(OutputId(1), (2560, 1440), 1.0)],
+                removal_ack: None,
             },
             &mut scanouts,
             &mut outputs,
