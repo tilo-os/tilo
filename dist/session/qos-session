@@ -80,6 +80,40 @@ journal_startup_failure() {
             --level-prefix=false >/dev/null 2>&1 || true
 }
 
+# The user manager is shared by every login of this Unix account.  Normally a
+# display manager has stopped the prior desktop's graphical targets before it
+# invokes us, but a killed wrapper or a failed logout can leave them active.
+# Starting qOS on top of that state changes the manager's desktop variables
+# without restarting the already-running portal frontend, which leaves the
+# old desktop backend selected.  Tear the stale lifecycle down *before*
+# publishing qOS's identity so service stop hooks still observe their own
+# previous environment.
+#
+# A same-user graphical session is necessarily exclusive here: both
+# XDG_CURRENT_DESKTOP and D-Bus activation are user-manager globals.  It was
+# never safe to run this wrapper alongside another desktop for the same user;
+# making that state explicit and deterministic is safer than silently mixing
+# their portal services.
+stop_predecessor_graphical_session() {
+    predecessor_active=0
+    for target in "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; do
+        if "$SYSTEMCTL" --user is-active --quiet "$target"; then
+            predecessor_active=1
+            break
+        fi
+    done
+    if [ "$predecessor_active" = 1 ]; then
+        if "$SYSTEMCTL" --user stop \
+            "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; then
+            :
+        else
+            status=$?
+            journal_startup_failure 'previous graphical session shutdown' "$status"
+            exit "$status"
+        fi
+    fi
+}
+
 forward_signal() {
     signal=$1
     status=$2
@@ -107,6 +141,7 @@ trap 'forward_signal TERM 143' TERM
 # SystemPrompter. It deliberately does not publish DISPLAY/WAYLAND_DISPLAY:
 # the compositor creates its socket after this wrapper starts, and the
 # activation API cannot safely guess or remove the previous socket value.
+stop_predecessor_graphical_session
 "$SYSTEMCTL" --user unset-environment \
     DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
     XDG_SESSION_DESKTOP >/dev/null 2>&1 || true

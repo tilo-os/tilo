@@ -18,6 +18,13 @@ fi
 if [ "${QOS_SESSION_TEST_FAIL_START:-0}" = 1 ] && [ "${2:-}" = start ]; then
     exit 1
 fi
+if [ "${2:-}" = is-active ]; then
+    if [ "${QOS_SESSION_TEST_PREDECESSOR:-0}" = 1 ] \
+        && [ "${4:-}" = graphical-session.target ]; then
+        exit 0
+    fi
+    exit 3
+fi
 exit 0
 SH
 cat >"$work/dbus-update-activation-environment" <<'SH'
@@ -65,6 +72,9 @@ status=$?
 set -e
 [[ $status == 7 ]]
 cat >"$work/expected" <<EOF
+systemctl --user is-active --quiet qos-graphical-session.target
+systemctl --user is-active --quiet graphical-session.target
+systemctl --user is-active --quiet graphical-session-pre.target
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
@@ -77,6 +87,24 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 EOF
 cmp "$work/expected" "$log"
 ! grep -Fq 'must-not-be-logged' "$log"
+
+: >"$log"
+QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_PREDECESSOR=1 "$work/qos-session"
+cat >"$work/expected-predecessor" <<EOF
+systemctl --user is-active --quiet qos-graphical-session.target
+systemctl --user is-active --quiet graphical-session.target
+systemctl --user stop qos-graphical-session.target graphical-session.target graphical-session-pre.target
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user start qos-graphical-session.target
+systemd-cat --identifier=qos-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
+shell --host-desktop-session --firstboot --backend drm
+systemctl --user stop qos-graphical-session.target
+dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+EOF
+cmp "$work/expected-predecessor" "$log"
 
 : >"$log"
 QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_HOLD=1 "$work/qos-session" &
