@@ -2489,6 +2489,7 @@ name = "containers"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "qos-actions",
  "qos-app",
  "runtime-dylib",

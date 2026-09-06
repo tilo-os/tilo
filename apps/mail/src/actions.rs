@@ -410,6 +410,11 @@ pub fn discard_draft_action() -> MailAction {
 // Resource tree
 // ===========================================================================
 
+/// Largest number of message rows materialised into the currently-open
+/// resource tree. Individual messages and threads remain lazily resolvable by
+/// stable id, so this is a snapshot-memory ceiling rather than a discovery cap.
+pub(crate) const OPEN_MESSAGE_LIMIT: usize = 100;
+
 /// One message surfaced as a resource, with the scalar state its actions need
 /// resolved at authoring time (so "Mark read" builds the byte-identical action
 /// the on-screen control does).
@@ -430,6 +435,31 @@ pub struct AttachmentRow {
     pub filename: String,
     pub size: u64,
     pub downloadable: bool,
+}
+
+/// Project exactly one loaded message into the scalar data required to author
+/// its canonical resource. Keeping this conversion public within Mail lets the
+/// small open-resource snapshot and lazy resolver use the same row without
+/// cloning the entire mailbox.
+pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
+    MessageRow {
+        id: message.id.to_string(),
+        subject: message.subject.clone(),
+        thread_subject: message.thread_subject(),
+        folder: message.folder,
+        read: message.read,
+        starred: message.starred,
+        labels: message.labels.clone(),
+        attachments: message
+            .attachments
+            .iter()
+            .map(|attachment| AttachmentRow {
+                filename: attachment.filename.clone(),
+                size: attachment.size,
+                downloadable: attachment.is_downloadable(),
+            })
+            .collect(),
+    }
 }
 
 /// The presentation context Mail hands [`provide_resources`]: the account label,
@@ -615,7 +645,6 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
     reason = "the mailbox hierarchy is intentionally authored together so every visible entity and operation shares one contract"
 )]
 pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    const OPEN_MESSAGE_LIMIT: usize = 100;
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
 
     if let Ok(refresh) = ActionSpec::operation(
@@ -781,7 +810,7 @@ pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resourc
     folder_node
 }
 
-fn thread_resource_key(subject: &str) -> String {
+pub(crate) fn thread_resource_key(subject: &str) -> String {
     // Stable FNV-1a rather than process-random HashMap hashing: agents and
     // history may hold this address across frames.
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -810,21 +839,37 @@ impl ResourceProvider for crate::app::MailApp {
             None
         }
 
-        let ctx = self.mail_resource_ctx(doc);
         if let Some(message_id) = id.strip_prefix("mail.message:") {
-            return ctx
-                .messages
-                .iter()
-                .find(|message| message.id == message_id)
-                .map(message_resource);
+            // The open tree carries only a small current-folder prefix. Do
+            // not make the remainder of a loaded mailbox unreachable to an
+            // agent or a canonical search address merely because it was not
+            // among those materialised rows.
+            let row = self.resource_message_row(message_id)?;
+            return Some(message_resource(&row));
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')
             && let Ok(index) = index.parse::<usize>()
-            && let Some(message) = ctx.messages.iter().find(|message| message.id == message_id)
         {
-            return message_resource(message).children.into_iter().nth(index);
+            let row = self.resource_message_row(message_id)?;
+            return message_resource(&row).children.into_iter().nth(index);
         }
+        if let Some(stable) = id.strip_prefix("mail.thread:") {
+            let (subject, messages) = self.resource_thread_rows(stable)?;
+            return Some(
+                Resource::new(
+                    id,
+                    "mail.thread",
+                    if subject.is_empty() {
+                        "(no subject)".into()
+                    } else {
+                        subject
+                    },
+                )
+                .with_children(messages.iter().map(message_resource)),
+            );
+        }
+        let ctx = self.mail_resource_ctx(doc);
         find(provide_resources(&ctx, doc), id)
     }
 }
