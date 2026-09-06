@@ -565,6 +565,7 @@ enum ShortcutGuideFocus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
     MemberSheet,
+    WorkspaceSettings,
     RoomActivity,
     QuickSettings,
     ShortcutHelp,
@@ -1352,11 +1353,14 @@ type QsFastFields = (
 
 impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(4);
+        let mut order = Vec::with_capacity(5);
         if self.workspace_settings_overlay.member_sheet_is_open() {
             order.push(AccessibleOverlay::MemberSheet);
         }
         let flags = self.overlay_flags();
+        if flags.ws_settings {
+            order.push(AccessibleOverlay::WorkspaceSettings);
+        }
         if flags.room_activity {
             order.push(AccessibleOverlay::RoomActivity);
         }
@@ -8603,6 +8607,11 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            WorkspaceSettingsOutcome::ManageOwnership => {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.palette.set_query("ownership");
+                self.last_search_query = "\0workspace-ownership\0".to_string();
+            }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
                 if is_owner {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
@@ -10036,6 +10045,24 @@ impl Widget for ShellOverlayHost {
                         )
                         .with_state(AccessState::new().modal(true)),
                 ),
+                AccessibleOverlay::WorkspaceSettings => {
+                    let mut settings = AccessNode::new(Role::Dialog)
+                        .with_name("Workspace settings")
+                        .with_description(
+                            "Workspace identity, people, permissions, apps, files, and signed ownership governance.",
+                        )
+                        .with_state(AccessState::new().modal(true));
+                    if self.workspace_settings_overlay.ownership_action_rect().area() > 0.0 {
+                        settings.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_name("Manage workspace ownership")
+                                .with_description(
+                                    "Open the same signed ownership actions available to search and automation. Recipient acceptance immediately completes a pending transfer.",
+                                ),
+                        );
+                    }
+                    root.children.push(settings);
+                }
                 AccessibleOverlay::RoomActivity => root
                     .children
                     .push(self.room_activity.accessibility_snapshot()),
@@ -10091,6 +10118,11 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::QuickSettings => {
                 self.qs_root.accessibility_rect_for_path(child_path)
             }
+            AccessibleOverlay::WorkspaceSettings => match child_path {
+                [] => Some(self.workspace_settings_overlay.rect()),
+                [0] => Some(self.workspace_settings_overlay.ownership_action_rect()),
+                _ => None,
+            },
             AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
         }
     }
@@ -10113,6 +10145,14 @@ impl Widget for ShellOverlayHost {
                 self.qs_root
                     .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
             }),
+            AccessibleOverlay::WorkspaceSettings => {
+                matches!(child_path, [0])
+                    && self
+                        .workspace_settings_overlay
+                        .ownership_action_rect()
+                        .area()
+                        > 0.0
+            }
             AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => false,
         }
     }
@@ -16991,7 +17031,12 @@ mod tests {
             .open_remove_member_sheet("peer".to_string());
         {
             let mut chrome = h.chrome.borrow_mut();
+            let local_user = chrome.active_local_user();
+            if let Some(workspace) = chrome.tree_mut().active_workspace_mut() {
+                workspace.set_owner(local_user);
+            }
             chrome.overlays.ws_settings = true;
+            chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
             chrome.overlays.room_activity = true;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
@@ -17001,13 +17046,28 @@ mod tests {
         h.host.force_quick_settings_settled();
         paint(&mut h);
 
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .get(1)
+                .and_then(|settings| settings.children.first())
+                .and_then(|ownership| ownership.name.as_deref()),
+            Some("Manage workspace ownership"),
+            "the visible ownership control is named in the accessibility tree"
+        );
+
         assert!(
             h.host.focus_synthetic_accessibility(&[1, 0]),
-            "Room Activity's first control remains focusable at its shifted path"
+            "Workspace Settings exposes its ownership action at the shifted path"
         );
         assert!(
             h.host.focus_synthetic_accessibility(&[2, 0]),
-            "Quick Settings' first control remains focusable at its shifted path"
+            "Room Activity's first control remains focusable at its shifted path"
+        );
+        assert!(
+            h.host.focus_synthetic_accessibility(&[3, 0]),
+            "Quick Settings' first control remains focusable after every earlier overlay"
         );
         assert!(
             !h.host.focus_synthetic_accessibility(&[0, 0]),
@@ -18267,6 +18327,9 @@ mod maximize_harvest_tests {
         };
         let ws = Workspace {
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
@@ -18452,6 +18515,9 @@ mod resync_strips_tests {
         };
         let ws = Workspace {
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
