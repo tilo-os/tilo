@@ -9,6 +9,7 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
@@ -555,12 +556,31 @@ pub fn attachment_display_name(path: &str) -> &str {
 
 /// The whole mailbox aggregate: an account, its messages, and the derived
 /// folder/thread structure. Pure logic — the widgets ask it questions.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Mailbox {
     pub account: AccountConfig,
     pub messages: HashMap<MessageId, Message>,
     /// Insertion order is irrelevant; folder views sort by timestamp.
     pub order: Vec<MessageId>,
+    /// Monotonically changes whenever a field represented in Mail's durable
+    /// search catalogue changes. The palette can therefore retain its index
+    /// across keystrokes instead of repeatedly walking the loaded mailbox.
+    search_revision: u64,
+}
+
+/// Process-local sequence for retained in-memory projections. A fresh mailbox
+/// must not accidentally share revision zero with a previous account whose
+/// catalogue is still retained by the app shell.
+static NEXT_SEARCH_REVISION: AtomicU64 = AtomicU64::new(1);
+
+fn next_search_revision() -> u64 {
+    NEXT_SEARCH_REVISION.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Default for Mailbox {
+    fn default() -> Self {
+        Self::new(AccountConfig::default())
+    }
 }
 
 impl Mailbox {
@@ -569,7 +589,23 @@ impl Mailbox {
             account,
             messages: HashMap::new(),
             order: Vec::new(),
+            search_revision: next_search_revision(),
         }
+    }
+
+    /// Revision of the loaded searchable corpus and its resource-facing flags.
+    #[must_use]
+    pub fn search_revision(&self) -> u64 {
+        self.search_revision
+    }
+
+    /// Mark a direct in-place edit as visible to retained projections.
+    ///
+    /// Most callers should use the mailbox mutation methods below. This tiny
+    /// escape hatch keeps the document reconciliation path honest without
+    /// exposing the revision field itself.
+    pub fn touch_search_revision(&mut self) {
+        self.search_revision = next_search_revision();
     }
 
     pub fn insert(&mut self, msg: Message) {
@@ -577,6 +613,7 @@ impl Mailbox {
             self.order.push(msg.id);
         }
         self.messages.insert(msg.id, msg);
+        self.touch_search_revision();
     }
 
     pub fn get(&self, id: MessageId) -> Option<&Message> {
@@ -678,23 +715,31 @@ impl Mailbox {
     // ---- mutating actions (the reader/list issue these) ----
 
     pub fn mark_read(&mut self, id: MessageId, read: bool) {
-        if let Some(m) = self.messages.get_mut(&id) {
+        if let Some(m) = self.messages.get_mut(&id)
+            && m.read != read
+        {
             m.read = read;
+            self.touch_search_revision();
         }
     }
 
     pub fn toggle_star(&mut self, id: MessageId) -> bool {
-        if let Some(m) = self.messages.get_mut(&id) {
+        let starred = if let Some(m) = self.messages.get_mut(&id) {
             m.starred = !m.starred;
             m.starred
         } else {
-            false
-        }
+            return false;
+        };
+        self.touch_search_revision();
+        starred
     }
 
     pub fn move_to(&mut self, id: MessageId, folder: Folder) {
-        if let Some(m) = self.messages.get_mut(&id) {
+        if let Some(m) = self.messages.get_mut(&id)
+            && m.folder != folder
+        {
             m.folder = folder;
+            self.touch_search_revision();
         }
     }
 
@@ -709,6 +754,7 @@ impl Mailbox {
             Some(true) => {
                 self.messages.remove(&id);
                 self.order.retain(|x| *x != id);
+                self.touch_search_revision();
             }
             Some(false) => self.move_to(id, Folder::Trash),
             None => {}
@@ -719,8 +765,10 @@ impl Mailbox {
     /// move-to-Trash affordance. Used when a replicated purge tombstone is
     /// reconciled from the document.
     pub fn purge(&mut self, id: MessageId) {
-        self.messages.remove(&id);
-        self.order.retain(|candidate| *candidate != id);
+        if self.messages.remove(&id).is_some() {
+            self.order.retain(|candidate| *candidate != id);
+            self.touch_search_revision();
+        }
     }
 }
 
