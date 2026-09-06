@@ -45,7 +45,7 @@ use qos_actions::{
 };
 
 use crate::doc::FeedsDoc;
-use crate::model::{Feed, FeedKind, Folder, Id};
+use crate::model::{Feed, FeedKind, Folder, Id, ReadSettings};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
@@ -74,6 +74,11 @@ pub enum FeedsOperation {
     RevealArticle { id: String },
 }
 
+/// Decode a Feeds-local view/effect operation, declining foreign type ids.
+///
+/// # Errors
+///
+/// Returns a message when a Feeds operation payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
     if type_id != FEEDS_OPERATION_TYPE {
         return Ok(None);
@@ -96,8 +101,11 @@ pub fn guess_kind(url: &str) -> FeedKind {
 /// Every collaborative operation Feeds exports on its subscription + read-state
 /// store. Each variant is a whole-item create/delete or a single field write,
 /// carrying enough payload to replay deterministically from a shared base state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FeedsAction {
+    /// Persist the reader's shared typography and paper preference. The panel
+    /// itself remains a local view, but this value is durable and replayable.
+    SetReadSettings { settings: ReadSettings },
     /// Create a subscription *record*: a feed row with a pre-minted id, the
     /// typed url, a derived site-url and placeholder title, in `folder` at
     /// `order`. Fetching its real title + articles is external and follows.
@@ -126,6 +134,9 @@ pub enum FeedsAction {
     RenameFolder { id: String, name: String },
     /// Delete a folder; its feeds survive, unparented to uncategorised.
     DeleteFolder { id: String },
+    /// Persist whether a folder's feed rows are collapsed in the shared
+    /// sidebar model.
+    SetFolderCollapsed { id: String, collapsed: bool },
     /// Set one article's `read` flag.
     MarkRead { id: String, read: bool },
     /// Set one article's `starred` flag.
@@ -139,6 +150,9 @@ pub enum FeedsAction {
 impl Action for FeedsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            FeedsAction::SetReadSettings { settings } => {
+                FeedsDoc::write_settings(doc, &settings.clamped());
+            }
             FeedsAction::AddSubscription {
                 id,
                 url,
@@ -195,6 +209,11 @@ impl Action for FeedsAction {
             FeedsAction::DeleteFolder { id } => {
                 if let Ok(uuid) = id.parse::<Id>() {
                     FeedsDoc::remove_folder(doc, uuid);
+                }
+            }
+            FeedsAction::SetFolderCollapsed { id, collapsed } => {
+                if let Ok(uuid) = id.parse::<Id>() {
+                    FeedsDoc::set_folder_collapsed(doc, uuid, *collapsed);
                 }
             }
             FeedsAction::MarkRead { id, read } => {
@@ -306,6 +325,19 @@ pub fn delete_folder_action(id: Id) -> FeedsAction {
     FeedsAction::DeleteFolder { id: id.to_string() }
 }
 
+pub fn set_folder_collapsed_action(id: Id, collapsed: bool) -> FeedsAction {
+    FeedsAction::SetFolderCollapsed {
+        id: id.to_string(),
+        collapsed,
+    }
+}
+
+pub fn set_read_settings_action(settings: ReadSettings) -> FeedsAction {
+    FeedsAction::SetReadSettings {
+        settings: settings.clamped(),
+    }
+}
+
 pub fn mark_read_action(id: Id, read: bool) -> FeedsAction {
     FeedsAction::MarkRead {
         id: id.to_string(),
@@ -357,6 +389,7 @@ pub struct ArticleRef {
 pub struct FolderRef {
     pub id: Id,
     pub name: String,
+    pub collapsed: bool,
 }
 
 /// The presentation context Feeds hands [`provide_resources`]: its folders and
@@ -368,6 +401,7 @@ pub struct FeedsResourceCtx {
     pub feeds: Vec<FeedRef>,
     /// The order a "New folder" created from the palette takes.
     pub next_folder_order: u32,
+    pub settings: ReadSettings,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
@@ -380,7 +414,7 @@ fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
         })
 }
 
-fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> ActionSpec {
+fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> Option<ActionSpec> {
     ActionSpec::operation(
         id,
         label,
@@ -388,8 +422,8 @@ fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> ActionSpec {
         FEEDS_OPERATION_TYPE,
         operation,
     )
-    .expect("FeedsOperation is always serializable")
-    .retry_policy(RetryPolicy::Idempotent)
+    .ok()
+    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
@@ -407,6 +441,10 @@ fn feed_label(f: &FeedRef) -> String {
 /// (open + rename + move + mark-all-read + unsubscribe), and each article
 /// (open + read + star). Every document-mutating operation is exported as the
 /// same action the on-screen affordance dispatches; open is a local View.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete reader/folder/feed/article hierarchy stays together so its bounded canonical action inventory is auditable"
+)]
 pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
 
@@ -442,6 +480,54 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         move |name: &str| encode(&add_folder_action(Uuid::new_v4(), name, order)),
     ));
 
+    let settings = ctx.settings;
+    let mut settings_resource = Resource::new(
+        "feeds.reader-settings",
+        "feeds.reader-settings",
+        "Reading settings",
+    );
+    for (id, label, next) in [
+        (
+            "font-decrease",
+            "Decrease reader text size",
+            ReadSettings {
+                font_scale: settings.font_scale - 0.1,
+                ..settings
+            }
+            .clamped(),
+        ),
+        (
+            "font-increase",
+            "Increase reader text size",
+            ReadSettings {
+                font_scale: settings.font_scale + 0.1,
+                ..settings
+            }
+            .clamped(),
+        ),
+    ] {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            id,
+            label,
+            &set_read_settings_action(next),
+        ));
+    }
+    for font in crate::model::ReadFont::ALL {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            font.as_str(),
+            &format!("Use {} reader font", font.label()),
+            &set_read_settings_action(ReadSettings { font, ..settings }),
+        ));
+    }
+    for theme in crate::model::ReadTheme::ALL {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            theme.as_str(),
+            &format!("Use {} reader paper", theme.label()),
+            &set_read_settings_action(ReadSettings { theme, ..settings }),
+        ));
+    }
+    root = root.with_child(settings_resource);
+
     // Known folder names → id, so a "Move to folder…" prompt can resolve a typed
     // name to a folder (an unknown name uncategorises the feed).
     let folder_lookup: Vec<(String, Id)> = ctx
@@ -469,18 +555,29 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             immediate_spec("delete", "Delete folder", &delete_folder_action(id))
                 .destructive()
                 .reversible(),
-        );
+        )
+        .with_action(immediate_spec(
+            "set-collapsed",
+            if folder.collapsed {
+                "Expand folder"
+            } else {
+                "Collapse folder"
+            },
+            &set_folder_collapsed_action(id, !folder.collapsed),
+        ));
         root = root.with_child(child);
     }
 
     for feed in &ctx.feeds {
         let id = feed.id;
         let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
-        child = child.with_action(view_spec(
+        if let Some(open) = view_spec(
             "open",
             "Open feed",
             &FeedsOperation::RevealFeed { id: id.to_string() },
-        ));
+        ) {
+            child = child.with_action(open);
+        }
         child = child.with_action(ActionSpec::prompted(
             "rename",
             "Rename feed",
@@ -527,29 +624,32 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             } else {
                 article.title.clone()
             };
-            let article_node =
-                Resource::new(article_resource_id(article_id), "feeds.article", title)
-                    .with_action(view_spec(
-                        "open",
-                        "Open article",
-                        &FeedsOperation::RevealArticle {
-                            id: article_id.to_string(),
-                        },
-                    ))
-                    .with_action(immediate_spec(
-                        "read",
-                        if article.read {
-                            "Mark unread"
-                        } else {
-                            "Mark read"
-                        },
-                        &mark_read_action(article_id, !article.read),
-                    ))
-                    .with_action(immediate_spec(
-                        "star",
-                        if article.starred { "Unstar" } else { "Star" },
-                        &set_starred_action(article_id, !article.starred),
-                    ));
+            let mut article_node =
+                Resource::new(article_resource_id(article_id), "feeds.article", title);
+            if let Some(open) = view_spec(
+                "open",
+                "Open article",
+                &FeedsOperation::RevealArticle {
+                    id: article_id.to_string(),
+                },
+            ) {
+                article_node = article_node.with_action(open);
+            }
+            article_node = article_node
+                .with_action(immediate_spec(
+                    "read",
+                    if article.read {
+                        "Mark unread"
+                    } else {
+                        "Mark read"
+                    },
+                    &mark_read_action(article_id, !article.read),
+                ))
+                .with_action(immediate_spec(
+                    "star",
+                    if article.starred { "Unstar" } else { "Star" },
+                    &set_starred_action(article_id, !article.starred),
+                ));
             child = child.with_child(article_node);
         }
         root = root.with_child(child);
@@ -604,6 +704,10 @@ mod tests {
     /// `feeds.folder` child per folder (rename + delete), and a
     /// `feeds.subscription` child per feed (rename + mark-read + move +
     /// unsubscribe). Drives the real resource hook.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one contract test deliberately audits the complete nested reader resource tree"
+    )]
     #[test]
     fn ctrl_k_publishes_the_reader_tree() {
         let (app, doc) = seeded();
@@ -725,6 +829,8 @@ mod tests {
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
         );
+        palette.set_query("Rename folder");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename folder")),
             "{labels:?}"
@@ -817,6 +923,33 @@ mod tests {
             "the star landed on both replicas"
         );
         assert!(FeedsDoc::load(&b).article(article).unwrap().starred);
+    }
+
+    #[test]
+    fn reader_preferences_and_folder_collapse_replay_byte_identically() {
+        let (app, seeded_doc) = seeded();
+        let folder = app.store_folder_ids()[0];
+        let mut a = seeded_doc;
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+
+        let settings = ReadSettings {
+            font_scale: 1.35,
+            font: crate::model::ReadFont::Serif,
+            theme: crate::model::ReadTheme::Sepia,
+        };
+        for action in [
+            set_read_settings_action(settings),
+            set_folder_collapsed_action(folder, true),
+        ] {
+            let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+            qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        }
+
+        assert_eq!(a.get_heads(), b.get_heads(), "shared preferences converge");
+        assert_eq!(FeedsDoc::read_settings(&a), settings);
+        assert!(FeedsDoc::load(&a).folder(folder).unwrap().collapsed);
     }
 
     /// Adding a subscription replays byte-identically too — the create path, not
