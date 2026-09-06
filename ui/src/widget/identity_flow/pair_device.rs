@@ -209,8 +209,23 @@ impl PairDeviceScreen {
                 IdentityFlowError::DecodeFailed("DKG produced no round-2 reply to share 1".into())
             })?;
         let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
-        hs.publish_pairer_round1(&nonce, my_round1.clone());
-        hs.publish_pairer_reply(&nonce, reply, mac);
+        // Publication is one acknowledged, idempotent exchange. A transient
+        // TLS timeout must not strand round 1 or round 2 while both screens
+        // continue to say they are waiting for the other device.
+        let publish_deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(15))
+            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
+        loop {
+            if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
+                break;
+            }
+            if std::time::Instant::now() >= publish_deadline {
+                return Err(IdentityFlowError::DecodeFailed(
+                    "pairing broker did not acknowledge the DKG exchange".into(),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         // The pairer also needs the host's round-1 contribution, sent as the
         // host's own round-2 message; bounded-poll the broker mailbox for it.
         let mut host_reply: Option<EnrolmentRound2> = None;

@@ -559,6 +559,9 @@ pub enum PairingBrokerRequest {
     PutHostRound2([u8; 16], EnrolmentRound2, PairingMac),
     TakeHostRound2([u8; 16]),
     RedeemInvite(Vec<u8>),
+    // Append-only: Postcard encodes enum discriminants positionally, so new
+    // protocol requests must not renumber requests understood by older peers.
+    PutPairerExchange([u8; 16], EnrolmentRound1, EnrolmentRound2, PairingMac),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -957,6 +960,52 @@ impl PairingHandshake {
                     ),
                 );
             }
+        }
+    }
+
+    /// Atomically publish the pairer's complete contribution and require an
+    /// acknowledgement from a remote broker. The two packets form one DKG
+    /// exchange: admitting only one would leave both devices waiting with no
+    /// safe way to infer which half was lost.
+    pub fn publish_pairer_exchange(
+        &self,
+        nonce: &[u8; 16],
+        round1: EnrolmentRound1,
+        round2: EnrolmentRound2,
+        mac: [u8; 64],
+    ) -> bool {
+        let key = hex::encode(nonce);
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                let mut guard = inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let state = guard.entry(key).or_default();
+                state.pairer_round1 = Some(round1);
+                state.reply = Some((round2, PairingMac::from_bytes(mac)));
+                drop(guard);
+                true
+            }
+            PairingBackend::Durable(backend) => Self::durable_update(backend, nonce, |state| {
+                state.pairer_round1 = Some(round1);
+                state.reply = Some((round2, PairingMac::from_bytes(mac)));
+            }),
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => matches!(
+                Self::remote_call(
+                    endpoint,
+                    certificate,
+                    &PairingBrokerRequest::PutPairerExchange(
+                        *nonce,
+                        round1,
+                        round2,
+                        PairingMac::from_bytes(mac),
+                    ),
+                ),
+                Some(PairingBrokerResponse::Ok)
+            ),
         }
     }
 
@@ -3326,6 +3375,32 @@ mod tests {
         assert_eq!(back.from_share_index, reply.from_share_index);
         assert_eq!(tag, mac);
         assert!(hs.take_pairer_reply(&nonce).is_none());
+    }
+
+    #[test]
+    fn pairing_handshake_publishes_the_complete_pairer_exchange_atomically() {
+        let hs = PairingHandshake::new();
+        let nonce = [0xAB; 16];
+        let mut rng = OsRng;
+        let mut identity = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let (_session, round1) = identity.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+        let round2 = EnrolmentRound2 {
+            from_share_index: 2,
+            to_share_index: 1,
+            package_bytes: vec![6, 7, 8],
+        };
+        let mac = [0xCE; 64];
+
+        assert!(hs.publish_pairer_exchange(&nonce, round1.clone(), round2.clone(), mac));
+        let (stored_round1, stored_round2, stored_mac) =
+            hs.take_pairer_exchange(&nonce).expect("complete exchange");
+        assert_eq!(stored_round1.from_share_index, round1.from_share_index);
+        assert_eq!(stored_round1.package_bytes, round1.package_bytes);
+        assert_eq!(stored_round2.from_share_index, round2.from_share_index);
+        assert_eq!(stored_round2.to_share_index, round2.to_share_index);
+        assert_eq!(stored_round2.package_bytes, round2.package_bytes);
+        assert_eq!(stored_mac, mac);
+        assert!(hs.take_pairer_exchange(&nonce).is_none());
     }
 
     #[test]
