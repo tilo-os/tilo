@@ -48,7 +48,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 pub mod actions;
 pub mod app;
 pub mod audio;

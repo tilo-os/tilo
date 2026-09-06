@@ -1,3 +1,13 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "collaboration integration fixture asserts setup failures directly"
+)]
+
 //! Two people in one edit.
 //!
 //! Every assertion here crosses between two independent editors. One drives —
@@ -43,6 +53,8 @@ use winit::keyboard::{Key, NamedKey};
 
 const W: u32 = 1280;
 const H: u32 = 800;
+const W_F32: f32 = 1280.0;
+const H_F32: f32 = 800.0;
 
 /// One editor and the document it holds.
 struct Participant {
@@ -88,8 +100,8 @@ impl Participant {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(W as f32),
-                        height: Dimension::length(H as f32),
+                        width: Dimension::length(W_F32),
+                        height: Dimension::length(H_F32),
                     },
                     ..Default::default()
                 },
@@ -103,8 +115,8 @@ impl Participant {
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(W as f32),
-                        height: AvailableSpace::Definite(H as f32),
+                        width: AvailableSpace::Definite(W_F32),
+                        height: AvailableSpace::Definite(H_F32),
                     },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -168,7 +180,7 @@ impl Participant {
     /// draining is what a few frames of a live session do. Nothing here
     /// inspects or rebuilds a key — whatever comes out goes straight in.
     fn relay(&self, to: &mut PresenceCtx, as_user: &str) -> usize {
-        let mut sent = 0;
+        let mut sent: usize = 0;
         let mut last = None;
         for _ in 0..8 {
             let Some(frame) = self.app.presence_payload() else {
@@ -179,7 +191,9 @@ impl Participant {
             }
             to.apply_remote_presence(as_user.to_string(), frame.0.clone(), frame.1.clone());
             last = Some(frame);
-            sent += 1;
+            sent = sent
+                .checked_add(1)
+                .expect("the bounded relay count fits usize");
         }
         sent
     }
@@ -188,8 +202,8 @@ impl Participant {
 /// The clips a participant's document holds, in a stable order — read from
 /// the document rather than from the editor, because that is the thing the
 /// two of them actually share.
-fn clip_ids(p: &mut Participant) -> Vec<ClipId> {
-    let mut ids: Vec<ClipId> = VideoDoc::load_project(&mut p.doc)
+fn clip_ids(p: &Participant) -> Vec<ClipId> {
+    let mut ids: Vec<ClipId> = VideoDoc::load_project(&p.doc)
         .clips
         .iter()
         .map(|c| c.id)
@@ -199,8 +213,8 @@ fn clip_ids(p: &mut Participant) -> Vec<ClipId> {
 }
 
 /// How long the shared project runs.
-fn duration(p: &mut Participant) -> f64 {
-    VideoDoc::load_project(&mut p.doc).duration()
+fn duration(p: &Participant) -> f64 {
+    VideoDoc::load_project(&p.doc).duration()
 }
 
 /// Rasterise, and count how many pixels carry a colour.
@@ -219,14 +233,14 @@ fn pixels_of_colour(rgba: &[u8], rgb: (u8, u8, u8)) -> usize {
 #[test]
 fn one_participant_moves_and_the_other_can_say_where_they_are() {
     let mut ada = Participant::opening();
-    let mut bo = Participant::joining(&ada);
+    let bo = Participant::joining(&ada);
 
     // They are looking at the same project, or nothing below means anything.
-    let shared = clip_ids(&mut bo);
+    let shared = clip_ids(&bo);
     assert!(!shared.is_empty(), "the joining participant received clips");
     assert_eq!(
         shared,
-        clip_ids(&mut ada),
+        clip_ids(&ada),
         "both participants hold the same clips, by the same ids",
     );
 
@@ -245,7 +259,7 @@ fn one_participant_moves_and_the_other_can_say_where_they_are() {
     let heads = vp::peer_playheads(&room);
     assert_eq!(heads.len(), 1, "exactly one other participant: {heads:?}");
     assert_eq!(heads[0].user, UserId("ada".to_string()));
-    let end = duration(&mut ada);
+    let end = duration(&ada);
     assert!(
         (heads[0].at - end).abs() < 0.01,
         "Ada jumped to the end ({end}s); Bo has her at {}s",
@@ -432,7 +446,7 @@ fn a_participants_selected_clip_alone_reaches_the_screen() {
 
     // A clip near the start of the timeline, so it is on screen at the
     // default zoom -- an outline on a clip nobody can see proves nothing.
-    let project = VideoDoc::load_project(&mut bo.doc);
+    let project = VideoDoc::load_project(&bo.doc);
     let clip = project
         .clips
         .iter()
@@ -483,7 +497,7 @@ fn a_participant_typing_in_a_field_is_keyed_to_a_shared_object() {
 
     // The title she just made, as the *document* holds it — which is what a
     // second participant would receive.
-    let title = VideoDoc::load_project(&mut ada.doc)
+    let title = VideoDoc::load_project(&ada.doc)
         .media
         .iter()
         .find(|m| m.kind == MediaKind::Text)
@@ -505,9 +519,9 @@ fn a_participant_typing_in_a_field_is_keyed_to_a_shared_object() {
     );
 
     // A joiner receives the very object that key names, so it resolves.
-    let mut bo = Participant::joining(&ada);
+    let bo = Participant::joining(&ada);
     assert!(
-        VideoDoc::load_project(&mut bo.doc)
+        VideoDoc::load_project(&bo.doc)
             .media
             .iter()
             .any(|m| m.id == title),
