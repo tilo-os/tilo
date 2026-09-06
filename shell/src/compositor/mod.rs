@@ -39,6 +39,7 @@ pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
 pub mod state;
+pub mod surface_outputs;
 pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;

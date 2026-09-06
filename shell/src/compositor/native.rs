@@ -86,6 +86,9 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::surface_outputs::{
+    Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
+};
 
 #[derive(Clone)]
 struct PendingLegacyStream {
@@ -4077,6 +4080,10 @@ pub fn run() -> ! {
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
     let mut output_globals = output_globals::OutputGlobals::new();
+    // Tracks the `wl_surface.enter`/`leave` events we have sent. Unlike an
+    // output global (which exists session-wide), membership is a property of
+    // the surface's current painted geometry.
+    let mut surface_output_memberships = SurfaceOutputMemberships::default();
     let display_handle_for_outputs = display_handle;
     {
         let outs = backend.outputs().to_vec();
@@ -4526,6 +4533,14 @@ pub fn run() -> ! {
             // Per-output scale: `wp_fractional_scale` is the scale of the output a
             // surface is on, so a changed layout changes what each client renders at.
             state.set_output_layout(&outs);
+            // A leave has to precede removal of the corresponding `wl_output`
+            // global. Once the global is withdrawn there is no client output
+            // object left to put in `wl_surface.leave`.
+            send_surface_output_changes(
+                &state,
+                &output_globals,
+                surface_output_memberships.leave_removed_outputs(&outs),
+            );
             output_globals.sync::<State>(
                 &display_handle_for_outputs,
                 &outs,
@@ -4734,18 +4749,6 @@ pub fn run() -> ! {
             // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
             state.client_input.clear_pending();
         }
-        // Every client surface must be associated with at least one output.
-        // GTK3/LibreOffice waits for `wl_surface.enter` before finishing its
-        // initial scale setup; Qt and GTK4 happen to tolerate its absence.
-        // `Output::enter` is idempotent, so this also covers surfaces created
-        // after startup without duplicating protocol events.
-        if let Some(primary) = backend.outputs().first()
-            && let Some(output) = output_globals.handle(primary.id)
-        {
-            for surface in state.surface_handles.values() {
-                output.enter(surface);
-            }
-        }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
@@ -4796,6 +4799,13 @@ pub fn run() -> ! {
             placements.extend(state.output_presentation_placements());
             state.update_surface_scales(&placements);
         }
+        reconcile_surface_output_memberships(
+            &mut surface_output_memberships,
+            &state,
+            &frame_builder,
+            backend.outputs(),
+            &output_globals,
+        );
 
         // Decide whether this frame needs repainting before the expensive layout
         // pass: `needs_animation_frame` walks the widget tree, and the chrome
@@ -5099,6 +5109,17 @@ pub fn run() -> ! {
             let t_layout_start = Instant::now();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            // `relayout` publishes a new tile rect (for a tab switch, move,
+            // fullscreen or hotplug) immediately before painting it. Reconcile
+            // here as well as above so the client gets the output transition in
+            // the same frame rather than one idle tick later.
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
             native_accessibility.set_window_focus(true);
             if session.is_locked() {
                 let lock_outputs: Vec<LockOutput> = backend
@@ -5465,6 +5486,13 @@ pub fn run() -> ! {
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
         }
         let t_paint_done = iter_t0.elapsed();
 
@@ -6575,6 +6603,75 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
                 .clamp(0.0, f64::from(u32::MAX)) as u32;
             mhz
         })
+}
+
+/// Rectangles of Wayland root surfaces that are actually visible in the
+/// compositor's current frame. Inactive tabs deliberately do not appear here:
+/// keyboard focus and painting both follow the active tab, so associating an
+/// inactive tab with an output would advertise a monitor on which it has no
+/// pixels. Floating and OSK surfaces use their live widget geometry for the
+/// same reason.
+fn visible_surface_rects(state: &State, frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
+    let mut surfaces: Vec<(u64, Rect)> = state
+        .client_input
+        .placements()
+        .filter_map(|(surface_id, group)| {
+            frame_builder
+                .host()
+                .active_tile_rect(group)
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+                .map(|rect| (surface_id, rect))
+        })
+        .collect();
+    surfaces.extend(frame_builder.floating_surface_rects());
+    if let Some(surface) = frame_builder.osk_surface_rect() {
+        surfaces.push(surface);
+    }
+    surfaces
+}
+
+/// Emit the diff calculated by [`surface_outputs::Memberships`] against the
+/// live Smithay objects. The tracker guarantees at most one transition of a
+/// given kind for `(surface, output)`; Smithay's own output object supplies a
+/// second idempotence guard at the protocol boundary.
+fn send_surface_output_changes(
+    state: &State,
+    output_globals: &output_globals::OutputGlobals,
+    changes: Vec<SurfaceOutputChange>,
+) {
+    for change in changes {
+        let (surface_id, output_id) = match change {
+            SurfaceOutputChange::Enter { surface_id, output }
+            | SurfaceOutputChange::Leave { surface_id, output } => (surface_id, output),
+        };
+        let Some(surface) = state.surface_handles.get(&surface_id) else {
+            // Destruction needs no final protocol leave: the client has
+            // already destroyed the resource. Drop the tracker entry on its
+            // next geometry reconciliation instead of resurrecting it here.
+            continue;
+        };
+        let Some(output) = output_globals.handle(output_id) else {
+            // The only expected missing handle is a freshly added output
+            // before `OutputGlobals::sync`; the next reconciliation retries
+            // after its global exists.
+            continue;
+        };
+        match change {
+            SurfaceOutputChange::Enter { .. } => output.enter(surface),
+            SurfaceOutputChange::Leave { .. } => output.leave(surface),
+        }
+    }
+}
+
+fn reconcile_surface_output_memberships(
+    memberships: &mut SurfaceOutputMemberships,
+    state: &State,
+    frame_builder: &FrameBuilder,
+    outputs: &[Output],
+    output_globals: &output_globals::OutputGlobals,
+) {
+    let changes = memberships.reconcile(outputs, &visible_surface_rects(state, frame_builder));
+    send_surface_output_changes(state, output_globals, changes);
 }
 
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
