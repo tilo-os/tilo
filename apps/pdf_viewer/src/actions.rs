@@ -33,7 +33,8 @@ use qos_actions::{
 
 use crate::doc::PdfDoc;
 use crate::model::{
-    AnnoKind, Annotation, Comment, MARGIN, PtRect, Reply, Signature, SignatureInk, Swatch,
+    AnnoKind, Annotation, Comment, MARGIN, PAGE_H, PAGE_W, PtRect, Reply, Signature, SignatureInk,
+    Swatch,
 };
 
 /// Registry `type_id` for every PDF-reader action.
@@ -574,6 +575,9 @@ pub struct PdfResourceCtx {
     pub page: usize,
     pub page_count: usize,
     pub author: String,
+    /// Date captured when the resource snapshot is published. Action payloads
+    /// carry this value so a palette invocation replays identically on peers.
+    pub signature_date: String,
     /// Base ordinal for a palette-authored comment's stable sort.
     pub created_seed: i64,
     /// Current bounded find projection. Search itself stays local view state;
@@ -859,6 +863,39 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         },
     ));
 
+    // Agents and keyboard users do not have a pointer location to drop a
+    // signature onto. Offer the canonical typed equivalent at a predictable,
+    // readable location on the current page; the timestamp is captured in the
+    // resource snapshot, then carried in the replayable action payload.
+    let signature_page = ctx.page;
+    let signature_date = ctx.signature_date.clone();
+    let fallback_signer = ctx.author.clone();
+    root = root.with_action(ActionSpec::prompted(
+        "add-typed-signature",
+        "Add typed signature",
+        "Signer",
+        "signer name (leave blank to use the current author)…",
+        ExecutionLocus::ClientLocal,
+        move |text: &str| {
+            let signer = if text.trim().is_empty() {
+                fallback_signer.clone()
+            } else {
+                text.trim().to_string()
+            };
+            encode(&add_signature_action(&Signature {
+                id: Signature::new_id(),
+                page: signature_page,
+                // Keep the automatic, keyboard/palette-created signature out
+                // of the opening paragraph while retaining a familiar signing
+                // location on the page.
+                rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
+                signer,
+                date: signature_date.clone(),
+                ink: SignatureInk::Typed,
+            }))
+        },
+    ));
+
     let annotations = PdfDoc::list_annotations(doc);
     let comments = PdfDoc::list_comments(doc);
 
@@ -992,6 +1029,10 @@ mod tests {
         assert_eq!(document.kind, "pdf.document");
         let doc_actions: Vec<&str> = document.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(doc_actions.contains(&"add-note"), "{doc_actions:?}");
+        assert!(
+            doc_actions.contains(&"add-typed-signature"),
+            "{doc_actions:?}"
+        );
         let page = document
             .children
             .iter()
@@ -1074,6 +1115,29 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport).unwrap();
         assert!(PdfDoc::list_signatures(&doc).is_empty());
+    }
+
+    #[test]
+    fn resource_typed_signature_is_replayable_and_uses_the_prompted_signer() {
+        let (app, mut state) = open_with_markup();
+        let expected_page = app.pdf_resource_ctx().expect("open document").page;
+        let resources = Widget::resources(&app, &state.doc);
+        let action = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "add-typed-signature")
+            .expect("typed signature action");
+        let encoded = prompted_encode(action, "Grace Hopper");
+        let decoded = registry().decode(&encoded).expect("decodable action");
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("signature action applies");
+        let signature = PdfDoc::list_signatures(&state.doc)
+            .into_iter()
+            .find(|signature| signature.signer == "Grace Hopper")
+            .expect("prompted signer is saved");
+        assert_eq!(signature.ink, SignatureInk::Typed);
+        assert_eq!(signature.page, expected_page);
     }
 
     /// Deleting an annotation through its action removes the annotation *and*
