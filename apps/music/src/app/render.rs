@@ -365,10 +365,11 @@ impl Widget for MusicApp {
         self.advance_downloads(state);
         // External media control (media keys / desktop widget) and a completed
         // file-portal cover pick both mutate the document, so they run here
-        // where the CRDT handle is available; then publish the fresh state to
-        // the desktop's media controls.
+        // where the CRDT handle is available. The portal conversion completion
+        // follows the pick; decode/resize work itself runs off-thread.
         self.drain_mpris(state);
         self.drain_cover_pick(state);
+        self.drain_cover_embed(state);
         self.publish_mpris();
     }
 
