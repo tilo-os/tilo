@@ -687,6 +687,34 @@ impl DrmDispatchState {
         }
     }
 
+    /// Retire input state when its source cannot promise matching key-up
+    /// events.  The compositor owns the authoritative Wayland-seat reset via
+    /// `InputStateReset`; this clears only the DRM adapter state which would
+    /// otherwise translate the next native key with stale modifiers or repeat
+    /// it before that reset reaches the seat.
+    fn reset_keyboard_input_source(&mut self) {
+        self.key_repeat.cancel();
+        self.slow_pending.clear();
+        self.sticky_latched = ModifiersState::empty();
+        self.physical_modifiers = ModifiersState::empty();
+        if let Some(keyboard) = self.keyboard.as_mut() {
+            keyboard.reset_state();
+        }
+        self.push(BackendEvent::InputStateReset);
+    }
+
+    /// Rebuild the display after system suspend.  Unlike a VT transition,
+    /// suspend does not cause libseat to revoke the session, so it also has to
+    /// explicitly retire keyboard state whose releases occurred while asleep.
+    fn resume_from_sleep(&mut self) {
+        self.reset_keyboard_input_source();
+        let actions = match self.session.as_ref() {
+            Some(session) => session.resume_actions(),
+            None => Vec::new(),
+        };
+        self.perform_all(actions);
+    }
+
     /// Run a whole sequence in order.
     pub fn perform_all(&mut self, actions: impl IntoIterator<Item = SessionAction>) {
         for a in actions {
@@ -893,11 +921,10 @@ impl DrmDispatchState {
             }
             SeatEvent::PauseSession => {
                 tracing::info!("DRM backend: session paused");
-                self.key_repeat.cancel();
                 // VT/session loss cuts raw libinput delivery. Pair the
                 // repeat cancellation with a seat-level key reset instead
                 // of assuming every held key will get an up event later.
-                self.push(BackendEvent::InputStateReset);
+                self.reset_keyboard_input_source();
                 SeatTick::Pause
             }
         };
@@ -1564,12 +1591,8 @@ impl DrmRuntime {
     /// arrives on the way out — the state machine has nothing to react to.
     /// The DRM device still needs a full re-establish, which is why this is a separate, unconditional entry point rather than a case of the VT path.
     pub fn resume_from_sleep(&mut self) {
-        let actions = match self.dispatch.session.as_ref() {
-            Some(s) => s.resume_actions(),
-            None => Vec::new(),
-        };
         tracing::info!("DRM backend: restoring the display after resume");
-        self.dispatch.perform_all(actions);
+        self.dispatch.resume_from_sleep();
     }
 
     /// Re-read the persisted input settings and push them at every
@@ -1959,6 +1982,15 @@ impl KeyboardXkb {
 
     fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
         self._keymap.key_repeats(keycode)
+    }
+
+    /// Forget keys and modifiers which may have been released while input
+    /// delivery was suspended, while preserving the user's active layout.
+    fn reset_state(&mut self) {
+        let active_layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
+        self.state = xkb::State::new(&self._keymap);
+        let _ = self.state.update_mask(0, 0, 0, 0, 0, active_layout);
+        self.mods = ModifiersState::empty();
     }
 
     /// Produce the same repeated `KeyboardInput` winit emits without
@@ -3044,6 +3076,69 @@ mod tests {
                 .any(|e| matches!(e, BackendEvent::Redraw)),
             "and force a full repaint"
         );
+    }
+
+    #[test]
+    fn resume_retires_held_shift_and_backspace_before_the_next_key() {
+        // Model the failure mode exactly: both keys go down, then the machine
+        // sleeps before libinput can report either release.  The first input
+        // after resume must be a clean `a`, not Shift+A, and the pending
+        // Backspace repeat must be gone.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.session = Some(SessionState::new_active());
+        state.keyboard = KeyboardXkb::from_settings(&KeyboardSettings::default());
+        if state.keyboard.is_none() {
+            return;
+        }
+
+        state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
+        state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
+        assert!(
+            state
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.current_mods().shift_key()),
+            "the adapter's XKB state must see the held Shift before sleep"
+        );
+        assert!(
+            state.key_repeat.held.is_some(),
+            "Backspace must be repeating before sleep"
+        );
+        state.events.clear(); // The pre-sleep input was already dispatched.
+
+        state.resume_from_sleep();
+
+        assert!(
+            matches!(state.events.first(), Some(BackendEvent::InputStateReset)),
+            "the compositor's canonical seat reset must precede resumed input"
+        );
+        assert!(state.physical_modifiers.is_empty());
+        assert!(state.sticky_latched.is_empty());
+        assert!(
+            state
+                .key_repeat
+                .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
+                .is_empty(),
+            "a Backspace held across sleep must not repeat after resume"
+        );
+
+        state.events.clear();
+        state.handle_keyboard_key(xkb::Keycode::new(38), true); // KEY_A + 8
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::ModifiersChanged(_))),
+            "the first post-resume key must not inherit Shift"
+        );
+        let Some(BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })) =
+            state.events.first()
+        else {
+            panic!("the first post-resume key must be dispatched")
+        };
+        assert_eq!(event.logical_key, Key::Character("a".into()));
+        assert_eq!(event.text.as_deref(), Some("a"));
+        assert!(!event.repeat, "the first post-resume key is a fresh press");
     }
 
     #[test]
