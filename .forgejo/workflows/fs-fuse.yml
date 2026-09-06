@@ -113,7 +113,6 @@ jobs:
           }
           ls -l /dev/fuse
           echo "FUSE preflight ready: ${fuse_helper}"
-          exit 0
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/qos-session-lifecycle.sh
