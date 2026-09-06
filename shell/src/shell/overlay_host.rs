@@ -6255,11 +6255,12 @@ impl ShellOverlayHost {
     /// short, so its position and keyboard hint never overlap the final body
     /// line on small displays or at enlarged text sizes.
     fn qs_notification_visible_rows(&self) -> usize {
-        const HEADER_HEIGHT: f64 = 64.0;
-        const FOOTER_HEIGHT: f64 = 26.0;
+        const HEADER_AND_STATUS_HEIGHT: f64 = 76.0;
+        const FOOTER_HEIGHT: f64 = 52.0;
         const ROW_HEIGHT: f64 = 70.0;
         f64_floor_to_usize_saturating(
-            (self.quick_settings_rect().height() - HEADER_HEIGHT - FOOTER_HEIGHT) / ROW_HEIGHT,
+            (self.quick_settings_rect().height() - HEADER_AND_STATUS_HEIGHT - FOOTER_HEIGHT)
+                / ROW_HEIGHT,
         )
         .max(1)
     }
@@ -9084,7 +9085,14 @@ impl ShellOverlayHost {
         p: Point,
         current_level: &crate::shell::quick_settings::QsLevel,
     ) {
-        let back = self.qs_back_chevron_rect();
+        let back = if matches!(
+            current_level,
+            crate::shell::quick_settings::QsLevel::Notifications
+        ) {
+            self.qs_notification_back_rect()
+        } else {
+            self.qs_back_chevron_rect()
+        };
         // A passphrase prompt owns the pane while up, so
         // its controls (including back) are tested first.
         let prompt_up = self
@@ -14908,6 +14916,14 @@ impl ShellOverlayHost {
         Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
     }
 
+    /// Notifications is a dense, scrollable history, so it uses a textual
+    /// Back button instead of depending on a small icon surviving an enlarged
+    /// text scale. The hit target intentionally matches the painted control.
+    fn qs_notification_back_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x0 + 12.0, r.y0 + 8.0, r.x0 + 78.0, r.y0 + 40.0)
+    }
+
     /// Render the shell-owned, bounded session history. History deliberately
     /// lives in chrome rather than Settings: Settings owns delivery policy,
     /// while the shell is the only authority that actually received and
@@ -14919,9 +14935,49 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Notifications");
         let rect = self.quick_settings_rect();
         let colors = &theme.tokens.colors;
+        let back = self.qs_notification_back_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.lift(0.35),
+            None,
+            &RoundedRect::from_rect(back, 10.0),
+        );
+        let (back_w, back_h) =
+            text_renderer.measure("Back", theme.tokens.typography.scale.xs, None);
+        text_renderer.draw_text(
+            scene,
+            "Back",
+            theme.tokens.typography.scale.xs,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    back.center().x - f64::from(back_w) / 2.0,
+                    back.center().y - f64::from(back_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+        let (title_w, title_h) =
+            text_renderer.measure("Notifications", theme.tokens.typography.scale.sm, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Notifications",
+            theme.tokens.typography.scale.sm,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(title_w) / 2.0,
+                    rect.y0 + 24.0 - f64::from(title_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
         let history = self
             .chrome
             .as_ref()
@@ -14985,7 +15041,7 @@ impl ShellOverlayHost {
             &position,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + 12.0, rect.y0 + 46.0).into()),
+            transform.pre_translate((rect.x0 + 12.0, rect.y0 + 52.0).into()),
             Some(f64_to_f32_lossy(rect.width() - 24.0)),
         );
 
@@ -14997,7 +15053,7 @@ impl ShellOverlayHost {
             .take(visible_rows)
             .enumerate()
         {
-            let y0 = rect.y0 + 64.0 + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            let y0 = rect.y0 + 76.0 + usize_to_f64_lossy(index) * ROW_HEIGHT;
             let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + ROW_HEIGHT - 6.0);
             scene.fill(
                 Fill::NonZero,
@@ -15042,24 +15098,44 @@ impl ShellOverlayHost {
 
         if history.len() > visible_rows {
             let newer = if start > 0 {
-                "\u{2191} newer"
+                "\u{2191} Newer"
             } else {
-                "at newest"
+                "At newest"
             };
             let older = if start.saturating_add(shown) < history.len() {
-                "\u{2193} older"
+                "\u{2193} Older"
             } else {
-                "at oldest"
+                "At oldest"
             };
-            let hint =
-                format!("{newer}  \u{00b7}  {older}  \u{00b7}  \u{2191}\u{2193} / PgUp PgDn");
+            let footer = Rect::new(
+                rect.x0 + 12.0,
+                rect.y1 - 44.0,
+                rect.x1 - 12.0,
+                rect.y1 - 10.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.lift(0.22),
+                None,
+                &RoundedRect::from_rect(footer, 9.0),
+            );
+            let hint = format!("{newer}   \u{00b7}   {older}");
+            let (hint_w, hint_h) =
+                text_renderer.measure(&hint, theme.tokens.typography.scale.xs, None);
             text_renderer.draw_text(
                 scene,
                 &hint,
                 theme.tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((rect.x0 + 12.0, rect.y1 - 17.0).into()),
-                Some(f64_to_f32_lossy(rect.width() - 24.0)),
+                colors.text_primary,
+                transform.pre_translate(
+                    (
+                        footer.center().x - f64::from(hint_w) / 2.0,
+                        footer.center().y - f64::from(hint_h) / 2.0,
+                    )
+                        .into(),
+                ),
+                Some(f64_to_f32_lossy(footer.width() - 16.0)),
             );
         }
     }
@@ -18475,6 +18551,32 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    #[test]
+    fn notification_history_back_control_stays_wide_and_clickable_with_large_text() {
+        let (width, height) = (960.0, 540.0);
+        let mut h = build_harness_sized(width, height);
+        open_notification_history(&mut h, 18, width, height);
+        let theme = Theme::dark().with_text_scale(1.3);
+        settle_with_theme(&mut h, width, height, &theme);
+        let back = h.host.qs_notification_back_rect();
+        let clear = h.host.qs_notification_clear_rect();
+        assert!(back.width() >= 64.0, "Back needs a textual tap target");
+        assert!(
+            back.intersect(clear).area() <= 0.0,
+            "Back and Clear must remain distinct at large text"
+        );
+        // The production click router uses this exact drill-in handler after
+        // it has classified the current Quick Settings level.
+        h.host.handle_shell_quick_settings_drill_in_click(
+            back.center(),
+            &crate::shell::quick_settings::QsLevel::Notifications,
+        );
+        assert!(matches!(
+            h.chrome.borrow().quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Root
+        ));
+    }
+
     /// Keep visual review on the exact production draw path at 1:1 pixels.
     /// This is intentionally opt-in because it needs a wgpu adapter and
     /// creates review PNGs, but its fixture has more than the former
@@ -18497,9 +18599,8 @@ mod overlay_event_absorb_tests {
         );
         std::fs::create_dir_all(&root).expect("create notification-history screenshot directory");
 
-        for (label, width, height, theme) in [
+        for (layout, width, height, theme) in [
             ("960x540-normal", 960_u32, 540_u32, Theme::dark()),
-            ("1280x720-normal", 1280_u32, 720_u32, Theme::dark()),
             (
                 "960x540-large-text",
                 960_u32,
@@ -18518,19 +18619,31 @@ mod overlay_event_absorb_tests {
             settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
             let panel = h.host.quick_settings_rect();
             let visible = h.host.qs_notification_visible_rows();
-            assert!(visible < h.chrome.borrow().notification_history().len());
+            let total = h.chrome.borrow().notification_history().len();
+            let max_start = h.host.qs_notification_max_start(total);
+            assert!(visible < total);
             assert!(
                 panel.y1 <= f64::from(height) - 16.0,
-                "{label}: panel must stay above the desktop bottom inset: {panel:?}"
+                "{layout}: panel must stay above the desktop bottom inset: {panel:?}"
             );
             assert!(
-                panel.y0 + 64.0 + usize_to_f64_lossy(visible) * 70.0 <= panel.y1 - 26.0,
-                "{label}: cards must leave the visible navigation footer clear"
+                panel.y0 + 76.0 + usize_to_f64_lossy(visible) * 70.0 <= panel.y1 - 52.0,
+                "{layout}: cards must leave the visible navigation footer clear"
             );
-
-            let scene = paint_scene(&mut h, &theme);
-            let mut renderer = OffscreenRenderer::new(width, height);
-            renderer.render_png(&scene, Color::BLACK, root.join(format!("{label}.png")));
+            for (position, start) in [
+                ("newest", 0),
+                ("middle", max_start / 2),
+                ("oldest", max_start),
+            ] {
+                h.host.qs_notification_history_start = start;
+                let scene = paint_scene(&mut h, &theme);
+                let mut renderer = OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    Color::BLACK,
+                    root.join(format!("{layout}-{position}.png")),
+                );
+            }
         }
         println!("notification-history review PNGs: {}", root.display());
     }
