@@ -358,6 +358,7 @@ impl ApplicationsProvider {
                         })
                 }),
                 on_invoke: None,
+                on_begin_invoke: None,
                 params: Vec::new(),
                 contract: None,
             });

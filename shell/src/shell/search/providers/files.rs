@@ -6,15 +6,19 @@
 //! background. Enter routes a hit through [`crate::shell::doc_open`], which
 //! resolves the extension to the installed package that opens it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -49,26 +53,158 @@ const SKIP_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
 const MAX_RESULTS: usize = 40;
+/// At most one modest retained ranked-query plan survives across palette
+/// edits. Positions are `usize`s, so this caps the cache below 1 MiB on
+/// 64-bit builds instead of retaining one corpus-sized vector per keystroke.
+const RANKED_QUERY_CACHE_MAX_POSITIONS: usize = 131_072;
+/// A publication gets a never-reused revision before it reaches the tiny
+/// snapshot-swap lock. A global sequence is intentionally conservative:
+/// another provider's rescan can make a cursor stale, never incorrectly
+/// current, while avoiding a mutable field inside an otherwise immutable
+/// `NameIndex` publication.
+static NEXT_NAME_INDEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// In-memory index, populated by a background walker and refreshed only via
 /// manual `rescan` (no inotify yet).
 #[derive(Default)]
 struct NameIndex {
-    entries: Vec<NameEntry>,
-    ready: bool,
+    entries: Arc<Vec<NameEntry>>,
+    exact_leaf: HashMap<String, Arc<Vec<usize>>>,
+    exact_stem: HashMap<String, Arc<Vec<usize>>>,
+    leaf_prefix: HashMap<String, Arc<Vec<usize>>>,
+    leaf_grams: HashMap<String, Arc<Vec<usize>>>,
+    path_trigrams: HashMap<String, Arc<Vec<usize>>>,
     /// Bumped on every walker replace; the narrowing cache keys on it so a
     /// re-scan invalidates stale candidate indices.
     generation: u64,
 }
 
-/// Entries that matched the previous needle. Match sets only shrink as the
-/// needle grows, so extending a query re-scores only what already matched.
-struct NarrowCache {
-    needle: String,
-    candidates: Vec<usize>,
-    generation: u64,
+impl NameIndex {
+    /// Build an immutable publication off the compositor path.  Readers only
+    /// clone its outer `Arc`; a rescan never holds their short publication
+    /// lock while allocating postings or sorting short-query buckets.
+    fn from_entries(entries: Vec<NameEntry>, generation: u64) -> Self {
+        let entries = Arc::new(entries);
+        let mut exact_leaf: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut exact_stem: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut leaf_prefix: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut leaf_grams: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut path_trigrams: HashMap<String, Vec<usize>> = HashMap::new();
+        for (position, entry) in entries.iter().enumerate() {
+            exact_leaf
+                .entry(entry.facts.leaf.to_string())
+                .or_default()
+                .push(position);
+            let stem_len = usize::from(entry.facts.stem_len);
+            if let Some(stem) = entry.facts.leaf.get(..stem_len) {
+                exact_stem
+                    .entry(stem.to_string())
+                    .or_default()
+                    .push(position);
+            }
+            for end in entry.facts.leaf.char_indices().map(|(at, _)| at).skip(1) {
+                if end <= 64 {
+                    leaf_prefix
+                        .entry(entry.facts.leaf[..end].to_string())
+                        .or_default()
+                        .push(position);
+                }
+            }
+            if entry.facts.leaf.len() <= 64 {
+                leaf_prefix
+                    .entry(entry.facts.leaf.to_string())
+                    .or_default()
+                    .push(position);
+            }
+            for gram in search_grams(&entry.facts.leaf) {
+                leaf_grams.entry(gram).or_default().push(position);
+            }
+            for gram in search_grams(&entry.facts.lower) {
+                if gram.chars().count() == 3 {
+                    path_trigrams.entry(gram).or_default().push(position);
+                }
+            }
+        }
+        // A one/two-character request intentionally means exact/prefix/
+        // contiguous *leaf* matching, never a vague subsequence across a
+        // whole path. Pre-rank those retained postings now, off the UI
+        // thread, with the same score/tie rules as a query. A huge `a` or
+        // `th` bucket therefore still gives the globally best first page.
+        let sort_short_postings = |needle: &str, positions: &mut Vec<usize>| {
+            positions.sort_by(|left, right| {
+                let rank = |position: &usize| {
+                    entries
+                        .get(*position)
+                        .map_or((i32::MIN, usize::MAX, ""), |entry| {
+                            (
+                                name_score(needle, &entry.facts).unwrap_or(i32::MIN),
+                                path_depth(&entry.facts.lower),
+                                entry.facts.lower.as_str(),
+                            )
+                        })
+                };
+                let left = rank(left);
+                let right = rank(right);
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| left.2.cmp(right.2))
+            });
+        };
+        for (gram, positions) in &mut leaf_grams {
+            if gram.chars().count() <= 2 {
+                sort_short_postings(gram, positions);
+            }
+        }
+        for (prefix, positions) in &mut leaf_prefix {
+            if prefix.chars().count() <= 2 {
+                sort_short_postings(prefix, positions);
+            }
+        }
+        let entries = entries;
+        let shared = |postings: HashMap<String, Vec<usize>>| {
+            postings
+                .into_iter()
+                .map(|(key, positions)| (key, Arc::new(positions)))
+                .collect()
+        };
+        Self {
+            entries,
+            exact_leaf: shared(exact_leaf),
+            exact_stem: shared(exact_stem),
+            leaf_prefix: shared(leaf_prefix),
+            leaf_grams: shared(leaf_grams),
+            path_trigrams: shared(path_trigrams),
+            generation,
+        }
+    }
 }
 
+/// Retained 1/2/3-character leaf postings.  Long needles select their
+/// rarest trigram; short input has explicit character/bigram buckets instead
+/// of falling back to a corpus scan.  The final score still validates the
+/// whole needle, so a posting is an accelerator, never a false result.
+fn search_grams(value: &str) -> Vec<String> {
+    let boundaries = value
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain(std::iter::once(value.len()))
+        .collect::<Vec<_>>();
+    let mut out = Vec::new();
+    for width in 1_usize..=3 {
+        for window in boundaries.windows(width.saturating_add(1)) {
+            if let [start, end] = window
+                && let Some(gram) = value.get(*start..*end)
+            {
+                out.push(gram.to_string());
+            }
+        }
+    }
+    out
+}
+
+#[derive(Clone)]
 struct NameEntry {
     path: PathBuf,
     display: String,
@@ -78,21 +214,135 @@ struct NameEntry {
 
 pub struct FilesProvider {
     home: PathBuf,
-    name_index: Arc<Mutex<NameIndex>>,
+    /// A tiny publication lock protects only swapping/cloning the immutable
+    /// index `Arc`; no query copies the corpus or holds it through ranking.
+    name_index: Arc<Mutex<Arc<NameIndex>>>,
     tantivy: Option<crate::shell::search::files_index::FilesIndex>,
-    /// See [`NarrowCache`]. Mutex because `query` takes `&self`.
-    narrow: Mutex<Option<NarrowCache>>,
     /// Entries examined by the most recent query — the per-keystroke cost,
     /// and what the narrowing test asserts on (unlike wall-clock time).
     last_scanned: AtomicUsize,
+    ranked_queries: Mutex<RankedQueryCache>,
+    ranked_query_epoch: AtomicU64,
+    rank_mailbox: Arc<Mutex<Option<RankRequest>>>,
+    rank_notify: mpsc::SyncSender<()>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    active_rank_workers: Arc<AtomicUsize>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    peak_rank_workers: Arc<AtomicUsize>,
+}
+
+struct RankedQuery {
+    generation: u64,
+    needle: String,
+    positions: Arc<Vec<usize>>,
+}
+
+struct PendingRankedQuery {
+    generation: u64,
+    needle: String,
+    receiver: mpsc::Receiver<RankedQuery>,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct RankRequest {
+    generation: u64,
+    needle: String,
+    entries: Arc<Vec<NameEntry>>,
+    candidates: Arc<Vec<usize>>,
+    cancelled: Arc<AtomicBool>,
+    sender: mpsc::SyncSender<RankedQuery>,
+}
+
+#[derive(Default)]
+struct RankedQueryCache {
+    ready: Vec<RankedQuery>,
+    pending: Option<PendingRankedQuery>,
 }
 
 impl FilesProvider {
+    fn rank_worker() -> (
+        Arc<Mutex<Option<RankRequest>>>,
+        mpsc::SyncSender<()>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        // A single coalescing worker is deliberately shared by every
+        // keystroke.  The one-slot mailbox retains only the newest request;
+        // a cancelled current rank checks at small chunks and then picks it
+        // up.  This prevents rapid typing from creating a thread/corpus-plan
+        // pile-up while keeping the compositor entirely non-blocking.
+        let mailbox = Arc::new(Mutex::new(None::<RankRequest>));
+        let (notify, wake) = mpsc::sync_channel(1);
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let worker_mailbox = Arc::clone(&mailbox);
+        let worker_active = Arc::clone(&active);
+        let worker_peak = Arc::clone(&peak);
+        let spawned = thread::Builder::new()
+            .name("qos-search-files-rank".into())
+            .spawn(move || {
+                while wake.recv().is_ok() {
+                    let request = worker_mailbox.lock().ok().and_then(|mut slot| slot.take());
+                    let Some(request) = request else {
+                        continue;
+                    };
+                    let current = worker_active.fetch_add(1, Ordering::Relaxed) + 1;
+                    worker_peak.fetch_max(current, Ordering::Relaxed);
+                    let mut positions = Vec::new();
+                    for (ordinal, position) in request.candidates.iter().copied().enumerate() {
+                        if ordinal.is_multiple_of(512) && request.cancelled.load(Ordering::Relaxed)
+                        {
+                            break;
+                        }
+                        let Some(entry) = request.entries.get(position) else {
+                            continue;
+                        };
+                        if let Some(score) = name_score(&request.needle, &entry.facts) {
+                            positions.push((score, path_depth(&entry.facts.lower), position));
+                        }
+                    }
+                    if !request.cancelled.load(Ordering::Relaxed) {
+                        positions.sort_by(|left, right| {
+                            right
+                                .0
+                                .cmp(&left.0)
+                                .then_with(|| left.1.cmp(&right.1))
+                                .then_with(|| {
+                                    request.entries[left.2]
+                                        .facts
+                                        .lower
+                                        .cmp(&request.entries[right.2].facts.lower)
+                                })
+                        });
+                        let positions = Arc::new(
+                            positions
+                                .into_iter()
+                                .map(|(_, _, position)| position)
+                                .collect::<Vec<_>>(),
+                        );
+                        let _ = request.sender.send(RankedQuery {
+                            generation: request.generation,
+                            needle: request.needle,
+                            positions,
+                        });
+                    }
+                    worker_active.fetch_sub(1, Ordering::Relaxed);
+                }
+            });
+        if spawned.is_err() {
+            // A disconnected wake channel makes the synchronous caller
+            // expose a bounded pending state instead of falling back to a
+            // corpus scan. This is exceptionally rare but remains safe.
+        }
+        (mailbox, notify, active, peak)
+    }
+
     /// Kicks off the background name-index walk and returns immediately.
     /// Users who query before it finishes get only the tantivy content index.
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let name_index: Arc<Mutex<NameIndex>> = Arc::new(Mutex::new(NameIndex::default()));
+        let name_index: Arc<Mutex<Arc<NameIndex>>> =
+            Arc::new(Mutex::new(Arc::new(NameIndex::default())));
         {
             let name_index = Arc::clone(&name_index);
             let home = home.clone();
@@ -102,12 +352,19 @@ impl FilesProvider {
                 .ok();
         }
         let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
+        let (rank_mailbox, rank_notify, active_rank_workers, peak_rank_workers) =
+            Self::rank_worker();
         Self {
             home,
             name_index,
             tantivy,
-            narrow: Mutex::new(None),
             last_scanned: AtomicUsize::new(0),
+            ranked_queries: Mutex::new(RankedQueryCache::default()),
+            ranked_query_epoch: AtomicU64::new(0),
+            rank_mailbox,
+            rank_notify,
+            active_rank_workers,
+            peak_rank_workers,
         }
     }
 
@@ -157,6 +414,311 @@ impl FilesProvider {
             out.push(make_result(&entry, content, hit.snippet));
         }
     }
+
+    /// Return a globally score-sorted retained query plan, or start its
+    /// off-thread construction.  The compositor never walks a broad posting
+    /// list synchronously: a pending plan is explicitly empty rather than a
+    /// misleading traversal-order partial answer.  Completion bumps
+    /// `ranked_query_epoch`, which makes an open palette refresh itself.
+    fn ranked_query_positions(
+        &self,
+        generation: u64,
+        needle: &str,
+        entries: Arc<Vec<NameEntry>>,
+        candidates: Arc<Vec<usize>>,
+    ) -> Option<Arc<Vec<usize>>> {
+        let Ok(mut cache) = self.ranked_queries.lock() else {
+            return None;
+        };
+        let received =
+            cache
+                .pending
+                .as_mut()
+                .and_then(|pending| match pending.receiver.try_recv() {
+                    Ok(ready) => Some(Ok(ready)),
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                });
+        if let Some(received) = received {
+            match received {
+                Ok(ready) => {
+                    cache.ready.retain(|query| {
+                        query.generation != ready.generation || query.needle != ready.needle
+                    });
+                    cache.ready.push(ready);
+                    while cache
+                        .ready
+                        .iter()
+                        .map(|query| query.positions.len())
+                        .sum::<usize>()
+                        > RANKED_QUERY_CACHE_MAX_POSITIONS
+                    {
+                        cache.ready.remove(0);
+                    }
+                    cache.pending = None;
+                    self.ranked_query_epoch.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(()) => cache.pending = None,
+            }
+        }
+        if let Some(query) = cache
+            .ready
+            .iter()
+            .find(|query| query.generation == generation && query.needle == needle)
+        {
+            return Some(Arc::clone(&query.positions));
+        }
+        let already_building = cache
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.generation == generation && pending.needle == needle);
+        if already_building {
+            return None;
+        }
+        if let Some(previous) = cache.pending.take() {
+            previous.cancelled.store(true, Ordering::Relaxed);
+        }
+        let needle = needle.to_string();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let request = RankRequest {
+            generation,
+            needle: needle.clone(),
+            entries,
+            candidates,
+            cancelled: Arc::clone(&cancelled),
+            sender,
+        };
+        if let Ok(mut mailbox) = self.rank_mailbox.lock() {
+            *mailbox = Some(request);
+            // A full wake slot means the single worker is either active or
+            // already scheduled; in both cases it will take this newest
+            // mailbox value next. Never create another worker for a key.
+            let _ = self.rank_notify.try_send(());
+            cache.pending = Some(PendingRankedQuery {
+                generation,
+                needle,
+                receiver,
+                cancelled,
+            });
+        }
+        None
+    }
+
+    fn sorted_positions(needle: &str, entries: &[NameEntry]) -> Arc<Vec<usize>> {
+        let mut positions = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                name_score(needle, &entry.facts)
+                    .map(|score| (score, path_depth(&entry.facts.lower), position))
+            })
+            .collect::<Vec<_>>();
+        positions.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| {
+                    entries[left.2]
+                        .facts
+                        .lower
+                        .cmp(&entries[right.2].facts.lower)
+                })
+        });
+        Arc::new(
+            positions
+                .into_iter()
+                .map(|(_, _, position)| position)
+                .collect(),
+        )
+    }
+
+    /// A page cursor is deliberately only an index generation and a scan
+    /// offset.  It never embeds paths (which would leak names across a later
+    /// permission/mount change) nor a giant match list.  A page inspects at
+    /// most `budget.max_work` retained entries; `last_scanned` is kept as
+    /// instrumentation and regression protection for the palette path.
+    fn page_name_hits(
+        &self,
+        ctx: &SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        if ctx.needle.trim().is_empty() || budget.max_results == 0 || budget.max_work == 0 {
+            return SearchPage::exhausted("empty", Vec::new());
+        }
+        let want_file = ctx.wanted.contains(&ResourceKind::File);
+        let want_folder = ctx.wanted.contains(&ResourceKind::Folder);
+        if !want_file && !want_folder {
+            return SearchPage::exhausted("not-wanted", Vec::new());
+        }
+        let Ok(index) = self.name_index.lock() else {
+            return SearchPage::exhausted("unavailable", Vec::new());
+        };
+        let entries = Arc::clone(&index.entries);
+        let generation = index.generation;
+        let mut revision = format!(
+            "{generation}:{}",
+            self.ranked_query_epoch.load(Ordering::Relaxed)
+        );
+        let needle = ctx.needle.to_lowercase();
+        let offset = match cursor {
+            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+            Some(cursor) => match cursor.token.split_once('\u{1f}') {
+                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
+                    Ok(offset) => offset,
+                    Err(_) => return SearchPage::stale(revision),
+                },
+                _ => return SearchPage::stale(revision),
+            },
+            None => 0,
+        };
+        let needle_chars = needle.chars().count();
+        let gram_width = needle_chars.min(3);
+        let all_grams = search_grams(&needle);
+        let rarest_gram = (1..=gram_width).rev().find_map(|width| {
+            all_grams
+                .iter()
+                .filter(|gram| gram.chars().count() == width)
+                .filter_map(|gram| index.leaf_grams.get(gram))
+                .min_by_key(|positions| positions.len())
+                .cloned()
+        });
+        let rarest_path_trigram = all_grams
+            .iter()
+            .filter(|gram| gram.chars().count() == 3)
+            .filter_map(|gram| index.path_trigrams.get(gram))
+            .min_by_key(|positions| positions.len())
+            .cloned();
+        let needs_ranked_plan = needle_chars > 2 && entries.len() > budget.max_work;
+        let ranked_candidates = match (rarest_gram.as_ref(), rarest_path_trigram.as_ref()) {
+            (Some(leaf), Some(path)) if leaf.len() <= path.len() => Some(leaf.clone()),
+            (Some(_), Some(path)) => Some(path.clone()),
+            (Some(leaf), None) => Some(leaf.clone()),
+            (None, Some(path)) => Some(path.clone()),
+            (None, None) => None,
+        };
+        // Exact postings remain a retained accelerator/consistency check,
+        // but cannot by themselves be the page source: a globally ranked
+        // result set must still include weaker prefix/path matches after an
+        // exact leaf hit.
+        let exact_hit_count = index
+            .exact_leaf
+            .get(&needle)
+            .or_else(|| index.exact_stem.get(&needle))
+            .map_or(0, |positions| positions.len());
+        debug_assert!(exact_hit_count <= entries.len());
+        if needs_ranked_plan && ranked_candidates.is_none() {
+            // Large-corpus fuzzy subsequence search would require a full
+            // candidate walk for every keypress.  Keep it intentionally out
+            // of this mode rather than claiming an incomplete page is a
+            // search result; contiguous leaf/path discovery remains indexed.
+            return SearchPage::exhausted(revision, Vec::new());
+        }
+        let short_positions = (needle_chars <= 2)
+            .then(|| index.leaf_prefix.get(&needle).cloned().or(rarest_gram))
+            .flatten();
+        drop(index);
+        let source_positions = if needle_chars <= 2 {
+            short_positions
+        } else if needs_ranked_plan {
+            ranked_candidates.and_then(|candidates| {
+                self.ranked_query_positions(generation, &needle, Arc::clone(&entries), candidates)
+            })
+        } else {
+            Some(Self::sorted_positions(&needle, &entries))
+        };
+        // Polling a completed retained plan can advance the ranking epoch in
+        // this call. Mint its first cursor against that new revision, not the
+        // pre-poll revision which would be stale before the next page.
+        revision = format!(
+            "{generation}:{}",
+            self.ranked_query_epoch.load(Ordering::Relaxed)
+        );
+        if needle_chars <= 2 && source_positions.is_none() {
+            // Short input has intentionally narrow, truthfully-ranked leaf
+            // semantics. Falling through to a path/fuzzy corpus sweep would
+            // make the displayed first page look exhaustive when it cannot
+            // be under the work budget.
+            return SearchPage::exhausted(revision, Vec::new());
+        }
+        // Broad queries do not display a traversal-order approximation while
+        // their ranked retained plan is building. The epoch above changes on
+        // completion, causing the open palette to retry automatically.
+        if needs_ranked_plan && source_positions.is_none() {
+            return SearchPage {
+                revision,
+                results: Vec::new(),
+                next_cursor: None,
+                exhausted: false,
+                stale_cursor: false,
+                budget_exhausted: true,
+            };
+        }
+        let source_len = source_positions
+            .as_ref()
+            .map_or(entries.len(), |positions| positions.len());
+        if offset > source_len {
+            return SearchPage::stale(revision);
+        }
+        let end = offset.saturating_add(budget.max_work).min(source_len);
+        self.last_scanned
+            .store(end.saturating_sub(offset), Ordering::Relaxed);
+        let mut bytes = 0usize;
+        let mut results = Vec::new();
+        let mut next = end;
+        let mut stopped_for_budget = false;
+        for source_position in offset..end {
+            let position = source_positions
+                .as_ref()
+                .and_then(|positions| positions.get(source_position).copied())
+                .unwrap_or(source_position);
+            let Some(entry) = entries.get(position) else {
+                continue;
+            };
+            if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
+                continue;
+            }
+            let Some(score) = name_score(&needle, &entry.facts) else {
+                continue;
+            };
+            if results.len() >= budget.max_results {
+                next = source_position;
+                stopped_for_budget = true;
+                break;
+            }
+            // Budget what the palette receives, including both labels and
+            // the opaque path id, before cloning any row into the UI.
+            let row_bytes = entry
+                .path
+                .display()
+                .to_string()
+                .len()
+                .saturating_add(entry.display.len())
+                .saturating_add(file_title(&entry.path).len())
+                .saturating_add(96);
+            if bytes.saturating_add(row_bytes) > budget.max_bytes {
+                next = source_position;
+                stopped_for_budget = true;
+                break;
+            }
+            bytes = bytes.saturating_add(row_bytes);
+            results.push(make_result(entry, score, None));
+        }
+        let exhausted = !stopped_for_budget && end == source_len;
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: (!exhausted).then(|| SearchCursor {
+                revision,
+                token: format!("{needle}\u{1f}{next}"),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: stopped_for_budget || !exhausted,
+        }
+    }
 }
 
 impl Default for FilesProvider {
@@ -181,113 +743,68 @@ impl SearchProvider for FilesProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        if ctx.needle.trim().is_empty() {
-            return Vec::new();
-        }
-        let want_file = ctx.wanted.contains(&ResourceKind::File);
-        let want_folder = ctx.wanted.contains(&ResourceKind::Folder);
-        if !want_file && !want_folder {
-            return Vec::new();
-        }
+        // Compatibility callers get exactly one bounded first page.  They
+        // never trigger the former synchronous corpus sweep; broad results
+        // may be temporarily empty while the retained plan is being ranked.
+        self.query_page(
+            ctx,
+            None,
+            SearchBudget {
+                max_results: MAX_RESULTS,
+                max_bytes: 64 * 1024,
+                max_work: SearchBudget::PALETTE.max_work,
+            },
+        )
+        .results
+    }
 
-        let needle_lower = ctx.needle.to_lowercase();
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        let mut out: Vec<SearchResult> = Vec::new();
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        self.name_index
+            .lock()
+            .map(|index| {
+                format!(
+                    "{}:{}",
+                    index.generation,
+                    self.ranked_query_epoch.load(Ordering::Relaxed)
+                )
+            })
+            .unwrap_or_else(|_| "unavailable".into())
+    }
 
-        // Score the whole index, then keep the best `MAX_RESULTS` — taking
-        // the first N would make ranking depend on directory traversal order.
-        if let Ok(guard) = self.name_index.lock() {
-            // Narrow from the previous match set when this needle extends it.
-            // Locked and released up front so the narrow-cache mutex isn't
-            // held across the (possibly expensive) candidate scan below.
-            let reuse_candidates: Option<Vec<usize>> = self.narrow.lock().ok().and_then(|cache| {
-                cache.as_ref().and_then(|c| {
-                    (!c.needle.is_empty()
-                        && c.generation == guard.generation
-                        && needle_lower.starts_with(&c.needle))
-                    .then(|| c.candidates.clone())
-                })
-            });
-            let mut candidates: Vec<usize> = Vec::new();
-            let mut ranked: Vec<(i32, usize, usize)> = Vec::new();
-            {
-                let mut consider = |i: usize| {
-                    let Some(entry) = guard.entries.get(i) else {
-                        return;
-                    };
-                    let Some(score) = name_score(&needle_lower, &entry.facts) else {
-                        return;
-                    };
-                    // Cached before the kind filter, so toggling the
-                    // Files/Folders chips can't poison the next keystroke's candidates.
-                    candidates.push(i);
-                    if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
-                        return;
-                    }
-                    ranked.push((score, path_depth(&entry.facts.lower), i));
-                };
-                if let Some(c) = &reuse_candidates {
-                    self.last_scanned.store(c.len(), Ordering::Relaxed);
-                    for &i in c {
-                        consider(i);
-                    }
-                } else {
-                    self.last_scanned
-                        .store(guard.entries.len(), Ordering::Relaxed);
-                    (0..guard.entries.len()).for_each(&mut consider);
-                }
-            }
-            if let Ok(mut cache) = self.narrow.lock() {
-                cache.replace(NarrowCache {
-                    needle: needle_lower,
-                    candidates,
-                    generation: guard.generation,
-                });
-            }
-            // Best score first, shallower path among equals; a final compare
-            // on path makes this a total order for the partition below.
-            let cmp = |a: &(i32, usize, usize), b: &(i32, usize, usize)| {
-                b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| {
-                    match (guard.entries.get(a.2), guard.entries.get(b.2)) {
-                        (Some(ea), Some(eb)) => ea.facts.lower.cmp(&eb.facts.lower),
-                        _ => std::cmp::Ordering::Equal,
-                    }
-                })
-            };
-            // Partition out the best `MAX_RESULTS`, then sort only those:
-            // sorting the whole candidate set costs 84 ms on a 50 000-entry
-            // index (five frames per character) only to discard all but forty.
-            let k = MAX_RESULTS.min(ranked.len());
-            if k < ranked.len() {
-                ranked.select_nth_unstable_by(k, cmp);
-                ranked.truncate(k);
-            }
-            ranked.sort_by(cmp);
-            for (score, _, i) in ranked {
-                let Some(entry) = guard.entries.get(i) else {
-                    continue;
-                };
-                seen.insert(entry.path.clone());
-                out.push(make_result(entry, score, None));
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        // Name lookup owns all continuation pages.  Tantivy already has its
+        // own retained inverted index and returns a bounded top-K; append it
+        // only to the first page so scrolling never repeats content rows.
+        let mut page = self.page_name_hits(&ctx, cursor, budget);
+        if cursor.is_some() || page.stale_cursor || !ctx.wanted.contains(&ResourceKind::File) {
+            return page;
+        }
+        let mut seen = page
+            .results
+            .iter()
+            .map(|row| PathBuf::from(&row.id))
+            .collect::<HashSet<_>>();
+        let remaining = budget.max_results.saturating_sub(page.results.len());
+        if remaining > 0 {
+            let mut content = Vec::new();
+            self.push_content_hits(ctx.needle, &seen, &mut content);
+            for row in content.into_iter().take(remaining) {
+                seen.insert(PathBuf::from(&row.id));
+                page.results.push(row);
             }
         }
-
-        // Content hits from tantivy, deduped against name hits so a file
-        // matching both only shows once (the higher score wins).
-        if want_file {
-            self.push_content_hits(ctx.needle, &seen, &mut out);
-        }
-
-        // Final ordering across both backends: score, then shallower path.
-        // Content hits clamp into a narrow band, so ties are common.
-        out.sort_by(|a, b| {
+        page.results.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
-                // `id` is the absolute path, not the (sometimes-snippet) subtitle.
                 .then_with(|| path_depth(&a.id).cmp(&path_depth(&b.id)))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        out
+        page
     }
 
     fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
@@ -437,6 +954,7 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
 /// Everything a path's score depends on besides the needle. Precomputed by
 /// the walker — a keystroke re-scores tens of thousands of entries and must
 /// never tokenise or `stat` a file.
+#[derive(Clone)]
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
@@ -796,12 +1314,14 @@ fn spawn_open(path: &Path, _is_dir: bool) {
 /// tens of thousands of paths (`~/Spiele` alone walks to 31 168):
 /// depth-first would spend [`MAX_ENTRIES`] on whichever branch it entered
 /// first and exclude whole trees.
-fn walk_home(home: &Path, index: &Arc<Mutex<NameIndex>>) {
+fn walk_home(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
+    // Construct all retained maps before touching the publication lock. A
+    // palette request meanwhile just clones the prior immutable snapshot.
+    let generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let next = Arc::new(NameIndex::from_entries(entries, generation));
     if let Ok(mut guard) = index.lock() {
-        guard.entries = entries;
-        guard.ready = true;
-        guard.generation = guard.generation.wrapping_add(1);
+        *guard = next;
     }
 }
 
@@ -1278,16 +1798,19 @@ mod tests {
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
         let home = PathBuf::from("/home/tester");
+        let (rank_mailbox, rank_notify, active_rank_workers, peak_rank_workers) =
+            FilesProvider::rank_worker();
         FilesProvider {
             home,
-            name_index: Arc::new(Mutex::new(NameIndex {
-                entries,
-                ready: true,
-                generation: 1,
-            })),
+            name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
             tantivy: None,
-            narrow: Mutex::new(None),
             last_scanned: AtomicUsize::new(0),
+            ranked_queries: Mutex::new(RankedQueryCache::default()),
+            ranked_query_epoch: AtomicU64::new(0),
+            rank_mailbox,
+            rank_notify,
+            active_rank_workers,
+            peak_rank_workers,
         }
     }
 
@@ -1311,6 +1834,17 @@ mod tests {
         let handle: WorkspaceTreeHandle =
             std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()));
         ChromeState::new_with_handle(handle)
+    }
+
+    fn eventually_page(mut query: impl FnMut() -> SearchPage) -> SearchPage {
+        for _ in 0..2_000 {
+            let page = query();
+            if !page.results.is_empty() || page.exhausted || page.stale_cursor {
+                return page;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("retained ranked query did not finish within two seconds");
     }
 
     /// The best matches win regardless of where they sit in the index.
@@ -1363,9 +1897,8 @@ mod tests {
         assert_eq!(out[0].id, "/home/tester/src/todo.md");
     }
 
-    /// Typing a word must cost one sweep of the index, not one per
-    /// character — asserted on entries examined so it holds across build
-    /// profiles. (One sweep of 50 000 entries measures 6.1 ms in release.)
+    /// Compatibility queries use the same retained, bounded page path as
+    /// the palette; no character may revive the former corpus sweep.
     #[test]
     fn typing_a_word_narrows_instead_of_re_sweeping() {
         let paths: Vec<String> = (0..MAX_ENTRIES)
@@ -1385,36 +1918,13 @@ mod tests {
             scanned.push(p.last_scanned.load(Ordering::Relaxed));
         }
 
-        assert_eq!(
-            scanned[0], MAX_ENTRIES,
-            "the first character has nothing to narrow from and must sweep"
-        );
-        // Work per keystroke only ever falls; savings show up once selective.
-        for (i, w) in scanned.iter().enumerate().skip(1) {
+        for (i, w) in scanned.iter().enumerate() {
             assert!(
-                *w <= scanned[i - 1],
-                "character {i} examined more entries ({w}) than character \
-                 {} did ({}) — match sets only shrink, so narrowing must \
-                 never grow the work: {scanned:?}",
-                i - 1,
-                scanned[i - 1]
+                *w <= SearchBudget::PALETTE.max_work,
+                "character {i} examined {w} rows; compatibility must remain \
+                 within the page work ceiling: {scanned:?}"
             );
         }
-        let last = *scanned.last().unwrap();
-        assert!(
-            last * 10 < MAX_ENTRIES,
-            "the last character of a 9-letter word still examined {last} of \
-             {MAX_ENTRIES} entries: {scanned:?}"
-        );
-        let total: usize = scanned.iter().sum();
-        let without_narrowing = MAX_ENTRIES * word.len();
-        assert!(
-            total * 2 < without_narrowing,
-            "typing {} characters examined {total} entries; re-sweeping every \
-             keystroke would be {without_narrowing}, so the narrowing is not \
-             earning its keep: {scanned:?}",
-            word.len()
-        );
     }
 
     const WORDS: &[&str] = &[
@@ -1450,13 +1960,11 @@ mod tests {
         let kinds = [ResourceKind::File, ResourceKind::Folder];
 
         for prefix in ["t", "to", "tod", "todo"] {
-            p.narrow.lock().unwrap().take();
             let mut warm = Vec::new();
             for end in 1..=prefix.len() {
                 let sub = prefix.get(..end).unwrap_or_default();
                 warm = p.query(ctx_for(sub, &kinds, &st, &doc));
             }
-            p.narrow.lock().unwrap().take();
             let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));
 
             let ids = |v: &[SearchResult]| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
@@ -1483,13 +1991,16 @@ mod tests {
 
         {
             let mut guard = p.name_index.lock().unwrap();
-            guard.entries = vec![NameEntry {
-                path: PathBuf::from("/home/tester/alphabet.md"),
-                display: "~/alphabet.md".into(),
-                facts: NameFacts::new("~/alphabet.md", None),
-                is_dir: false,
-            }];
-            guard.generation = guard.generation.wrapping_add(1);
+            let generation = guard.generation.wrapping_add(1);
+            *guard = Arc::new(NameIndex::from_entries(
+                vec![NameEntry {
+                    path: PathBuf::from("/home/tester/alphabet.md"),
+                    display: "~/alphabet.md".into(),
+                    facts: NameFacts::new("~/alphabet.md", None),
+                    is_dir: false,
+                }],
+                generation,
+            ));
         }
         let out = p.query(ctx_for("alphab", &[ResourceKind::File], &st, &doc));
         assert_eq!(
@@ -1499,6 +2010,371 @@ mod tests {
              stale indices: {out:?}"
         );
         assert_eq!(out[0].title, "alphabet.md");
+    }
+
+    /// Paging an enormous retained corpus must not quietly turn the first
+    /// (or a late) palette page back into a whole-index scan.  This measures
+    /// inspected entries, not elapsed time, so it remains meaningful under
+    /// sanitizers and on slow CI workers.
+    #[test]
+    fn pages_a_hundred_thousand_retained_entries_with_fixed_work() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/archive/{i:06}-target-needle.md"))
+            .collect::<Vec<_>>();
+        // The exact filename is deliberately last: page quality must come
+        // from the retained exact-name index, not traversal position.
+        paths.push("~/archive/target-needle.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 17,
+            max_bytes: 8_192,
+            max_work: 113,
+        };
+        let first = eventually_page(|| {
+            p.query_page(
+                ctx_for("target-needle", &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            )
+        });
+        assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
+        assert!(first.results.len() <= 17);
+        assert_eq!(
+            first.results.first().map(|row| row.title.as_str()),
+            Some("target-needle.md"),
+            "an exact filename beyond 100k earlier candidates must lead"
+        );
+    }
+
+    #[test]
+    fn late_non_exact_pages_keep_the_same_work_ceiling() {
+        let paths = (0..100_001)
+            .map(|i| format!("~/archive/{i:06}-needle.md"))
+            .collect::<Vec<_>>();
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 17,
+            max_bytes: 8_192,
+            max_work: 113,
+        };
+        let first = eventually_page(|| {
+            p.query_page(
+                ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            )
+        });
+        let mut cursor = first.next_cursor;
+        for _ in 0..700 {
+            let page = p.query_page(
+                ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert!(!page.stale_cursor);
+            assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
+            cursor = page.next_cursor;
+        }
+        assert!(cursor.is_some(), "fixture must reach a genuine late page");
+    }
+
+    #[test]
+    fn late_leaf_prefix_outranks_a_hundred_thousand_path_substrings() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/report/archive/item-{i:06}.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/report-final.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("report", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 8,
+                    max_bytes: 8_192,
+                    max_work: 32,
+                },
+            )
+        });
+        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+        assert_eq!(page.results[0].title, "report-final.md");
+    }
+
+    #[test]
+    fn late_leaf_substring_uses_retained_trigram_postings() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/lunar/archive/item-{i:06}.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/monthlylunarlog.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("lunar", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 8,
+                    max_bytes: 8_192,
+                    max_work: 32,
+                },
+            )
+        });
+        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+        assert_eq!(page.results[0].title, "monthlylunarlog.md");
+    }
+
+    #[test]
+    fn late_fuzzy_hit_uses_a_retained_character_bucket() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/archive/item-{i:06}.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/monthlylunarlog.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("mnlr", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 8,
+                    max_bytes: 8_192,
+                    max_work: 32,
+                },
+            )
+        });
+        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+        assert_eq!(page.results[0].title, "monthlylunarlog.md");
+    }
+
+    #[test]
+    fn one_character_bucket_is_preranked_before_the_palette_opens() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/archive/another-item-{i:06}.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/zreport.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = p.query_page(
+            ctx_for("r", &[ResourceKind::File], &st, &doc),
+            None,
+            SearchBudget {
+                max_results: 8,
+                max_bytes: 8_192,
+                max_work: 32,
+            },
+        );
+        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 32);
+        assert_eq!(page.results[0].title, "zreport.md");
+    }
+
+    #[test]
+    fn rapid_broad_edits_keep_one_worker_and_never_publish_a_stale_plan() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/archive/{i:06}-needlestick.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/needlestick-current.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 8,
+            max_bytes: 8_192,
+            max_work: 32,
+        };
+
+        // Each call only takes retained posting handles. The rank worker may
+        // do candidate work off-thread, but no keypress copies/scans the
+        // 100k-entry corpus on the compositor path.
+        for needle in ["need", "needs", "needles", "needlestic", "needlestick"] {
+            let page = p.query_page(
+                ctx_for(needle, &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            );
+            assert!(page.results.is_empty());
+            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 0);
+            assert!(p.active_rank_workers.load(Ordering::Relaxed) <= 1);
+        }
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("needlestick", &[ResourceKind::File], &st, &doc),
+                None,
+                budget,
+            )
+        });
+        assert_eq!(page.results[0].title, "needlestick-current.md");
+        assert_eq!(p.peak_rank_workers.load(Ordering::Relaxed), 1);
+        let cache = p.ranked_queries.lock().unwrap();
+        assert!(cache.ready.iter().all(|plan| plan.needle == "needlestick"));
+        assert!(
+            cache
+                .ready
+                .iter()
+                .map(|plan| plan.positions.len())
+                .sum::<usize>()
+                <= RANKED_QUERY_CACHE_MAX_POSITIONS
+        );
+    }
+
+    #[test]
+    fn path_substring_uses_a_retained_path_trigram_without_a_corpus_copy() {
+        let mut paths = (0..100_000)
+            .map(|i| format!("~/very-long-project-{i:06}/unrelated.md"))
+            .collect::<Vec<_>>();
+        paths.push("~/later/ordinary.md".into());
+        let entries = paths.iter().map(|path| NameEntry {
+            path: PathBuf::from(path.replace('~', "/home/tester")),
+            display: path.clone(),
+            facts: NameFacts::new(path, None),
+            is_dir: false,
+        });
+        let p = provider_from_entries(entries.collect());
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("project-099", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 8,
+                    max_bytes: 8_192,
+                    max_work: 32,
+                },
+            )
+        });
+        assert!(
+            page.results
+                .iter()
+                .all(|row| row.id.contains("project-099"))
+        );
+        assert!(p.last_scanned.load(Ordering::Relaxed) <= 32);
+    }
+
+    #[test]
+    fn rejects_a_cursor_after_the_retained_index_changes() {
+        let p = provider_with_index(vec![("~/one/needle.md", false), ("~/two/needle.md", false)]);
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let page = eventually_page(|| {
+            p.query_page(
+                ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: 8_192,
+                    max_work: 1,
+                },
+            )
+        });
+        let cursor = page.next_cursor.expect("a continuation page");
+        {
+            let mut publication = p.name_index.lock().unwrap();
+            *publication = Arc::new(NameIndex::from_entries(
+                publication.entries.as_ref().clone(),
+                2,
+            ));
+        }
+        let stale = p.query_page(
+            ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
+            Some(&cursor),
+            SearchBudget::PALETTE,
+        );
+        assert!(stale.stale_cursor);
+        assert!(stale.results.is_empty());
+    }
+
+    #[test]
+    fn byte_limited_page_does_not_skip_the_first_unemitted_match() {
+        let huge = format!("~/{}-needle.md", "x".repeat(4_096));
+        let p = provider_with_index(vec![("~/a-needle.md", false), (&huge, false)]);
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let first = p.query_page(
+            ctx_for("needle", &[ResourceKind::File], &st, &doc),
+            None,
+            SearchBudget {
+                max_results: 10,
+                max_bytes: 512,
+                max_work: 10,
+            },
+        );
+        assert_eq!(first.results.len(), 1);
+        assert!(first.budget_exhausted);
+        let retry = p.query_page(
+            ctx_for("needle", &[ResourceKind::File], &st, &doc),
+            first.next_cursor.as_ref(),
+            SearchBudget {
+                max_results: 10,
+                max_bytes: 16_384,
+                max_work: 10,
+            },
+        );
+        assert_eq!(retry.results.len(), 1, "the oversized match was skipped");
+        assert_eq!(
+            retry.results[0].title.len(),
+            huge.rsplit('/').next().unwrap().len()
+        );
     }
 
     #[test]

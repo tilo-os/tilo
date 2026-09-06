@@ -216,6 +216,11 @@ pub enum WorkspaceControlInput {
 }
 
 pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
+/// Client endpoint for an application-owned paged action directory.  Apps
+/// implement the matching `action_directory::Server` and hand this capability
+/// to [`ChannelHandle::publish_action_directory`]; the broker owns neither the
+/// widget nor a complete copy of its rows.
+pub use collab_capnp::action_directory::Client as ActionDirectoryClient;
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
@@ -654,6 +659,96 @@ impl ChannelHandle {
         }
         req.send().promise.await?;
         Ok(())
+    }
+
+    /// Register an application-owned, paged action directory.
+    ///
+    /// This is additive to [`Self::publish_actions`]. It is intended for
+    /// large or late-bound resource trees: only bounded query pages and exact
+    /// resolutions cross the broker boundary, never widget ownership or a
+    /// full resource corpus. Re-registering atomically replaces the previous
+    /// directory for this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during registration.
+    pub async fn publish_action_directory(
+        &self,
+        app_id: &str,
+        directory: ActionDirectoryClient,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_action_directory_request();
+        {
+            let mut builder = req.get();
+            builder.set_app_id(app_id);
+            builder.set_directory(directory);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Query the authenticated session-wide resource/action directory.
+    ///
+    /// The broker enforces authority and clamps the supplied limits before
+    /// forwarding them to an application's directory capability. A returned
+    /// stale cursor must be discarded and the query restarted with an empty
+    /// cursor; it is never valid across revisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the connection drops or the broker returns
+    /// malformed directory data.
+    pub async fn query_action_directory(
+        &self,
+        query: &ActionDirectoryQuery,
+    ) -> Result<ActionDirectoryPage, NotAvailable> {
+        let mut request = self.inner.query_action_directory_request();
+        {
+            let mut wire = request.get().init_query();
+            wire.set_revision(&query.revision);
+            wire.set_cursor(&query.cursor);
+            wire.set_needle(&query.needle);
+            wire.set_parent_resource(&query.parent_resource);
+            wire.set_max_results(query.max_results);
+            wire.set_max_bytes(query.max_bytes);
+            wire.set_max_work(query.max_work);
+            wire.set_max_depth(query.max_depth);
+            wire.set_peer_id(query.peer_id);
+        }
+        let reply = request.send().promise.await?;
+        Ok(decode_action_directory_page(reply.get()?.get_page()?)?)
+    }
+
+    /// Re-materialize an exact action at the revision that yielded it.
+    ///
+    /// Call this immediately before beginning an invocation. `Found` is the
+    /// only outcome that may be used for execution; stale/disconnected rows
+    /// are deliberately not served from a broker cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the connection drops or the broker returns
+    /// a malformed exact-resolution response.
+    pub async fn resolve_published_action(
+        &self,
+        peer_id: u64,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<ActionDirectoryResolution, NotAvailable> {
+        let mut request = self.inner.resolve_published_action_request();
+        {
+            let mut wire = request.get();
+            wire.set_peer_id(peer_id);
+            wire.set_revision(revision);
+            wire.set_resource(resource);
+            wire.set_action(action);
+        }
+        let reply = request.send().promise.await?;
+        Ok(decode_action_directory_resolution(
+            reply.get()?.get_resolution()?,
+        )?)
     }
 
     /// Open a server-pulled stream of invocations the session has addressed
@@ -1329,6 +1424,175 @@ pub struct ExportedAction {
     /// JSON encoding of the complete safety/lifecycle/result contract.
     pub contract_json: String,
     pub input: ExportedInput,
+}
+
+/// Bounded, revision-aware request to an application-owned action directory.
+///
+/// `cursor` is opaque to callers. A source must reject it as stale when its
+/// revision no longer names the same ordering, rather than silently skipping
+/// or duplicating rows. Every numeric field is an upper bound, never a hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDirectoryQuery {
+    /// Broker-issued live connection id. Zero requests the broker's root
+    /// directory; non-zero addresses one application directory.
+    pub peer_id: u64,
+    pub revision: String,
+    pub cursor: Vec<u8>,
+    pub needle: String,
+    pub parent_resource: String,
+    pub max_results: u32,
+    pub max_bytes: u32,
+    pub max_work: u32,
+    pub max_depth: u16,
+}
+
+/// A hierarchy-preserving directory row. Resource rows have no action or
+/// descriptor; action rows contain the canonical descriptor for that exact
+/// resource/action address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDirectoryRow {
+    pub parent_resource: String,
+    pub resource: String,
+    /// Stable kind and user-facing label for resource/container rows. Action
+    /// rows repeat their descriptor values here so a shell can render either
+    /// shape without parsing raw resource identifiers.
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action: Option<String>,
+    pub descriptor: Option<ExportedAction>,
+    pub has_children: bool,
+    /// Permission-bearing action used only to disclose a container row.
+    pub visibility_action: Option<String>,
+    /// Contract paired with [`Self::visibility_action`].
+    pub visibility_contract_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDirectoryPage {
+    pub revision: String,
+    pub rows: Vec<ActionDirectoryRow>,
+    pub next_cursor: Vec<u8>,
+    pub exhausted: bool,
+    pub stale_cursor: bool,
+    pub budget_exhausted: bool,
+}
+
+/// Exact, current-authority response before an invocation is admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionDirectoryResolution {
+    Found(Box<ActionDirectoryRow>),
+    NotFound,
+    StaleRevision,
+    Unavailable,
+}
+
+fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
+    value.to_str().map(str::to_owned).map_err(|error| {
+        capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
+    })
+}
+
+fn decode_exported_action(
+    row: collab_capnp::exported_action::Reader<'_>,
+) -> Result<ExportedAction, capnp::Error> {
+    let description = capnp_text(row.get_description()?)?;
+    let input = match row.get_input()?.which()? {
+        collab_capnp::action_input::Which::None(()) => ExportedInput::None,
+        collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
+            prompt: capnp_text(text.get_prompt()?)?,
+            placeholder: capnp_text(text.get_placeholder()?)?,
+            wants_content: text.get_wants_content(),
+        },
+    };
+    Ok(ExportedAction {
+        resource: capnp_text(row.get_resource()?)?,
+        action: capnp_text(row.get_action()?)?,
+        resource_kind: capnp_text(row.get_resource_kind()?)?,
+        resource_label: capnp_text(row.get_resource_label()?)?,
+        action_label: capnp_text(row.get_action_label()?)?,
+        description: (!description.is_empty()).then_some(description),
+        operation_kind: capnp_text(row.get_operation_kind()?)?,
+        params_json: capnp_text(row.get_params_json()?)?,
+        contract_json: capnp_text(row.get_contract_json()?)?,
+        input,
+    })
+}
+
+fn decode_action_directory_row(
+    row: collab_capnp::action_directory_row::Reader<'_>,
+) -> Result<ActionDirectoryRow, capnp::Error> {
+    let action = capnp_text(row.get_action()?)?;
+    let visibility_action = capnp_text(row.get_visibility_action()?)?;
+    let descriptor = row
+        .has_descriptor()
+        .then(|| row.get_descriptor())
+        .transpose()?
+        .map(decode_exported_action)
+        .transpose()?;
+    Ok(ActionDirectoryRow {
+        parent_resource: capnp_text(row.get_parent_resource()?)?,
+        resource: capnp_text(row.get_resource()?)?,
+        resource_kind: capnp_text(row.get_resource_kind()?)?,
+        resource_label: capnp_text(row.get_resource_label()?)?,
+        action: (!action.is_empty()).then_some(action),
+        descriptor,
+        has_children: row.get_has_children(),
+        visibility_action: (!visibility_action.is_empty()).then_some(visibility_action),
+        visibility_contract_json: capnp_text(row.get_visibility_contract_json()?)?,
+    })
+}
+
+/// Decode a broker-validated directory page for an in-process shell client.
+/// Public so the shell can use the same typed bridge without reserialising a
+/// Cap'n Proto page into an eager JSON catalogue.
+/// Decode one bounded action-directory page from its Cap'n Proto wire form.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a field is absent, malformed, or cannot
+/// be decoded into the typed resource/action representation.
+pub fn decode_action_directory_page(
+    page: collab_capnp::action_directory_page::Reader<'_>,
+) -> Result<ActionDirectoryPage, capnp::Error> {
+    let rows = page
+        .get_rows()?
+        .iter()
+        .map(decode_action_directory_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ActionDirectoryPage {
+        revision: capnp_text(page.get_revision()?)?,
+        rows,
+        next_cursor: page.get_next_cursor()?.to_vec(),
+        exhausted: page.get_exhausted(),
+        stale_cursor: page.get_stale_cursor(),
+        budget_exhausted: page.get_budget_exhausted(),
+    })
+}
+
+/// Decode a broker-validated exact resolution for an in-process shell client.
+/// Decode an exact action-directory resolution from its Cap'n Proto wire form.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union or a contained action row is
+/// malformed.
+pub fn decode_action_directory_resolution(
+    resolution: collab_capnp::action_directory_resolution::Reader<'_>,
+) -> Result<ActionDirectoryResolution, capnp::Error> {
+    match resolution.which()? {
+        collab_capnp::action_directory_resolution::Which::Found(row) => Ok(
+            ActionDirectoryResolution::Found(Box::new(decode_action_directory_row(row?)?)),
+        ),
+        collab_capnp::action_directory_resolution::Which::NotFound(()) => {
+            Ok(ActionDirectoryResolution::NotFound)
+        }
+        collab_capnp::action_directory_resolution::Which::StaleRevision(()) => {
+            Ok(ActionDirectoryResolution::StaleRevision)
+        }
+        collab_capnp::action_directory_resolution::Which::Unavailable(()) => {
+            Ok(ActionDirectoryResolution::Unavailable)
+        }
+    }
 }
 
 /// One invocation off an [`InvocationStream`].

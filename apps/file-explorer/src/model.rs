@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
 /// The qOS collaborative FUSE mount. Per `fs.service` the daemon mounts
@@ -67,8 +68,14 @@ pub const RECORD_ID_XATTR: &str = "user.qos.record-id";
 pub const METADATA_XATTR: &str = "user.qos.metadata";
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
 pub const RECORD_INDEX_XATTR: &str = "user.qos.record-index";
+pub const RECORD_INDEX_V2_XATTR: &str = "user.qos.record-index.v2";
+pub const RECORD_INDEX_V3_XATTR: &str = "user.qos.record-index.v3";
+pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id.";
 pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
+const RECORD_INDEX_V2_VERSION: u16 = 2;
+const RECORD_INDEX_PAGE_ENTRIES: usize = 128;
+const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
 pub const AVAILABILITY_XATTR: &str = "user.qos.availability";
 pub const AVAILABILITY_CONTROL_XATTR: &str = "user.qos.availability-control";
 pub const PIN_XATTR: &str = "user.qos.pin";
@@ -430,6 +437,43 @@ pub struct WorkspaceRecordIndex {
     pub truncated: bool,
 }
 
+/// One bounded unit of work from a mounted collaborative record catalogue.
+/// `reset` means the authority generation changed while this pager was alive;
+/// consumers must discard previously indexed rows before accepting `records`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRecordIndexPage {
+    pub records: Vec<WorkspaceRecord>,
+    pub reset: bool,
+    pub complete: bool,
+    pub truncated: bool,
+}
+
+/// Retained continuation state for the mount's record-index protocol. A call
+/// to [`Self::next_page`] reads at most one v2 page (or the bounded v1
+/// compatibility projection), so opening or typing in global search never
+/// synchronously materialises the complete workspace authority.
+#[derive(Debug)]
+pub struct WorkspaceRecordIndexPager {
+    source_roots: Vec<PathBuf>,
+    roots: Vec<PathBuf>,
+    root_index: usize,
+    cursor: Option<RecordIndexCursor>,
+    opaque_cursor: Option<(String, String, Option<collab_types::FileRecordId>)>,
+    discovered: bool,
+    reset_pending: bool,
+    observed_generation: Option<String>,
+    root_generations: std::collections::HashMap<PathBuf, String>,
+    generation_root_cursor: usize,
+    discovery_sources: std::collections::VecDeque<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct RecordIndexCursor {
+    revision: String,
+    offset: usize,
+    last_record_id: Option<collab_types::FileRecordId>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRecord {
     pub record_id: uuid::Uuid,
@@ -454,6 +498,51 @@ struct RecordIndexEntry {
     is_dir: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIndexManifestV2 {
+    schema_version: u16,
+    revision: String,
+    records: usize,
+    page_entries: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIndexPageV2 {
+    schema_version: u16,
+    revision: String,
+    offset: usize,
+    next_offset: Option<usize>,
+    records: Vec<RecordIndexEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIndexManifestV3 {
+    schema_version: u16,
+    revision: String,
+    initial_cursor: String,
+    page_entries: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIndexPageV3 {
+    schema_version: u16,
+    revision: String,
+    next_cursor: Option<String>,
+    records: Vec<RecordIndexEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIndexExactV2 {
+    schema_version: u16,
+    revision: String,
+    record: RecordIndexEntry,
+}
+
 fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
     use std::path::Component;
     let relative = projected.strip_prefix('/')?;
@@ -470,6 +559,174 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
 fn read_record_index_projection(root: &Path) -> Option<RecordIndexProjection> {
     let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;
     parse_record_index_projection(root, &bytes)
+}
+
+fn valid_record_index_revision(revision: &str) -> bool {
+    revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
+    let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;
+    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+        return None;
+    }
+    let manifest: RecordIndexManifestV2 = serde_json::from_slice(&bytes).ok()?;
+    if manifest.schema_version != RECORD_INDEX_V2_VERSION
+        || !valid_record_index_revision(&manifest.revision)
+        || manifest.page_entries != RECORD_INDEX_PAGE_ENTRIES
+    {
+        return None;
+    }
+    Some(manifest)
+}
+
+fn read_record_index_page_v2(
+    root: &Path,
+    manifest: &RecordIndexManifestV2,
+    offset: usize,
+) -> Option<RecordIndexPageV2> {
+    let name = format!("{RECORD_INDEX_V2_XATTR}.{}.{}", manifest.revision, offset);
+    let bytes = xattr::get(root, &name).ok()??;
+    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+        return None;
+    }
+    let page: RecordIndexPageV2 = serde_json::from_slice(&bytes).ok()?;
+    if page.schema_version != RECORD_INDEX_V2_VERSION
+        || page.revision != manifest.revision
+        || page.offset != offset
+        || page.records.len() > manifest.page_entries
+        || page
+            .records
+            .windows(2)
+            .any(|pair| pair[0].record_id >= pair[1].record_id)
+    {
+        return None;
+    }
+    Some(page)
+}
+
+fn read_record_index_manifest_v3(root: &Path) -> Option<RecordIndexManifestV3> {
+    let bytes = xattr::get(root, RECORD_INDEX_V3_XATTR).ok()??;
+    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+        return None;
+    }
+    let value: RecordIndexManifestV3 = serde_json::from_slice(&bytes).ok()?;
+    (value.schema_version == 3
+        && valid_record_index_revision(&value.revision)
+        && uuid::Uuid::parse_str(&value.initial_cursor).is_ok()
+        && value.page_entries == RECORD_INDEX_PAGE_ENTRIES)
+        .then_some(value)
+}
+
+fn read_record_index_page_v3(
+    root: &Path,
+    manifest: &RecordIndexManifestV3,
+    cursor: &str,
+) -> Option<RecordIndexPageV3> {
+    let name = format!("{RECORD_INDEX_V3_XATTR}.{}.{}", manifest.revision, cursor);
+    let bytes = xattr::get(root, name).ok()??;
+    if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+        return None;
+    }
+    let value: RecordIndexPageV3 = serde_json::from_slice(&bytes).ok()?;
+    (value.schema_version == 3
+        && value.revision == manifest.revision
+        && value.records.len() <= manifest.page_entries
+        && value
+            .next_cursor
+            .as_ref()
+            .is_none_or(|value| uuid::Uuid::parse_str(value).is_ok())
+        && value
+            .records
+            .windows(2)
+            .all(|pair| pair[0].record_id < pair[1].record_id))
+    .then_some(value)
+}
+
+/// Resolve one known stable record through the mount authority. This is a
+/// single bounded xattr request, including for a record beyond page 100,000.
+pub fn resolve_workspace_record(
+    roots: &[PathBuf],
+    record_id: uuid::Uuid,
+) -> Option<WorkspaceRecord> {
+    for root in roots {
+        let name = format!("{RECORD_INDEX_BY_ID_XATTR_PREFIX}{record_id}");
+        let Some(bytes) = xattr::get(root, name).ok().flatten() else {
+            continue;
+        };
+        if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
+            continue;
+        }
+        let Ok(projection) = serde_json::from_slice::<RecordIndexExactV2>(&bytes) else {
+            continue;
+        };
+        if projection.schema_version != RECORD_INDEX_V2_VERSION
+            || !valid_record_index_revision(&projection.revision)
+            || projection.record.record_id.0 != record_id
+        {
+            continue;
+        }
+        let (mut records, malformed) = project_record_entries(root, vec![projection.record]);
+        if !malformed {
+            if let Some(record) = records.pop() {
+                return Some(record);
+            }
+        }
+    }
+    None
+}
+
+fn has_record_index(root: &Path) -> bool {
+    if read_record_index_manifest_v3(root).is_some() {
+        return true;
+    }
+    match xattr::get(root, RECORD_INDEX_V2_XATTR).ok().flatten() {
+        Some(bytes) if bytes.len() <= MAX_RECORD_INDEX_PAGE_BYTES => {
+            read_record_index_manifest_v2(root).is_some()
+        }
+        Some(_) => false,
+        None => read_record_index_projection(root).is_some(),
+    }
+}
+
+fn root_generation(root: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut hasher = Sha256::new();
+    hasher.update(b"qos.files.record-index-root-generation.v2\\0");
+    let root_bytes = root.as_os_str().as_bytes();
+    hasher.update((root_bytes.len() as u64).to_be_bytes());
+    hasher.update(root_bytes);
+    // ACL mounts intentionally expose a stable opaque manifest. Do not hash
+    // directory mtime there: it would turn hidden record edits into a visible
+    // global-search reset signal.
+    if let Some(bytes) = xattr::get(root, RECORD_INDEX_V3_XATTR).ok().flatten() {
+        hasher.update(b"opaque-v3\\0");
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(&bytes);
+        return format!("{:x}", hasher.finalize());
+    }
+    match std::fs::metadata(root) {
+        Ok(metadata) => {
+            hasher.update(b"metadata\\0");
+            hasher.update(metadata.len().to_be_bytes());
+            if let Ok(modified) = metadata.modified()
+                && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+            {
+                hasher.update(duration.as_secs().to_be_bytes());
+                hasher.update(duration.subsec_nanos().to_be_bytes());
+            }
+        }
+        Err(_) => hasher.update(b"missing\\0"),
+    }
+    for name in [RECORD_INDEX_V2_XATTR, RECORD_INDEX_XATTR] {
+        hasher.update((name.len() as u64).to_be_bytes());
+        hasher.update(name.as_bytes());
+        if let Some(bytes) = xattr::get(root, name).ok().flatten() {
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(&bytes);
+        }
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjection> {
@@ -492,64 +749,412 @@ fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordInde
     Some(projection)
 }
 
-/// Read bounded, ACL-filtered record catalogs from the workspace mounts.
-/// Recipient shares are individual mounts one level below `Shared`, so that
-/// ordinary parent is expanded by one bounded directory read only when it has
-/// no catalog of its own. No file contents are opened.
-pub fn read_workspace_record_index(roots: &[PathBuf]) -> WorkspaceRecordIndex {
-    let mut catalog_roots = Vec::new();
+fn project_record_entries(
+    root: &Path,
+    entries: Vec<RecordIndexEntry>,
+) -> (Vec<WorkspaceRecord>, bool) {
     let mut truncated = false;
-    for root in roots {
-        if read_record_index_projection(root).is_some() {
-            catalog_roots.push(root.clone());
-            continue;
-        }
-        let Ok(children) = std::fs::read_dir(root) else {
+    let mut records = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(path) = safe_projected_path(root, &entry.path) else {
+            truncated = true;
             continue;
         };
-        for child in children.flatten().take(MAX_RECORD_INDEX_ENTRIES + 1) {
-            if catalog_roots.len() >= MAX_RECORD_INDEX_ENTRIES {
-                truncated = true;
-                break;
-            }
-            if child.file_type().is_ok_and(|kind| kind.is_dir())
-                && read_record_index_projection(&child.path()).is_some()
-            {
-                catalog_roots.push(child.path());
-            }
-        }
-    }
-
-    let mut records = Vec::new();
-    for root in catalog_roots {
-        let Some(projection) = read_record_index_projection(&root) else {
-            continue;
-        };
-        truncated |= projection.truncated;
-        for entry in projection.records {
-            if records.len() >= MAX_RECORD_INDEX_ENTRIES {
-                truncated = true;
-                break;
-            }
-            let Some(path) = safe_projected_path(&root, &entry.path) else {
-                truncated = true;
-                continue;
-            };
-            let name = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |name| name.to_string_lossy().into(),
-            );
-            records.push(WorkspaceRecord {
-                record_id: entry.record_id.0,
-                name,
-                path,
-                is_dir: entry.is_dir,
-            });
-        }
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into(),
+        );
+        records.push(WorkspaceRecord {
+            record_id: entry.record_id.0,
+            name,
+            path,
+            is_dir: entry.is_dir,
+        });
     }
     records.sort_by_key(|record| record.record_id);
     records.dedup_by_key(|record| record.record_id);
-    WorkspaceRecordIndex { records, truncated }
+    (records, truncated)
+}
+
+impl WorkspaceRecordIndexPager {
+    pub fn new(roots: &[PathBuf]) -> Self {
+        Self {
+            source_roots: roots.to_vec(),
+            roots: Vec::new(),
+            root_index: 0,
+            cursor: None,
+            opaque_cursor: None,
+            discovered: false,
+            reset_pending: false,
+            observed_generation: None,
+            root_generations: std::collections::HashMap::new(),
+            generation_root_cursor: 0,
+            discovery_sources: roots.iter().cloned().collect(),
+            #[cfg(test)]
+            test_v2: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_generated_v2(root: PathBuf, records: usize) -> Self {
+        let revision = "a".repeat(64);
+        Self {
+            source_roots: vec![root.clone()],
+            roots: vec![root.clone()],
+            root_index: 0,
+            cursor: None,
+            opaque_cursor: None,
+            discovered: true,
+            reset_pending: false,
+            observed_generation: Some(revision.clone()),
+            root_generations: std::collections::HashMap::new(),
+            generation_root_cursor: 0,
+            discovery_sources: std::collections::VecDeque::new(),
+            test_v2: Some(TestV2Source {
+                root,
+                revision,
+                records,
+            }),
+        }
+    }
+
+    fn v2_manifest(&self, root: &Path) -> Option<RecordIndexManifestV2> {
+        #[cfg(test)]
+        if let Some(source) = &self.test_v2
+            && source.root == root
+        {
+            return Some(RecordIndexManifestV2 {
+                schema_version: RECORD_INDEX_V2_VERSION,
+                revision: source.revision.clone(),
+                records: source.records,
+                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+            });
+        }
+        read_record_index_manifest_v2(root)
+    }
+
+    fn v2_page(
+        &self,
+        root: &Path,
+        manifest: &RecordIndexManifestV2,
+        offset: usize,
+    ) -> Option<RecordIndexPageV2> {
+        #[cfg(test)]
+        if let Some(source) = &self.test_v2
+            && source.root == root
+            && source.revision == manifest.revision
+        {
+            let end = offset
+                .checked_add(RECORD_INDEX_PAGE_ENTRIES)?
+                .min(source.records);
+            let records = ((offset + 1)..=end)
+                .map(|ordinal| RecordIndexEntry {
+                    record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
+                    path: if ordinal == source.records {
+                        "/late-target.txt".into()
+                    } else {
+                        "/indexed.txt".into()
+                    },
+                    is_dir: false,
+                })
+                .collect();
+            return Some(RecordIndexPageV2 {
+                schema_version: RECORD_INDEX_V2_VERSION,
+                revision: source.revision.clone(),
+                offset,
+                next_offset: (end < source.records).then_some(end),
+                records,
+            });
+        }
+        read_record_index_page_v2(root, manifest, offset)
+    }
+
+    fn discover_step(&mut self) -> bool {
+        // Each configured workspace root is an authority mount. We do not
+        // infer child mounts by directory enumeration: doing so makes an exact
+        // record UUID impossible to reopen without a hidden tail scan. Shared
+        // mounts must therefore be listed directly in `QOS_WORKSPACE_ROOTS`.
+        while let Some(root) = self.discovery_sources.pop_front() {
+            if has_record_index(&root) {
+                self.roots.push(root);
+            }
+        }
+        self.discovered = true;
+        true
+    }
+
+    /// Whether idle work still has an authority continuation to consume.
+    pub fn has_more(&self) -> bool {
+        !self.discovered || self.root_index < self.roots.len()
+    }
+
+    /// Cheap, periodic manifest/root-set poll. It never reads record pages;
+    /// a changed or vanished authority withdraws the retained index before a
+    /// fresh bounded page is admitted on the next idle turn.
+    pub fn poll_generation(&mut self) -> bool {
+        const ROOT_WATCH_BUDGET: usize = 8;
+        let mut roots = self.source_roots.clone();
+        roots.extend(self.roots.iter().cloned());
+        roots.sort();
+        roots.dedup();
+        if roots.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        for _ in 0..ROOT_WATCH_BUDGET.min(roots.len()) {
+            let index = self.generation_root_cursor % roots.len();
+            self.generation_root_cursor = self.generation_root_cursor.wrapping_add(1);
+            let root = &roots[index];
+            let generation = root_generation(root);
+            let root_changed = self
+                .root_generations
+                .insert(root.clone(), generation.clone())
+                .is_some_and(|previous| previous != generation);
+            changed |= root_changed;
+        }
+        self.observed_generation = Some(String::from("watching"));
+        if changed {
+            self.roots.clear();
+            self.root_index = 0;
+            self.cursor = None;
+            self.opaque_cursor = None;
+            self.discovered = false;
+            self.discovery_sources = self.source_roots.iter().cloned().collect();
+            self.generation_root_cursor = 0;
+            self.reset_pending = true;
+        }
+        changed
+    }
+
+    /// Fetch one authority page. A changed manifest generation restarts from
+    /// its first page and marks `reset`, preventing mixed old/new paths.
+    pub fn next_page(&mut self) -> WorkspaceRecordIndexPage {
+        // Capture the current authority before admitting the first page. This
+        // prevents a mutation between startup and the first periodic poll from
+        // becoming a stale-row baseline.
+        if self.observed_generation.is_none() {
+            let _ = self.poll_generation();
+        }
+        let mut reset = std::mem::take(&mut self.reset_pending);
+        let mut truncated = false;
+        if !self.discovered && !self.discover_step() {
+            return WorkspaceRecordIndexPage {
+                records: Vec::new(),
+                reset,
+                complete: false,
+                truncated,
+            };
+        }
+        loop {
+            let Some(root) = self.roots.get(self.root_index).cloned() else {
+                return WorkspaceRecordIndexPage {
+                    records: Vec::new(),
+                    reset,
+                    complete: true,
+                    truncated,
+                };
+            };
+            if let Some(manifest) = read_record_index_manifest_v3(&root) {
+                let cursor = match &self.opaque_cursor {
+                    Some((revision, cursor, _)) if revision == &manifest.revision => cursor.clone(),
+                    Some(_) => {
+                        self.root_index = 0;
+                        self.cursor = None;
+                        self.opaque_cursor = None;
+                        reset = true;
+                        continue;
+                    }
+                    None => manifest.initial_cursor.clone(),
+                };
+                let Some(page) = read_record_index_page_v3(&root, &manifest, &cursor) else {
+                    self.root_index += 1;
+                    self.opaque_cursor = None;
+                    return WorkspaceRecordIndexPage {
+                        records: Vec::new(),
+                        reset,
+                        complete: false,
+                        truncated: true,
+                    };
+                };
+                let prior_record_id =
+                    self.opaque_cursor
+                        .as_ref()
+                        .and_then(|(revision, _, previous)| {
+                            (revision == &manifest.revision)
+                                .then(|| previous.clone())
+                                .flatten()
+                        });
+                if prior_record_id.is_some_and(|previous| {
+                    page.records
+                        .first()
+                        .is_some_and(|record| record.record_id <= previous)
+                }) {
+                    self.root_index += 1;
+                    self.opaque_cursor = None;
+                    return WorkspaceRecordIndexPage {
+                        records: Vec::new(),
+                        reset,
+                        complete: false,
+                        truncated: true,
+                    };
+                }
+                let last_record_id = page.records.last().map(|record| record.record_id.clone());
+                let (records, malformed) = project_record_entries(&root, page.records);
+                truncated |= malformed;
+                if let Some(next) = page.next_cursor {
+                    self.opaque_cursor = Some((manifest.revision, next, last_record_id));
+                } else {
+                    self.root_index += 1;
+                    self.opaque_cursor = None;
+                }
+                return WorkspaceRecordIndexPage {
+                    records,
+                    reset,
+                    complete: self.root_index == self.roots.len(),
+                    truncated,
+                };
+            }
+            let manifest = self.v2_manifest(&root);
+            let v2_present = manifest.is_some()
+                || xattr::get(&root, RECORD_INDEX_V2_XATTR)
+                    .ok()
+                    .flatten()
+                    .is_some();
+            match manifest {
+                Some(manifest) => {
+                    let (offset, prior_record_id) = match &self.cursor {
+                        Some(cursor) if cursor.revision == manifest.revision => {
+                            (cursor.offset, cursor.last_record_id.clone())
+                        }
+                        Some(_) => {
+                            // The mount invalidated the cursor. Do not keep old
+                            // rows under the new authority generation.
+                            self.root_index = 0;
+                            self.cursor = None;
+                            reset = true;
+                            continue;
+                        }
+                        None => {
+                            self.cursor = Some(RecordIndexCursor {
+                                revision: manifest.revision.clone(),
+                                offset: 0,
+                                last_record_id: None,
+                            });
+                            (0, None)
+                        }
+                    };
+                    if manifest.records == 0 {
+                        self.root_index += 1;
+                        self.cursor = None;
+                        continue;
+                    }
+                    let Some(page) = self.v2_page(&root, &manifest, offset) else {
+                        self.root_index += 1;
+                        self.cursor = None;
+                        return WorkspaceRecordIndexPage {
+                            records: Vec::new(),
+                            reset,
+                            complete: false,
+                            truncated: true,
+                        };
+                    };
+                    let next = page.next_offset;
+                    if prior_record_id.is_some_and(|prior| {
+                        page.records
+                            .first()
+                            .is_some_and(|record| record.record_id <= prior)
+                    }) {
+                        self.root_index += 1;
+                        self.cursor = None;
+                        return WorkspaceRecordIndexPage {
+                            records: Vec::new(),
+                            reset,
+                            complete: false,
+                            truncated: true,
+                        };
+                    }
+                    let last_record_id = page.records.last().map(|record| record.record_id.clone());
+                    // A page's continuation advances over the namespace-owned
+                    // source window, not merely returned rows: an ACL can
+                    // deny every row in a bounded window. Empty pages are
+                    // therefore valid and never trigger an unbounded hunt for
+                    // the next visible record.
+                    let terminal = next.is_none();
+                    let valid_next = terminal && offset < manifest.records
+                        || matches!(next, Some(next) if next > offset && next <= manifest.records && next % manifest.page_entries == 0);
+                    if !valid_next {
+                        self.root_index += 1;
+                        self.cursor = None;
+                        return WorkspaceRecordIndexPage {
+                            records: Vec::new(),
+                            reset,
+                            complete: false,
+                            truncated: true,
+                        };
+                    }
+                    let (records, malformed) = project_record_entries(&root, page.records);
+                    truncated |= malformed;
+                    if let Some(next) = next {
+                        self.cursor = Some(RecordIndexCursor {
+                            revision: manifest.revision,
+                            offset: next,
+                            last_record_id,
+                        });
+                    } else {
+                        self.root_index += 1;
+                        self.cursor = None;
+                    }
+                    return WorkspaceRecordIndexPage {
+                        records,
+                        reset,
+                        complete: self.root_index == self.roots.len(),
+                        truncated,
+                    };
+                }
+                None if v2_present => {
+                    self.root_index += 1;
+                    self.cursor = None;
+                    return WorkspaceRecordIndexPage {
+                        records: Vec::new(),
+                        reset,
+                        complete: false,
+                        truncated: true,
+                    };
+                }
+                None => {
+                    let Some(projection) = read_record_index_projection(&root) else {
+                        self.root_index += 1;
+                        return WorkspaceRecordIndexPage {
+                            records: Vec::new(),
+                            reset,
+                            complete: false,
+                            truncated: true,
+                        };
+                    };
+                    self.root_index += 1;
+                    let (records, malformed) = project_record_entries(&root, projection.records);
+                    return WorkspaceRecordIndexPage {
+                        records,
+                        reset,
+                        complete: self.root_index == self.roots.len(),
+                        truncated: truncated || projection.truncated || malformed,
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// Compatibility helper for callers that only need the first bounded unit.
+/// New retained search code owns a [`WorkspaceRecordIndexPager`] and keeps
+/// advancing it as the user refreshes or opens global search.
+pub fn read_workspace_record_index(roots: &[PathBuf]) -> WorkspaceRecordIndex {
+    let mut pager = WorkspaceRecordIndexPager::new(roots);
+    let page = pager.next_page();
+    WorkspaceRecordIndex {
+        records: page.records,
+        truncated: page.truncated || !page.complete,
+    }
 }
 
 /// Read a host-provided thumbnail (raw PNG bytes) for `path` from the
@@ -568,16 +1173,14 @@ pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
 /// The qOS workspace roots the FUSE driver mounts (first-class sidebar
 /// locations, and the dirs whose entries carry sync state). Normally just
 /// [`WORKSPACE_ROOT`]; `QOS_WORKSPACE_ROOTS` (colon-separated) overrides it for
-/// tests and alternate mounts. Only roots that currently exist are returned.
+/// tests and alternate mounts. This navigable list includes the user's Shared
+/// place even when received shares are separate authority mounts.
 pub fn workspace_roots() -> Vec<PathBuf> {
     if let Ok(v) = std::env::var("QOS_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&v);
     }
     let p = PathBuf::from(WORKSPACE_ROOT);
     let mut roots = if p.exists() { vec![p] } else { Vec::new() };
-    // The per-user recipient service deliberately mounts personal shares
-    // outside the ordinary workspace replication graph. Surface that root as
-    // another collaborative System place once it exists.
     if let Some(received) = user_home().map(|home| home.join("Shared"))
         && received.exists()
         && !roots.contains(&received)
@@ -585,6 +1188,17 @@ pub fn workspace_roots() -> Vec<PathBuf> {
         roots.push(received);
     }
     roots
+}
+
+/// Direct mounts permitted to publish record-index resources and satisfy exact
+/// record opens. Received-share discovery requires a dedicated subscription
+/// index and is intentionally not inferred by walking `~/Shared`.
+pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
+    if let Ok(value) = std::env::var("QOS_WORKSPACE_ROOTS") {
+        return parse_workspace_roots(&value);
+    }
+    let root = PathBuf::from(WORKSPACE_ROOT);
+    root.exists().then_some(root).into_iter().collect()
 }
 
 /// Parse a `QOS_WORKSPACE_ROOTS` value (colon-separated) into the roots that
@@ -1278,6 +1892,171 @@ mod sync_state_tests {
         assert_eq!(index.records.len(), 1);
         assert_eq!(index.records[0].record_id, record_id);
         assert_eq!(index.records[0].path, root.path().join("deep/report.pdf"));
+    }
+
+    #[test]
+    fn revisioned_workspace_pager_is_one_page_bounded_and_indexes_later_rows_incrementally() {
+        use ui::search::SearchProvider as _;
+
+        let root = tempfile::tempdir().unwrap();
+        // An injected FUSE page source models all 100,001 rows without trying
+        // to store hundreds of pages as host xattrs (which many filesystems
+        // reject long before the protocol's per-page limit).
+        let mut pager =
+            WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), 100_001);
+        let first = pager.next_page();
+        assert_eq!(
+            first.records.len(),
+            RECORD_INDEX_PAGE_ENTRIES,
+            "one step cannot materialise 100k rows"
+        );
+        assert!(!first.complete);
+        let provider =
+            crate::search_provider::CollaborativeRecordSearchProvider::new(&first.records);
+        assert!(provider.search("late-target").is_empty());
+
+        while pager.has_more() {
+            let page = pager.next_page();
+            assert!(
+                page.records.len() <= RECORD_INDEX_PAGE_ENTRIES,
+                "an idle tick must not monopolise the frame"
+            );
+            provider.append_page(0, &page.records);
+        }
+        assert!(
+            !pager.has_more(),
+            "idle work stops once the current authority is indexed"
+        );
+        assert!(
+            provider
+                .search("late-target")
+                .iter()
+                .any(|hit| hit.title == "late-target.txt"),
+            "later pages enter the retained search catalogue without a full refresh"
+        );
+    }
+
+    #[test]
+    fn completed_pager_withdraws_rows_after_mount_disappears() {
+        let root = tempfile::tempdir().unwrap();
+        let projection = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": uuid::Uuid::from_u128(9),
+                "path": "/visible.txt",
+                "is_dir": false,
+            }],
+        });
+        xattr::set(
+            root.path(),
+            RECORD_INDEX_XATTR,
+            &serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
+        assert_eq!(pager.next_page().records.len(), 1);
+        xattr::remove(root.path(), RECORD_INDEX_XATTR).unwrap();
+        assert!(
+            pager.poll_generation(),
+            "lost mount authority withdraws stale rows"
+        );
+        let withdrawn = pager.next_page();
+        assert!(withdrawn.reset);
+        assert!(withdrawn.records.is_empty());
+        assert!(withdrawn.complete);
+    }
+
+    #[test]
+    fn pager_does_not_advertise_nested_share_as_an_exact_record_authority() {
+        let parent = tempfile::tempdir().unwrap();
+        let share = parent.path().join("received-share");
+        std::fs::create_dir(&share).unwrap();
+        let projection = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": uuid::Uuid::from_u128(1),
+                "path": "/not-an-authority-record",
+                "is_dir": false,
+            }],
+        });
+        xattr::set(
+            &share,
+            RECORD_INDEX_XATTR,
+            &serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        let mut pager = WorkspaceRecordIndexPager::new(&[parent.path().to_path_buf()]);
+        let page = pager.next_page();
+        assert!(page.records.is_empty());
+        assert!(page.complete);
+        assert!(
+            resolve_workspace_record(&[parent.path().to_path_buf()], uuid::Uuid::from_u128(1))
+                .is_none(),
+            "walking child mounts would make search publish a record that exact opens cannot route"
+        );
+    }
+
+    #[test]
+    fn pager_refuses_duplicate_identity_across_revisioned_page_boundary() {
+        let root = tempfile::tempdir().unwrap();
+        let revision = "b".repeat(64);
+        xattr::set(
+            root.path(),
+            RECORD_INDEX_V2_XATTR,
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": RECORD_INDEX_V2_VERSION,
+                "revision": revision,
+                "records": 129,
+                "page_entries": RECORD_INDEX_PAGE_ENTRIES,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let first = (1..=RECORD_INDEX_PAGE_ENTRIES)
+            .map(|id| {
+                serde_json::json!({
+                    "record_id": uuid::Uuid::from_u128(id as u128),
+                    "path": format!("/row-{id}"),
+                    "is_dir": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        for (offset, next, records) in [
+            (0, Some(RECORD_INDEX_PAGE_ENTRIES), first),
+            (
+                RECORD_INDEX_PAGE_ENTRIES,
+                None,
+                vec![serde_json::json!({
+                    "record_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
+                    "path": "/aliased",
+                    "is_dir": false,
+                })],
+            ),
+        ] {
+            xattr::set(
+                root.path(),
+                format!("{RECORD_INDEX_V2_XATTR}.{revision}.{offset}"),
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": RECORD_INDEX_V2_VERSION,
+                    "revision": revision,
+                    "offset": offset,
+                    "next_offset": next,
+                    "records": records,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
+        assert_eq!(pager.next_page().records.len(), RECORD_INDEX_PAGE_ENTRIES);
+        let rejected = pager.next_page();
+        assert!(rejected.records.is_empty());
+        assert!(
+            rejected.truncated,
+            "an id cannot acquire a second path in one revision"
+        );
     }
 
     #[test]
