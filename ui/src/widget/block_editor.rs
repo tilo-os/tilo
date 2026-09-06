@@ -10,8 +10,10 @@ use std::fmt::Write as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
+use serde::{Deserialize, Serialize};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{KeyEvent, Modifiers, WindowEvent};
@@ -98,6 +100,9 @@ impl BlockKind {
 }
 
 pub struct Block {
+    /// Durable identity.  List indexes are deliberately not used by action
+    /// payloads: concurrent insertions make them an unstable address.
+    pub id: String,
     pub kind: BlockKind,
     pub line: RichTextLine,
     /// Set by Shift+Enter: renders with no inter-block top spacing so
@@ -106,51 +111,56 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn paragraph(text: &str) -> Self {
+    fn with_id(kind: BlockKind, line: RichTextLine) -> Self {
         Self {
-            kind: BlockKind::Paragraph,
-            line: RichTextLine::new()
-                .with_text(text)
-                .with_size(BlockKind::Paragraph.font_size()),
+            id: Uuid::new_v4().to_string(),
+            kind,
+            line,
             soft_break: false,
         }
     }
 
+    pub fn paragraph(text: &str) -> Self {
+        Self::with_id(
+            BlockKind::Paragraph,
+            RichTextLine::new()
+                .with_text(text)
+                .with_size(BlockKind::Paragraph.font_size()),
+        )
+    }
+
     pub fn heading(level: u8, text: &str) -> Self {
         let kind = BlockKind::Heading(level.clamp(1, 3));
-        Self {
-            kind: kind.clone(),
-            line: RichTextLine::new()
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
                 .with_text(text)
                 .with_size(kind.font_size()),
-            soft_break: false,
-        }
+        )
     }
 
     pub fn bullet(indent: u8, text: &str) -> Self {
         let kind = BlockKind::Bullet {
             indent: indent.min(MAX_LIST_INDENT),
         };
-        Self {
-            kind: kind.clone(),
-            line: RichTextLine::new()
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
                 .with_text(text)
                 .with_size(kind.font_size()),
-            soft_break: false,
-        }
+        )
     }
 
     pub fn numbered(indent: u8, text: &str) -> Self {
         let kind = BlockKind::Numbered {
             indent: indent.min(MAX_LIST_INDENT),
         };
-        Self {
-            kind: kind.clone(),
-            line: RichTextLine::new()
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
                 .with_text(text)
                 .with_size(kind.font_size()),
-            soft_break: false,
-        }
+        )
     }
 
     pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
@@ -158,39 +168,77 @@ impl Block {
             indent: indent.min(MAX_LIST_INDENT),
             done,
         };
-        Self {
-            kind: kind.clone(),
-            line: RichTextLine::new()
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
                 .with_text(text)
                 .with_size(kind.font_size()),
-            soft_break: false,
-        }
+        )
     }
 
     pub fn code_block(lang: Option<String>, text: &str) -> Self {
         let kind = BlockKind::CodeBlock { lang };
-        Self {
-            kind: kind.clone(),
-            line: RichTextLine::new()
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
                 .with_text(text)
                 .with_size(kind.font_size())
                 .with_mono(),
-            soft_break: false,
-        }
+        )
     }
 
     /// Empty inner line keeps a uniform shape; never focused or edited.
     pub fn divider() -> Self {
-        Self {
-            kind: BlockKind::Divider,
-            line: RichTextLine::new().with_size(BlockKind::Divider.font_size()),
-            soft_break: false,
-        }
+        Self::with_id(
+            BlockKind::Divider,
+            RichTextLine::new().with_size(BlockKind::Divider.font_size()),
+        )
     }
 
     pub fn text(&self) -> &str {
         self.line.value()
     }
+}
+
+/// A semantic, UUID-addressed mutation emitted by the optional action bridge.
+/// It intentionally contains no Automerge object ids, making it safe to replay
+/// on another replica or use from apps with a different document layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockEditOp {
+    TextSplice {
+        block_id: String,
+        start: usize,
+        end: usize,
+        text: String,
+    },
+    Insert {
+        block_id: String,
+        after: Option<String>,
+        kind: String,
+        text: String,
+    },
+    Delete {
+        block_id: String,
+    },
+    Move {
+        block_id: String,
+        after: Option<String>,
+    },
+    SetKind {
+        block_id: String,
+        kind: String,
+    },
+    SetChecklist {
+        block_id: String,
+        done: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockSnapshot {
+    id: String,
+    kind: String,
+    text: String,
 }
 
 #[allow(
@@ -259,6 +307,8 @@ pub struct BlockEditor {
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
     preferred_formula_mode: crate::math::FormulaMode,
+    action_interception: bool,
+    interception_before: Option<Vec<BlockSnapshot>>,
 }
 
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
@@ -299,6 +349,8 @@ impl BlockEditor {
             visual_formulas: HashMap::new(),
             visual_formula_focus: None,
             preferred_formula_mode: crate::math::FormulaMode::Visual,
+            action_interception: false,
+            interception_before: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -318,38 +370,48 @@ impl BlockEditor {
         &self.empty_hint
     }
 
+    /// Opt into action-owned editing. The host snapshots immediately before an
+    /// input event and dispatches the resulting semantic operations afterwards.
+    /// Existing consumers remain on the direct CRDT path unless they opt in.
+    pub fn set_action_interception(&mut self, enabled: bool) {
+        self.action_interception = enabled;
+        for block in &mut self.blocks {
+            block.line.set_direct_crdt_writes(!enabled);
+        }
+        if !enabled {
+            self.interception_before = None;
+        }
+    }
+
+    pub fn begin_action_intercept(&mut self) {
+        if self.action_interception {
+            self.interception_before = Some(self.block_snapshot());
+        }
+    }
+
+    pub fn take_intercepted_ops(&mut self) -> Vec<BlockEditOp> {
+        let Some(before) = self.interception_before.take() else {
+            return Vec::new();
+        };
+        semantic_block_ops(&before, &self.block_snapshot())
+    }
+
+    fn block_snapshot(&self) -> Vec<BlockSnapshot> {
+        self.blocks
+            .iter()
+            .map(|block| BlockSnapshot {
+                id: block.id.clone(),
+                kind: kind_to_str(&block.kind),
+                text: block.text().to_string(),
+            })
+            .collect()
+    }
+
     /// Minimal markdown parser; empty input still produces one empty
     /// paragraph.
     pub fn from_markdown(md: &str) -> Self {
-        let mut editor = Self {
-            blocks: Vec::new(),
-            focused: None,
-            is_focused: false,
-            rect: Rect::ZERO,
-            child_nodes: Vec::new(),
-            dirty: true,
-            structure_dirty: true,
-            edit_pending: false,
-            commit_pending: false,
-            last_mouse_pos: Point::ZERO,
-            cross_block_drag_start: None,
-            cross_block_drag_touched: None,
-            document_selection: None,
-            slash_menu: SlashMenu::new(),
-            slash_open_at: None,
-            link_popover: LinkPopover::new(),
-            link_open_at: None,
-            blocks_list: None,
-            doc_structure_dirty: false,
-            local_author: None,
-            kbd_sel_anchor: None,
-            empty_hint: DEFAULT_EMPTY_HINT.to_string(),
-            formula_preview_rects: Vec::new(),
-            formula_chrome: Vec::new(),
-            visual_formulas: HashMap::new(),
-            visual_formula_focus: None,
-            preferred_formula_mode: crate::math::FormulaMode::Visual,
-        };
+        let mut editor = Self::new();
+        editor.blocks.clear();
         let mut lines = md.split('\n');
         while let Some(line) = lines.next() {
             if line.is_empty() {
@@ -621,7 +683,8 @@ impl BlockEditor {
                     // `None` here means the doc's `list` itself was
                     // concurrently removed; leave the block unbound rather
                     // than desync `doc_idx` from a write that never landed.
-                    if let Some(t) = insert_doc_block(state, list, doc_idx, &kind_str, &local_text)
+                    if let Some(t) =
+                        insert_doc_block(state, list, doc_idx, &block.id, &kind_str, &local_text)
                     {
                         block.line.bind_text(t);
                         doc_idx = doc_idx.saturating_add(1);
@@ -630,7 +693,9 @@ impl BlockEditor {
             } else {
                 // New block (e.g. the suffix of a split): insert a
                 // fresh doc block and bind it.
-                if let Some(t) = insert_doc_block(state, list, doc_idx, &kind_str, &local_text) {
+                if let Some(t) =
+                    insert_doc_block(state, list, doc_idx, &block.id, &kind_str, &local_text)
+                {
                     block.line.bind_text(t);
                     doc_idx = doc_idx.saturating_add(1);
                 }
@@ -655,6 +720,7 @@ impl BlockEditor {
         for i in 0..doc_len {
             let kind = kind_from_str(&read_block_kind(state, list, i));
             let mut b = block_for_kind(&kind);
+            b.id = read_or_migrate_block_id(state, list, i, &kind, !self.action_interception);
             b.line.set_local_author(self.local_author.clone());
             if let Some(t) = doc_text_obj(state, list, i) {
                 b.line.bind_text(t);
@@ -1235,6 +1301,138 @@ fn clamp_char_boundary(text: &str, byte: usize) -> usize {
         b = b.saturating_sub(1);
     }
     b
+}
+
+fn semantic_block_ops(before: &[BlockSnapshot], after: &[BlockSnapshot]) -> Vec<BlockEditOp> {
+    let mut ops = Vec::new();
+    let old = before
+        .iter()
+        .map(|b| (b.id.as_str(), b))
+        .collect::<HashMap<_, _>>();
+    let new = after
+        .iter()
+        .map(|b| (b.id.as_str(), b))
+        .collect::<HashMap<_, _>>();
+
+    for block in before
+        .iter()
+        .filter(|block| !new.contains_key(block.id.as_str()))
+    {
+        ops.push(BlockEditOp::Delete {
+            block_id: block.id.clone(),
+        });
+    }
+    for (index, block) in after.iter().enumerate() {
+        let after_id = index
+            .checked_sub(1)
+            .and_then(|i| after.get(i))
+            .map(|b| b.id.clone());
+        let Some(previous) = old.get(block.id.as_str()) else {
+            ops.push(BlockEditOp::Insert {
+                block_id: block.id.clone(),
+                after: after_id,
+                kind: block.kind.clone(),
+                text: block.text.clone(),
+            });
+            continue;
+        };
+        if previous.kind != block.kind {
+            match (kind_from_str(&previous.kind), kind_from_str(&block.kind)) {
+                (
+                    BlockKind::Checklist {
+                        indent: old_indent, ..
+                    },
+                    BlockKind::Checklist {
+                        indent: new_indent,
+                        done,
+                    },
+                ) if old_indent == new_indent => ops.push(BlockEditOp::SetChecklist {
+                    block_id: block.id.clone(),
+                    done,
+                }),
+                _ => ops.push(BlockEditOp::SetKind {
+                    block_id: block.id.clone(),
+                    kind: block.kind.clone(),
+                }),
+            }
+        }
+        if previous.text != block.text {
+            let (start, end, text) = semantic_text_splice(&previous.text, &block.text);
+            ops.push(BlockEditOp::TextSplice {
+                block_id: block.id.clone(),
+                start,
+                end,
+                text,
+            });
+        }
+    }
+    // Ordering is expressed with predecessor UUIDs, so it remains meaningful
+    // when another peer inserts adjacent blocks concurrently.
+    let mut order = before
+        .iter()
+        .filter(|b| new.contains_key(b.id.as_str()))
+        .map(|b| b.id.clone())
+        .collect::<Vec<_>>();
+    for (index, block) in after.iter().enumerate() {
+        if !old.contains_key(block.id.as_str()) {
+            continue;
+        }
+        let expected_after = index
+            .checked_sub(1)
+            .and_then(|i| after.get(i))
+            .map(|b| b.id.clone());
+        let current_after = order
+            .iter()
+            .position(|id| id == &block.id)
+            .and_then(|pos| pos.checked_sub(1).and_then(|p| order.get(p).cloned()));
+        if current_after != expected_after {
+            ops.push(BlockEditOp::Move {
+                block_id: block.id.clone(),
+                after: expected_after.clone(),
+            });
+            if let Some(pos) = order.iter().position(|id| id == &block.id) {
+                order.remove(pos);
+            }
+            let destination = expected_after
+                .as_ref()
+                .and_then(|id| order.iter().position(|current| current == id))
+                .map_or(0, |pos| pos.saturating_add(1));
+            order.insert(destination, block.id.clone());
+        }
+    }
+    ops
+}
+
+#[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "the suffix scan intentionally compares two independently moving end cursors"
+)]
+fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
+    let mut start = 0;
+    while start < before.len()
+        && start < after.len()
+        && before.as_bytes().get(start) == after.as_bytes().get(start)
+    {
+        start = start.saturating_add(1);
+    }
+    start = clamp_char_boundary(before, start).min(clamp_char_boundary(after, start));
+    let mut old_end = before.len();
+    let mut new_end = after.len();
+    while old_end > start
+        && new_end > start
+        && (before.as_bytes().get(old_end.saturating_sub(1))
+            == after.as_bytes().get(new_end.saturating_sub(1)))
+    {
+        old_end = old_end.saturating_sub(1);
+        new_end = new_end.saturating_sub(1);
+    }
+    old_end = ceil_char_boundary(before, old_end);
+    new_end = ceil_char_boundary(after, new_end);
+    (
+        start,
+        old_end,
+        after.get(start..new_end).unwrap_or_default().to_string(),
+    )
 }
 
 /// Rounds a byte offset *up* to the next char boundary — the mirror of
@@ -1939,6 +2137,68 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
+/// Read a persisted UUID, assigning a deterministic UUID to old block maps
+/// that predate the action bridge.  The migration deliberately derives only
+/// from replicated content and position, never an actor id or wall clock, so
+/// every replica upgrading the same legacy document writes the same value.
+fn read_or_migrate_block_id(
+    state: &mut AutoCommit,
+    list: &ObjId,
+    index: usize,
+    kind: &BlockKind,
+    persist: bool,
+) -> String {
+    let Some(map) = list_map(state, list, index) else {
+        return Uuid::new_v4().to_string();
+    };
+    if let Some(id) = read_block_id(state, &map) {
+        return id;
+    }
+    let text = doc_text_obj(state, list, index)
+        .and_then(|text| state.text(&text).ok())
+        .unwrap_or_default();
+    let id = legacy_block_id(list, index, &kind_to_str(kind), &text);
+    if persist {
+        let _ = state.put(&map, "id", id.as_str());
+    }
+    id
+}
+
+/// Deterministic stable ID for a legacy block map that has no persisted `id`.
+///
+/// Action-owned hosts use this read-only projection while capturing an edit;
+/// their action handler persists the ID atomically with the first operation.
+#[must_use]
+pub fn legacy_block_id(list: &ObjId, index: usize, kind: &str, text: &str) -> String {
+    let seed = format!("quickdesktop:block:v1:{list:?}:{index}:{kind}:{text}");
+    deterministic_block_uuid(&seed).to_string()
+}
+
+fn read_block_id(state: &AutoCommit, map: &ObjId) -> Option<String> {
+    let Ok(Some((Value::Scalar(value), _))) = state.get(map, "id") else {
+        return None;
+    };
+    let automerge::ScalarValue::Str(id) = value.as_ref() else {
+        return None;
+    };
+    Uuid::parse_str(id).ok().map(|_| id.to_string())
+}
+
+fn deterministic_block_uuid(seed: &str) -> Uuid {
+    fn fnv(seed: &[u8], initial: u64) -> u64 {
+        seed.iter().fold(initial, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+    let hi = fnv(seed.as_bytes(), 0xcbf2_9ce4_8422_2325);
+    let lo = fnv(seed.as_bytes(), 0x8422_2325_cbf2_9ce4);
+    let mut raw = (u128::from(hi) << 64) | u128::from(lo);
+    // RFC 4122 variant + a deterministic name-based version marker.
+    raw = (raw & !(0xf_u128 << 76)) | (5_u128 << 76);
+    raw = (raw & !(0x3_u128 << 62)) | (0x2_u128 << 62);
+    Uuid::from_u128(raw)
+}
+
 /// Returns `None` if `list` was concurrently removed from the document —
 /// the only way `insert_object`/`put_object` can fail here — leaving the
 /// caller's local block unbound rather than panicking on a legitimate CRDT
@@ -1947,10 +2207,12 @@ fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
     index: usize,
+    id: &str,
     kind: &str,
     text: &str,
 ) -> Option<ObjId> {
     let block = state.insert_object(list, index, ObjType::Map).ok()?;
+    let _ = state.put(&block, "id", id);
     let _ = state.put(&block, "kind", kind);
     let text_id = state.put_object(&block, "text", ObjType::Text).ok()?;
     if !text.is_empty() {
@@ -2868,6 +3130,49 @@ impl Widget for BlockEditor {
             return;
         };
 
+        // Action-owned hosts (Calendar today) must never let the widget write
+        // straight to Automerge.  Their host has already dispatched the exact
+        // semantic operation before this frame's sync. We only bind fresh text
+        // objects and adopt remote structural changes here.
+        if self.action_interception {
+            let doc_len = state.length(&list);
+            if doc_len != self.blocks.len() {
+                self.rebuild_from_doc(state, &list, doc_len);
+                return;
+            }
+            let drifted = (0..doc_len).any(|i| {
+                let Some(block) = self.blocks.get(i) else {
+                    return true;
+                };
+                let Some(map) = list_map(state, &list, i) else {
+                    return true;
+                };
+                let id = read_block_id(state, &map);
+                let kind = read_block_kind(state, &list, i);
+                let text = doc_text_obj(state, &list, i)
+                    .and_then(|text| state.text(&text).ok())
+                    .unwrap_or_default();
+                id.as_deref() != Some(block.id.as_str())
+                    || kind != kind_to_str(&block.kind)
+                    || text != block.text()
+            });
+            if drifted {
+                self.rebuild_from_doc(state, &list, doc_len);
+                return;
+            }
+            for (i, block) in self.blocks.iter_mut().enumerate() {
+                let kind = kind_from_str(&read_block_kind(state, &list, i));
+                block.id = read_or_migrate_block_id(state, &list, i, &kind, false);
+                if block.line.bound_obj().is_none()
+                    && let Some(text) = doc_text_obj(state, &list, i)
+                {
+                    block.line.bind_text(text);
+                }
+            }
+            self.doc_structure_dirty = false;
+            return;
+        }
+
         if self.doc_structure_dirty {
             self.reconcile_structure_to_doc(state, &list);
             self.doc_structure_dirty = false;
@@ -2885,6 +3190,7 @@ impl Widget for BlockEditor {
         // bound text without disturbing the local caret).
         for (i, block) in self.blocks.iter_mut().enumerate() {
             let k = kind_from_str(&read_block_kind(state, &list, i));
+            block.id = read_or_migrate_block_id(state, &list, i, &k, true);
             if block.kind != k {
                 block.kind = k;
                 self.structure_dirty = true;
@@ -3983,6 +4289,11 @@ impl BlockEditor {
         if let Some(b) = self.blocks.get_mut(focused_idx)
             && b.kind.is_editable()
         {
+            // Bound RichTextLines ordinarily splice their Text object from
+            // `handle_event`. Action-owned hosts retain that binding for
+            // reconciliation, but their optimistic input must stay local until
+            // the host dispatches the semantic operation captured below.
+            b.line.set_direct_crdt_writes(!self.action_interception);
             b.line.handle_event(
                 event,
                 ctx.scale_factor,
@@ -5081,5 +5392,58 @@ mod tests {
         let (l, rest) = parse_list_indent("no indent");
         assert_eq!(l, 0);
         assert_eq!(rest, "no indent");
+    }
+
+    #[test]
+    fn action_bridge_emits_uuid_ops_and_unicode_boundaries() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("café")]);
+        editor.set_action_interception(true);
+        let id = editor.blocks()[0].id.clone();
+        editor.begin_action_intercept();
+        editor.blocks_mut()[0].line.set_text("cafe");
+        let ops = editor.take_intercepted_ops();
+        assert_eq!(
+            ops,
+            vec![BlockEditOp::TextSplice {
+                block_id: id,
+                start: 3,
+                end: 5,
+                text: "e".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn action_interception_reads_legacy_ids_without_mutating_document() {
+        use automerge::ROOT;
+
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(&ROOT, "notes", ObjType::List)
+            .expect("notes list");
+        let block = doc
+            .insert_object(&list, 0, ObjType::Map)
+            .expect("legacy block");
+        doc.put(&block, "kind", "paragraph").expect("legacy kind");
+        let text = doc
+            .put_object(&block, "text", ObjType::Text)
+            .expect("legacy text");
+        doc.splice_text(&text, 0, 0, "legacy")
+            .expect("legacy content");
+
+        let mut editor = BlockEditor::new();
+        editor.set_action_interception(true);
+        editor.bind_blocks(&mut doc, list.clone());
+
+        assert_eq!(
+            read_block_id(&doc, &block),
+            None,
+            "action interception derives a legacy UUID but never writes it"
+        );
+        assert_eq!(
+            editor.blocks()[0].id,
+            legacy_block_id(&list, 0, "paragraph", "legacy")
+        );
     }
 }
