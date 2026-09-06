@@ -60,6 +60,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "collapsed",
     "context",
     "new-playlist",
+    "empty",
     "search-focus",
     "skeleton",
     "nowplaying",
@@ -71,6 +72,8 @@ const SHOT_SCENARIOS: &[&str] = &[
     "search-artists",
     "artist-page",
     "album-page",
+    "error",
+    "membership-open",
 ];
 
 #[cfg(feature = "thin")]
