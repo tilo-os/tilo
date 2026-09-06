@@ -106,6 +106,10 @@ pub struct NavShell {
 
     breakpoint: f64,
     sidebar_width: f64,
+    /// Optional wider width for the narrow overlay drawer. This lets a
+    /// destination list remain comfortably usable on a phone without making
+    /// its persistent desktop sidebar unnecessarily wide.
+    narrow_sidebar_width: Option<f64>,
     overview_width: f64,
 
     /// Reveal easing for the sidebar (collapse when docked, slide when
@@ -158,6 +162,7 @@ impl NavShell {
             detail: Some(detail),
             breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
             sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
+            narrow_sidebar_width: None,
             overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
             sidebar_flap: FlapState::open_when_docked(),
             pane: NavPane::Overview,
@@ -212,6 +217,14 @@ impl NavShell {
     #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
+        self
+    }
+
+    /// Override the sidebar width only while it is an overlay drawer below
+    /// the shell breakpoint. The normal docked width remains unchanged.
+    #[must_use]
+    pub fn with_narrow_sidebar_width(mut self, px: f64) -> Self {
+        self.narrow_sidebar_width = Some(px);
         self
     }
 
@@ -440,7 +453,12 @@ impl NavShell {
         let r = self.rect;
         let w = r.width();
         let has_sidebar = self.has_sidebar();
-        let sw = self.sidebar_width.min(w);
+        let configured_sidebar_width = if self.mode() == ShellMode::Narrow {
+            self.narrow_sidebar_width.unwrap_or(self.sidebar_width)
+        } else {
+            self.sidebar_width
+        };
+        let sw = configured_sidebar_width.min(w);
 
         // Sidebar-plus-content: the one content pane fills the region at
         // every width; narrow turns the sidebar into a drawer *over* it
@@ -1403,6 +1421,38 @@ mod tests {
         assert!(
             ns.scrim_rect().width() > 0.0,
             "an open drawer dims the content behind a scrim",
+        );
+    }
+
+    #[test]
+    fn narrow_drawer_width_can_exceed_the_docked_sidebar_without_shrinking_content() {
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(Text::new("places")),
+            Box::new(Text::new("files")),
+        )
+        .with_sidebar_width(200.0)
+        .with_narrow_sidebar_width(320.0);
+        lay_out(&mut ns, 390.0, 640.0);
+        ns.snap();
+        assert_eq!(
+            ns.overview_rect().width(),
+            390.0,
+            "closed content stays full width"
+        );
+        ns.open_sidebar();
+        ns.snap();
+        assert_eq!(ns.sidebar_rect().width(), 320.0);
+        assert_eq!(
+            ns.overview_rect().width(),
+            390.0,
+            "the overlay drawer never displaces the live content pane"
+        );
+        lay_out(&mut ns, 1200.0, 640.0);
+        ns.snap();
+        assert_eq!(
+            ns.sidebar_rect().width(),
+            200.0,
+            "desktop docking stays compact"
         );
     }
 

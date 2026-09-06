@@ -686,6 +686,11 @@ impl FileExplorerWidget {
             // pixel-stable.
             nav: NavShell::sidebar_over_content(Box::new(Text::new("")), Box::new(Text::new("")))
                 .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
+                // A narrow drawer should read as navigation, not leave a
+                // sliver of obscured list columns competing for attention.
+                // Keep the compact 200px desktop dock, but give phone-width
+                // places enough room for labels and touch targets.
+                .with_narrow_sidebar_width(320.0)
                 .with_breakpoint(BODY_BREAKPOINT_PX)
                 // The docked places list is permanent — no in-sidebar collapse chip;
                 // the hamburger still summons the drawer when narrow.
@@ -5928,6 +5933,7 @@ impl Widget for FileExplorerWidget {
             "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
+            "files.rename",
             "files.share-link",
         ]
     }
@@ -5942,7 +5948,7 @@ impl Widget for FileExplorerWidget {
     )]
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = Resource::new(
-            format!("folder:{}", self.current_path.display()),
+            crate::search_provider::folder_resource_id(&self.current_path),
             "files.folder",
             self.current_path.display().to_string(),
         );
@@ -6269,11 +6275,23 @@ impl Widget for FileExplorerWidget {
         // Collaborative identity is the immutable record UUID. The operation
         // resolves its mutable path only when invoked, so rename/move races do
         // not turn stale search provenance into navigation authority.
+        // An entry already visible in this folder publishes the canonical
+        // record resource below, with its complete command surface. Avoid a
+        // second resource with the same UUID address here: duplicates make an
+        // action-door lookup depend on incidental tree order.
+        let visible_record_ids: std::collections::BTreeSet<_> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.record_id.map(uuid::Uuid::from_bytes))
+            .collect();
         let mut exported_records = std::collections::BTreeSet::new();
         for record in crate::model::read_workspace_record_index(&self.workspace_roots)
             .records
             .into_iter()
-            .filter(|record| exported_records.insert(record.record_id))
+            .filter(|record| {
+                !visible_record_ids.contains(&record.record_id)
+                    && exported_records.insert(record.record_id)
+            })
             .take(crate::search_provider::MAX_COLLABORATIVE_SEARCH_RECORDS)
         {
             let resource = Resource::new(
@@ -6296,23 +6314,103 @@ impl Widget for FileExplorerWidget {
         }
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
-            let mut resource =
-                Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
-            if let Ok(spec) =
-                ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
-            {
+            let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
+            let mut resource = Resource::new(
+                record_id.map_or_else(
+                    || crate::search_provider::entry_resource_id(&entry.path),
+                    crate::search_provider::record_resource_id,
+                ),
+                if record_id.is_some() {
+                    "files.record"
+                } else {
+                    "files.entry"
+                },
+                entry.name.clone(),
+            );
+            if let Some(record_id) = record_id {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        crate::search_provider::REVEAL_ACTION,
+                        t("files-action-reveal"),
+                        OperationKind::View,
+                        "files.reveal-record",
+                        &record_id.to_string(),
+                    )
+                    .expect("record id is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                t("files-menu-open"),
+                OperationKind::View,
+                "files.open",
+                &path,
+            ) {
                 resource
                     .actions
                     .push(spec.with_contract(ActionContract::view()));
             }
-            for (id, label, verb, destructive) in [
-                ("copy", "Copy", "copy", false),
-                ("cut", "Cut", "cut", false),
-                ("trash", "Move to Trash", "trash", true),
-                ("properties", "Properties", "properties", false),
-                ("sharing", "Sharing and access", "sharing", false),
-                ("history", "Version history", "history", false),
-            ] {
+            if !self.is_trash_view() {
+                let rename_path = path.clone();
+                resource.actions.push(
+                    ActionSpec::prompted_operation(
+                        "rename",
+                        t("files-menu-rename"),
+                        t("files-action-rename-prompt"),
+                        &entry.name,
+                        OperationKind::Effect,
+                        "files.rename",
+                        move |name| {
+                            EncodedAction::encode_operation(
+                                "files.rename",
+                                &vec![rename_path.as_str(), name],
+                            )
+                            .expect("rename payload is serializable")
+                        },
+                    )
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        // The FUSE/host filesystem owns durable history. This
+                        // external effect has no qOS action inverse, so never
+                        // advertise an undo boundary we cannot honor.
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            let entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
+                vec![
+                    ("restore", t("files-menu-restore"), "restore", false),
+                    (
+                        "delete-permanently",
+                        t("files-menu-delete-permanently"),
+                        "purge",
+                        true,
+                    ),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                ]
+            } else {
+                vec![
+                    ("copy", t("files-menu-copy"), "copy", false),
+                    ("cut", t("files-menu-cut"), "cut", false),
+                    ("trash", t("files-menu-move-trash"), "trash", true),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                    ("sharing", t("files-sharing-access"), "sharing", false),
+                    ("history", t("files-version-history"), "history", false),
+                ]
+            };
+            for (id, label, verb, destructive) in entry_commands {
                 let mut spec = ActionSpec::operation(
                     id,
                     label,
@@ -6442,7 +6540,7 @@ impl Widget for FileExplorerWidget {
                 let path = args.get(1).ok_or_else(|| "missing file path".to_string())?;
                 let target = PathBuf::from(path);
                 let index = self
-                    .displayed_entries()
+                    .entries
                     .iter()
                     .position(|entry| entry.path == target)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
@@ -6459,6 +6557,10 @@ impl Widget for FileExplorerWidget {
                 let command = match verb.as_str() {
                     "copy" => FileCommand::Copy,
                     "cut" => FileCommand::Cut,
+                    "restore" if self.is_trash_view() => FileCommand::RestoreFromTrash,
+                    "purge" if self.is_trash_view() => FileCommand::ConfirmPermanentDelete {
+                        paths: vec![target],
+                    },
                     "properties" => FileCommand::ShowProperties,
                     "sharing" => FileCommand::ShowSharing,
                     "history" => FileCommand::ShowHistory,
@@ -6467,6 +6569,22 @@ impl Widget for FileExplorerWidget {
                 if !self.apply_command(command) {
                     return Err("file operation could not be applied".into());
                 }
+            }
+            (OperationKind::Effect, "files.rename") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let path = args
+                    .first()
+                    .ok_or_else(|| "missing file path".to_string())?;
+                let name = args
+                    .get(1)
+                    .ok_or_else(|| "missing new file name".to_string())?;
+                let target = PathBuf::from(path);
+                if !self.entries.iter().any(|entry| entry.path == target) {
+                    return Err("file entry is no longer visible".into());
+                }
+                fileops::rename(&target, name)?;
+                self.refresh();
             }
             (OperationKind::Effect, "files.share-link") => {
                 let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -7998,6 +8116,75 @@ mod command_path_tests {
     }
 
     #[test]
+    fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
+        use ui::qos_actions::{ActionAddress, door};
+
+        let d = tempfile::tempdir().unwrap();
+        // A control separator is a legal Unix filename byte but must not leak
+        // into the resource/action wire address.
+        let old = d.path().join("old\u{1f}.txt");
+        std::fs::write(&old, b"x").unwrap();
+        let record_id = uuid::Uuid::from_u128(0xfeed);
+        let mut w = FileExplorerWidget::new();
+        w.workspace_roots = vec![d.path().to_path_buf()];
+        w.current_path = d.path().to_path_buf();
+        let mut entry = ent("old\u{1f}.txt", false, "text/plain");
+        entry.path = old.clone();
+        entry.record_id = Some(*record_id.as_bytes());
+        w.entries = vec![entry];
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let entry = resources[0]
+            .children
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == crate::search_provider::record_resource_id(record_id)
+            })
+            .expect("a collaborative file uses its record UUID as the resource identity");
+        assert_eq!(entry.kind, "files.record");
+        let address = ActionAddress::new(entry.id.as_str(), "rename");
+        assert_eq!(
+            ActionAddress::parse(&address.encode()),
+            Some(address.clone())
+        );
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("value".into(), serde_json::Value::String("new.txt".into()));
+        let encoded = door::encode_json(&resources, &address, &arguments)
+            .expect("the entry's prompted rename action encodes");
+        assert!(
+            !door::resolve(&resources, &address)
+                .expect("rename action is exported")
+                .contract
+                .reversible,
+            "an external filesystem rename has no qOS action-history inverse"
+        );
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(!old.exists());
+        let renamed = d.path().join("new.txt");
+        assert!(renamed.exists());
+        // A mount refresh presents a new path but the same daemon-provided
+        // record identity, so the old action address resolves against it.
+        w.entries[0].path = renamed;
+        w.entries[0].name = "new.txt".into();
+        w.entries[0].record_id = Some(*record_id.as_bytes());
+        let refreshed = Widget::resources(&w, &doc);
+        assert!(
+            door::resolve(&refreshed, &address).is_some(),
+            "the record action address survives a path rename and resolves its fresh path"
+        );
+    }
+
+    #[test]
     fn exported_background_operations_have_valid_job_contracts() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
@@ -9262,10 +9449,16 @@ mod command_path_tests {
         widget.workspace_roots = vec![dir.path().to_path_buf()];
 
         let providers = widget.search_providers();
-        assert_eq!(providers.len(), 2, "Places remains a separate provider");
-        let hit = providers[1]
-            .search("renamed")
-            .pop()
+        // Places and remote-account discovery remain separate providers; find
+        // the collaborative hit by its stable record action rather than by a
+        // brittle provider position or a developer's local account settings.
+        let hit = providers
+            .iter()
+            .flat_map(|provider| provider.search("renamed"))
+            .find(|result| {
+                result.action_address()
+                    == Some(crate::search_provider::record_reveal_address(record_id))
+            })
             .expect("collaborative record is searchable");
         let doc = automerge::AutoCommit::new();
         let address = hit.action_address().expect("canonical reveal action");
