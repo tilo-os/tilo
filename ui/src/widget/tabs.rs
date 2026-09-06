@@ -176,10 +176,20 @@ impl TabDescriptor {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupFocus {
+    Focused,
+    Unfocused,
+}
+
 pub struct TabBar {
     group_id_tag: String,
     tabs: Vec<TabDescriptor>,
     active_id: u64,
+    /// Whether this bar belongs to the shell's keyboard-focused window group.
+    /// An active tab exists in every group; only the focused group's active tab
+    /// receives the accent keyline.
+    group_focus: GroupFocus,
     rect: Rect,
     tab_rects: Vec<Rect>,
     close_rects: Vec<Rect>,
@@ -269,6 +279,7 @@ impl TabBar {
             group_id_tag: group_id_tag.into(),
             tabs,
             active_id,
+            group_focus: GroupFocus::Focused,
             rect: Rect::ZERO,
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
@@ -309,6 +320,14 @@ impl TabBar {
             reveal_px: Vec::new(),
             reduce_motion: false,
         }
+    }
+
+    pub fn set_group_focused(&mut self, focused: bool) {
+        self.group_focus = if focused {
+            GroupFocus::Focused
+        } else {
+            GroupFocus::Unfocused
+        };
     }
 
     /// No-op before the first layout pass — nothing to spring from yet.
@@ -377,6 +396,23 @@ impl TabBar {
         // can't drift from the rest of the chrome.
         let shape = RoundedRect::from_rect(r, radius);
         crate::chrome::shell::paint_glass_body(scene, pill_transform, r, radius, theme, &look, 1.0);
+        if is_active && self.group_focus == GroupFocus::Focused {
+            // A restrained focus keyline separates two different facts that
+            // used to share one treatment: "active tab in this group" and
+            // "group receiving keyboard input".  It sits inside the pill so
+            // it cannot collide with neighbouring groups or drag targets.
+            let keyline = RoundedRect::from_rect(
+                Rect::new(r.x0 + 8.0, r.y1 - 2.5, r.x1 - 8.0, r.y1 - 0.5),
+                1.0,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                pill_transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &keyline,
+            );
+        }
         // Rebind: the rest of the pill chrome paints under `pill_transform` so it
         // compresses with the body when pressed.
         let transform = pill_transform;
@@ -5518,5 +5554,15 @@ mod tests {
             b.close_affordance_visible_for_tests(1, &theme),
             "a chip that is still painted must still have a pill body under it",
         );
+    }
+
+    #[test]
+    fn group_focus_is_distinct_from_active_tab_identity() {
+        let mut bar = four_tab_bar();
+        assert_eq!(bar.group_focus, GroupFocus::Focused);
+        let active = bar.active_id;
+        bar.set_group_focused(false);
+        assert_eq!(bar.active_id, active, "focus must not select another tab");
+        assert_eq!(bar.group_focus, GroupFocus::Unfocused);
     }
 }

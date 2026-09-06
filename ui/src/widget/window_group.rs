@@ -508,6 +508,8 @@ impl WindowGroup {
             .find(|(id, _)| *id == active_id)
             .map(|(_, host)| host)?;
         let capture_rect = host.complete_content_rect()?;
+        self.bar
+            .set_group_focused(self.focused || self.search_active);
         self.bar.draw(scene, transform, tr, theme, presence);
         if let Some(name) = opening_name.as_deref() {
             host.set_opening_name(name);
@@ -1521,6 +1523,8 @@ impl Widget for WindowGroup {
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
         if !self.maximized {
+            self.bar
+                .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();

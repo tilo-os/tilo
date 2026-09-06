@@ -1092,9 +1092,9 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     let topbar_ptr = &raw mut *topbar;
 
     let mut content_col = Column::new()
-        // Fills the viewport height remaining AFTER the topbar's 40px
+        // Fills the viewport height remaining after the persistent top bar.
         // sibling in `foreground_col`; without it the column's
-        // `percent(1.0)` height overflowed the viewport by 40px and apps
+        // `percent(1.0)` height overflowed the viewport by the bar height and apps
         // painted right up to the absolute bottom.
         .with_fill_remaining_height()
         // 8px is the minimum keeping the active-tile bottom from clipping
