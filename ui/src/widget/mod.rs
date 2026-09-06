@@ -898,6 +898,54 @@ pub trait Widget {
     /// reacted to even though the app never asked. Root widget only.
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 
+    /// Request a separate audience toplevel for a presentation. The host only
+    /// honours this when it can enumerate a *different* output from the local
+    /// presenter window; it never simulates dual-display mode inside one
+    /// window. The regular fullscreen contract remains the safe fallback.
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        None
+    }
+
+    /// The host reports whether a real audience toplevel is live. Widgets use
+    /// this to keep their ordinary window as the presenter surface. It is
+    /// edge-triggered and is also sent during teardown.
+    fn on_audience_presentation_changed(&mut self, _active: bool) {}
+
+    /// Paint only the audience content in a separate surface. This is not a
+    /// second layout pass: it must be a pure projection of already-owned app
+    /// state, so a presenter and audience stay in lock-step without cloning a
+    /// document or rendering a fake split pane.
+    fn draw_audience_presentation(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _rect: vello::kurbo::Rect,
+    ) -> bool {
+        false
+    }
+
+    /// Route lightweight presentation controls from the audience surface.
+    /// Widgets must not depend on the primary window's layout here: an
+    /// audience surface has its own output dimensions. Returning `true`
+    /// requests a normal model sync and redraw of both surfaces.
+    fn handle_audience_presentation_event(
+        &mut self,
+        _event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// Closing the audience toplevel is a user-visible stop request, not a
+    /// transient output loss. The default is intentionally a no-op because
+    /// only presentation-capable roots own that lifecycle.
+    fn on_audience_presentation_closed(&mut self) {}
+
     /// Which **record** (see [`crate::record`]) this widget's document
     /// should be, so opening a second file checks out a different document
     /// instead of overwriting the first. Root widget only; `None` keeps the

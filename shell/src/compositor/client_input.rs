@@ -1358,11 +1358,11 @@ fn foreign_tab_title(app_id: &str) -> String {
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
-    let candidate = {
+    let candidate = state.focused_output_presentation_surface().or_else(|| {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
-    };
+    });
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
 
@@ -1393,6 +1393,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
                 .into_iter()
                 .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
         );
+        tiles.extend(state.output_presentation_remote_tiles());
         tiles
     };
     let view = crate::network::input_firewall::ShellView::new(
@@ -1516,11 +1517,20 @@ fn route_mouse_input(
             });
             // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
+                if state.is_output_presentation_surface(h.surface_id) {
+                    // Audience focus is explicit and never mutates the
+                    // presenter's workspace selection.
+                    state.focus_output_presentation_surface(h.surface_id);
+                    sync_keyboard_focus(state, fb);
+                } else {
+                    state.clear_output_presentation_focus();
+                }
                 // Tapping the keyboard must keep the editable field's
                 // keyboard focus. Pointer focus moves to the OSK, but
                 // raising/focusing it would deactivate the very
                 // text-input session the tap is meant to feed.
-                if state.osk_surface != Some(h.surface_id)
+                if !state.is_output_presentation_surface(h.surface_id)
+                    && state.osk_surface != Some(h.surface_id)
                     && !state.is_floating_toplevel(h.surface_id)
                 {
                     raise_group(fb, h.strip, h.group);
@@ -1756,6 +1766,14 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                 .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
         }
         Some(PointerOwner::Client(surface_id)) => {
+            if let Some(rect) = state.output_presentation_rect(surface_id) {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             if state.osk_surface == Some(surface_id) {
                 let (surface_id, rect) = fb.osk_surface_hit(state.client_input.cursor())?;
                 return Some(TileHit {
@@ -1786,6 +1804,9 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
         None => {
             if captured {
                 return None;
+            }
+            if let Some(hit) = state.output_presentation_hit(state.client_input.cursor()) {
+                return Some(hit);
             }
             if let Some((surface_id, rect)) = fb.osk_surface_hit(state.client_input.cursor())
                 && state.osk_surface == Some(surface_id)

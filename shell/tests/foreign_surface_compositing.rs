@@ -82,6 +82,34 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
+#[test]
+fn output_presentation_buffer_reaches_a_nonblack_output_frame() {
+    let surface_id = 0x70_0000_0003;
+    store().forget(surface_id);
+    let pixels = solid(4, 4, (0x19, 0xC8, 0x5A));
+    // This is the same decoded frame store that `State::commit` populates;
+    // direct output paint must not depend on a WorkspaceTree widget.
+    store().publish_rgba(surface_id, &pixels, 4, 4);
+    assert_eq!(
+        store().snapshot(surface_id).expect("captured frame").rgba,
+        pixels
+    );
+    let mut scene = vello::Scene::new();
+    foreign::paint_output_presentation_surface(
+        &mut scene,
+        surface_id,
+        vello::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
+    );
+    let mut renderer = OffscreenRenderer::new(80, 80);
+    let rgba = renderer.render(&scene, Color::BLACK);
+    let pixel = OffscreenRenderer::sample(&rgba, 80, 40, 40);
+    assert!(
+        pixel.0.abs_diff(0x19) <= 4 && pixel.1.abs_diff(0xC8) <= 4 && pixel.2.abs_diff(0x5A) <= 4,
+        "direct audience output must paint the committed client frame, got {pixel:?}"
+    );
+    store().forget(surface_id);
+}
+
 /// Paint until the widget tree reaches a steady state.
 ///
 /// Splicing a tab plays the spawn fade, which legitimately keeps
