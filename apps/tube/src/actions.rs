@@ -247,12 +247,24 @@ pub enum TubeAction {
     LikeVideo {
         video_id: String,
     },
+    /// Set the state resolved by the authoring surface. Retains the legacy
+    /// toggle variant above so recorded envelopes remain replayable.
+    SetVideoLiked {
+        video_id: String,
+        liked: bool,
+    },
     /// Append a video to the shared watch queue.
     AddToQueue {
         video_id: String,
     },
     ToggleSubscription {
         channel_id: String,
+    },
+    /// Set the state resolved by the authoring surface. Retains the legacy
+    /// toggle variant above so recorded envelopes remain replayable.
+    SetSubscription {
+        channel_id: String,
+        subscribed: bool,
     },
     SetSetting {
         setting: SettingFlag,
@@ -324,6 +336,10 @@ impl Action for TubeAction {
                     ScalarValue::Boolean(!is_liked),
                 )?;
             }
+            TubeAction::SetVideoLiked { video_id, liked } => {
+                let likes_map = child_map(doc, &tube, "likes")?;
+                doc.put(&likes_map, video_id.as_str(), ScalarValue::Boolean(*liked))?;
+            }
             TubeAction::AddToQueue { video_id } => {
                 let queue = child_list(doc, &tube, "queue")?;
                 let len = doc.length(&queue);
@@ -339,6 +355,17 @@ impl Action for TubeAction {
                     &subscriptions,
                     channel_id.as_str(),
                     ScalarValue::Boolean(!subscribed),
+                )?;
+            }
+            TubeAction::SetSubscription {
+                channel_id,
+                subscribed,
+            } => {
+                let subscriptions = child_map(doc, &tube, "subscriptions")?;
+                doc.put(
+                    &subscriptions,
+                    channel_id.as_str(),
+                    ScalarValue::Boolean(*subscribed),
                 )?;
             }
             TubeAction::SetSetting { setting, enabled } => {
@@ -399,8 +426,10 @@ impl Action for TubeAction {
             }
             // Personal, replicable state.
             TubeAction::LikeVideo { .. }
+            | TubeAction::SetVideoLiked { .. }
             | TubeAction::LikeComment { .. }
             | TubeAction::ToggleSubscription { .. }
+            | TubeAction::SetSubscription { .. }
             | TubeAction::SetSetting { .. }
             | TubeAction::CyclePreferredQuality
             | TubeAction::SetSponsorCategory { .. } => ExecutionLocus::ClientLocal,
@@ -524,11 +553,12 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
             immediate_spec(
                 "like",
                 "Like video",
-                &TubeAction::LikeVideo {
+                &TubeAction::SetVideoLiked {
                     video_id: video_id.to_string(),
+                    liked: !model.is_liked(video_id),
                 },
             )
-            .with_description("Toggle the like on this video")
+            .with_description("Set the like state for this video")
             .reversible(),
         )
         .with_action(
@@ -691,8 +721,9 @@ fn library_resource(model: &TubeModel) -> Resource {
             immediate_spec(
                 "subscribe",
                 "Subscribe or unsubscribe",
-                &TubeAction::ToggleSubscription {
+                &TubeAction::SetSubscription {
                     channel_id: channel.id.clone(),
+                    subscribed: !model.is_subscribed(&channel.id),
                 },
             )
             .reversible(),
