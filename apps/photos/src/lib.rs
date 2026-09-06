@@ -66,6 +66,7 @@ pub mod doc;
 pub mod model;
 pub mod pixels;
 pub mod reference;
+pub mod search;
 pub mod strings;
 
 pub use app::PhotosApp;
@@ -81,7 +82,7 @@ pub fn app_root() -> Box<dyn Widget> {
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
 /// them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &["empty", "opened", "cropping", "edited"];
+pub const SHOT_SCENARIOS: &[&str] = &["empty", "loading", "error", "opened", "cropping", "edited"];
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
@@ -159,6 +160,26 @@ pub fn seed_scenario(
 
     PhotosDoc::seed(doc);
     if scenario == "empty" {
+        return;
+    }
+
+    // These two poses exercise the honest states a collaborator can see
+    // before their content arrives, and after bytes turn out not to be an
+    // image.  They intentionally write only tiny document metadata: neither
+    // state fabricates picture bytes merely to make a screenshot attractive.
+    if scenario == "loading" {
+        let open = OpenImage::from_path("/photos-shots/not-here-yet.png", 1200, 800)
+            .with_content("0".repeat(64));
+        PhotosDoc::set_image(doc, Some(&open));
+        return;
+    }
+    if scenario == "error" {
+        let path = dir.join("unreadable-image.png");
+        std::fs::create_dir_all(dir).ok();
+        if std::fs::write(&path, b"this is not an image").is_ok() {
+            let open = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
+            PhotosDoc::set_image(doc, Some(&open));
+        }
         return;
     }
 
