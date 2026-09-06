@@ -38,6 +38,9 @@ const FILL_HANDLE_GRAB: f64 = 3.0;
 /// Upper bound for an auto-fitted column so one very long value can't blow the
 /// column out to an unreadable width (it clips past this, like Excel).
 const MAX_AUTOFIT_W: f64 = DEFAULT_COL_W * 3.0;
+/// Always-visible, touch-friendly grid scrollbar rail/target thickness.
+const SCROLLBAR_THICKNESS: f64 = 16.0;
+const SCROLLBAR_MIN_THUMB: f64 = 28.0;
 
 /// A mutation the grid wants applied to the document by the app.
 #[derive(Clone, Debug)]
@@ -128,6 +131,18 @@ struct ResizeDrag {
     origin_size: f64,
 }
 
+#[derive(Clone, Copy)]
+enum ScrollAxis {
+    Horizontal,
+    Vertical,
+}
+
+struct ScrollDrag {
+    axis: ScrollAxis,
+    pointer_origin: f64,
+    scroll_origin: f64,
+}
+
 /// An in-flight fill-handle drag. The selection at grab time is the source
 /// *pattern*; `target` is the cell currently under the pointer, projected onto
 /// the dominant forward axis (down or right) to a fill region.
@@ -184,6 +199,7 @@ pub struct Grid {
     fmt: HashMap<Addr, CellFormat>,
     last_cursor: Point,
     resize: Option<ResizeDrag>,
+    scroll_drag: Option<ScrollDrag>,
     /// An in-flight fill-handle drag (grab the selection's bottom-right corner
     /// and drag down/right to extend the pattern).
     fill_drag: Option<FillDrag>,
@@ -239,6 +255,7 @@ impl Grid {
             fmt: HashMap::new(),
             last_cursor: Point::ZERO,
             resize: None,
+            scroll_drag: None,
             fill_drag: None,
             pending_fill: None,
             selecting: false,
@@ -604,9 +621,79 @@ impl Grid {
         Rect::new(
             self.rect.x0 + ROW_HEADER_W,
             self.rect.y0 + COL_HEADER_H,
-            self.rect.x1,
-            self.rect.y1,
+            self.rect.x1 - SCROLLBAR_THICKNESS,
+            self.rect.y1 - SCROLLBAR_THICKNESS,
         )
+    }
+
+    fn max_scroll_x(&self) -> f64 {
+        (self.total_width() - self.body_rect().width()).max(0.0)
+    }
+
+    fn max_scroll_y(&self) -> f64 {
+        (self.total_height() - self.body_rect().height()).max(0.0)
+    }
+
+    fn horizontal_scrollbar_rect(&self) -> Rect {
+        let body = self.body_rect();
+        Rect::new(body.x0, body.y1, body.x1, self.rect.y1)
+    }
+
+    fn vertical_scrollbar_rect(&self) -> Rect {
+        let body = self.body_rect();
+        Rect::new(body.x1, body.y0, self.rect.x1, body.y1)
+    }
+
+    fn scrollbar_thumb(&self, axis: ScrollAxis) -> Rect {
+        let (rail, content, viewport, scroll) = match axis {
+            ScrollAxis::Horizontal => (
+                self.horizontal_scrollbar_rect(),
+                self.total_width(),
+                self.body_rect().width(),
+                self.scroll_x,
+            ),
+            ScrollAxis::Vertical => (
+                self.vertical_scrollbar_rect(),
+                self.total_height(),
+                self.body_rect().height(),
+                self.scroll_y,
+            ),
+        };
+        let length = match axis {
+            ScrollAxis::Horizontal => rail.width(),
+            ScrollAxis::Vertical => rail.height(),
+        };
+        let cross = match axis {
+            ScrollAxis::Horizontal => rail.height(),
+            ScrollAxis::Vertical => rail.width(),
+        };
+        let thumb = if content <= viewport {
+            length
+        } else {
+            (length * viewport / content)
+                .max(SCROLLBAR_MIN_THUMB)
+                .min(length)
+        };
+        let max_scroll = (content - viewport).max(0.0);
+        let offset = if max_scroll <= 0.0 {
+            0.0
+        } else {
+            (length - thumb) * scroll / max_scroll
+        };
+        match axis {
+            ScrollAxis::Horizontal => Rect::new(
+                rail.x0 + offset,
+                rail.y0 + 2.0,
+                rail.x0 + offset + thumb,
+                rail.y0 + cross - 2.0,
+            ),
+            ScrollAxis::Vertical => Rect::new(
+                rail.x0 + 2.0,
+                rail.y0 + offset,
+                rail.x0 + cross - 2.0,
+                rail.y0 + offset + thumb,
+            ),
+        }
     }
 
     fn grid_x0(&self) -> f64 {
@@ -1008,6 +1095,9 @@ impl Grid {
         if !self.rect.contains(p) {
             return false;
         }
+        if self.try_start_scrollbar_drag(p) {
+            return true;
+        }
         if self.try_point_mode_click(p) {
             return true;
         }
@@ -1024,6 +1114,68 @@ impl Grid {
             return true;
         }
         self.try_body_click(p, ctrl, shift, out)
+    }
+
+    fn try_start_scrollbar_drag(&mut self, p: Point) -> bool {
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+            let rail = match axis {
+                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
+                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
+            };
+            if !rail.contains(p) {
+                continue;
+            }
+            let thumb = self.scrollbar_thumb(axis);
+            let pointer = match axis {
+                ScrollAxis::Horizontal => p.x,
+                ScrollAxis::Vertical => p.y,
+            };
+            let thumb_start = match axis {
+                ScrollAxis::Horizontal => thumb.x0,
+                ScrollAxis::Vertical => thumb.y0,
+            };
+            let thumb_end = match axis {
+                ScrollAxis::Horizontal => thumb.x1,
+                ScrollAxis::Vertical => thumb.y1,
+            };
+            let origin = if pointer < thumb_start || pointer > thumb_end {
+                let rail_start = match axis {
+                    ScrollAxis::Horizontal => rail.x0,
+                    ScrollAxis::Vertical => rail.y0,
+                };
+                let rail_len = match axis {
+                    ScrollAxis::Horizontal => rail.width(),
+                    ScrollAxis::Vertical => rail.height(),
+                };
+                let thumb_len = thumb_end - thumb_start;
+                let max_scroll = match axis {
+                    ScrollAxis::Horizontal => self.max_scroll_x(),
+                    ScrollAxis::Vertical => self.max_scroll_y(),
+                };
+                let next = ((pointer - rail_start - thumb_len / 2.0)
+                    / (rail_len - thumb_len).max(1.0)
+                    * max_scroll)
+                    .clamp(0.0, max_scroll);
+                match axis {
+                    ScrollAxis::Horizontal => self.scroll_x = next,
+                    ScrollAxis::Vertical => self.scroll_y = next,
+                }
+                pointer
+            } else {
+                pointer
+            };
+            self.scroll_drag = Some(ScrollDrag {
+                axis,
+                pointer_origin: origin,
+                scroll_origin: match axis {
+                    ScrollAxis::Horizontal => self.scroll_x,
+                    ScrollAxis::Vertical => self.scroll_y,
+                },
+            });
+            self.dirty = true;
+            return true;
+        }
+        false
     }
 
     /// Formula point mode: while editing a formula, a click on another cell
@@ -1187,6 +1339,38 @@ impl Grid {
 
     pub fn pointer_move(&mut self, p: Point) -> bool {
         self.last_cursor = p;
+        if let Some(drag) = &self.scroll_drag {
+            let rail = match drag.axis {
+                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
+                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
+            };
+            let thumb = self.scrollbar_thumb(drag.axis);
+            let rail_len = match drag.axis {
+                ScrollAxis::Horizontal => rail.width(),
+                ScrollAxis::Vertical => rail.height(),
+            };
+            let thumb_len = match drag.axis {
+                ScrollAxis::Horizontal => thumb.width(),
+                ScrollAxis::Vertical => thumb.height(),
+            };
+            let pointer = match drag.axis {
+                ScrollAxis::Horizontal => p.x,
+                ScrollAxis::Vertical => p.y,
+            };
+            let max_scroll = match drag.axis {
+                ScrollAxis::Horizontal => self.max_scroll_x(),
+                ScrollAxis::Vertical => self.max_scroll_y(),
+            };
+            let next = drag.scroll_origin
+                + (pointer - drag.pointer_origin) * max_scroll / (rail_len - thumb_len).max(1.0);
+            match drag.axis {
+                ScrollAxis::Horizontal => self.scroll_x = next,
+                ScrollAxis::Vertical => self.scroll_y = next,
+            }
+            self.clamp_scroll();
+            self.dirty = true;
+            return true;
+        }
         // A held fill-handle drag tracks the pointer; the projected region is
         // recomputed (and previewed) each frame.
         if self.fill_drag.is_some() {
@@ -1235,6 +1419,7 @@ impl Grid {
 
     pub fn pointer_up(&mut self) {
         self.resize = None;
+        self.scroll_drag = None;
         self.selecting = false;
         // Keep `point_anchor` so the next click replaces the just-inserted
         // reference (Excel keeps a click-inserted ref "hot" until you type);
@@ -1672,10 +1857,40 @@ impl Grid {
         // --- headers (painted on top, never clipped by the body) ---
         self.draw_headers(scene, transform, tr, theme, &cols, &rows);
 
+        // Visible rails make both axes discoverable, and their 16px targets
+        // remain usable with a mouse, touchpad-generated pointer drag, or a
+        // high-contrast palette. The thumb position is derived solely from
+        // the same scroll offsets the viewport uses.
+        self.draw_scrollbars(scene, transform, theme);
+
         // --- in-cell editor overlay ---
         if self.edit.is_some() {
             self.draw_editor(scene, transform, tr, theme);
         }
+    }
+
+    fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let rail = theme.tokens.colors.surfaces.raised;
+        let thumb = theme.tokens.colors.accent[7];
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+            let track = match axis {
+                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
+                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
+            };
+            scene.fill(Fill::NonZero, transform, rail, None, &track);
+            let handle = self.scrollbar_thumb(axis);
+            scene.fill(Fill::NonZero, transform, thumb, None, &handle);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &handle,
+            );
+        }
+        let body = self.body_rect();
+        let corner = Rect::new(body.x1, body.y1, self.rect.x1, self.rect.y1);
+        scene.fill(Fill::NonZero, transform, rail, None, &corner);
     }
 
     /// Selection ranges (translucent accent fill) under the cells. Every
@@ -2401,6 +2616,48 @@ mod tests {
         }
         g.values = map;
         g
+    }
+
+    #[test]
+    fn visible_scrollbar_thumb_is_pointer_draggable_on_both_axes() {
+        let mut grid = grid_with(&[]);
+        // The normal logical grid is larger than this deliberately narrow
+        // viewport, so both rails expose a thumb and have scroll range.
+        grid.rect = Rect::new(0.0, 0.0, 260.0, 180.0);
+        let mut out = Vec::new();
+        let horizontal = grid.scrollbar_thumb(ScrollAxis::Horizontal);
+        assert!(grid.pointer_down(
+            Point::new(
+                horizontal.x0.midpoint(horizontal.x1),
+                horizontal.y0.midpoint(horizontal.y1)
+            ),
+            false,
+            false,
+            &mut out,
+        ));
+        assert!(grid.pointer_move(Point::new(
+            horizontal.x1 + 40.0,
+            horizontal.y0.midpoint(horizontal.y1)
+        )));
+        grid.pointer_up();
+        assert!(grid.scroll_x > 0.0);
+
+        let vertical = grid.scrollbar_thumb(ScrollAxis::Vertical);
+        assert!(grid.pointer_down(
+            Point::new(
+                vertical.x0.midpoint(vertical.x1),
+                vertical.y0.midpoint(vertical.y1)
+            ),
+            false,
+            false,
+            &mut out,
+        ));
+        assert!(grid.pointer_move(Point::new(
+            vertical.x0.midpoint(vertical.x1),
+            vertical.y1 + 40.0
+        )));
+        grid.pointer_up();
+        assert!(grid.scroll_y > 0.0);
     }
 
     #[test]

@@ -97,6 +97,34 @@ impl SheetsDoc {
         doc.length(&sheets)
     }
 
+    /// Read the current sheet count without creating a malformed/missing
+    /// workbook subtree. Action preflight uses this so refusing a stale or
+    /// hostile envelope is a genuinely side-effect-free operation.
+    pub fn sheet_count_readonly(doc: &AutoCommit) -> usize {
+        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
+            return 0;
+        };
+        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
+            return 0;
+        };
+        doc.length(&sheets)
+    }
+
+    /// Whether `idx` still identifies a concrete sheet map. This is the
+    /// read-only counterpart to `sheet_map`, for atomic action validation.
+    pub fn sheet_exists(doc: &AutoCommit, idx: usize) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
+            return false;
+        };
+        matches!(
+            doc.get(&sheets, idx),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
+    }
+
     /// Whether the workbook has been seeded at all.
     pub fn is_empty(doc: &mut AutoCommit) -> bool {
         Self::sheet_count(doc) == 0
@@ -175,10 +203,24 @@ impl SheetsDoc {
 
     /// Append a new sheet with `name` and return its index.
     pub fn add_sheet(doc: &mut AutoCommit, name: &str) -> usize {
+        Self::add_sheet_with_id(doc, name, "")
+    }
+
+    /// Append a sheet carrying the action-authored durable identity. Empty is
+    /// reserved for legacy local seeding, which retains the object-id fallback.
+    pub fn add_sheet_with_id(doc: &mut AutoCommit, name: &str, resource_id: &str) -> usize {
         let sheets = Self::sheets_list(doc);
         let idx = doc.length(&sheets);
         let sheet = Self::insert_object_or_panic(doc, &sheets, idx, ObjType::Map);
-        let _ = doc.put(&sheet, "resource_id", sheet.to_string());
+        let _ = doc.put(
+            &sheet,
+            "resource_id",
+            if resource_id.is_empty() {
+                sheet.to_string()
+            } else {
+                resource_id.to_string()
+            },
+        );
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         idx
@@ -194,10 +236,28 @@ impl SheetsDoc {
     /// Insert a new blank sheet named `name` at position `at` (clamped to the
     /// end) and return the index it landed at.
     pub fn insert_sheet(doc: &mut AutoCommit, at: usize, name: &str) -> usize {
+        Self::insert_sheet_with_id(doc, at, name, "")
+    }
+
+    /// Insert a sheet using the exact durable id serialized in an action.
+    pub fn insert_sheet_with_id(
+        doc: &mut AutoCommit,
+        at: usize,
+        name: &str,
+        resource_id: &str,
+    ) -> usize {
         let sheets = Self::sheets_list(doc);
         let at = at.min(doc.length(&sheets));
         let sheet = Self::insert_object_or_panic(doc, &sheets, at, ObjType::Map);
-        let _ = doc.put(&sheet, "resource_id", sheet.to_string());
+        let _ = doc.put(
+            &sheet,
+            "resource_id",
+            if resource_id.is_empty() {
+                sheet.to_string()
+            } else {
+                resource_id.to_string()
+            },
+        );
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         at
@@ -216,11 +276,21 @@ impl SheetsDoc {
     /// Duplicate sheet `idx` (name, per-cell raw+format, and tab colour) into a
     /// new sheet inserted immediately after it. Returns the new sheet's index.
     pub fn duplicate_sheet(doc: &mut AutoCommit, idx: usize) -> Option<usize> {
+        Self::duplicate_sheet_with_id(doc, idx, "")
+    }
+
+    /// Duplicate with an action-authored identity so independent replays keep
+    /// the new logical sheet address stable.
+    pub fn duplicate_sheet_with_id(
+        doc: &mut AutoCommit,
+        idx: usize,
+        resource_id: &str,
+    ) -> Option<usize> {
         Self::sheet_map(doc, idx)?;
         let snap = Self::snapshot_sheet(doc, idx, Currency::USD);
         let color = Self::sheet_color(doc, idx);
         let new_name = format!("{} copy", snap.name);
-        let new_idx = Self::insert_sheet(doc, idx + 1, &new_name);
+        let new_idx = Self::insert_sheet_with_id(doc, idx + 1, &new_name, resource_id);
         for (addr, raw) in &snap.raw {
             Self::set_cell_raw(doc, new_idx, *addr, raw);
         }

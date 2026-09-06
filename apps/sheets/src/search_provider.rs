@@ -7,38 +7,94 @@
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult, SearchTextIndex,
+    normalize_search_text,
 };
 
 pub const SHEET_KIND: &str = "Sheets";
 pub const CELL_KIND: &str = "Sheet cells";
 
+/// One display row and all independently searchable text belonging to it.
+/// `sources` are kept separate so a query cannot accidentally match across a
+/// field boundary (for example, the end of a cell value plus its A1 address).
+struct SearchEntry {
+    result: SearchResult,
+    sources: Vec<String>,
+}
+
+/// A complete shared Unicode substring index.  Field values are joined with a
+/// newline sentinel so ordinary text cannot accidentally match across fields.
 pub struct SheetSearchProvider {
     sheets: Vec<crate::actions::SearchableSheet>,
+    entries: Vec<SearchEntry>,
+    index: SearchTextIndex,
 }
 
 impl SheetSearchProvider {
     pub fn new(sheets: &[crate::actions::SearchableSheet]) -> Self {
-        let mut remaining = DEFAULT_SEARCH_INDEX_LIMIT;
-        let sheets = sheets
-            .iter()
-            .take(DEFAULT_SEARCH_INDEX_LIMIT)
-            .map(|sheet| {
-                let cells = sheet
-                    .cells
+        let mut entries = Vec::new();
+        for sheet in sheets {
+            entries.push(SearchEntry {
+                result: SearchResult::for_action(
+                    SHEET_KIND,
+                    sheet.name.clone(),
+                    crate::actions::open_sheet_address(&sheet.id),
+                )
+                .with_icon(Icon::LayoutGrid),
+                sources: vec![sheet.name.clone()],
+            });
+        }
+        for sheet in sheets {
+            for cell in &sheet.cells {
+                let reference =
+                    format!("{}{}", crate::actions::column_label(cell.col), cell.row + 1);
+                let qualified = format!("{}!{reference}", sheet.name);
+                let subtitle = if cell.display.is_empty() || cell.display == cell.raw {
+                    cell.raw.clone()
+                } else {
+                    format!("{} · {}", cell.display, cell.raw)
+                };
+                entries.push(SearchEntry {
+                    result: SearchResult::for_action(
+                        CELL_KIND,
+                        qualified.clone(),
+                        crate::actions::open_cell_address(&sheet.id, cell.col, cell.row),
+                    )
+                    .with_subtitle(subtitle)
+                    .with_icon(Icon::LayoutGrid),
+                    sources: [reference, qualified, cell.raw.clone(), cell.display.clone()]
+                        .into_iter()
+                        .filter(|source| !source.is_empty())
+                        .collect(),
+                });
+            }
+        }
+
+        Self {
+            sheets: sheets.to_vec(),
+            index: SearchTextIndex::new(entries.iter().map(|row| row.sources.join("\n"))),
+            entries,
+        }
+    }
+
+    /// Return the requested bounded result window. The shared suffix index
+    /// resolves matching offsets directly, without a per-row candidate scan.
+    fn matching_entry_ids(&self, query: &str, limit: usize) -> (Vec<usize>, usize) {
+        if query.is_empty() || limit == 0 {
+            return (Vec::new(), 0);
+        }
+        let mut matches = self.index.matching_ids(query, limit);
+        // Retain Sheets' useful field ranking: an exact field hit comes ahead
+        // of a generic substring hit without making exactness a requirement.
+        matches.sort_by_key(|&entry| {
+            !self.entries.get(entry).is_some_and(|row| {
+                row.sources
                     .iter()
-                    .take(remaining)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                remaining = remaining.saturating_sub(cells.len());
-                crate::actions::SearchableSheet {
-                    id: sheet.id.clone(),
-                    name: sheet.name.clone(),
-                    cells,
-                }
+                    .any(|source| normalize_search_text(source) == query)
             })
-            .collect();
-        Self { sheets }
+        });
+        matches.truncate(limit);
+        (matches, 0)
     }
 }
 
@@ -52,59 +108,22 @@ impl SearchProvider for SheetSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         if limit == 0 {
             return Vec::new();
         }
-        let q = query.to_lowercase();
-        let mut results = Vec::with_capacity(limit.min(32));
-        for sheet in &self.sheets {
-            if sheet.name.to_lowercase().contains(&q) {
-                results.push(
-                    SearchResult::for_action(
-                        SHEET_KIND,
-                        sheet.name.clone(),
-                        crate::actions::open_sheet_address(&sheet.id),
-                    )
-                    .with_icon(Icon::LayoutGrid),
-                );
-                if results.len() == limit {
-                    return results;
-                }
-            }
+        if query.is_empty() {
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|entry| entry.result.clone())
+                .collect();
         }
-        for sheet in &self.sheets {
-            for cell in &sheet.cells {
-                let reference =
-                    format!("{}{}", crate::actions::column_label(cell.col), cell.row + 1);
-                let qualified = format!("{}!{reference}", sheet.name);
-                if q.is_empty()
-                    || reference.to_lowercase().contains(&q)
-                    || qualified.to_lowercase().contains(&q)
-                    || cell.raw.to_lowercase().contains(&q)
-                    || cell.display.to_lowercase().contains(&q)
-                {
-                    let subtitle = if cell.display.is_empty() || cell.display == cell.raw {
-                        cell.raw.clone()
-                    } else {
-                        format!("{} · {}", cell.display, cell.raw)
-                    };
-                    results.push(
-                        SearchResult::for_action(
-                            CELL_KIND,
-                            qualified,
-                            crate::actions::open_cell_address(&sheet.id, cell.col, cell.row),
-                        )
-                        .with_subtitle(subtitle)
-                        .with_icon(Icon::LayoutGrid),
-                    );
-                    if results.len() == limit {
-                        return results;
-                    }
-                }
-            }
-        }
-        results
+        let (ids, _) = self.matching_entry_ids(&normalize_search_text(query), limit);
+        ids.into_iter()
+            .filter_map(|id| self.entries.get(id))
+            .map(|entry| entry.result.clone())
+            .collect()
     }
 
     fn resolve_action_resource(
@@ -180,6 +199,88 @@ mod tests {
         let provider = SheetSearchProvider::new(&sheets());
         assert_eq!(provider.search_limited("", 2).len(), 2);
         assert!(provider.search_limited("", 0).is_empty());
+    }
+
+    #[test]
+    fn late_cells_are_searchable_in_a_large_workbook() {
+        let mut large = vec![SearchableSheet {
+            id: "large-id".into(),
+            name: "Large workbook".into(),
+            cells: (0..10_000)
+                .map(|row| SearchableCell {
+                    col: 0,
+                    row,
+                    raw: format!("ordinary {row}"),
+                    display: String::new(),
+                })
+                .collect(),
+        }];
+        large[0].cells[9_999].raw = "needle beyond the old index limit".into();
+
+        let hits = SheetSearchProvider::new(&large).search("needle beyond");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Large workbook!A10000");
+        assert_eq!(
+            hits[0].action_address(),
+            Some(crate::actions::open_cell_address("large-id", 0, 9_999))
+        );
+    }
+
+    #[test]
+    fn complete_index_honors_large_broad_result_windows_without_row_scans() {
+        let cells = (0..12_000)
+            .map(|row| SearchableCell {
+                col: 0,
+                row,
+                raw: format!("common broad value {row}"),
+                display: String::new(),
+            })
+            .collect();
+        let provider = SheetSearchProvider::new(&[SearchableSheet {
+            id: "scale-id".into(),
+            name: "Scale".into(),
+            cells,
+        }]);
+
+        let (broad, broad_checks) = provider.matching_entry_ids("common", 256);
+        assert_eq!(broad.len(), 256);
+        assert_eq!(broad_checks, 0, "suffix lookup does not inspect row text");
+
+        let (missing, missing_checks) = provider.matching_entry_ids("not-present-anywhere", 7);
+        assert!(missing.is_empty());
+        assert_eq!(missing_checks, 0);
+    }
+
+    #[test]
+    fn exact_token_ranking_never_excludes_a_longer_substring_hit() {
+        let provider = SheetSearchProvider::new(&[SearchableSheet {
+            id: "substring-id".into(),
+            name: "Substring".into(),
+            cells: vec![
+                SearchableCell {
+                    col: 0,
+                    row: 0,
+                    raw: "need".into(),
+                    display: String::new(),
+                },
+                SearchableCell {
+                    col: 0,
+                    row: 1,
+                    raw: "needle late substring".into(),
+                    display: String::new(),
+                },
+            ],
+        }]);
+        let hits = provider.search_limited("need", 2);
+        let titles = hits
+            .iter()
+            .map(|hit| hit.title.as_str())
+            .collect::<Vec<_>>();
+        assert!(titles.contains(&"Substring!A1"));
+        assert!(
+            titles.contains(&"Substring!A2"),
+            "an exact-token fast path must not hide a longer substring match"
+        );
     }
 
     #[test]
