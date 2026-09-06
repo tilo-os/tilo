@@ -109,6 +109,18 @@ pub enum Face {
     IconOnly,
 }
 
+/// What the canvas can honestly render right now. A shared document can name
+/// an image before this device has received its content, so "no pixels yet"
+/// is distinct from both an empty library and corrupt local bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CanvasState {
+    #[default]
+    Empty,
+    Loading,
+    Error,
+    Ready,
+}
+
 /// A slot in the toolbar strip, in painting order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Slot {
@@ -263,6 +275,8 @@ pub struct PhotosApp {
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
     pending_resource_open: Option<(qos_actions::InvocationId, String)>,
+    canvas_state: CanvasState,
+    search_provider: crate::search::PhotosSearchProvider,
 }
 
 impl Default for PhotosApp {
@@ -298,6 +312,8 @@ impl PhotosApp {
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
+            canvas_state: CanvasState::Empty,
+            search_provider: crate::search::PhotosSearchProvider::empty(),
         }
     }
 
@@ -567,6 +583,8 @@ impl PhotosApp {
 
     fn perform_effect(&mut self, operation: crate::actions::PhotosOperation, doc: &AutoCommit) {
         match operation {
+            // Resource/search routing has already brought this Photos
+            // instance forward. Viewing does not alter document or OS state.
             crate::actions::PhotosOperation::Open { path: None } => {
                 self.picker = Some(
                     ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
@@ -589,7 +607,8 @@ impl PhotosApp {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
             }
-            crate::actions::PhotosOperation::Open { path: Some(_) } => {}
+            crate::actions::PhotosOperation::View
+            | crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
     }
 
@@ -599,6 +618,11 @@ impl PhotosApp {
             self.rendered = None;
             self.viewer = None;
             self.original = None;
+            self.canvas_state = if self.notice.is_some() {
+                CanvasState::Error
+            } else {
+                CanvasState::Empty
+            };
             return;
         };
         let edits = PhotosDoc::edits(doc);
@@ -606,15 +630,18 @@ impl PhotosApp {
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
-            if let Some(img) = crate::doc::bytes_of(&open)
-                .as_deref()
-                .and_then(pixels::decode)
-            {
+            let bytes = crate::doc::bytes_of(&open);
+            if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
                 self.original = Some((open.path.clone(), img));
             } else {
                 self.original = None;
                 self.rendered = None;
                 self.viewer = None;
+                self.canvas_state = if bytes.is_some() {
+                    CanvasState::Error
+                } else {
+                    CanvasState::Loading
+                };
                 return;
             }
         }
@@ -638,6 +665,7 @@ impl PhotosApp {
         // exactly what was framed, so showing it at zoom 1 is showing what was
         // asked for.
         self.viewer = Some(ImageViewer::new(image));
+        self.canvas_state = CanvasState::Ready;
         self.rendered = Some(Rendered {
             path: open.path,
             edits,
@@ -726,7 +754,7 @@ impl PhotosApp {
                 format!("{} — {}", image_label(), tr("photos-edited")),
                 tr("photos-image-help"),
             ),
-            None => (tr("photos-empty-title"), tr("photos-empty-body")),
+            None => self.empty_state_text(),
         };
         let mut children = vec![
             self.toolbar_semantics(),
@@ -861,7 +889,7 @@ impl PhotosApp {
     /// The status line: the file, its edited size, and any notice.
     fn status_text(&self, doc: &AutoCommit) -> String {
         let Some(open) = PhotosDoc::image(doc) else {
-            return String::new();
+            return self.notice.clone().unwrap_or_default();
         };
         let edits = PhotosDoc::edits(doc);
         let (w, h) = open.edited_size(&edits);
@@ -875,6 +903,16 @@ impl PhotosApp {
             s.push_str(n);
         }
         s
+    }
+
+    fn empty_state_text(&self) -> (String, String) {
+        match self.canvas_state {
+            CanvasState::Loading => (tr("photos-loading-title"), tr("photos-loading-body")),
+            CanvasState::Error => (tr("photos-error-title"), tr("photos-error-body")),
+            CanvasState::Empty | CanvasState::Ready => {
+                (tr("photos-empty-title"), tr("photos-empty-body"))
+            }
+        }
     }
 
     /// Lay out the toolbar strip: one taffy node per [`SLOTS`] entry (a
@@ -1217,12 +1255,16 @@ impl Widget for PhotosApp {
         self.drain_picker(doc);
         self.refresh(doc);
 
-        let has_image = PhotosDoc::image(doc).is_some();
+        // An address can arrive before its bytes. Do not offer Copy, Save or
+        // a blind crop against an empty canvas; the durable resource remains
+        // available to a headless collaborator that deliberately chooses it.
+        let has_image = self.has_image();
         let edited = !PhotosDoc::edits(doc).is_identity();
         for (hit, button) in &mut self.buttons {
             button.set_enabled(Self::enabled(*hit, has_image, edited));
         }
         self.status = self.status_text(doc);
+        self.search_provider = crate::search::PhotosSearchProvider::new(doc);
     }
 
     #[allow(
@@ -1389,22 +1431,22 @@ impl Widget for PhotosApp {
             button.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        match self.viewer.as_mut() {
-            Some(v) => v.draw(scene, transform, text_renderer, theme, presence),
-            None => {
-                EmptyState::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    self.canvas_rect,
-                    Some(Icon::Image),
-                    &tr("photos-empty-title"),
-                    Some(&tr("photos-empty-body")),
-                    None,
-                    Point::ZERO,
-                );
-            }
+        if let Some(v) = self.viewer.as_mut() {
+            v.draw(scene, transform, text_renderer, theme, presence);
+        } else {
+            let (title, body) = self.empty_state_text();
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.canvas_rect,
+                Some(Icon::Image),
+                &title,
+                Some(&body),
+                None,
+                Point::ZERO,
+            );
         }
 
         if !self.status.is_empty() {
@@ -1524,6 +1566,13 @@ impl Widget for PhotosApp {
         crate::actions::PhotosResources.resources(doc)
     }
 
+    /// Keep the palette projection derived from the same fresh document
+    /// resource tree as agents and assistive technology. The provider's
+    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1565,8 +1614,10 @@ impl ui::widget::AppWidget for PhotosApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::PhotosResources;
     use crate::shots_pattern;
     use automerge::ROOT;
+    use qos_actions::ResourceProvider;
 
     #[test]
     fn accessibility_exposes_and_routes_every_toolbar_control() {
@@ -1627,5 +1678,56 @@ mod tests {
             .expect("opened image has status text");
         assert_eq!(status.role, Role::StaticText);
         assert_eq!(status.live, Some(Politeness::Polite));
+    }
+
+    #[test]
+    fn unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let waiting =
+            OpenImage::from_path("/not-present/yet.png", 1200, 800).with_content("0".repeat(64));
+        PhotosDoc::set_image(&mut doc, Some(&waiting));
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.canvas_state, CanvasState::Loading);
+        assert!(!app.has_image());
+        assert_eq!(app.empty_state_text().0, tr("photos-loading-title"));
+        assert!(
+            app.buttons
+                .iter()
+                .filter(|(hit, _)| *hit != Hit::Open)
+                .all(|(_, button)| !button.is_enabled())
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.png");
+        std::fs::write(&path, b"not image data").unwrap();
+        let bad = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
+        PhotosDoc::set_image(&mut doc, Some(&bad));
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.canvas_state, CanvasState::Error);
+        assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
+    }
+
+    #[test]
+    fn synchronized_app_registers_the_canonical_photo_search_provider() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
+        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.sync(&mut doc, &ROOT);
+
+        let providers = Widget::search_providers(&app);
+        assert_eq!(providers.len(), 1);
+        let hit = providers[0].search("夏").pop().unwrap();
+        let address = hit.action_address().unwrap();
+        assert_eq!(address.action, "view");
+        assert!(
+            PhotosResources
+                .resources(&doc)
+                .iter()
+                .any(|resource| resource.id.0 == address.resource)
+        );
     }
 }
