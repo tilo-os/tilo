@@ -24,6 +24,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::region::{
     Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
 };
@@ -40,6 +41,7 @@ pub struct RegionPane {
     settings: RegionSettings,
     needs_seed: bool,
     commit_context_pending: bool,
+    actions: ui::ActionHost,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -62,6 +64,7 @@ impl RegionPane {
             settings,
             needs_seed: true,
             commit_context_pending: false,
+            actions: ui::ActionHost::new(),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -77,7 +80,7 @@ impl RegionPane {
         // Currency dropdown — options are ISO codes (the stored form).
         let currency_opts: Vec<String> =
             Currency::ALL.iter().map(|c| c.code().to_string()).collect();
-        let currency = Dropdown::new(currency_opts, CURRENCY_KEY)
+        let currency = Dropdown::new(currency_opts, "region.currency.edit")
             .with_id("region.currency")
             .with_placeholder(loc.currency.code());
 
@@ -85,7 +88,7 @@ impl RegionPane {
             .iter()
             .map(|d| d.label().to_string())
             .collect();
-        let date = Dropdown::new(date_opts, DATE_KEY)
+        let date = Dropdown::new(date_opts, "region.date_format.edit")
             .with_id("region.date")
             .with_placeholder(loc.date_format.label());
 
@@ -93,7 +96,7 @@ impl RegionPane {
             .iter()
             .map(|t| t.label().to_string())
             .collect();
-        let time = Dropdown::new(time_opts, TIME_KEY)
+        let time = Dropdown::new(time_opts, "region.time_format.edit")
             .with_id("region.time")
             .with_placeholder(loc.time_format.label());
 
@@ -101,7 +104,7 @@ impl RegionPane {
             .iter()
             .map(|m| m.label().to_string())
             .collect();
-        let units = Dropdown::new(unit_opts, MEASUREMENT_KEY)
+        let units = Dropdown::new(unit_opts, "region.measurement.edit")
             .with_id("region.measurement")
             .with_placeholder(loc.measurement.label());
 
@@ -110,7 +113,7 @@ impl RegionPane {
                 .iter()
                 .map(|style| style.label().to_string())
                 .collect(),
-            NUMBER_STYLE_KEY,
+            "region.number_style.edit",
         )
         .with_id("region.number_style")
         .with_placeholder(loc.number_style.label());
@@ -120,7 +123,7 @@ impl RegionPane {
                 .iter()
                 .map(|day| day.label().to_string())
                 .collect(),
-            FIRST_DAY_KEY,
+            "region.first_day.edit",
         )
         .with_id("region.first_day")
         .with_placeholder(loc.first_day_of_week.label());
@@ -177,6 +180,40 @@ impl RegionPane {
             _ => None,
         }
     }
+
+    fn draft_key(canonical: &str) -> String {
+        format!("{canonical}.edit")
+    }
+
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
+    }
+
+    fn reconcile(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        key: &str,
+        current: &str,
+    ) -> (String, bool) {
+        let canonical = Self::read_str(state, root, key).unwrap_or_else(|| current.to_string());
+        let draft_key = Self::draft_key(key);
+        let draft = Self::read_str(state, root, &draft_key).unwrap_or_else(|| canonical.clone());
+        if canonical != current {
+            let _ = state.put(root, draft_key, canonical.as_str());
+            (canonical, true)
+        } else if draft != canonical {
+            self.dispatch(state, &set_text_action(key, draft.clone()));
+            (draft, true)
+        } else {
+            (current.to_string(), false)
+        }
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -189,54 +226,70 @@ impl Widget for RegionPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
             let loc = self.settings.locale;
-            let _ = state.put(root, CURRENCY_KEY, loc.currency.code());
-            let _ = state.put(root, DATE_KEY, loc.date_format.label());
-            let _ = state.put(root, TIME_KEY, loc.time_format.label());
-            let _ = state.put(root, MEASUREMENT_KEY, loc.measurement.label());
-            let _ = state.put(root, NUMBER_STYLE_KEY, loc.number_style.label());
-            let _ = state.put(root, FIRST_DAY_KEY, loc.first_day_of_week.label());
+            for (key, value) in [
+                (CURRENCY_KEY, loc.currency.code()),
+                (DATE_KEY, loc.date_format.label()),
+                (TIME_KEY, loc.time_format.label()),
+                (MEASUREMENT_KEY, loc.measurement.label()),
+                (NUMBER_STYLE_KEY, loc.number_style.label()),
+                (FIRST_DAY_KEY, loc.first_day_of_week.label()),
+            ] {
+                self.dispatch(state, &set_text_action(key, value));
+            }
             self.needs_seed = false;
         }
 
         let mut changed = false;
 
-        if let Some(code) = Self::read_str(state, root, CURRENCY_KEY)
-            && let Some(c) = Currency::from_code(&code)
+        let currency_now = self.settings.locale.currency.code();
+        let (code, did_change) = self.reconcile(state, root, CURRENCY_KEY, currency_now);
+        changed |= did_change;
+        if let Some(c) = Currency::from_code(&code)
             && c != self.settings.locale.currency
         {
             self.settings.locale.currency = c;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, DATE_KEY)
-            && let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
+        let date_now = self.settings.locale.date_format.label();
+        let (label, did_change) = self.reconcile(state, root, DATE_KEY, date_now);
+        changed |= did_change;
+        if let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
             && *d != self.settings.locale.date_format
         {
             self.settings.locale.date_format = *d;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TIME_KEY)
-            && let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
+        let time_now = self.settings.locale.time_format.label();
+        let (label, did_change) = self.reconcile(state, root, TIME_KEY, time_now);
+        changed |= did_change;
+        if let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
             && *t != self.settings.locale.time_format
         {
             self.settings.locale.time_format = *t;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, MEASUREMENT_KEY)
-            && let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
+        let measure_now = self.settings.locale.measurement.label();
+        let (label, did_change) = self.reconcile(state, root, MEASUREMENT_KEY, measure_now);
+        changed |= did_change;
+        if let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
             && *m != self.settings.locale.measurement
         {
             self.settings.locale.measurement = *m;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, NUMBER_STYLE_KEY)
-            && let Some(style) = NumberStyle::ALL.iter().find(|style| style.label() == label)
+        let style_now = self.settings.locale.number_style.label();
+        let (label, did_change) = self.reconcile(state, root, NUMBER_STYLE_KEY, style_now);
+        changed |= did_change;
+        if let Some(style) = NumberStyle::ALL.iter().find(|style| style.label() == label)
             && *style != self.settings.locale.number_style
         {
             self.settings.locale.number_style = *style;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, FIRST_DAY_KEY)
-            && let Some(day) = FirstDayOfWeek::ALL.iter().find(|day| day.label() == label)
+        let first_day_now = self.settings.locale.first_day_of_week.label();
+        let (label, did_change) = self.reconcile(state, root, FIRST_DAY_KEY, first_day_now);
+        changed |= did_change;
+        if let Some(day) = FirstDayOfWeek::ALL.iter().find(|day| day.label() == label)
             && *day != self.settings.locale.first_day_of_week
         {
             self.settings.locale.first_day_of_week = *day;

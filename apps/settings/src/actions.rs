@@ -143,6 +143,7 @@ impl Action for SettingsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             SettingsAction::SetSetting { key, value } => {
+                validate_setting_target(key, value)?;
                 // Skip the write when the key already holds this value, so a
                 // replayed / stale envelope leaves the document (and its heads)
                 // untouched.
@@ -159,6 +160,76 @@ impl Action for SettingsAction {
         // replicate, no host ordering needed.
         ExecutionLocus::ClientLocal
     }
+}
+
+/// Refuse a delayed action whose target no longer belongs to Settings.  The
+/// old generic setter accepted *any* root key, which meant a replay from an
+/// obsolete UI could silently create an unrelated value.  Draft (`.edit`),
+/// confirmation, and navigation keys are intentionally absent: they are local
+/// presentation state, not collaborative resources.
+fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), ActionError> {
+    let text =
+        || matches!(value, SettingValue::Text(text) if !text.is_empty() && text.len() <= 1024);
+    let boolean = || matches!(value, SettingValue::Bool(_));
+    let finite_float = || matches!(value, SettingValue::Float(number) if number.is_finite());
+    let presentation_key = matches!(key.rsplit_once('.'), Some((_, "edit" | "error")));
+    let allowed = match key {
+        "appearance.theme"
+        | "appearance.text_size"
+        | "appearance.ui_scale"
+        | "region.currency"
+        | "region.date_format"
+        | "region.time_format"
+        | "region.measurement"
+        | "region.number_style"
+        | "region.first_day"
+        | "time.timezone"
+        | "power.lid"
+        | "power.power_key"
+        | "power.critical" => text(),
+        "appearance.high_contrast"
+        | "appearance.reduce_motion"
+        | "time.auto"
+        | "time.h24"
+        | "shortcuts.vim_mode"
+        | "notifications.do_not_disturb"
+        | "notifications.show_banners"
+        | "notifications.show_previews"
+        | "notifications.play_sounds"
+        | "notifications.show_on_lock_screen"
+        | "notifications.show_badges"
+        | "network.wifi_enabled"
+        | "bluetooth.enabled"
+        | "audio.muted"
+        | "display.auto_brightness"
+        | "display.night_light"
+        | "input.natural_scroll"
+        | "input.tap_to_click"
+        | "power.auto_suspend"
+        | "updates.auto" => boolean(),
+        "audio.volume"
+        | "display.brightness"
+        | "display.scale"
+        | "input.pointer_speed"
+        | "input.key_repeat" => finite_float(),
+        key if key.starts_with("shortcuts.") && !presentation_key => text(),
+        key if key.starts_with("default_apps.") && !presentation_key => text(),
+        // Device-mesh resources are discovered at runtime. Their stable
+        // namespace is the stale-target boundary; only its documented scalar
+        // preferences can enter it.
+        "device_mesh.role" | "device_mesh.replication" => text(),
+        "device_mesh.inbound_relay"
+        | "device_mesh.remote_control_relay"
+        | "device_mesh.app_serving"
+        | "device_mesh.compute" => boolean(),
+        key if key.starts_with("device_mesh.workspace.") && !presentation_key => boolean(),
+        _ => false,
+    };
+    allowed.then_some(()).ok_or_else(|| {
+        ActionError::Refused(format!(
+            "settings target is stale, unknown, or has an invalid value: {key}"
+        ))
+    })
 }
 
 /// Register the settings action decoder for palette execution + remote replay.
@@ -351,6 +422,10 @@ pub fn provide_resources_with_accounts(
             Category::Appearance => appearance_section(doc, &d),
             Category::Accessibility => accessibility_section(doc, &d),
             Category::Notifications => notifications_section(doc, &d),
+            Category::RegionFormats => region_section(doc, &d),
+            Category::TimeDate => time_date_section(doc, &d),
+            Category::KeyboardShortcuts => shortcuts_section(doc),
+            Category::DeviceMesh => device_mesh_section(doc),
             Category::Updates => updates_section(doc, &d),
             Category::ExternalAccounts => accounts_section(account_inventory),
             _ => Resource::new(
@@ -587,21 +662,24 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ),
         "reduced motion",
     ));
-    sec = sec.with_action(float_prompt_spec(
+    sec = sec.with_action(choice_prompt_spec(
         "text_size",
         "Set text size",
         panes::appearance::TEXT_SIZE_KEY,
-        "0.8 – 1.5",
-        0.8,
-        1.5,
+        "Small, Default, Large, Larger",
+        &["Small", "Default", "Large", "Larger"],
+        s(
+            panes::appearance::TEXT_SIZE_KEY,
+            panes::appearance::text_size_label(d.appearance.text_scale),
+        ),
     ));
-    sec = sec.with_action(float_prompt_spec(
+    sec = sec.with_action(choice_prompt_spec(
         "ui_scale",
         "Set UI scale",
         panes::appearance::UI_SCALE_KEY,
-        "0.8 – 2.0",
-        0.8,
-        2.0,
+        "90%, 100%, 110%, 125%, 150%",
+        &["90%", "100%", "110%", "125%", "150%"],
+        s(panes::appearance::UI_SCALE_KEY, "100%"),
     ));
     sec
 }
@@ -894,6 +972,223 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
     bt
 }
 
+/// Region and time are deliberately represented as individual named actions,
+/// not an "advanced" catch-all, so a person or an assistive agent can find a
+/// setting from the same hierarchy shown in the sidebar.
+fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    const CURRENCY_OPTIONS: &[&str] = &[
+        "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "INR",
+    ];
+    const DATE_OPTIONS: &[&str] = &[
+        "ISO (2023-03-15)",
+        "US (03/15/2023)",
+        "European (15/03/2023)",
+        "Long (15 Mar 2023)",
+    ];
+    const TIME_OPTIONS: &[&str] = &["24-hour (14:05)", "12-hour (2:05 PM)"];
+    const MEASUREMENT_OPTIONS: &[&str] = &["Metric (°C, km, kg)", "Imperial (°F, mi, lb)"];
+    const NUMBER_OPTIONS: &[&str] = &["1,234,567.89", "1.234.567,89"];
+    const FIRST_DAY_OPTIONS: &[&str] = &["Monday", "Sunday", "Saturday"];
+    let current = |key: &str, fallback: &str| doc_str(doc, key).unwrap_or_else(|| fallback.into());
+    let mut section = Resource::new(
+        pane_resource_id(Category::RegionFormats),
+        "settings.section",
+        "Region & Formats",
+    );
+    for (id, label, key, options, fallback) in [
+        (
+            "currency",
+            "Set currency",
+            panes::region::CURRENCY_KEY,
+            CURRENCY_OPTIONS,
+            "USD",
+        ),
+        (
+            "date",
+            "Set date format",
+            panes::region::DATE_KEY,
+            DATE_OPTIONS,
+            "ISO",
+        ),
+        (
+            "time",
+            "Set time format",
+            panes::region::TIME_KEY,
+            TIME_OPTIONS,
+            "24-hour (14:05)",
+        ),
+        (
+            "measurement",
+            "Set measurement units",
+            panes::region::MEASUREMENT_KEY,
+            MEASUREMENT_OPTIONS,
+            "Metric (°C, km, kg)",
+        ),
+        (
+            "number",
+            "Set number format",
+            panes::region::NUMBER_STYLE_KEY,
+            NUMBER_OPTIONS,
+            "1,234,567.89",
+        ),
+        (
+            "first-day",
+            "Set first day of week",
+            panes::region::FIRST_DAY_KEY,
+            FIRST_DAY_OPTIONS,
+            "Monday",
+        ),
+    ] {
+        // The action-spec closure requires static choices; all entries above
+        // are literals and receive a static promotion here.
+        section = section.with_action(choice_prompt_spec(
+            id,
+            label,
+            key,
+            label,
+            options,
+            current(key, fallback),
+        ));
+    }
+    section
+}
+
+fn time_date_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+    let mut section = Resource::new(
+        pane_resource_id(Category::TimeDate),
+        "settings.section",
+        "Time & Date",
+    );
+    section = section.with_action(bool_flip_spec(
+        "automatic-time",
+        panes::time_date::AUTO_TIME_KEY,
+        b(panes::time_date::AUTO_TIME_KEY, true),
+        "automatic time",
+    ));
+    section = section.with_action(bool_flip_spec(
+        "24-hour",
+        panes::time_date::H24_KEY,
+        b(panes::time_date::H24_KEY, true),
+        "24-hour time",
+    ));
+    section.with_action(
+        ActionSpec::typed(
+            "timezone",
+            "Set time zone",
+            "IANA time-zone identifier",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "choice",
+                ParamType::Text,
+                "Time zone",
+            )],
+            |args| {
+                encode(&set_text_action(
+                    panes::time_date::TIMEZONE_KEY,
+                    args.text("choice").unwrap_or("UTC"),
+                ))
+            },
+        )
+        .with_contract(setting_contract()),
+    )
+}
+
+fn shortcuts_section(doc: &AutoCommit) -> Resource {
+    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+    let mut section = Resource::new(
+        pane_resource_id(Category::KeyboardShortcuts),
+        "settings.section",
+        "Keyboard Shortcuts",
+    );
+    section = section.with_action(bool_flip_spec(
+        "vim-mode",
+        "shortcuts.vim_mode",
+        b("shortcuts.vim_mode", false),
+        "Vim-style desktop navigation",
+    ));
+    for (id, label, key) in [
+        ("search", "Set Search shortcut", "shortcuts.search"),
+        (
+            "overview",
+            "Set Workspace Overview shortcut",
+            "shortcuts.overview",
+        ),
+        ("lock", "Set Lock Screen shortcut", "shortcuts.lock"),
+        (
+            "quick-settings",
+            "Set Quick Settings shortcut",
+            "shortcuts.quick_settings",
+        ),
+    ] {
+        section = section.with_action(
+            ActionSpec::typed(
+                id,
+                label,
+                "e.g. Super+K",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required("choice", ParamType::Text, "Shortcut")],
+                move |args| {
+                    encode(&set_text_action(
+                        key,
+                        args.text("choice").unwrap_or_default(),
+                    ))
+                },
+            )
+            .with_contract(setting_contract()),
+        );
+    }
+    section
+}
+
+fn device_mesh_section(doc: &AutoCommit) -> Resource {
+    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+    let mut section = Resource::new(
+        pane_resource_id(Category::DeviceMesh),
+        "settings.section",
+        "Devices & Sync",
+    );
+    section = section.with_action(choice_prompt_spec(
+        "role",
+        "Set device role",
+        "device_mesh.role",
+        "Personal device, Available while active, Always-on server",
+        &[
+            "Personal device",
+            "Available while active",
+            "Always-on server",
+        ],
+        doc_str(doc, "device_mesh.role").unwrap_or_else(|| "Personal device".into()),
+    ));
+    section = section.with_action(choice_prompt_spec(
+        "replication",
+        "Set replication",
+        "device_mesh.replication",
+        "On demand, Workspace state, Full workspace copy",
+        &["On demand", "Workspace state", "Full workspace copy"],
+        doc_str(doc, "device_mesh.replication").unwrap_or_else(|| "On demand".into()),
+    ));
+    for (id, key, label) in [
+        (
+            "inbound-relay",
+            "device_mesh.inbound_relay",
+            "inbound relay",
+        ),
+        (
+            "remote-control",
+            "device_mesh.remote_control_relay",
+            "remote-control relay",
+        ),
+        ("app-serving", "device_mesh.app_serving", "app serving"),
+        ("compute", "device_mesh.compute", "remote compute"),
+    ] {
+        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+    }
+    section
+}
+
 impl ResourceProvider for crate::SettingsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources_with_accounts(doc, self.account_resource_inventory())
@@ -1134,6 +1429,21 @@ mod tests {
             doc_str(&b, panes::appearance::THEME_KEY),
             doc_str(&a, panes::appearance::THEME_KEY)
         );
+    }
+
+    #[test]
+    fn stale_or_presentation_targets_are_refused() {
+        let mut doc = AutoCommit::new();
+        for action in [
+            set_bool_action("appearance.high_contrast.edit", true),
+            set_text_action("settings.select.appearance", "true"),
+            set_text_action("unknown.preference", "value"),
+        ] {
+            assert!(matches!(
+                action.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+        }
     }
 
     /// Writing the value a key already holds is a no-op: the document's heads are
