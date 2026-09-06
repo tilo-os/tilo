@@ -8800,6 +8800,12 @@ mod action_palette_tests {
         ));
         app.open_action_palette();
         app.action_palette.as_mut().unwrap().set_query("restricted");
+        // A query advances one provider page immediately; the second provider
+        // is intentionally deferred to the next redraw so no keystroke scans
+        // every source on the UI thread. Mirror that host frame here before
+        // asserting on the lazy provider's row.
+        let progress = app.action_palette.as_mut().unwrap().advance_search_page();
+        assert!(!progress.pending, "both tiny providers are now exhausted");
         assert_eq!(
             app.action_palette().unwrap().result_labels(),
             vec!["Restricted lazy action"]
