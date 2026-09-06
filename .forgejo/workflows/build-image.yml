@@ -444,11 +444,14 @@ jobs:
           # The OS graph contains several large RPM and Rust stages. Letting
           # BuildKit run all of them at once exhausts the ephemeral runner's
           # backing store and can tear SQLite's rpmdb while a layer is being
-          # committed. Two solver operations retain useful overlap without
-          # making disk-pressure failures nondeterministic.
+          # committed. In particular, composefs needs temporary room comparable
+          # to the completed root while sealing the UKI; a second active solver
+          # operation has exhausted that headroom on otherwise healthy runners.
+          # Serialize the solver so the installed-image and AT-SPI gates are not
+          # skipped because an unrelated stage consumed composefs's workspace.
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 2
+              max-parallelism = 1
 
       - name: Extract image metadata (tags, labels)
         id: meta
