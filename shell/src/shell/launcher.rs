@@ -542,8 +542,12 @@ impl LaunchEvent {
     /// copied into notification chrome.
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
         let body = match &self.kind {
-            LaunchEventKind::SpawnFailed { .. } => "The app launcher is unavailable. Try again.",
-            LaunchEventKind::Failed { .. } => "The app stopped before opening. Try again.",
+            LaunchEventKind::SpawnFailed { .. } => {
+                "The app launcher is unavailable. Open Applications and try again."
+            }
+            LaunchEventKind::Failed { .. } => {
+                "The app stopped before opening. Open Applications and try again."
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
         Some(LaunchFailureNotice {
@@ -2100,7 +2104,10 @@ mod tests {
         });
         let notice = event.failure_notice().expect("failure has a notice");
         assert_eq!(notice.title, "Couldn't open Broken App");
-        assert_eq!(notice.body, "The app stopped before opening. Try again.");
+        assert_eq!(
+            notice.body,
+            "The app stopped before opening. Open Applications and try again."
+        );
         assert!(!notice.body.contains(raw));
         assert!(!notice.body.contains('\n'));
         assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
@@ -2113,7 +2120,10 @@ mod tests {
         });
         let notice = event.failure_notice().expect("failure has a notice");
         assert_eq!(notice.title, "Couldn't open Broken App");
-        assert_eq!(notice.body, "The app launcher is unavailable. Try again.");
+        assert_eq!(
+            notice.body,
+            "The app launcher is unavailable. Open Applications and try again."
+        );
         assert!(
             launch_event(LaunchEventKind::Started { pid: 42 })
                 .failure_notice()

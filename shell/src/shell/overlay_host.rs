@@ -4105,20 +4105,30 @@ impl ShellOverlayHost {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
             }
-            // Only a failure settles the "Opening…" notice here. `Started`
+            // A failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
-            // [`Self::retire_notices_for_opened_windows`]'s job; `Exited`
-            // doesn't either, by then the app has run.
+            // [`Self::retire_notices_for_opened_windows`]'s job. A clean
+            // exit also settles it: a process can quit before presenting a
+            // window, and leaving "Loading…" visible for two minutes would
+            // falsely claim that launch is still in flight.
             if matches!(
                 event.kind,
-                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
-            ) && let Some(notice) =
-                crate::shell::catalogue::take_pending_notice(&event.package_id)
-            {
-                let mut st = chrome_handle.borrow_mut();
-                st.dismiss_notification(notice);
-                st.bump();
-                posted = true;
+                LaunchEventKind::SpawnFailed { .. }
+                    | LaunchEventKind::Failed { .. }
+                    | LaunchEventKind::Exited
+            ) {
+                // A placement is a one-shot promise to a future toplevel. A
+                // process that has ended can never claim it, so clear it at
+                // the same transaction boundary as the opening notice.
+                crate::shell::launcher::clear_pending_placement(&event.package_id);
+                if let Some(notice) =
+                    crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
             }
             match &event.kind {
                 LaunchEventKind::Started { pid } => {
@@ -8126,6 +8136,19 @@ impl ShellOverlayHost {
         if st.overlays.quick_settings {
             st.overlays.quick_settings = false;
             st.bump();
+            *handled = true;
+            return true;
+        }
+        // Toasts are transient chrome rather than a modal, so they come
+        // after every real overlay in the dismissal ladder. Escape still
+        // needs to offer a keyboard path out for people who cannot reach the
+        // small close affordance with a pointer.
+        if let Some(id) = st
+            .notifications()
+            .last()
+            .map(|notification| notification.id)
+        {
+            st.dismiss_notification(id);
             *handled = true;
             return true;
         }
@@ -15711,6 +15734,76 @@ mod palette_dispatch_tests {
         assert_eq!(chord.display(), "Super+Shift+Down");
     }
 
+    /// A GUI process is allowed to exit before it ever maps a toplevel. The
+    /// opening acknowledgement must be retired on that terminal event;
+    /// otherwise the desktop reports "Loading…" for the full two-minute
+    /// timeout after the launch has already ended.
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn clean_launch_exit_retires_its_pending_open_notice() {
+        let (mut host, chrome) = host_with_chrome();
+        let package_id = "dev.qos.exit-before-window-fixture";
+        crate::shell::launcher::set_pending_placement(
+            package_id,
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+        let notice = chrome.borrow_mut().push_notification_full(
+            crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
+                .with_dismiss_after(std::time::Duration::from_secs(120)),
+        );
+        crate::shell::catalogue::note_pending_notice(package_id, notice);
+        crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
+            package_id: package_id.to_string(),
+            display_name: "Fixture".to_string(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: crate::shell::launcher::LaunchEventKind::Exited,
+        });
+
+        assert!(host.drain_launch_events());
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.id != notice),
+            "the terminal launch event must dismiss its opening notice"
+        );
+        assert!(
+            crate::shell::catalogue::pending_notice(package_id).is_none(),
+            "the pending id must be consumed along with the card"
+        );
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(package_id, 99_001).is_none(),
+            "a dead launch must not leave a placement for a later toplevel"
+        );
+    }
+
+    #[test]
+    fn escape_dismisses_the_latest_launch_error_without_touching_layout() {
+        let (mut host, chrome) = host_with_chrome();
+        let notice = chrome.borrow_mut().push_error_notification(
+            "Couldn't open Notes",
+            "The app stopped before opening. Open Applications and try again.",
+        );
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.id != notice),
+            "Escape must dismiss the visible error"
+        );
+        assert_eq!(
+            chrome.borrow().tree().workspaces.len(),
+            WorkspaceTree::bootstrap_demo().workspaces.len(),
+            "dismissing a notification must not mutate the desktop layout"
+        );
+    }
+
     #[test]
     fn shortcut_reference_covers_every_production_essential() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
@@ -16303,6 +16396,7 @@ mod palette_dispatch_tests {
     /// retire the moment the window's own place says which app is coming —
     /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
     #[test]
+    #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_chrome();
@@ -16384,6 +16478,7 @@ mod palette_dispatch_tests {
     /// The other way the hand-over can happen: an app fast enough to paint
     /// before the card was ever due still settles the open.
     #[test]
+    #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_chrome();
