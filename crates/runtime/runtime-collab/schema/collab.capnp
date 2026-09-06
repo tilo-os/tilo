@@ -252,6 +252,95 @@ interface ChannelHandle {
   # published surface and derives actor/workspace/context itself. Arguments,
   # output and failure prose never cross this durable boundary.
   recordLocalEffect @32 (resource :Text, action :Text, updateJson :Text) -> ();
+
+  # Register a revisioned, pull-only directory for resources which are too
+  # large or too dynamic to mirror through `publishActions`. The capability is
+  # owned by the application connection; the broker never retains resource
+  # bodies or an unbounded copy of its rows. Calling this replaces the prior
+  # directory capability for this connection. The legacy eager surface at @13
+  # remains available to old applications and small/static surfaces.
+  publishActionDirectory @33 (appId :Text, directory :ActionDirectory) -> ();
+
+  # Query the authenticated, broker-filtered session directory. `cursor` is
+  # opaque and bound to the source revision and caller-visible query. A stale
+  # cursor produces `staleCursor`; callers restart from an empty cursor. The
+  # broker clamps every budget before forwarding it to an app.
+  queryActionDirectory @34 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+
+  # Resolve exactly one row immediately before invocation. The broker applies
+  # current membership policy and asks the live owner to re-materialize the
+  # descriptor at `revision`; an unavailable, changed, or disconnected owner
+  # returns a non-ok status and is never invoked from cached catalogue data.
+  resolvePublishedAction @35 (peerId :UInt64, revision :Text,
+                              resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution);
+}
+
+# Application-owned, broker-pulled resource/action directory. A capability is
+# deliberately used instead of a JSON callback: the broker can bound the work
+# it requests, preserve typed descriptors, and drop all live rows when the
+# connection/capability goes away.
+interface ActionDirectory {
+  query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+  resolve @1 (revision :Text, resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution);
+}
+
+# Caller supplied upper bounds. `maxDepth` counts resource hierarchy edges;
+# the source must never walk past it. Zero means "only directly matched rows".
+struct ActionDirectoryQuery {
+  revision @0 :Text;
+  cursor @1 :Data;
+  needle @2 :Text;
+  parentResource @3 :Text;
+  maxResults @4 :UInt32;
+  maxBytes @5 :UInt32;
+  maxWork @6 :UInt32;
+  maxDepth @7 :UInt16;
+  # Zero selects the broker's cross-application root directory. A non-zero
+  # value pages exactly one live application's capability, identified by the
+  # broker-issued peer id returned in the authenticated catalogue.
+  peerId @8 :UInt64;
+}
+
+struct ActionDirectoryRow {
+  parentResource @0 :Text;
+  resource @1 :Text;
+  # A resource row carries an empty action; action rows carry a canonical
+  # descriptor. This keeps hierarchy truthful without requiring resource
+  # bodies or eagerly serialising every child.
+  action @2 :Text;
+  descriptor @3 :ExportedAction;
+  hasChildren @4 :Bool;
+  # Resource-only/container rows use this action+contract solely for
+  # visibility. It is evaluated by the broker before the label or hierarchy
+  # is forwarded; it does not make the container action invokable.
+  visibilityAction @5 :Text;
+  visibilityContractJson @6 :Text;
+  # Container rows have no descriptor, so their independently bounded display
+  # metadata must travel here rather than forcing shells to render raw ids.
+  resourceKind @7 :Text;
+  resourceLabel @8 :Text;
+}
+
+struct ActionDirectoryPage {
+  revision @0 :Text;
+  rows @1 :List(ActionDirectoryRow);
+  nextCursor @2 :Data;
+  exhausted @3 :Bool;
+  staleCursor @4 :Bool;
+  # True when one of the supplied bounds stopped this page. It is distinct
+  # from exhaustion so callers can choose larger budgets deliberately.
+  budgetExhausted @5 :Bool;
+}
+
+struct ActionDirectoryResolution {
+  union {
+    found @0 :ActionDirectoryRow;
+    notFound @1 :Void;
+    staleRevision @2 :Void;
+    unavailable @3 :Void;
+  }
 }
 
 interface WorkspaceControlHandle {

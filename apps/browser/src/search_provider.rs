@@ -175,6 +175,27 @@ impl SearchProvider for BrowserSearchProvider {
         "Browser"
     }
 
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(
+            self.index
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .catalog
+                .stats()
+                .generation,
+        )
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
+        self.index
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .cursor_is_current(cursor)
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult> {
         self.search_limited(query, 100)
     }

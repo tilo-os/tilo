@@ -1292,7 +1292,9 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
     clippy::expect_used,
     reason = "resource surface is deliberately co-located and serializes owned enum values"
 )]
-pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+/// Stable workbook root only. Dynamic sheets and cells are exposed by the
+/// retained index/provider rather than being materialized for remote browse.
+pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
     // Keep the established workbook command ordering for keyboard users while
     // publishing the same envelopes under the selected range as well. The
@@ -1392,6 +1394,11 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         },
     ));
 
+    workbook
+}
+
+pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut workbook = workbook_root(ctx);
     for (idx, searchable) in ctx.searchable_sheets.iter().enumerate() {
         let name = &searchable.name;
         let label = if name.trim().is_empty() {
