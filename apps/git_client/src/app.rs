@@ -2059,11 +2059,12 @@ impl GitClientApp {
         clippy::too_many_lines,
         reason = "this is the single derived semantic inventory for the app's three mutually exclusive screens"
     )]
-    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+    fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let button = |rect: Rect, label: String| {
+        let button = |target: &str, rect: Rect, label: String| {
             (
+                target.to_string(),
                 rect,
                 AccessNode::new(Role::Button)
                     .with_name(label)
@@ -2075,6 +2076,7 @@ impl GitClientApp {
             let mut targets = Vec::new();
             if self.open_input_rect.area() > 0.0 {
                 targets.push((
+                    "git.open-path".into(),
                     self.open_input_rect,
                     self.open_input
                         .accessibility()
@@ -2085,7 +2087,11 @@ impl GitClientApp {
                 ));
             }
             if self.open_button_rect.area() > 0.0 {
-                targets.push(button(self.open_button_rect, "Open repository".into()));
+                targets.push(button(
+                    "git.open-repository",
+                    self.open_button_rect,
+                    "Open repository".into(),
+                ));
             }
             return targets;
         }
@@ -2093,6 +2099,7 @@ impl GitClientApp {
         let mut targets = Vec::new();
         if self.hamburger_rect.area() > 0.0 {
             targets.push(button(
+                "git.navigation-toggle",
                 self.hamburger_rect,
                 "Show repository navigation".into(),
             ));
@@ -2103,6 +2110,12 @@ impl GitClientApp {
                 .find(|(candidate, _)| candidate == screen)
                 .map_or("Repository view", |(_, label)| *label);
             (
+                match screen {
+                    Screen::Changes => "git.screen.changes",
+                    Screen::History => "git.screen.history",
+                    Screen::Panels => "git.screen.branches",
+                }
+                .to_string(),
                 *rect,
                 AccessNode::new(Role::Tab)
                     .with_name(label)
@@ -2115,13 +2128,22 @@ impl GitClientApp {
             )
         }));
         if self.settings_seg.area() > 0.0 {
-            targets.push(button(self.settings_seg, "Diff layout".into()));
+            targets.push(button(
+                "git.diff-layout",
+                self.settings_seg,
+                "Diff layout".into(),
+            ));
         }
         if self.settings_syn.area() > 0.0 {
-            targets.push(button(self.settings_syn, "Syntax highlighting".into()));
+            targets.push(button(
+                "git.syntax-highlight",
+                self.settings_syn,
+                "Syntax highlighting".into(),
+            ));
         }
         match self.screen {
             Screen::Changes if self.commit_input.get_rect().area() > 0.0 => targets.push((
+                "git.commit-message".into(),
                 self.commit_input.get_rect(),
                 self.commit_input
                     .accessibility()
@@ -2132,6 +2154,7 @@ impl GitClientApp {
                 for (index, rect) in self.history_rows.iter().enumerate() {
                     if let Some(commit) = self.model.commits.get(index) {
                         targets.push((
+                            format!("git.commit:{}", commit.id),
                             *rect,
                             AccessNode::new(Role::ListItem)
                                 .with_name(format!(
@@ -2151,6 +2174,7 @@ impl GitClientApp {
             Screen::Panels => {
                 if self.new_branch_input.area() > 0.0 {
                     targets.push((
+                        "git.new-branch-name".into(),
                         self.new_branch_input,
                         self.branch_input
                             .accessibility()
@@ -2161,13 +2185,18 @@ impl GitClientApp {
                     ));
                 }
                 if self.new_branch_button.area() > 0.0 {
-                    targets.push(button(self.new_branch_button, "Create branch".into()));
+                    targets.push(button(
+                        "git.create-branch",
+                        self.new_branch_button,
+                        "Create branch".into(),
+                    ));
                 }
             }
             Screen::Changes => {}
         }
         if self.discard_file_rect.area() > 0.0 {
             targets.push(button(
+                "git.discard-file",
                 self.discard_file_rect,
                 "Discard file changes".into(),
             ));
@@ -2373,13 +2402,12 @@ impl Widget for GitClientApp {
             .accessibility_targets()
             .into_iter()
             .enumerate()
-            .map(|(index, (_, node))| {
-                // Synthetic children need an opaque action target before the
-                // bridge advertises them as operable. The ordinal remains the
-                // geometry lookup key, so it must stay in lock-step with
-                // `synthetic_accessibility_rect` below.
-                node.with_key(index as u64)
-                    .with_action_target(format!("git-target:{index}"))
+            .map(|(index, (target, _, node))| {
+                // The ordinal is only the synthetic-tree geometry key. The
+                // action target is semantic and stable across responsive
+                // layouts, so assistive technology never activates a
+                // different control after a row appears or disappears.
+                node.with_key(index as u64).with_action_target(target)
             })
             .collect();
         Some(
@@ -2400,7 +2428,43 @@ impl Widget for GitClientApp {
         };
         self.accessibility_targets()
             .get(*index)
-            .map(|(rect, _)| *rect)
+            .map(|(_, rect, _)| *rect)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        let field = match target {
+            "git.open-path" => Some(Field::Open),
+            "git.commit-message" => Some(Field::Commit),
+            "git.new-branch-name" => Some(Field::Branch),
+            _ => None,
+        };
+        if let Some(field) = field {
+            if matches!(action, Action::Focus | Action::Activate) {
+                self.set_focus(Some(field));
+                return true;
+            }
+            return false;
+        }
+        if !matches!(action, Action::Activate | Action::ToggleCheck) {
+            return false;
+        }
+        let Some(rect) = self
+            .accessibility_targets()
+            .into_iter()
+            .find_map(|(candidate, rect, _)| (candidate == target).then_some(rect))
+        else {
+            return false;
+        };
+        self.handle_click(rect.center(), state);
+        true
     }
 
     /// Publish the open repository and its view-preference actions to the
@@ -2940,17 +3004,44 @@ mod tests {
 
         let node = Widget::accessibility(&app).expect("git client is semantic");
         assert!(!node.children.is_empty());
+        let targets: std::collections::HashSet<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.as_deref())
+            .collect();
+        assert_eq!(targets.len(), node.children.len());
+        assert!(targets.contains("git.screen.changes"));
+        assert!(targets.contains("git.screen.history"));
+        assert!(targets.contains("git.diff-layout"));
+        assert!(targets.contains("git.syntax-highlight"));
+        assert!(targets.contains("git.commit-message"));
         for (index, child) in node.children.iter().enumerate() {
-            let expected_target = format!("git-target:{index}");
-            assert_eq!(
-                child.action_target.as_deref(),
-                Some(expected_target.as_str())
-            );
             assert_eq!(
                 Widget::synthetic_accessibility_rect(&app, &[index]),
                 child.bounds.map(ui::a11y::AccessBounds::to_rect),
                 "semantic control {index} must activate inside the visible control"
             );
         }
+
+        let mut doc = automerge::AutoCommit::new();
+        let before = app.settings.diff_layout;
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "git.diff-layout",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_ne!(app.settings.diff_layout, before);
+        assert!(app.last_dispatched().is_some());
+
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "git.commit-message",
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.focus, Some(Field::Commit));
     }
 }
