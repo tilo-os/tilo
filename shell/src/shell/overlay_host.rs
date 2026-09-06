@@ -2327,6 +2327,19 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Supply the durable Quick Settings arrangement explicitly. Production
+    /// uses the persisted per-user configuration; embedders and interaction
+    /// tests can inject a deterministic arrangement without reading or
+    /// rewriting the desktop user's settings file.
+    #[must_use]
+    pub fn with_quick_settings_config(
+        mut self,
+        config: settings_store::hardware::QuickSettingsConfig,
+    ) -> Self {
+        self.qs_root = QuickSettingsRoot::with_config(config);
+        self
+    }
+
     /// Install the live-status bridge. Only the compositor's real-session
     /// constructors do this; without it the tray's readings stay `None`
     /// and it draws no indicators, which is what keeps golden renders
@@ -8663,10 +8676,11 @@ impl ShellOverlayHost {
         }
         if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
                 let outcome = self.qs_wifi_pane.handle_click(
                     p,
-                    self.quick_settings_rect(),
+                    panel,
                     &mut st.quick_settings,
                     self.qs_actions.as_ref(),
                 );
@@ -8682,12 +8696,11 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Bluetooth
         ) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
-                let outcome = self.qs_bluetooth_pane.handle_click(
-                    p,
-                    self.quick_settings_rect(),
-                    &st.quick_settings.bt_devices,
-                );
+                let outcome =
+                    self.qs_bluetooth_pane
+                        .handle_click(p, panel, &st.quick_settings.bt_devices);
                 match outcome {
                     DrillInOutcome::Back => st.quick_settings.pop_level(),
                     DrillInOutcome::Changed => {}
@@ -8697,10 +8710,11 @@ impl ShellOverlayHost {
             }
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
                 let outcome = self.qs_vpn_pane.handle_click(
                     p,
-                    self.quick_settings_rect(),
+                    panel,
                     &mut st.quick_settings.vpns,
                     self.qs_actions.as_ref(),
                 );
@@ -8726,10 +8740,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let panel = self.quick_settings_rect();
         let action = {
             let mut st = chrome.borrow_mut();
-            self.qs_root
-                .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
+            self.qs_root.handle_click(p, panel, &mut st.quick_settings)
         };
         self.apply_quick_settings_root_action(action, &chrome);
     }
@@ -8794,10 +8808,11 @@ impl ShellOverlayHost {
         }
 
         if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let panel = self.quick_settings_rect();
             let action = {
                 let mut state = chrome.borrow_mut();
                 self.qs_root
-                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+                    .activate_focused(panel, &mut state.quick_settings)
             };
             self.apply_quick_settings_root_action(action, &chrome);
             *handled = true;
@@ -14787,7 +14802,12 @@ impl ShellOverlayHost {
 
     /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
-        QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
+        let panel = self.quick_settings_rect();
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Rect::ZERO;
+        };
+        self.qs_root
+            .power_geometry(panel, &chrome.borrow().quick_settings)
     }
 }
 
