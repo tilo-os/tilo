@@ -226,6 +226,34 @@ pub enum WordProcessorAction {
         key: String,
         value: AttrVal,
     },
+    /// Set an image crop in ten-thousandths of its source rectangle.  Keeping
+    /// all four edges in one action is important: a crop must never briefly
+    /// become invalid while a collaborator/replay observes it.
+    SetImageCrop {
+        block: String,
+        left: i64,
+        top: i64,
+        right: i64,
+        bottom: i64,
+    },
+    /// Resize an image frame while preserving a single replay/undo boundary.
+    SetImageSize {
+        block: String,
+        width: i64,
+        height: i64,
+    },
+    /// Move an image between normal flow and a free page-positioned object.
+    /// Offsets are document pixels relative to the page content origin; `page`
+    /// is zero-based.  This is deliberately a single canonical operation so a
+    /// drag cannot publish a half-updated anchor/coordinate pair.
+    SetImagePlacement {
+        block: String,
+        anchor: String,
+        wrap: String,
+        x: i64,
+        y: i64,
+        page: i64,
+    },
     /// Insert a `rows`×`cols` table after `after`. Cells are consecutive `cell`
     /// blocks sharing a freshly-minted `table` id, tagged with `row`/`col`.
     InsertTable {
@@ -414,6 +442,56 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             key,
             value,
         } => unique_existing(*region, blocks) && valid_attr(key, value),
+        WordProcessorAction::SetImageCrop {
+            block,
+            left,
+            top,
+            right,
+            bottom,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap.blocks.iter().any(|b| b.id == *block && b.kind == "image")
+                && [left, top, right, bottom]
+                    .iter()
+                    .all(|edge| (0_i64..=9_500).contains(*edge))
+                // Always retain at least five percent of the source in both
+                // dimensions. This prevents a hostile crop from creating an
+                // infinite scale factor in the renderer.
+                && (*left).saturating_add(*right) <= 9_500
+                && (*top).saturating_add(*bottom) <= 9_500
+        }
+        WordProcessorAction::SetImageSize {
+            block,
+            width,
+            height,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+                && (16..=100_000).contains(width)
+                && (16..=100_000).contains(height)
+        }
+        WordProcessorAction::SetImagePlacement {
+            block,
+            anchor,
+            wrap,
+            x,
+            y,
+            page,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+                && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
+                && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
+                && (-100_000..=100_000).contains(x)
+                && (-100_000..=100_000).contains(y)
+                && (0..=10_000).contains(page)
+        }
         WordProcessorAction::InsertTable { after, rows, cols } => {
             block_len(RegionKind::Body, after).is_some()
                 && *rows > 0
@@ -990,6 +1068,43 @@ impl Action for WordProcessorAction {
                 value,
             } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
 
+            WordProcessorAction::SetImageCrop {
+                block,
+                left,
+                top,
+                right,
+                bottom,
+            } => {
+                dm.set_attr(block, "crop_left", *left);
+                dm.set_attr(block, "crop_top", *top);
+                dm.set_attr(block, "crop_right", *right);
+                dm.set_attr(block, "crop_bottom", *bottom);
+            }
+
+            WordProcessorAction::SetImageSize {
+                block,
+                width,
+                height,
+            } => {
+                dm.set_attr(block, "width", *width);
+                dm.set_attr(block, "height", *height);
+            }
+
+            WordProcessorAction::SetImagePlacement {
+                block,
+                anchor,
+                wrap,
+                x,
+                y,
+                page,
+            } => {
+                dm.set_attr(block, "anchor", anchor.as_str());
+                dm.set_attr(block, "wrap", wrap.as_str());
+                dm.set_attr(block, "offset_x", *x);
+                dm.set_attr(block, "offset_y", *y);
+                dm.set_attr(block, "page", *page);
+            }
+
             WordProcessorAction::InsertTable { after, rows, cols } => {
                 apply_insert_table(&mut dm, after, *rows, *cols);
             }
@@ -1110,6 +1225,51 @@ pub fn set_block_attr_action(
         blocks,
         key: key.to_string(),
         value,
+    }
+}
+
+/// Crop an image by source-relative edge insets (0..=9500 per edge).
+pub fn set_image_crop_action(
+    block: &str,
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+) -> WordProcessorAction {
+    WordProcessorAction::SetImageCrop {
+        block: block.to_string(),
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// Resize an image frame in document pixels.
+pub fn set_image_size_action(block: &str, width: i64, height: i64) -> WordProcessorAction {
+    WordProcessorAction::SetImageSize {
+        block: block.to_string(),
+        width,
+        height,
+    }
+}
+
+/// Put an image in normal flow or at a canonical page-relative free position.
+pub fn set_image_placement_action(
+    block: &str,
+    anchor: &str,
+    wrap: &str,
+    x: i64,
+    y: i64,
+    page: i64,
+) -> WordProcessorAction {
+    WordProcessorAction::SetImagePlacement {
+        block: block.to_string(),
+        anchor: anchor.to_string(),
+        wrap: wrap.to_string(),
+        x,
+        y,
+        page,
     }
 }
 
@@ -1677,9 +1837,23 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         root = root.with_child(styles);
     }
 
-    // Images → a resource each, with a delete action.
+    // Images are first-class document resources.  Object layout is not a
+    // private canvas gesture: crop, flow/free placement, and delete all use
+    // the same replayable action envelope as the inspector controls.
     for b in snap.blocks.iter().filter(|b| b.kind == "image") {
-        let child = Resource::new(
+        let edge = |key: &str| match b.attrs.get(key) {
+            // Imported/legacy attributes are not action-validated, so clamp
+            // before the resource builder does arithmetic for its next crop.
+            Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+            _ => 0,
+        };
+        let left = edge("crop_left");
+        let top = edge("crop_top");
+        let right = edge("crop_right");
+        let bottom = edge("crop_bottom");
+        let can_crop_further =
+            left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
+        let mut child = Resource::new(
             format!("word-processor.image:{}", b.id),
             "word_processor.image",
             "Image",
@@ -1689,6 +1863,36 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             "Delete image",
             &remove_blocks_action(vec![b.id.clone()]),
         ));
+        if can_crop_further {
+            child = child.with_action(immediate_spec(
+                "crop-inset",
+                "Crop image by 5%",
+                &set_image_crop_action(&b.id, left + 250, top + 250, right + 250, bottom + 250),
+            ));
+        }
+        if left != 0 || top != 0 || right != 0 || bottom != 0 {
+            child = child.with_action(immediate_spec(
+                "reset-crop",
+                "Reset crop",
+                &set_image_crop_action(&b.id, 0, 0, 0, 0),
+            ));
+        }
+        child = child
+            .with_action(immediate_spec(
+                "free-position",
+                "Place freely on page",
+                &set_image_placement_action(&b.id, "page", "none", 0, 0, 0),
+            ))
+            .with_action(immediate_spec(
+                "flow-left",
+                "Wrap text on right",
+                &set_image_placement_action(&b.id, "paragraph", "left", 0, 0, 0),
+            ))
+            .with_action(immediate_spec(
+                "flow-right",
+                "Wrap text on left",
+                &set_image_placement_action(&b.id, "paragraph", "right", 0, 0, 0),
+            ));
         root = root.with_child(child);
     }
 
@@ -2310,6 +2514,66 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"
         );
+        palette.set_query("Crop image");
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|label| label.contains("Crop image")),
+            "image crop is a searchable resource action"
+        );
+    }
+
+    #[test]
+    fn image_object_actions_are_atomic_replayable_and_refuse_stale_targets() {
+        let (mut a, ids) = seeded("Object\n");
+        let block = ids[0].clone();
+        dispatch(
+            &mut a.doc,
+            &insert_image_action(&block, 0, vec![1, 2, 3, 4], Some(40), Some(30)),
+        );
+        let image = body_blocks(&a.doc)
+            .into_iter()
+            .find(|view| view.kind == "image")
+            .expect("inserted image")
+            .id;
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).expect("fork document");
+        let actions = [
+            set_image_size_action(&image, 120, 90),
+            set_image_crop_action(&image, 500, 250, 500, 250),
+            set_image_placement_action(&image, "page", "none", 24, 36, 0),
+        ];
+        for action in &actions {
+            let envelope = qos_actions::apply_local(&mut a.doc, action, encode(action))
+                .expect("apply object action");
+            qos_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
+        }
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "object actions replay byte-identically"
+        );
+        let image_view = body_blocks(&a.doc)
+            .into_iter()
+            .find(|view| view.id == image)
+            .expect("image remains");
+        assert_eq!(
+            image_view.attrs.get("crop_left"),
+            Some(&qdoc::AttrVal::Int(500))
+        );
+        assert_eq!(
+            image_view.attrs.get("offset_x"),
+            Some(&qdoc::AttrVal::Int(24))
+        );
+
+        let before = a.save();
+        let stale = set_image_crop_action("already-removed", 0, 0, 0, 0);
+        assert!(matches!(
+            stale.apply(&mut a.doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(a.save(), before, "refusal has no partial mutation");
     }
 
     #[test]

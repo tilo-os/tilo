@@ -165,6 +165,13 @@ panel-image-flip-h = Horizontal
 panel-image-flip-v = Vertical
 panel-image-smaller = Smaller
 panel-image-larger = Larger
+panel-image-crop = Crop
+panel-image-crop-inset = Crop 5%
+panel-image-crop-reset = Reset
+panel-image-position = Position
+panel-image-free = Free
+panel-image-wrap-left = Left
+panel-image-wrap-right = Right
 
 ## Paragraph-style context menu (right-click a style chip)
 style-menu-delete = Delete style
@@ -197,6 +204,13 @@ layout-spacing-readout = { $name } spacing  { $px } px   Â·   drag the handle â€
 ## Canvas
 a11y-document-editor = Document editor
 a11y-group-review = Review suggestions
+a11y-group-image-placement = Image position
+a11y-image-free-position = Free image position
+a11y-image-free-position-description = Place the image freely on the page without wrapping text
+a11y-image-wrap-left = Image left with text wrap
+a11y-image-wrap-left-description = Place the image on the left and wrap text to its right
+a11y-image-wrap-right = Image right with text wrap
+a11y-image-wrap-right-description = Place the image on the right and wrap text to its left
 page-indicator = Page { $n }
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
