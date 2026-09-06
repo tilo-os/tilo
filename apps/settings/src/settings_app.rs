@@ -82,6 +82,9 @@ pub struct SettingsApp {
     /// captures. Live construction always leaves this `None`.
     account_directory_override: Option<crate::accounts::AccountDirectory>,
     account_form_override: Option<crate::accounts::AccountKind>,
+    /// Use stable, host-independent hardware fixtures in visual captures.
+    /// Live construction always leaves this false.
+    deterministic_hardware_for_shot: bool,
     account_probe: Option<(
         qos_actions::InvocationId,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -119,6 +122,7 @@ impl SettingsApp {
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             account_directory_override: None,
             account_form_override: None,
+            deterministic_hardware_for_shot: false,
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
@@ -154,6 +158,13 @@ impl SettingsApp {
     #[must_use]
     pub(crate) fn with_account_form_for_shot(mut self, kind: crate::accounts::AccountKind) -> Self {
         self.account_form_override = Some(kind);
+        self
+    }
+
+    #[must_use]
+    #[doc(hidden)]
+    pub fn with_deterministic_hardware_for_shot(mut self) -> Self {
+        self.deterministic_hardware_for_shot = true;
         self
     }
 
@@ -298,6 +309,12 @@ impl SettingsApp {
             Category::Bluetooth => panes::bluetooth::build(),
             Category::DeviceMesh => panes::device_mesh::build(),
             Category::Sound => panes::sound::build(),
+            Category::Displays if self.deterministic_hardware_for_shot => {
+                Box::new(panes::display::DisplayPane::with_dispatcher(
+                    crate::dispatcher::dispatcher_or_real(None),
+                    0.62,
+                ))
+            }
             Category::Displays => panes::display::build(),
             Category::MouseKeyboard => panes::mouse_keyboard::build(),
             Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),

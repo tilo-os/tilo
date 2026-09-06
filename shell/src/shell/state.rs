@@ -885,6 +885,17 @@ pub enum TileContent {
         app_id: String,
         surface_id: u64,
     },
+    /// Durable local application window awaiting a fresh compositor surface.
+    /// Unlike `Foreign`, this stores no process-local Wayland id. At session
+    /// startup the normal launcher opens `app_id` and binds its first
+    /// toplevel back into this exact tab, preserving layout without reviving
+    /// a dead surface handle.
+    LocalApp {
+        app_id: String,
+        label: String,
+        #[serde(default)]
+        note: String,
+    },
     /// A window a peer has open, before this machine has bound a local
     /// instance to the tab. The peer's `surface_id` only resolves on
     /// their compositor so it is dropped, keeping only the app id. A

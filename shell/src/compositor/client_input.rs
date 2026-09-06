@@ -437,7 +437,11 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
 pub enum ChordKey {
     Space,
     Tab,
+    PageUp,
+    PageDown,
     PrintScreen,
+    ArrowLeft,
+    ArrowRight,
     ArrowUp,
     ArrowDown,
     Escape,
@@ -500,13 +504,58 @@ impl From<&Modifiers> for ChordMods {
     }
 }
 
-/// The shell's chord table, expressed once: every `Super` chord, `Ctrl+K`/
-/// `Alt+Space`, `Alt+Tab`, `Ctrl+Tab`, F1, and `Escape` *only while an overlay is
-/// open* — an unconditional Escape grab would break every modal editor
-/// running as a client. Ctrl+Arrow remains an application chord; desktop
-/// navigation uses Super+Arrow. Print Screen is always compositor-owned.
+/// True immutable shell chords only. Configurable navigation/search bindings
+/// are resolved from `ShortcutConfig` by the host before client delivery; do
+/// not add their defaults here or rebinding would leave the old app chord
+/// blocked forever.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
+        return false;
+    }
+    // Alt+Tab is the conventional, immutable window ring alias. It must be
+    // withheld before a focused client sees it even though the editable
+    // spatial bindings default to Super+Left/Right.
+    if key == ChordKey::Tab && mods.alt && !mods.logo && !mods.ctrl {
+        return true;
+    }
+    // These desktop conventions are deliberately immutable aliases. They
+    // must be withheld before a focused client can consume them: Alt+F4 is
+    // the universal close gesture, while Super+PageUp/PageDown is the GNOME
+    // workspace convention people retain when moving between sessions.
+    if (key == ChordKey::Function(4) && mods.alt && !mods.logo && !mods.ctrl && !mods.shift)
+        || (matches!(key, ChordKey::PageUp | ChordKey::PageDown)
+            && mods.logo
+            && !mods.ctrl
+            && !mods.alt
+            && !mods.shift)
+    {
+        return true;
+    }
+    // Vim navigation is an explicitly enabled desktop layer. Its complete
+    // Super+Ctrl mask cannot collide with ordinary text editing, and keeping
+    // this ownership decision beside the static aliases prevents a focused
+    // client from consuming H/J/K/L before the host can dispatch them.
+    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+        && mods.logo
+        && mods.ctrl
+        && !mods.alt
+        && matches!(key, ChordKey::Char('h' | 'j' | 'k' | 'l'))
+    {
+        return true;
+    }
+    // These are defaults for editable actions.  They intentionally fall
+    // through when the effective configuration no longer assigns them.
+    if matches!(
+        key,
+        ChordKey::Tab
+            | ChordKey::ArrowLeft
+            | ChordKey::ArrowRight
+            | ChordKey::ArrowUp
+            | ChordKey::ArrowDown
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+    ) && ((mods.logo && !mods.ctrl && !mods.alt)
+        || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
+    {
         return false;
     }
     if mods.logo {
@@ -514,11 +563,14 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     }
     match key {
         ChordKey::Space => mods.alt,
-        ChordKey::Tab => mods.ctrl || mods.alt,
+        ChordKey::Tab => false,
+        ChordKey::PageUp | ChordKey::PageDown => false,
         ChordKey::PrintScreen => true,
-        ChordKey::ArrowUp | ChordKey::ArrowDown => false,
+        ChordKey::ArrowLeft | ChordKey::ArrowRight | ChordKey::ArrowUp | ChordKey::ArrowDown => {
+            false
+        }
         ChordKey::Escape => overlay_open,
-        ChordKey::Char(c) => mods.ctrl && c == 'k',
+        ChordKey::Char(_) => false,
         // The shell visibly advertises F1 as the hardware-neutral route to
         // its desktop guide. Reserving it here is essential: otherwise a
         // focused client consumes the event before the guide dispatcher can
@@ -536,7 +588,11 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
     match key {
         Key::Named(NamedKey::Space) => ChordKey::Space,
         Key::Named(NamedKey::Tab) => ChordKey::Tab,
+        Key::Named(NamedKey::PageUp) => ChordKey::PageUp,
+        Key::Named(NamedKey::PageDown) => ChordKey::PageDown,
         Key::Named(NamedKey::PrintScreen) => ChordKey::PrintScreen,
+        Key::Named(NamedKey::ArrowLeft) => ChordKey::ArrowLeft,
+        Key::Named(NamedKey::ArrowRight) => ChordKey::ArrowRight,
         Key::Named(NamedKey::ArrowUp) => ChordKey::ArrowUp,
         Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
@@ -572,6 +628,8 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
     match code {
         1 => ChordKey::Escape,
         15 => ChordKey::Tab,
+        104 => ChordKey::PageUp,
+        109 => ChordKey::PageDown,
         99 => ChordKey::PrintScreen,
         // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
         29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
@@ -579,6 +637,8 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
         88 => ChordKey::Function(12),
+        105 => ChordKey::ArrowLeft,
+        106 => ChordKey::ArrowRight,
         103 => ChordKey::ArrowUp,
         108 => ChordKey::ArrowDown,
         111 => ChordKey::Delete,
@@ -1819,7 +1879,8 @@ fn route_keyboard_input(
     let configured_shortcut = pressed
         && fb
             .host()
-            .configured_shortcut_matches(&key.logical_key, modifiers);
+            .configured_shortcut_action(&key.logical_key, modifiers)
+            .is_some();
     let shell_owns =
         captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
     let forward = track_forwarded_key(
@@ -2400,15 +2461,11 @@ mod tests {
     }
 
     #[test]
-    fn super_chords_never_reach_a_client() {
+    fn only_immutable_super_chords_are_static_client_firewall_rules() {
         let m = mods(ModifiersState::SUPER);
         for key in [
             Key::Character(SmolStr::new("l")),
-            Key::Character(SmolStr::new("k")),
             Key::Named(NamedKey::Space),
-            Key::Named(NamedKey::Tab),
-            Key::Named(NamedKey::ArrowUp),
-            Key::Named(NamedKey::ArrowDown),
         ] {
             let ev = key_event(key.clone(), true);
             assert!(
@@ -2416,27 +2473,37 @@ mod tests {
                 "Super+{key:?} must be handled by the shell"
             );
         }
+        for key in [
+            Key::Character(SmolStr::new("k")),
+            Key::Named(NamedKey::Tab),
+            Key::Named(NamedKey::ArrowUp),
+            Key::Named(NamedKey::ArrowDown),
+        ] {
+            assert!(
+                !is_shell_chord(&key_event(key.clone(), true), &m, false),
+                "Super+{key:?} is configurable and must be resolved by the effective table"
+            );
+        }
     }
 
     #[test]
-    fn ctrl_and_alt_shell_chords_are_reserved() {
+    fn configurable_ctrl_defaults_are_not_static_but_alt_tab_is_the_ring_alias() {
         let ctrl = mods(ModifiersState::CONTROL);
         let alt = mods(ModifiersState::ALT);
-        assert!(is_shell_chord(
+        assert!(!is_shell_chord(
             &key_event(Key::Character(SmolStr::new("k")), true),
             &ctrl,
             false
         ));
-        assert!(is_shell_chord(
+        assert!(!is_shell_chord(
             &key_event(Key::Named(NamedKey::Tab), true),
             &ctrl,
             false
         ));
-        assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::Tab), true),
-            &alt,
-            false
-        ));
+        assert!(
+            is_shell_chord(&key_event(Key::Named(NamedKey::Tab), true), &alt, false),
+            "Alt+Tab is the immutable conventional window-ring alias"
+        );
         assert!(!is_shell_chord(
             &key_event(Key::Named(NamedKey::ArrowDown), true),
             &ctrl,
@@ -2448,13 +2515,36 @@ mod tests {
             false
         ));
         assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::Tab), true),
+            &key_event(Key::Named(NamedKey::PrintScreen), true),
+            &mods(ModifiersState::empty()),
+            false
+        ));
+    }
+
+    #[test]
+    fn conventional_close_and_workspace_aliases_are_owned_before_clients() {
+        let alt = mods(ModifiersState::ALT);
+        let super_only = mods(ModifiersState::SUPER);
+        assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::F4), true),
             &alt,
             false
         ));
-        assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::PrintScreen), true),
+        for key in [NamedKey::PageUp, NamedKey::PageDown] {
+            assert!(is_shell_chord(
+                &key_event(Key::Named(key), true),
+                &super_only,
+                false
+            ));
+        }
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::F4), true),
             &mods(ModifiersState::empty()),
+            false
+        ));
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::PageDown), true),
+            &mods(ModifiersState::CONTROL),
             false
         ));
     }
@@ -3458,6 +3548,27 @@ mod tests {
             ChordKey::Function(2),
             ChordMods {
                 logo: true,
+                ..Default::default()
+            },
+            false
+        ));
+    }
+
+    #[test]
+    fn conventional_alt_tab_ring_is_owned_before_a_focused_client() {
+        assert!(shell_owns_chord(
+            ChordKey::Tab,
+            ChordMods {
+                alt: true,
+                ..Default::default()
+            },
+            false
+        ));
+        assert!(shell_owns_chord(
+            ChordKey::Tab,
+            ChordMods {
+                shift: true,
+                alt: true,
                 ..Default::default()
             },
             false

@@ -151,7 +151,9 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             }
             // Neither can be duplicated: a live client's surface, or a
             // window belonging to somebody else's machine.
-            TileContent::Foreign { .. } | TileContent::PeerWindow { .. } => {
+            TileContent::Foreign { .. }
+            | TileContent::PeerWindow { .. }
+            | TileContent::LocalApp { .. } => {
                 return Err(DuplicateError::ForeignWindow);
             }
         }

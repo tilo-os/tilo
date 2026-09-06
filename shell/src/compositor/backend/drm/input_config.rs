@@ -723,9 +723,11 @@ mod tests {
     }
 
     #[test]
-    fn natural_scroll_reaches_every_device_that_has_it() {
+    fn legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent() {
         let s = InputSettings {
             natural_scroll: true,
+            touchpad_natural_scroll: None,
+            mouse_natural_scroll: None,
             ..Default::default()
         };
         assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));

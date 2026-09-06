@@ -1099,6 +1099,42 @@ mod tests {
     }
 
     #[test]
+    fn verified_foreign_identity_obeys_its_settings_rule() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+        policy.per_app.insert(
+            "org.example.Chat".into(),
+            settings_store::notification_policy::AppNotificationRule {
+                banners: Some(false),
+                ..Default::default()
+            },
+        );
+        chrome
+            .borrow_mut()
+            .set_notification_policy_for_tests(policy);
+
+        let mut foreign = incoming(23, 1, 5000);
+        // This is the identity the notification service derived from a
+        // Flatpak sender's PID + cgroup, not its Notify.app_name string.
+        foreign.app_name = "Pretend Settings".into();
+        foreign.caller = Some(PortalCaller::new(
+            WorkspaceId::default(),
+            "org.example.Chat",
+        ));
+        bridge.push_incoming(foreign);
+        chrome.borrow_mut().pump_dbus_notifications();
+
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(
+            chrome.borrow().notification_history()[0].app_id.as_deref(),
+            Some("org.example.Chat")
+        );
+    }
+
+    #[test]
     fn replaces_id_supersedes_existing_toast_via_pump() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();

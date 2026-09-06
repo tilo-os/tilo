@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as InputDevice, GestureBeginEvent,
-    GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
-    TouchSlot,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as InputDevice,
+    Event as InputEventTrait, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent,
+    GestureSwipeUpdateEvent, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
+    PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
@@ -31,7 +31,8 @@ use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase,
+    WindowEvent,
 };
 use winit::keyboard::{
     Key, KeyLocation, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
@@ -241,6 +242,10 @@ pub struct DrmDispatchState {
     pub scale_override: Option<f64>,
     /// Accumulates touchpad swipes and pinches into shell navigation.
     pub gestures: GestureTracker,
+    /// Arbitration for direct touchscreen contacts. A stream begins as client
+    /// touch, but the third simultaneous contact transfers it to shell
+    /// gestures and cancels the client stream that began before that upgrade.
+    direct_touch: DirectTouchOwnership,
     /// Set whenever the output set changed, so the backend refreshes its cached list and the compositor re-syncs its `wl_output` globals.
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
@@ -266,6 +271,182 @@ pub struct DrmDispatchState {
     /// already be inside a page flip when the libseat callback returns; the
     /// callback must not drop DRM master until that presentation has retired.
     pub present_gate: Option<Arc<Mutex<()>>>,
+}
+
+/// The direct-touch equivalent of the pointer-gesture ownership tracker.
+///
+/// A touch client has to see the first one or two contacts promptly, before
+/// we can know whether a third will join them. Once it does, `wl_touch.cancel`
+/// retires that partial client stream and ownership remains with the shell
+/// until every contact lifts. Pointer emulation is deliberately held until a
+/// one-finger stream finishes, so an upgrade can never leave a client with a
+/// synthetic press, drag, or click to undo.
+#[derive(Debug, Default)]
+pub(crate) struct DirectTouchOwnership {
+    contacts: BTreeMap<TouchContactKey, DirectTouchContact>,
+    next_global_id: u32,
+    max_contacts: usize,
+    client_stream_active: bool,
+    client_frame_pending: bool,
+    shell_owned: bool,
+}
+
+/// Libinput touch slots restart at zero for every physical device. Keep the
+/// device identity in the compositor-side key, then allocate an independent
+/// seat-global id for the `wl_touch` and winit wires.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TouchContactKey {
+    device: String,
+    slot: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DirectTouchContact {
+    id: u32,
+    start: (f64, f64),
+    current: (f64, f64),
+    moved: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectTouchDown {
+    ForwardToClient(u32),
+    CancelClientForShell(u32),
+    ShellOwned(u32),
+}
+
+impl DirectTouchOwnership {
+    const TAP_SLOP: f64 = 14.0;
+
+    /// Construct the stable compositor-side identity for a physical touch
+    /// contact. Test-control's headless input adapter uses this same
+    /// ownership state as DRM, rather than recreating the third-finger
+    /// handoff policy in a second injector.
+    pub(crate) fn key(device: impl Into<String>, slot: u32) -> TouchContactKey {
+        TouchContactKey {
+            device: device.into(),
+            slot,
+        }
+    }
+
+    pub(crate) fn down(&mut self, key: TouchContactKey, position: (f64, f64)) -> DirectTouchDown {
+        let id = self.allocate_global_id();
+        self.contacts.insert(
+            key,
+            DirectTouchContact {
+                id,
+                start: position,
+                current: position,
+                moved: false,
+            },
+        );
+        self.max_contacts = self.max_contacts.max(self.contacts.len());
+        if self.shell_owned {
+            return DirectTouchDown::ShellOwned(id);
+        }
+        if self.contacts.len() >= 3 {
+            self.shell_owned = true;
+            if self.client_stream_active {
+                self.client_stream_active = false;
+                // Smithay's TouchHandle::cancel is itself the complete
+                // protocol boundary. A following frame is suppressed once
+                // cancel advances each slot's sequence, so do not promise a
+                // frame the seat cannot emit.
+                self.client_frame_pending = false;
+                return DirectTouchDown::CancelClientForShell(id);
+            }
+            return DirectTouchDown::ShellOwned(id);
+        }
+        self.client_stream_active = true;
+        self.client_frame_pending = true;
+        DirectTouchDown::ForwardToClient(id)
+    }
+
+    pub(crate) fn motion(
+        &mut self,
+        key: &TouchContactKey,
+        position: (f64, f64),
+    ) -> Option<(u32, bool)> {
+        let contact = self.contacts.get_mut(key)?;
+        contact.current = position;
+        contact.moved |= distance(contact.start, position) > Self::TAP_SLOP;
+        if self.client_stream_active {
+            self.client_frame_pending = true;
+        };
+        Some((contact.id, self.client_stream_active))
+    }
+
+    /// Returns the last known position, whether this still belongs to the
+    /// client touch stream, and whether it completed a confirmed one-finger
+    /// tap eligible for pointer emulation.
+    pub(crate) fn up(&mut self, key: &TouchContactKey) -> Option<((f64, f64), u32, bool, bool)> {
+        let contact = self.contacts.remove(key)?;
+        let forward_to_client = self.client_stream_active;
+        let emulate_pointer = self.client_stream_active && self.max_contacts == 1 && !contact.moved;
+        if self.contacts.is_empty() {
+            self.reset();
+        }
+        if forward_to_client {
+            // Set this after a possible ownership reset: Up still belongs to
+            // the client protocol batch even when it removed the final
+            // compositor-side contact.
+            self.client_frame_pending = true;
+        }
+        Some((
+            contact.current,
+            contact.id,
+            forward_to_client,
+            emulate_pointer,
+        ))
+    }
+
+    pub(crate) fn client_stream_active(&self) -> bool {
+        self.client_stream_active
+    }
+
+    pub(crate) fn take_client_frame(&mut self) -> bool {
+        std::mem::take(&mut self.client_frame_pending)
+    }
+
+    pub(crate) fn cancel(&mut self) -> Vec<(u32, (f64, f64))> {
+        let forward_cancel = self.client_stream_active;
+        let contacts: Vec<_> = std::mem::take(&mut self.contacts).into_iter().collect();
+        self.reset();
+        if forward_cancel {
+            // `wl_touch.cancel` completes the sequence; unlike Up it is not
+            // followed by a frame in Smithay's touch state machine.
+            self.client_frame_pending = false;
+        }
+        contacts
+            .into_iter()
+            .map(|(_, contact)| (contact.id, contact.current))
+            .collect()
+    }
+
+    fn allocate_global_id(&mut self) -> u32 {
+        loop {
+            let id = self.next_global_id;
+            self.next_global_id = self.next_global_id.wrapping_add(1);
+            if self.contacts.values().all(|contact| contact.id != id) {
+                return id;
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.max_contacts = 0;
+        self.client_stream_active = false;
+        self.shell_owned = false;
+        // `reset` retires ownership, not the protocol batch already queued by
+        // a final Up. Keep `client_frame_pending` until the backend drains it
+        // through `take_client_frame`, otherwise the last contact can
+        // disappear without its closing wl_touch.frame. Cancel explicitly
+        // clears the flag because wl_touch.cancel is its own boundary.
+    }
+}
+
+fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
 }
 
 /// One output the backend is currently driving, from the loop thread's view — the scanout itself lives on the render thread; this is the identity, geometry and crtc needed to reconcile a hotplug.
@@ -595,6 +776,7 @@ impl DrmDispatchState {
                 natural_scroll: input.natural_scroll_for(true),
                 ..GestureConfig::default()
             }),
+            direct_touch: DirectTouchOwnership::default(),
             outputs_changed: false,
             output_meta: HashMap::new(),
             pointer: (0.0, 0.0),
@@ -1082,6 +1264,10 @@ impl DrmDispatchState {
     /// otherwise translate the next native key with stale modifiers or repeat
     /// it before that reset reaches the seat.
     fn reset_keyboard_input_source(&mut self) {
+        // A session/source reset can lose touch-up just as readily as key-up.
+        // Retire both the shell arena's raw contacts and the client's Wayland
+        // touch focus before another device or resumed session reuses a slot.
+        self.handle_direct_touch_cancel();
         self.key_repeat.cancel();
         self.slow_pending.clear();
         self.sticky_latched = ModifiersState::empty();
@@ -1718,6 +1904,12 @@ impl DrmDispatchState {
                     // can type into a newly focused client.
                     self.push(BackendEvent::InputStateReset);
                 }
+                if device.has_capability(smithay::reexports::input::DeviceCapability::Touch) {
+                    // Smithay touch cancellation is seat-wide, so a vanished
+                    // touch source retires every current contact rather than
+                    // risking a stale device-local slot being reused.
+                    self.handle_direct_touch_source_removed();
+                }
                 self.touch_output_bindings.remove(&device.id());
                 self.devices.retain(|d| *d != device);
             }
@@ -1833,60 +2025,166 @@ impl DrmDispatchState {
     }
 
     /// The touchscreen arms of [`Self::handle_libinput_event`] — split out
-    /// to keep that dispatcher short. Each touch point is delivered twice:
-    /// once as a `wl_touch` event for real multi-touch clients, and once as
-    /// pointer motion + a left click so the shell chrome (driven by the
-    /// winit event stream, no touch path) responds like a click. Without the
-    /// second half, a touchscreen can operate apps but not the desktop.
+    /// to keep that dispatcher short. Raw touch always reaches the shell's
+    /// touch arena first. The first one or two contacts also reach `wl_touch`,
+    /// but a third transfers the complete stream to shell gestures and sends
+    /// `wl_touch.cancel` for the partial client stream. A pointer click is
+    /// synthesized only after a confirmed one-finger tap ends, so no
+    /// multi-touch stream can press or drag the client or shell chrome.
     fn handle_libinput_touch_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::TouchDown { event } => {
                 let (x, y) = touch_position(self, &event);
-                self.pointer = (x, y);
-                self.hw_cursor.move_to(x, y);
-                self.push(BackendEvent::Touch(QosTouchEvent::Down {
-                    slot: touch_slot(event.slot()),
+                self.handle_direct_touch_down(
+                    touch_contact_key(event.device().id(), touch_slot(event.slot())),
                     x,
                     y,
-                }));
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
-                self.push(BackendEvent::Input(mouse_input_event(
-                    ElementState::Pressed,
-                    MouseButton::Left,
-                )));
+                );
             }
             InputEvent::TouchMotion { event } => {
                 let (x, y) = touch_position(self, &event);
-                self.pointer = (x, y);
-                self.hw_cursor.move_to(x, y);
+                self.handle_direct_touch_motion(
+                    touch_contact_key(event.device().id(), touch_slot(event.slot())),
+                    x,
+                    y,
+                );
+            }
+            InputEvent::TouchUp { event } => {
+                self.handle_direct_touch_up(touch_contact_key(
+                    event.device().id(),
+                    touch_slot(event.slot()),
+                ));
+            }
+            InputEvent::TouchCancel { .. } => {
+                self.handle_direct_touch_cancel();
+            }
+            InputEvent::TouchFrame { .. } => {
+                self.flush_direct_touch_frame();
+            }
+            _ => {}
+        }
+    }
+
+    /// Inject a direct-touch down after output calibration. Kept separate
+    /// from libinput extraction so unit tests can cover the ownership wire
+    /// without a real touch device or seat.
+    fn handle_direct_touch_down(&mut self, key: TouchContactKey, x: f64, y: f64) {
+        self.pointer = (x, y);
+        self.hw_cursor.move_to(x, y);
+        match self.direct_touch.down(key, (x, y)) {
+            DirectTouchDown::ForwardToClient(id) => {
+                self.push(BackendEvent::Input(touch_input_event(
+                    id,
+                    x,
+                    y,
+                    TouchPhase::Started,
+                )));
+                self.push(BackendEvent::Touch(QosTouchEvent::Down { slot: id, x, y }));
+            }
+            DirectTouchDown::CancelClientForShell(id) => {
+                self.push(BackendEvent::Input(touch_input_event(
+                    id,
+                    x,
+                    y,
+                    TouchPhase::Started,
+                )));
+                // The client received the earlier contacts, but no longer owns
+                // their sequence. `cancel` is the Wayland protocol's explicit
+                // handoff; importantly, the third down itself never leaks.
+                self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+                // Do not rely on a later libinput frame here: an ownership
+                // boundary must close the client sequence even when the
+                // source disappears immediately afterwards.
+                self.flush_direct_touch_frame();
+            }
+            DirectTouchDown::ShellOwned(id) => {
+                self.push(BackendEvent::Input(touch_input_event(
+                    id,
+                    x,
+                    y,
+                    TouchPhase::Started,
+                )));
+            }
+        }
+    }
+
+    fn handle_direct_touch_motion(&mut self, key: TouchContactKey, x: f64, y: f64) {
+        self.pointer = (x, y);
+        self.hw_cursor.move_to(x, y);
+        if let Some((id, forward_to_client)) = self.direct_touch.motion(&key, (x, y)) {
+            self.push(BackendEvent::Input(touch_input_event(
+                id,
+                x,
+                y,
+                TouchPhase::Moved,
+            )));
+            if forward_to_client {
                 self.push(BackendEvent::Touch(QosTouchEvent::Motion {
-                    slot: touch_slot(event.slot()),
+                    slot: id,
                     x,
                     y,
                 }));
-                self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
-            InputEvent::TouchUp { event } => {
-                self.push(BackendEvent::Touch(QosTouchEvent::Up {
-                    slot: touch_slot(event.slot()),
-                }));
-                self.push(BackendEvent::Input(mouse_input_event(
-                    ElementState::Released,
-                    MouseButton::Left,
-                )));
-            }
-            InputEvent::TouchCancel { .. } => {
-                self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
-                // A cancelled touch is not a click — release the synthetic button so the chrome doesn't sit on a phantom held pointer.
-                self.push(BackendEvent::Input(mouse_input_event(
-                    ElementState::Released,
-                    MouseButton::Left,
-                )));
-            }
-            InputEvent::TouchFrame { .. } => {
-                self.push(BackendEvent::Touch(QosTouchEvent::Frame));
-            }
-            _ => {}
+        }
+    }
+
+    fn handle_direct_touch_up(&mut self, key: TouchContactKey) {
+        let Some(((x, y), id, forward_to_client, emulate_pointer)) = self.direct_touch.up(&key)
+        else {
+            return;
+        };
+        self.pointer = (x, y);
+        self.hw_cursor.move_to(x, y);
+        self.push(BackendEvent::Input(touch_input_event(
+            id,
+            x,
+            y,
+            TouchPhase::Ended,
+        )));
+        // `up` must be queued before the stream is retired. The shell may
+        // already own this stream, in which case `client_stream_active` was
+        // cleared at the cancellation boundary and nothing reaches it here.
+        if forward_to_client {
+            self.push(BackendEvent::Touch(QosTouchEvent::Up { slot: id }));
+        }
+        if emulate_pointer {
+            self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+            self.push(BackendEvent::Input(mouse_input_event(
+                ElementState::Pressed,
+                MouseButton::Left,
+            )));
+            self.push(BackendEvent::Input(mouse_input_event(
+                ElementState::Released,
+                MouseButton::Left,
+            )));
+        }
+    }
+
+    fn handle_direct_touch_cancel(&mut self) {
+        let forward_cancel = self.direct_touch.client_stream_active();
+        for (slot, (x, y)) in self.direct_touch.cancel() {
+            self.push(BackendEvent::Input(touch_input_event(
+                slot,
+                x,
+                y,
+                TouchPhase::Cancelled,
+            )));
+        }
+        if forward_cancel {
+            self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+        }
+        // This also flushes a pending final `Up` when the source vanishes
+        // between that up and libinput's normal frame event.
+        self.flush_direct_touch_frame();
+    }
+
+    fn handle_direct_touch_source_removed(&mut self) {
+        self.handle_direct_touch_cancel();
+    }
+
+    fn flush_direct_touch_frame(&mut self) {
+        if self.direct_touch.take_client_frame() {
+            self.push(BackendEvent::Touch(QosTouchEvent::Frame));
         }
     }
 }
@@ -2284,6 +2582,13 @@ impl DrmRuntime {
         self.dispatch.resume_from_sleep();
     }
 
+    /// Queue cancellation for every active direct-touch contact. The session
+    /// lock uses this before it hides client input, because a physical release
+    /// after that boundary cannot be relied upon to arrive.
+    pub fn cancel_touch(&mut self) {
+        self.dispatch.handle_direct_touch_cancel();
+    }
+
     /// Re-read the persisted input settings and push them at every
     /// libinput device again.
     ///
@@ -2551,6 +2856,10 @@ fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(id.max(0)).unwrap_or(0)
 }
 
+fn touch_contact_key(device: String, slot: u32) -> TouchContactKey {
+    TouchContactKey { device, slot }
+}
+
 /// One output's geometry needed to calibrate a touchscreen. Kept separate
 /// from [`LiveEntry`] so the selection and coordinate transform stay pure
 /// and can be covered without opening DRM or libinput.
@@ -2678,6 +2987,19 @@ fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(x, y),
     }
+}
+
+/// Build a `WindowEvent::Touch` for the shell's direct-touch arena. DRM has
+/// no winit window, so its device id is the same inert zero value used by the
+/// other synthetic input adapters; touch identity is carried by `slot`.
+fn touch_input_event(slot: u32, x: f64, y: f64, phase: TouchPhase) -> WindowEvent {
+    WindowEvent::Touch(Touch {
+        device_id: unsafe { std::mem::zeroed() },
+        phase,
+        location: PhysicalPosition::new(x, y),
+        force: None,
+        id: u64::from(slot),
+    })
 }
 
 /// Build a `WindowEvent::MouseInput`.
@@ -3113,6 +3435,10 @@ mod tests {
 
     fn test_keyboard_settings() -> KeyboardSettings {
         KeyboardSettings::default()
+    }
+
+    fn test_touch_key(device: &str, slot: u32) -> TouchContactKey {
+        touch_contact_key(device.into(), slot)
     }
 
     // These tests build a `DrmDispatchState` directly; they avoid calling `DrmRuntime::new` which would try to open a real seat.
@@ -4494,6 +4820,297 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
             "two fingers is the client's gesture"
+        );
+    }
+
+    #[test]
+    fn three_finger_touch_cancels_the_partial_client_stream_and_never_clicks_or_drags() {
+        let mut state = DrmDispatchState::default();
+        for (slot, x) in [(1, 100.0), (2, 140.0), (3, 180.0)] {
+            state.handle_direct_touch_down(test_touch_key("panel", slot), x, 80.0);
+        }
+        for (slot, x) in [(1, 40.0), (2, 80.0), (3, 120.0)] {
+            state.handle_direct_touch_motion(test_touch_key("panel", slot), x, 80.0);
+        }
+        for slot in [1, 2, 3] {
+            state.handle_direct_touch_up(test_touch_key("panel", slot));
+        }
+
+        let client_touch: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Touch(touch) => Some(*touch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            client_touch,
+            [
+                QosTouchEvent::Down {
+                    slot: 0,
+                    x: 100.0,
+                    y: 80.0,
+                },
+                QosTouchEvent::Down {
+                    slot: 1,
+                    x: 140.0,
+                    y: 80.0,
+                },
+                QosTouchEvent::Cancel,
+            ],
+            "the early contacts are explicitly cancelled; no third contact, motion, or release reaches the client"
+        );
+        assert!(
+            !state.events.iter().any(|event| matches!(
+                event,
+                BackendEvent::Input(
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                )
+            )),
+            "a shell-owned multi-touch stream must not synthesize client/chrome pointer motion, press, drag, or click"
+        );
+        let shell_touch_phases: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.phase),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shell_touch_phases,
+            [
+                TouchPhase::Started,
+                TouchPhase::Started,
+                TouchPhase::Started,
+                TouchPhase::Moved,
+                TouchPhase::Moved,
+                TouchPhase::Moved,
+                TouchPhase::Ended,
+                TouchPhase::Ended,
+                TouchPhase::Ended,
+            ],
+            "the shell still receives the complete raw stream needed by its three-finger arena"
+        );
+    }
+
+    #[test]
+    fn a_single_touch_keeps_client_touch_and_becomes_one_chrome_click_at_release() {
+        let mut state = DrmDispatchState::default();
+        let key = test_touch_key("panel", 7);
+        state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
+        state.handle_direct_touch_motion(key.clone(), 324.0, 242.0);
+        state.handle_direct_touch_up(key);
+
+        let client_touch: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Touch(touch) => Some(*touch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            client_touch,
+            [
+                QosTouchEvent::Down {
+                    slot: 0,
+                    x: 320.0,
+                    y: 240.0,
+                },
+                QosTouchEvent::Motion {
+                    slot: 0,
+                    x: 324.0,
+                    y: 242.0,
+                },
+                QosTouchEvent::Up { slot: 0 },
+            ]
+        );
+        let pointer_events: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Input(WindowEvent::CursorMoved { position, .. }) => {
+                    Some(("move", position.x, position.y))
+                }
+                BackendEvent::Input(WindowEvent::MouseInput { state, button, .. }) => Some((
+                    if *state == ElementState::Pressed {
+                        "press"
+                    } else {
+                        "release"
+                    },
+                    0.0,
+                    if *button == MouseButton::Left {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pointer_events,
+            [
+                ("move", 324.0, 242.0),
+                ("press", 0.0, 1.0),
+                ("release", 0.0, 1.0)
+            ],
+            "the release-confirmed click keeps ordinary one-finger chrome controls usable"
+        );
+    }
+
+    #[test]
+    fn touch_ids_are_global_across_devices_that_both_report_slot_zero() {
+        let mut state = DrmDispatchState::default();
+        state.handle_direct_touch_down(test_touch_key("panel-a", 0), 10.0, 20.0);
+        state.handle_direct_touch_down(test_touch_key("panel-b", 0), 30.0, 40.0);
+
+        let ids: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Touch(QosTouchEvent::Down { slot, .. }) => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, [0, 1]);
+        let shell_ids: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Input(WindowEvent::Touch(touch)) => Some(touch.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shell_ids, [0, 1]);
+    }
+
+    #[test]
+    fn final_touch_up_and_cancel_each_keep_their_closing_frame() {
+        let mut state = DrmDispatchState::default();
+        let key = test_touch_key("panel", 0);
+        state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
+        state.flush_direct_touch_frame();
+        state.handle_direct_touch_up(key);
+        state.flush_direct_touch_frame();
+        let client_events: Vec<_> = state
+            .events
+            .iter()
+            .filter(|event| matches!(event, BackendEvent::Touch(_)))
+            .collect();
+        assert!(matches!(
+            client_events.as_slice(),
+            [
+                BackendEvent::Touch(QosTouchEvent::Down { .. }),
+                BackendEvent::Touch(QosTouchEvent::Frame),
+                BackendEvent::Touch(QosTouchEvent::Up { .. }),
+                BackendEvent::Touch(QosTouchEvent::Frame),
+            ]
+        ));
+
+        let mut state = DrmDispatchState::default();
+        state.handle_direct_touch_down(test_touch_key("panel", 0), 10.0, 20.0);
+        state.flush_direct_touch_frame();
+        state.handle_direct_touch_cancel();
+        state.flush_direct_touch_frame();
+        assert!(matches!(
+            state.events.as_slice(),
+            [
+                BackendEvent::Input(WindowEvent::Touch(_)),
+                BackendEvent::Touch(QosTouchEvent::Down { .. }),
+                BackendEvent::Touch(QosTouchEvent::Frame),
+                BackendEvent::Input(WindowEvent::Touch(touch)),
+                BackendEvent::Touch(QosTouchEvent::Cancel),
+            ] if touch.phase == TouchPhase::Cancelled
+        ));
+    }
+
+    #[test]
+    fn session_pause_and_suspend_resume_cancel_active_touch_before_slot_reuse() {
+        let mut state = DrmDispatchState::default();
+        let key = test_touch_key("panel", 0);
+        state.handle_direct_touch_down(key, 10.0, 20.0);
+        state.handle_session_event(smithay::backend::session::Event::PauseSession);
+        assert!(state.events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
+        )));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Cancel)))
+        );
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Frame)))
+        );
+
+        state.events.clear();
+        state.handle_direct_touch_down(test_touch_key("panel", 0), 30.0, 40.0);
+        state.resume_from_sleep();
+        assert!(state.events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Input(WindowEvent::Touch(touch)) if touch.phase == TouchPhase::Cancelled
+        )));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Cancel)))
+        );
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Frame)))
+        );
+    }
+
+    #[test]
+    fn touchscreen_removal_cancels_the_seat_stream_before_reusing_its_slot() {
+        let mut state = DrmDispatchState::default();
+        state.handle_direct_touch_down(test_touch_key("removed-panel", 0), 10.0, 20.0);
+        state.handle_direct_touch_source_removed();
+        state.flush_direct_touch_frame();
+        state.handle_direct_touch_down(test_touch_key("replacement-panel", 0), 30.0, 40.0);
+        let touches: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Touch(touch) => Some(*touch),
+                _ => None,
+            })
+            .collect();
+        assert!(matches!(
+            touches.as_slice(),
+            [
+                QosTouchEvent::Down { slot: 0, .. },
+                QosTouchEvent::Cancel,
+                QosTouchEvent::Down { slot: 1, .. },
+            ]
+        ));
+    }
+
+    #[test]
+    fn moved_single_touch_never_becomes_a_release_position_click() {
+        let mut state = DrmDispatchState::default();
+        let key = test_touch_key("panel", 0);
+        state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
+        state.handle_direct_touch_motion(key.clone(), 80.0, 20.0);
+        state.handle_direct_touch_up(key);
+        assert!(
+            !state.events.iter().any(|event| matches!(
+                event,
+                BackendEvent::Input(
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                )
+            )),
+            "a movement beyond touch slop is deliberately not converted into a late click"
         );
     }
 
