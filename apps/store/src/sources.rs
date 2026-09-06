@@ -69,6 +69,55 @@ pub fn qos_to_store_item(
     }
 }
 
+/// Turn an installed qOS package into a local-only Store row.
+///
+/// A verified catalogue entry normally supplies the richer description and
+/// update metadata. That entry is not guaranteed to be reachable forever,
+/// though: a user must still be able to launch, pin, or remove software that
+/// is already on their device while its registry is offline or has withdrawn
+/// it. This deliberately publishes no download URL or claimed latest version,
+/// so the UI cannot offer an update based on stale or invented metadata.
+pub fn installed_qos_to_store_item(entry: &InstalledEntry) -> StoreItem {
+    StoreItem {
+        id: entry.id.clone(),
+        // Package ids are the only durable local display metadata available
+        // from app-host's list endpoint. Do not manufacture a publisher name
+        // or copy one from an unrelated catalogue row.
+        name: entry.id.clone(),
+        description: "Installed on this device. Catalogue details are unavailable.".into(),
+        categories: Vec::new(),
+        icon_url: None,
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Qos {
+            registry_name: "Installed on this device".into(),
+        },
+        // app-host accepts only packages whose signature and declared package
+        // identity verified at installation. This is not a current registry
+        // review claim; the detail sheet spells that distinction out.
+        trust: StoreTrust::PublisherSigned,
+        versions: vec![StoreItemVersion {
+            version: entry.version.clone(),
+            released_at_unix: 0,
+            download_url: None,
+            root_hash_hex: None,
+            size_bytes: 0,
+        }],
+        publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
+            .then(|| entry.publisher_key_hex.clone()),
+        installed: InstalledState::Installed {
+            version: entry.version.clone(),
+            // The only truthful available version while offline is unknown.
+            // Keeping it equal to the installed version prevents a fake
+            // "Update" affordance.
+            available: entry.version.clone(),
+            pinned: entry.pinned,
+        },
+    }
+}
+
 fn qos_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
     StoreItemVersion {
         version: v.version.clone(),
@@ -118,6 +167,39 @@ pub fn flathub_placeholder_to_item(
         }],
         publisher_pubkey_hex: None,
         installed,
+    }
+}
+
+/// Return a local-only row for an installed Flatpak absent from the current
+/// popular/search result. As with [`installed_qos_to_store_item`], action
+/// availability comes from the host; update metadata remains unknown rather
+/// than being guessed from an unrelated network response.
+pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
+    StoreItem {
+        id: app_id.to_string(),
+        name: app_id.to_string(),
+        description: "Installed Flatpak. Catalogue details are unavailable.".into(),
+        categories: Vec::new(),
+        icon_url: None,
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Flathub,
+        trust: StoreTrust::Flathub,
+        versions: vec![StoreItemVersion {
+            version: version.to_string(),
+            released_at_unix: 0,
+            download_url: None,
+            root_hash_hex: None,
+            size_bytes: 0,
+        }],
+        publisher_pubkey_hex: None,
+        installed: InstalledState::Installed {
+            version: version.to_string(),
+            available: version.to_string(),
+            pinned: false,
+        },
     }
 }
 
@@ -304,6 +386,40 @@ mod tests {
         }];
         let item = qos_to_store_item(&verified(entry), "qOS main", &installed);
         assert!(item.installed.update_available());
+    }
+
+    #[test]
+    fn locally_installed_qos_item_stays_actionable_without_catalogue_metadata() {
+        let item = installed_qos_to_store_item(&InstalledEntry {
+            id: "dev.qos.offline".into(),
+            version: "1.2.3".into(),
+            publisher_key_hex: "ab".repeat(32),
+            installed_at: 0,
+            pinned: true,
+        });
+        assert_eq!(item.name, "dev.qos.offline");
+        assert!(item.installed.is_installed());
+        assert!(item.installed.is_pinned());
+        assert!(!item.installed.update_available());
+        assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+        assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
+        assert!(item.versions[0].download_url.is_none());
+    }
+
+    #[test]
+    fn locally_installed_flatpak_stays_actionable_without_a_popular_feed_row() {
+        let item = installed_flatpak_to_item("org.example.Offline", "4.0");
+        assert_eq!(item.name, "org.example.Offline");
+        assert!(item.installed.is_installed());
+        assert!(!item.installed.update_available());
+        assert_eq!(
+            item.action_kind(true),
+            crate::model::ActionKind::FlatpakOpen
+        );
+        assert_eq!(
+            item.remove_action(),
+            Some(crate::model::ActionKind::FlatpakRemove)
+        );
     }
 
     #[test]
