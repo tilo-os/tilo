@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use vello::Scene;
@@ -41,8 +41,9 @@ use winit::event::WindowEvent;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, Availability, DiscoveryScope,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResultSpec, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -86,9 +87,81 @@ pub struct WeatherApp {
     last_activity: Instant,
     resource_refresh_invocation: Option<qos_actions::InvocationId>,
     resource_refresh_failure: Option<String>,
+    actions: ui::ActionHost,
+    /// Last document state folded into the render model. `ActionHost` updates
+    /// this watermark eagerly; palette/agent actions are adopted on sync.
+    doc_heads: Vec<ChangeHash>,
 }
 
 impl WeatherApp {
+    /// Replay every user-owned mutation reported by the core through the
+    /// framework action host. The core has already updated its render model;
+    /// this is the authoritative history/collaboration write, while external
+    /// forecast cache responses keep using the separate cache path.
+    fn flush_durable_actions(&mut self, doc: &mut AutoCommit) {
+        let actions = self.core.borrow_mut().take_durable_actions();
+        if actions.is_empty() {
+            return;
+        }
+        for action in actions {
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::WEATHER_ACTION_TYPE,
+                &action,
+                qos_actions::ActionContext::for_action("org.qos.Weather", "Weather", &action),
+            );
+        }
+        self.doc_heads = doc.get_heads();
+    }
+
+    /// Adopt an action/document change even when a local network cache write
+    /// is queued. The user-owned location projection comes from the document;
+    /// locally arrived provider data is merged by fetch timestamp and is then
+    /// persisted through the separate cache-only path.
+    fn adopt_document_changes(&mut self, state: &mut AutoCommit) {
+        let current_heads = state.get_heads();
+        if current_heads == self.doc_heads {
+            return;
+        }
+        let mut persisted = WeatherDoc::read_model(state);
+        let core = self.core.borrow();
+        for (id, snapshot) in &core.model.snapshots {
+            if persisted
+                .snapshots
+                .get(id)
+                .is_none_or(|remote| remote.fetched_at <= snapshot.fetched_at)
+            {
+                persisted.snapshots.insert(*id, snapshot.clone());
+            }
+        }
+        for (id, reading) in &core.model.air_quality {
+            if persisted
+                .air_quality
+                .get(id)
+                .is_none_or(|remote| remote.fetched_at <= reading.fetched_at)
+            {
+                persisted.air_quality.insert(*id, reading.clone());
+            }
+        }
+        // Units belong to this device's Settings/region preference.
+        persisted.units = core.units;
+        drop(core);
+        self.core.borrow_mut().model = persisted;
+        self.doc_heads = current_heads;
+    }
+
+    /// Persist only external cache data after all remote durable state has
+    /// been folded into the render projection. This ordering prevents a cache
+    /// write from advancing `doc_heads` past an unseen remote location action.
+    fn flush_pending_cache(&mut self, state: &mut AutoCommit) {
+        self.adopt_document_changes(state);
+        let mut core = self.core.borrow_mut();
+        if core.pending_doc_write {
+            WeatherDoc::write_cache(state, &core.model);
+            core.pending_doc_write = false;
+            self.doc_heads = state.get_heads();
+        }
+    }
     /// Build the responsive shell at the overview width implied by `collapsed`
     /// (full list vs. rail). Both pane widgets share the one [`Core`].
     fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
@@ -116,6 +189,8 @@ impl WeatherApp {
             last_activity: Instant::now(),
             resource_refresh_invocation: None,
             resource_refresh_failure: None,
+            actions: ui::ActionHost::new(),
+            doc_heads: Vec::new(),
         }
     }
 
@@ -295,9 +370,75 @@ impl Widget for WeatherApp {
         ]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root resource, its typed create form, effect contract, and child resource tree must remain visibly co-located"
+    )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let core = self.core.borrow();
         let mut root = Resource::new("weather", "weather.locations", "Weather");
+        root.actions.push(
+            ActionSpec::typed(
+                "add-saved-location",
+                "Save location",
+                "Location name",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required("name", ParamType::Text, "City or place name"),
+                    ActionParam::required("country", ParamType::Text, "Country name"),
+                    ActionParam::required("latitude", ParamType::Number, "Latitude from -90 to 90"),
+                    ActionParam::required(
+                        "longitude",
+                        ParamType::Number,
+                        "Longitude from -180 to 180",
+                    ),
+                    ActionParam::optional("region", ParamType::Text, "Administrative region"),
+                    ActionParam::optional("country_code", ParamType::Text, "ISO country code"),
+                    ActionParam::optional(
+                        "timezone",
+                        ParamType::Text,
+                        "IANA timezone; defaults to auto",
+                    ),
+                ],
+                |args: &ActionArgs| {
+                    let name = args
+                        .text("name")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    let country = args
+                        .text("country")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    let latitude = args
+                        .number("latitude")
+                        .filter(|value| (-90.0..=90.0).contains(value));
+                    let longitude = args
+                        .number("longitude")
+                        .filter(|value| (-180.0..=180.0).contains(value));
+                    match (name, country, latitude, longitude) {
+                        (Some(name), Some(country), Some(latitude), Some(longitude)) => {
+                            crate::actions::encode(&crate::actions::WeatherAction::AddLocation {
+                                location: crate::model::SavedLocation::new(
+                                    name,
+                                    args.text("region").unwrap_or_default().trim(),
+                                    country,
+                                    args.text("country_code").unwrap_or_default().trim(),
+                                    latitude,
+                                    longitude,
+                                    args.text("timezone").unwrap_or("auto").trim(),
+                                ),
+                            })
+                        }
+                        _ => EncodedAction {
+                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: b"name, country, and valid latitude/longitude are required"
+                                .to_vec(),
+                        },
+                    }
+                },
+            )
+            .reversible(),
+        );
         if let Ok(spec) = ActionSpec::operation(
             "refresh",
             "Refresh forecasts",
@@ -327,26 +468,61 @@ impl Widget for WeatherApp {
                 ..ActionContract::default()
             }));
         }
-        root.children
-            .extend(core.model.locations.iter().map(|location| {
-                let mut resource = Resource::new(
-                    crate::actions::location_resource_id(location.id),
-                    "weather.location",
-                    location.name.clone(),
-                );
-                resource.actions.push(
-                    ActionSpec::operation(
+        root.children.extend(
+            core.model
+                .locations
+                .iter()
+                .enumerate()
+                .map(|(index, location)| {
+                    let mut resource = Resource::new(
+                        crate::actions::location_resource_id(location.id),
+                        "weather.location",
+                        location.name.clone(),
+                    );
+                    if let Ok(spec) = ActionSpec::operation(
                         "open",
                         "Open forecast",
                         OperationKind::View,
                         crate::actions::OPEN_LOCATION_OPERATION,
                         &location.id.to_string(),
-                    )
-                    .expect("weather location id is serializable")
-                    .with_contract(ActionContract::view()),
-                );
-                resource
-            }));
+                    ) {
+                        resource
+                            .actions
+                            .push(spec.with_contract(ActionContract::view()));
+                    }
+                    if let Ok(spec) = ActionSpec::immediate(
+                        "use-as-default",
+                        "Use as default location",
+                        crate::actions::WEATHER_ACTION_TYPE,
+                        &crate::actions::select_location_action(location.id),
+                    ) {
+                        resource.actions.push(spec.reversible());
+                    }
+                    if index > 0 {
+                        let mut order: Vec<_> =
+                            core.model.locations.iter().map(|item| item.id).collect();
+                        let moved = order.remove(index);
+                        order.insert(0, moved);
+                        if let Ok(spec) = ActionSpec::immediate(
+                            "move-to-top",
+                            "Move to top",
+                            crate::actions::WEATHER_ACTION_TYPE,
+                            &crate::actions::location_order_action(&order),
+                        ) {
+                            resource.actions.push(spec.reversible());
+                        }
+                    }
+                    if let Ok(spec) = ActionSpec::immediate(
+                        "remove",
+                        "Remove location",
+                        crate::actions::WEATHER_ACTION_TYPE,
+                        &crate::actions::remove_location_action(location.id),
+                    ) {
+                        resource.actions.push(spec.destructive().reversible());
+                    }
+                    resource
+                }),
+        );
         vec![root]
     }
 
@@ -468,19 +644,19 @@ impl Widget for WeatherApp {
                 }
             }
             self.seeded_doc = true;
+            self.doc_heads = state.get_heads();
             if self.live {
                 self.ensure_service();
             }
         }
 
+        // Direct palette/agent dispatches mutate the same document through the
+        // registered WeatherAction. This also preserves a pending local fetch
+        // result rather than letting it hide an unseen remote durable change.
+        self.adopt_document_changes(state);
+
         self.tick_network();
-        {
-            let mut core = self.core.borrow_mut();
-            if core.pending_doc_write {
-                WeatherDoc::write_model(state, &core.model);
-                core.pending_doc_write = false;
-            }
-        }
+        self.flush_pending_cache(state);
         self.nav.sync(state, path);
     }
 
@@ -570,6 +746,7 @@ impl Widget for WeatherApp {
             node_id,
             taffy,
         );
+        self.flush_durable_actions(state);
 
         // The overview raises a push intent when a city is selected.
         if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
@@ -582,11 +759,7 @@ impl Widget for WeatherApp {
         }
 
         self.tick_network();
-        let mut core = self.core.borrow_mut();
-        if core.pending_doc_write {
-            WeatherDoc::write_model(state, &core.model);
-            core.pending_doc_write = false;
-        }
+        self.flush_pending_cache(state);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -637,6 +810,10 @@ impl Widget for WeatherApp {
                 || core.search_pending()
         };
         core_busy || self.nav.needs_animation_frame()
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1575,12 +1752,132 @@ mod interaction_tests {
             1,
             "the new selection persisted to the CRDT"
         );
+        assert!(
+            h.app.take_committed_action().is_some(),
+            "the keyboard selection crossed one canonical ActionHost history boundary"
+        );
 
         h.key(Key::Named(NamedKey::ArrowUp), None);
         assert_eq!(
             h.app.core.borrow().model.selected,
             0,
             "Arrow Up moves it back"
+        );
+    }
+
+    #[test]
+    fn remote_location_change_is_adopted_before_pending_cache_flush() {
+        let mut h = Harness::new(1280.0, 720.0);
+        let mut remote = AutoCommit::load(&h.state.doc.save()).unwrap();
+        let oslo = crate::model::SavedLocation::new(
+            "Oslo",
+            "Oslo",
+            "Norway",
+            "NO",
+            59.9139,
+            10.7522,
+            "Europe/Oslo",
+        );
+        WeatherDoc::upsert_location(&mut remote, &oslo);
+        remote.commit();
+        let changes = remote.get_changes(&h.state.doc.get_heads());
+        h.state.doc.apply_changes(changes).unwrap();
+
+        let local_id = h.app.core.borrow().model.locations[0].id;
+        let local_temperature = 37.5;
+        {
+            let mut core = h.app.core.borrow_mut();
+            core.model
+                .snapshots
+                .get_mut(&local_id)
+                .unwrap()
+                .current
+                .temperature = local_temperature;
+            core.pending_doc_write = true;
+        }
+
+        h.app.sync(&mut h.state.doc, &h.state.root);
+
+        let core = h.app.core.borrow();
+        assert!(
+            core.model
+                .locations
+                .iter()
+                .any(|location| location.id == oslo.id),
+            "remote saved location was adopted despite the local cache write"
+        );
+        assert_eq!(
+            core.model.snapshots[&local_id].current.temperature, local_temperature,
+            "local pending provider cache survived the durable-state adoption"
+        );
+        drop(core);
+        let persisted = WeatherDoc::read_model(&h.state.doc);
+        assert!(
+            persisted
+                .locations
+                .iter()
+                .any(|location| location.id == oslo.id)
+        );
+        assert_eq!(
+            persisted.snapshots[&local_id].current.temperature,
+            local_temperature
+        );
+    }
+
+    #[test]
+    fn location_resources_separate_view_default_and_reorder_actions() {
+        let h = Harness::new(1280.0, 720.0);
+        let root = Widget::resources(&h.app, &h.state.doc).pop().unwrap();
+        let first = &root.children[0];
+        let second = &root.children[1];
+        assert!(first.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            first
+                .actions
+                .iter()
+                .any(|action| action.id == "use-as-default"),
+            "durable default selection is not conflated with opening a view"
+        );
+        assert!(
+            !first
+                .actions
+                .iter()
+                .any(|action| action.id == "move-to-top"),
+            "the first location is already at the top"
+        );
+        assert!(
+            second
+                .actions
+                .iter()
+                .any(|action| action.id == "move-to-top"),
+            "every existing non-first UI reorder is also agent-discoverable"
+        );
+    }
+
+    #[test]
+    fn durable_action_does_not_drop_a_same_frame_provider_cache_write() {
+        let mut h = Harness::new(1280.0, 720.0);
+        let id = h.app.core.borrow().model.locations[0].id;
+        {
+            let mut core = h.app.core.borrow_mut();
+            core.model
+                .snapshots
+                .get_mut(&id)
+                .unwrap()
+                .current
+                .temperature = 31.25;
+            core.pending_doc_write = true;
+        }
+
+        h.key(Key::Named(NamedKey::ArrowDown), None);
+
+        assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 1);
+        assert_eq!(
+            WeatherDoc::read_model(&h.state.doc).snapshots[&id]
+                .current
+                .temperature,
+            31.25,
+            "the cache flag survives ActionHost dispatch and reaches the cache writer"
         );
     }
 
