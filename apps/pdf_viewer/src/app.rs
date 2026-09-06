@@ -529,6 +529,9 @@ pub struct PdfApp {
     /// idle window (no hover in progress) settles to zero frames instead of
     /// spinning forever.
     tooltip_pending: bool,
+    /// Suppresses timed fades/reveal animation while preserving immediate
+    /// state changes for users who request reduced motion.
+    reduce_motion: bool,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -745,6 +748,10 @@ impl PdfApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "constructor lists the complete explicit state of this custom document workspace"
+    )]
     fn build(doc: Document, seed_sample: bool) -> Self {
         let author = std::env::var("QUICK_APP_ID")
             .ok()
@@ -827,6 +834,7 @@ impl PdfApp {
             tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
             tooltip_anchor: Rect::ZERO,
             tooltip_pending: false,
+            reduce_motion: false,
             portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
@@ -891,7 +899,20 @@ impl PdfApp {
             page: self.current_page,
             page_count: self.doc.page_count(),
             author: self.author.clone(),
+            signature_date: today_ymd(),
             created_seed: self.created_counter,
+            search_query: self.query().to_string(),
+            search_pages: if self.raster.is_some() {
+                self.raster_matches.iter().map(|hit| hit.page).collect()
+            } else {
+                self.matches.iter().map(|hit| hit.page).collect()
+            },
+            outline: self
+                .doc
+                .outline
+                .iter()
+                .map(|item| (item.title.clone(), item.page, item.level))
+                .collect(),
         })
     }
 
@@ -1434,7 +1455,11 @@ impl PdfApp {
             let n = self.doc.page_count();
             for i in 0..n {
                 let pt = rz.page_text(i);
-                hits.extend(pt.search(i + 1, &query, opts));
+                let remaining = model::MAX_SEARCH_RESULTS.saturating_sub(hits.len());
+                hits.extend(pt.search(i + 1, &query, opts).into_iter().take(remaining));
+                if hits.len() >= model::MAX_SEARCH_RESULTS {
+                    break;
+                }
             }
             self.raster_matches = hits;
             if let Some(m) = self.raster_matches.first() {
@@ -2091,7 +2116,7 @@ impl PdfApp {
             date: today_ymd(),
             ink,
         };
-        PdfDoc::add_signature(state, &s);
+        self.perform_action(state, &crate::actions::add_signature_action(&s));
         self.selected_sig = Some(sig_id.clone());
         self.selected_anno = None;
         // Land the user on the Signatures rail, scrolled to the new field.
@@ -2342,13 +2367,10 @@ impl PdfApp {
                 self.perform_action(state, &crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
-                PdfDoc::delete_signature(state, id);
+                self.perform_action(state, &crate::actions::delete_signature_action(id));
                 if self.selected_sig.as_deref() == Some(id.as_str()) {
                     self.selected_sig = None;
                 }
-                // Signatures are not (yet) on the action model; keep the
-                // snapshot-undo path for them.
-                self.commit_pending = true;
             }
         }
         self.context_menu = None;
@@ -2566,13 +2588,13 @@ impl Widget for PdfApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        use crate::actions::PdfOperation;
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::PdfOperation;
         match operation {
             PdfOperation::PreviousPage => self.prev_page(),
             PdfOperation::NextPage => self.next_page(),
@@ -2581,6 +2603,18 @@ impl Widget for PdfApp {
             PdfOperation::FitPage => self.fit_page(),
             PdfOperation::FitWidth => self.fit_width(),
             PdfOperation::ToggleSidebar => self.toggle_sidebar(),
+            PdfOperation::ToggleRail => self.toggle_rail(),
+            PdfOperation::OpenSearch => self.open_search(),
+            PdfOperation::GoToPage { page } => self.go_to_page(page),
+            PdfOperation::DuplicatePage { page } => {
+                self.duplicate_page_at(page.saturating_sub(1));
+            }
+            PdfOperation::DeletePage { page } => {
+                self.delete_page_at(page.saturating_sub(1));
+            }
+            PdfOperation::MovePage { from, to } => {
+                self.reorder_pages(from.saturating_sub(1), to.saturating_sub(1));
+            }
             PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
                 return Err("file operations require the lifecycle-capable operation host".into());
             }
@@ -2811,45 +2845,334 @@ impl Widget for PdfApp {
     /// otherwise invisible structure explicitly.  The navigation controls use
     /// the same `PdfOperation` reducer as the toolbar and Ctrl+K resources;
     /// assistive technology never takes a separate, untested shortcut.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom-painted workspace needs one complete semantic mirror of every visible region"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         let pages = self.doc.page_count();
-        let current = self.current_page.saturating_add(1).min(pages.max(1));
-        let controls = vec![
+        let current = self.current_page.clamp(1, pages.max(1));
+        let focusable = || AccessState::new().focusable(true);
+        let button = |name: &str, target: &str, bounds: Rect| {
             AccessNode::new(Role::Button)
-                .with_name("Previous page")
-                .with_action_target("pdf.previous-page"),
-            AccessNode::new(Role::Button)
-                .with_name("Next page")
-                .with_action_target("pdf.next-page"),
-            AccessNode::new(Role::Button)
-                .with_name("Zoom in")
-                .with_action_target("pdf.zoom-in"),
-            AccessNode::new(Role::Button)
-                .with_name("Zoom out")
-                .with_action_target("pdf.zoom-out"),
+                .with_name(name)
+                .with_action_target(target)
+                .with_bounds(bounds)
+                .with_state(focusable())
+        };
+        if !self.has_document {
+            let mut children = vec![
+                AccessNode::new(Role::Heading { level: 1 })
+                    .with_name("Open a PDF")
+                    .with_hashed_key("pdf.empty.heading"),
+                button("Open PDF", "pdf.open", self.canvas_rect),
+            ];
+            if let Some(error) = &self.load_error {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(error)
+                        .with_hashed_key("pdf.empty.error")
+                        .with_live(Politeness::Assertive),
+                );
+            }
+            return Some(
+                AccessNode::new(Role::Window)
+                    .with_name("PDF Viewer")
+                    .with_bounds(self.rect)
+                    .with_children(children),
+            );
+        }
+
+        let layout = self.toolbar_layout();
+        let mut controls = vec![
+            button("Open PDF", "pdf.open", layout.open),
+            button("Save annotated PDF", "pdf.save", layout.save),
+            button("Previous page", "pdf.previous-page", self.bubble_prev)
+                .with_state(focusable().disabled(current <= 1)),
+            button("Next page", "pdf.next-page", self.bubble_next)
+                .with_state(focusable().disabled(current >= pages)),
+            button("Zoom out", "pdf.zoom-out", layout.zoom_out),
+            button("Zoom in", "pdf.zoom-in", layout.zoom_in),
+            button("Fit page or width", "pdf.fit", layout.fit),
+            button("Find in document", "pdf.search.open", layout.search),
             AccessNode::new(Role::ToggleButton)
-                .with_name("Sidebar")
+                .with_name("Page thumbnails")
+                .with_action_target("pdf.toggle-rail")
+                .with_bounds(layout.toggle_rail)
+                .with_state(focusable().checked(self.show_rail)),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Review sidebar")
                 .with_action_target("pdf.toggle-sidebar")
-                .with_state(AccessState::new().checked(self.show_sidebar)),
+                .with_bounds(layout.toggle_sidebar)
+                .with_state(focusable().checked(self.show_sidebar)),
         ];
-        Some(
+        controls.extend(layout.tools.iter().map(|(tool, bounds)| {
+            AccessNode::new(Role::ToggleButton)
+                .with_name(tool.label())
+                .with_description(format!("Annotation tool; shortcut {}", tool.hotkey()))
+                .with_action_target(format!("pdf.tool:{}", tool.hotkey()))
+                .with_bounds(*bounds)
+                .with_state(focusable().checked(self.tool == *tool))
+        }));
+        controls.extend(layout.swatches.iter().map(|(swatch, bounds)| {
+            AccessNode::new(Role::RadioButton)
+                .with_name(format!("{} annotation colour", swatch_label(*swatch)))
+                .with_action_target(format!("pdf.swatch:{}", swatch.key()))
+                .with_bounds(*bounds)
+                .with_state(focusable().checked(self.swatch == *swatch))
+        }));
+
+        let page_nodes = self
+            .page_sidebar
+            .thumb_rects()
+            .into_iter()
+            .map(|(index, bounds)| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(format!("Page {}", index + 1))
+                    .with_description(if self.pages_with_markup().contains(&(index + 1)) {
+                        "Contains review markup"
+                    } else {
+                        "No review markup"
+                    })
+                    .with_action_target(format!("pdf.page:{}", index + 1))
+                    .with_bounds(bounds)
+                    .with_position(index + 1, pages)
+                    .with_state(focusable().selected(index + 1 == current))
+            })
+            .collect();
+        let page_list = AccessNode::new(Role::List)
+            .with_name("Pages")
+            .with_hashed_key("pdf.pages")
+            .with_children(page_nodes);
+
+        let mut content_children = vec![
+            AccessNode::new(Role::Heading { level: 1 }).with_name(if self.doc_name.is_empty() {
+                "PDF document".to_string()
+            } else {
+                self.doc_name.clone()
+            }),
             AccessNode::new(Role::Document)
-                .with_name(if self.doc_name.is_empty() {
-                    "PDF document".to_string()
-                } else {
-                    self.doc_name.clone()
+                .with_name(format!("Page {current} of {pages}"))
+                .with_description(
+                    "PDF page canvas. Arrow keys scroll; Page Up and Page Down change pages.",
+                )
+                .with_value(format!("Zoom {:.0}%", self.zoom() * 100.0))
+                .with_bounds(self.canvas_rect)
+                .with_state(focusable()),
+        ];
+
+        if self.search_active {
+            let count = self.match_count();
+            let result_nodes = (0..count.min(100))
+                .map(|index| {
+                    let page = if self.raster.is_some() {
+                        self.raster_matches.get(index).map_or(1, |m| m.page)
+                    } else {
+                        self.matches.get(index).map_or(1, |m| m.page)
+                    };
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("Match {} on page {page}", index + 1))
+                        .with_action_target(format!("pdf.match:{index}"))
+                        .with_position(index + 1, count)
+                        .with_state(focusable().selected(index == self.active_match))
                 })
-                .with_description("PDF reader; page navigation, zoom, and sidebar controls")
-                .with_value(format!(
-                    "Page {current} of {pages}; zoom {:.0}%",
-                    self.zoom() * 100.0
-                ))
-                .with_state(AccessState::new().focusable(true))
-                .with_children(controls),
+                .collect();
+            content_children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Find in document")
+                    .with_children(vec![
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Search PDF")
+                            .with_value(self.query())
+                            .with_action_target("pdf.search.input")
+                            .with_bounds(self.search_input.get_rect())
+                            .with_state(focusable().focused(self.search_input.is_focused())),
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name("Whole words")
+                            .with_action_target("pdf.search.whole-word")
+                            .with_state(focusable().checked(self.search_whole_word)),
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name("Match case")
+                            .with_action_target("pdf.search.case-sensitive")
+                            .with_state(focusable().checked(self.search_case_sensitive)),
+                        AccessNode::new(Role::StaticText)
+                            .with_name(format!("{count} matches"))
+                            .with_hashed_key("pdf.search.count")
+                            .with_live(Politeness::Polite),
+                        AccessNode::new(Role::List)
+                            .with_name("Search results")
+                            .with_hashed_key("pdf.search.results")
+                            .with_children(result_nodes),
+                    ]),
+            );
+        }
+
+        if self.show_sidebar {
+            let tabs = self
+                .sidebar_tab_rects()
+                .into_iter()
+                .map(|(tab, bounds)| {
+                    let (name, tag) = match tab {
+                        SidebarTab::Comments => ("Comments", "comments"),
+                        SidebarTab::Outline => ("Contents", "contents"),
+                        SidebarTab::Signatures => ("Signatures", "signatures"),
+                    };
+                    AccessNode::new(Role::Tab)
+                        .with_name(name)
+                        .with_action_target(format!("pdf.tab:{tag}"))
+                        .with_bounds(bounds)
+                        .with_state(focusable().selected(tab == self.sidebar_tab))
+                })
+                .collect();
+            let panel_children = match self.sidebar_tab {
+                SidebarTab::Outline => self
+                    .doc
+                    .outline
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        AccessNode::new(Role::TreeItem)
+                            .with_name(item.title.clone())
+                            .with_value(format!("Page {}", item.page))
+                            .with_level(usize::from(item.level) + 1)
+                            .with_action_target(format!("pdf.outline:{index}"))
+                            .with_state(focusable().selected(item.page == current))
+                    })
+                    .collect(),
+                SidebarTab::Comments => self
+                    .comments
+                    .iter()
+                    .map(|comment| {
+                        AccessNode::new(Role::ListItem)
+                            .with_name(if comment.body.trim().is_empty() {
+                                "Empty comment".into()
+                            } else {
+                                comment.body.clone()
+                            })
+                            .with_description(format!(
+                                "{} on page {}; {} replies",
+                                comment.author,
+                                comment.page,
+                                comment.replies.len()
+                            ))
+                            .with_action_target(format!("pdf.comment:{}.open", comment.id))
+                            .with_state(focusable().selected(
+                                comment.anno_id.as_deref() == self.selected_anno.as_deref(),
+                            ))
+                            .with_children(vec![
+                                button(
+                                    "Edit comment",
+                                    &format!("pdf.comment:{}.edit", comment.id),
+                                    Rect::ZERO,
+                                ),
+                                button(
+                                    "Reply",
+                                    &format!("pdf.comment:{}.reply", comment.id),
+                                    Rect::ZERO,
+                                ),
+                                AccessNode::new(Role::ToggleButton)
+                                    .with_name(if comment.resolved {
+                                        "Reopen comment"
+                                    } else {
+                                        "Resolve comment"
+                                    })
+                                    .with_action_target(format!(
+                                        "pdf.comment:{}.resolve",
+                                        comment.id
+                                    ))
+                                    .with_state(focusable().checked(comment.resolved)),
+                                button(
+                                    "Delete comment",
+                                    &format!("pdf.comment:{}.delete", comment.id),
+                                    Rect::ZERO,
+                                ),
+                            ])
+                    })
+                    .collect(),
+                SidebarTab::Signatures => {
+                    let mut nodes: Vec<AccessNode> = vec![
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Signer name")
+                            .with_value(self.signer_name.clone())
+                            .with_action_target("pdf.signer")
+                            .with_state(focusable()),
+                        AccessNode::new(Role::RadioButton)
+                            .with_name("Type signature")
+                            .with_action_target("pdf.signature-mode:type")
+                            .with_state(focusable().checked(self.sig_mode == SigMode::Type)),
+                        AccessNode::new(Role::RadioButton)
+                            .with_name("Draw signature")
+                            .with_action_target("pdf.signature-mode:draw")
+                            .with_state(focusable().checked(self.sig_mode == SigMode::Draw)),
+                        button("Use signature on page", "pdf.signature.use", Rect::ZERO),
+                    ];
+                    nodes.extend(self.signatures.iter().map(|signature| {
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!("Signature by {}", signature.signer))
+                            .with_description(format!(
+                                "Signed {} on page {}",
+                                signature.date, signature.page
+                            ))
+                            .with_action_target(format!("pdf.signature:{}.open", signature.id))
+                            .with_state(focusable().selected(
+                                self.selected_sig.as_deref() == Some(signature.id.as_str()),
+                            ))
+                            .with_children(vec![button(
+                                "Delete signature",
+                                &format!("pdf.signature:{}.delete", signature.id),
+                                Rect::ZERO,
+                            )])
+                    }));
+                    nodes
+                }
+            };
+            content_children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Review sidebar")
+                    .with_children(vec![
+                        AccessNode::new(Role::TabBar)
+                            .with_name("Review panels")
+                            .with_children(tabs),
+                        AccessNode::new(Role::TabPanel)
+                            .with_name(match self.sidebar_tab {
+                                SidebarTab::Comments => "Comments",
+                                SidebarTab::Outline => "Contents",
+                                SidebarTab::Signatures => "Signatures",
+                            })
+                            .with_children(panel_children),
+                    ]),
+            );
+        }
+        if let Some(status) = &self.status_note {
+            content_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(status)
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("PDF Viewer")
+                .with_bounds(self.rect)
+                .with_children(vec![
+                    AccessNode::new(Role::Toolbar)
+                        .with_name("Document tools")
+                        .with_hashed_key("pdf.toolbar")
+                        .with_children(controls),
+                    page_list,
+                    AccessNode::new(Role::Group)
+                        .with_name("Document")
+                        .with_hashed_key("pdf.content")
+                        .with_children(content_children),
+                ]),
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one target router mirrors the single synthetic accessibility tree"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2857,13 +3180,218 @@ impl Widget for PdfApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        if !matches!(
-            action,
-            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
-        ) {
+        use crate::actions::PdfOperation;
+        use ui::a11y::Action as A11yAction;
+        if target == "pdf.search.input" {
+            match action {
+                A11yAction::Activate | A11yAction::Focus => self.open_search(),
+                A11yAction::SetValue(value) => {
+                    self.open_search();
+                    self.search_input.set_text(value);
+                    self.search_input.set_cursor_pos(value.len());
+                    self.recompute_matches();
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if target == "pdf.signer" {
+            match action {
+                A11yAction::Activate | A11yAction::Focus => {
+                    let value = self.signer_name.clone();
+                    self.begin_edit(EditTarget::Signer, &value);
+                }
+                A11yAction::SetValue(value) => {
+                    self.signer_name.clone_from(value);
+                    self.begin_edit(EditTarget::Signer, value);
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        let activates = matches!(action, A11yAction::Activate | A11yAction::ToggleCheck);
+        if !activates && !matches!(action, A11yAction::ScrollIntoView | A11yAction::Focus) {
             return false;
         }
-        use crate::actions::PdfOperation;
+
+        if let Some(page) = target
+            .strip_prefix("pdf.page:")
+            .and_then(|v| v.parse().ok())
+        {
+            self.go_to_page(page);
+            return true;
+        }
+        if let Some(index) = target
+            .strip_prefix("pdf.match:")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            if index >= self.match_count() {
+                return false;
+            }
+            self.active_match = index;
+            let page = if self.raster.is_some() {
+                self.raster_matches.get(index).map(|hit| hit.page)
+            } else {
+                self.matches.get(index).map(|hit| hit.page)
+            };
+            if let Some(page) = page {
+                self.go_to_page(page);
+            }
+            return true;
+        }
+        if let Some(index) = target
+            .strip_prefix("pdf.outline:")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            if let Some(page) = self.doc.outline.get(index).map(|item| item.page) {
+                self.go_to_page(page);
+                return true;
+            }
+            return false;
+        }
+        if let Some(tag) = target.strip_prefix("pdf.tool:") {
+            let tool = match tag {
+                "1" => Tool::Select,
+                "2" => Tool::Highlight,
+                "3" => Tool::Ink,
+                "4" => Tool::Note,
+                "5" => Tool::Sign,
+                _ => return false,
+            };
+            self.set_tool(tool);
+            return true;
+        }
+        if let Some(name) = target.strip_prefix("pdf.swatch:") {
+            self.swatch = Swatch::parse(name);
+            if let Some(id) = self.selected_anno.clone() {
+                self.perform_action(
+                    state,
+                    &crate::actions::set_annotation_color_action(&id, self.swatch),
+                );
+                self.reload(state);
+            }
+            self.dirty = true;
+            return true;
+        }
+        if let Some(tab) = target.strip_prefix("pdf.tab:") {
+            self.sidebar_tab = match tab {
+                "comments" => SidebarTab::Comments,
+                "contents" => SidebarTab::Outline,
+                "signatures" => SidebarTab::Signatures,
+                _ => return false,
+            };
+            self.show_sidebar = true;
+            self.reflow();
+            return true;
+        }
+        if let Some(mode) = target.strip_prefix("pdf.signature-mode:") {
+            self.sig_mode = match mode {
+                "type" => SigMode::Type,
+                "draw" => SigMode::Draw,
+                _ => return false,
+            };
+            self.sig_stroke = None;
+            self.dirty = true;
+            return true;
+        }
+        if let Some(rest) = target.strip_prefix("pdf.comment:") {
+            let Some((id, verb)) = rest.rsplit_once('.') else {
+                return false;
+            };
+            let Some(comment) = self
+                .comments
+                .iter()
+                .find(|comment| comment.id == id)
+                .cloned()
+            else {
+                return false;
+            };
+            match verb {
+                "open" => {
+                    self.selected_anno = comment.anno_id;
+                    self.go_to_page(comment.page);
+                }
+                "edit" => {
+                    self.begin_edit(EditTarget::CommentBody(id.into()), &comment.body);
+                }
+                "reply" => self.begin_edit(EditTarget::Reply(id.into()), ""),
+                "resolve" => {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_comment_resolved_action(id, !comment.resolved),
+                    );
+                    self.reload(state);
+                }
+                "delete" => self.delete_target(&DeleteTarget::Comment(id.into()), state),
+                _ => return false,
+            }
+            return true;
+        }
+        if let Some(rest) = target.strip_prefix("pdf.signature:") {
+            let Some((id, verb)) = rest.rsplit_once('.') else {
+                return false;
+            };
+            let Some(signature) = self
+                .signatures
+                .iter()
+                .find(|signature| signature.id == id)
+                .cloned()
+            else {
+                return false;
+            };
+            match verb {
+                "open" => {
+                    self.selected_sig = Some(id.into());
+                    self.selected_anno = None;
+                    self.go_to_page(signature.page);
+                }
+                "delete" => self.delete_target(&DeleteTarget::Signature(id.into()), state),
+                _ => return false,
+            }
+            return true;
+        }
+
+        match target {
+            "pdf.open" => {
+                self.request_open_via_portal();
+                return true;
+            }
+            "pdf.save" => {
+                self.request_save_via_portal();
+                return true;
+            }
+            "pdf.toggle-rail" => {
+                self.toggle_rail();
+                return true;
+            }
+            "pdf.search.open" => {
+                self.open_search();
+                return true;
+            }
+            "pdf.search.whole-word" => {
+                self.search_whole_word = !self.search_whole_word;
+                self.recompute_matches();
+                return true;
+            }
+            "pdf.search.case-sensitive" => {
+                self.search_case_sensitive = !self.search_case_sensitive;
+                self.recompute_matches();
+                return true;
+            }
+            "pdf.fit" => {
+                if self.fit == FitMode::Width {
+                    self.fit_page();
+                } else {
+                    self.fit_width();
+                }
+                return true;
+            }
+            "pdf.signature.use" => {
+                self.set_tool(Tool::Sign);
+                return true;
+            }
+            _ => {}
+        }
         let operation = match target {
             "pdf.previous-page" => PdfOperation::PreviousPage,
             "pdf.next-page" => PdfOperation::NextPage,
@@ -2937,7 +3465,9 @@ impl Widget for PdfApp {
         // settles to zero frames instead of redrawing forever. The pointer
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
-        //
+        if self.reduce_motion {
+            return self.pending_raster;
+        }
         // Also tick while a page rasterisation was deferred off this frame's
         // budget (`pending_raster`): the framework's animation pump re-draws at
         // ~60 Hz so the remaining visible pages fill in over the next frame(s),
@@ -2947,6 +3477,17 @@ impl Widget for PdfApp {
         self.tooltip_pending
             || self.pending_raster
             || self.page_bubble.needs_frame(std::time::Instant::now())
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
+        if reduced {
+            self.tooltip_pending = false;
+            self.page_bubble = ui::StatusBubble::new().with_linger(Duration::ZERO);
+        } else {
+            self.page_bubble = ui::StatusBubble::new();
+        }
+        self.dirty = true;
     }
 
     fn mark_drawn(&mut self) {
@@ -3094,6 +3635,17 @@ mod tests {
         (app, st)
     }
 
+    fn any_access_node(
+        node: &ui::a11y::AccessNode,
+        predicate: &impl Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> bool {
+        predicate(node)
+            || node
+                .children
+                .iter()
+                .any(|child| any_access_node(child, predicate))
+    }
+
     #[test]
     fn accessibility_exposes_reader_state_and_routes_toolbar_operations() {
         use ui::a11y::Action;
@@ -3101,17 +3653,15 @@ mod tests {
 
         let (mut app, mut state) = app_with_state();
         let tree = app.accessibility().expect("reader semantics");
-        assert_eq!(tree.role, ui::a11y::Role::Document);
-        assert!(
-            tree.value
-                .as_deref()
-                .is_some_and(|value| value.contains("Page"))
-        );
-        assert!(
-            tree.children
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("pdf.zoom-in"))
-        );
+        assert_eq!(tree.role, ui::a11y::Role::Window);
+        assert!(any_access_node(&tree, &|node| node
+            .name
+            .as_deref()
+            .is_some_and(|value| value.contains("Page"))));
+        assert!(any_access_node(&tree, &|node| node
+            .action_target
+            .as_deref()
+            == Some("pdf.zoom-in")));
 
         let sidebar_before = app.show_sidebar;
         assert!(app.perform_semantic_action(

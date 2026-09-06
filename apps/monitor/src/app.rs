@@ -30,8 +30,8 @@ use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionContract, ActionSpec, ConfirmationPolicy, OperationKind, PermissionRequirement, Resource,
-    RetryPolicy, RiskLevel,
+    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ControlInvocation,
+    OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -62,6 +62,47 @@ enum ProcAction {
     Kill(u32),
     CopyPid(u32),
     ShowDetails(u32),
+}
+
+/// Canonical wire operation for every system effect Monitor exposes through
+/// its resource tree. Keeping the pid and signal shape typed avoids a palette
+/// or agent inventing positional string arguments that disagree with the
+/// visible Stop/Kill affordances.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum MonitorOperation {
+    Refresh,
+    Signal { pid: u32, signal: MonitorSignal },
+}
+
+/// The two process signals Monitor deliberately supports. This is distinct
+/// from [`StopKind`], which is the sampler's platform-facing representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MonitorSignal {
+    Stop,
+    Kill,
+}
+
+impl MonitorSignal {
+    const fn stop_kind(self) -> StopKind {
+        match self {
+            Self::Stop => StopKind::Term,
+            Self::Kill => StopKind::Kill,
+        }
+    }
+}
+
+const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
+
+/// Why a signal operation is being executed. Visible UI honors the user's
+/// persisted local confirmation preference; the resource-action door already
+/// enforces the operation contract before it calls the app, so it must execute
+/// the approved effect instead of reporting success for merely opening a UI
+/// dialog that an agent cannot operate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignalConfirmation {
+    LocalPreference,
+    ActionContract,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -353,6 +394,9 @@ pub struct MonitorApp {
     /// drained + applied by `on_click` after dispatch (see [`ProcAction`]).
     /// `Arc<Mutex<..>>` because `ContextMenu` requires `Send + Sync` actions.
     pending_action: Arc<Mutex<Option<ProcAction>>>,
+    /// Visible process controls emit inert resource addresses; the host
+    /// resolves the latest action contract before any OS signal is sent.
+    pending_control_invocation: Option<ControlInvocation>,
     /// The pid most recently "Copy PID"'d. The pid itself is written to the OS
     /// clipboard via [`ui::clipboard_copy`]; this field records it so the
     /// transient "PID N copied" toast (and tests) can observe the action.
@@ -490,6 +534,7 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             pending_action: Arc::new(Mutex::new(None)),
+            pending_control_invocation: None,
             copied_pid: None,
             copied_at: None,
             scroll_drag: None,
@@ -668,21 +713,63 @@ impl MonitorApp {
         }
     }
 
-    /// Request a hard **Kill** (SIGKILL). Gated by the confirm-kill pref,
-    /// since SIGKILL is un-catchable and loses unsaved work.
-    fn request_kill(&mut self, pid: u32, doc: &mut AutoCommit, _path: &ObjId) {
-        if self.prefs.confirm_kill {
-            self.confirm_stop = Some((pid, StopKind::Kill));
-        } else {
-            self.do_stop(pid, StopKind::Kill, doc);
+    /// Queue the exact resource address every visible process control uses.
+    /// The host re-resolves it against a fresh catalogue and enforces the
+    /// published permission, confirmation, and retry contract before calling
+    /// [`Self::invoke_resource_operation`].
+    fn request_process_control(&mut self, pid: u32, action: &'static str) {
+        if self
+            .model
+            .processes
+            .iter()
+            .any(|process| process.pid == pid)
+        {
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new(format!("process:{pid}"), action),
+                arguments: serde_json::Map::new(),
+            });
         }
     }
 
-    /// **Stop** a process (SIGTERM) — the polite, catchable termination
-    /// request. Never gated by a confirm dialog: it lets the process clean
-    /// up, so it's safe as a one-click action.
-    fn request_stop(&mut self, pid: u32, doc: &mut AutoCommit) {
-        self.do_stop(pid, StopKind::Term, doc);
+    /// Execute the typed operation emitted by the resource catalogue. All
+    /// process controls delegate here; only the confirmation source differs
+    /// between a visible UI request and an already-confirmed action contract.
+    fn perform_operation(
+        &mut self,
+        operation: &MonitorOperation,
+        confirmation: SignalConfirmation,
+    ) -> Result<(), String> {
+        match operation {
+            MonitorOperation::Refresh => {
+                self.sampler.refresh(&mut self.model);
+                self.record_proc_cpu();
+                self.clamp_scroll();
+                Ok(())
+            }
+            MonitorOperation::Signal { pid, signal } => {
+                let kind = signal.stop_kind();
+                if !self
+                    .model
+                    .processes
+                    .iter()
+                    .any(|process| process.pid == *pid)
+                {
+                    return Err("process is no longer running".into());
+                }
+                if kind == StopKind::Kill
+                    && confirmation == SignalConfirmation::LocalPreference
+                    && self.prefs.confirm_kill
+                {
+                    self.confirm_stop = Some((*pid, kind));
+                    return Ok(());
+                }
+                if self.do_stop(*pid, kind) {
+                    Ok(())
+                } else {
+                    Err("the operating system refused the process signal".into())
+                }
+            }
+        }
     }
 
     /// Dispatch the real signal and reflect it in the local model. Live: the
@@ -690,8 +777,13 @@ impl MonitorApp {
     /// Sample/offscreen: the signal call is a no-op (the pid isn't a real
     /// process), but we still drop the row so the UI responds — the next live
     /// refresh would do the same once the process actually exits.
-    fn do_stop(&mut self, pid: u32, kind: StopKind, _doc: &mut AutoCommit) {
-        let _ = self.sampler.signal(pid, kind);
+    fn do_stop(&mut self, pid: u32, kind: StopKind) -> bool {
+        // Sample/offscreen rows are deliberately synthetic, so a system call
+        // cannot find their pids. Treat their action as a local simulation;
+        // live rows only disappear after the OS accepted the signal.
+        if !self.sample_only && !self.sampler.signal(pid, kind) {
+            return false;
+        }
         // SIGKILL removes the row immediately (it cannot survive); SIGTERM is
         // a request, so on a *live* system we'd wait for the next refresh —
         // but in the seeded/offscreen model there's no live refresh, so we
@@ -703,6 +795,7 @@ impl MonitorApp {
         self.confirm_stop = None;
         self.confirm_dialog = None;
         self.clamp_scroll();
+        true
     }
 
     // ---- right-click context menu ----------------------------------------
@@ -901,10 +994,10 @@ impl MonitorApp {
     /// writes the pid to the real OS clipboard via [`ui::clipboard_copy`] (a
     /// silent no-op in a headless/locked-down session) and records it so the
     /// transient toast and tests can observe the action.
-    fn apply_action(&mut self, action: ProcAction, doc: &mut AutoCommit, path: &ObjId) {
+    fn apply_action(&mut self, action: ProcAction, _doc: &mut AutoCommit, _path: &ObjId) {
         match action {
-            ProcAction::Stop(pid) => self.request_stop(pid, doc),
-            ProcAction::Kill(pid) => self.request_kill(pid, doc, path),
+            ProcAction::Stop(pid) => self.request_process_control(pid, "stop"),
+            ProcAction::Kill(pid) => self.request_process_control(pid, "kill"),
             ProcAction::CopyPid(pid) => {
                 ui::clipboard_copy(&pid.to_string());
                 self.copied_pid = Some(pid);
@@ -3541,7 +3634,14 @@ impl MonitorApp {
             && ke.state == ElementState::Pressed
             && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
         {
-            self.do_stop(pid, kind, doc);
+            let operation = MonitorOperation::Signal {
+                pid,
+                signal: match kind {
+                    StopKind::Term => MonitorSignal::Stop,
+                    StopKind::Kill => MonitorSignal::Kill,
+                },
+            };
+            let _ = self.perform_operation(&operation, SignalConfirmation::ActionContract);
             *handled = true;
             return;
         }
@@ -3557,7 +3657,14 @@ impl MonitorApp {
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if confirm {
-            self.do_stop(pid, kind, doc);
+            let operation = MonitorOperation::Signal {
+                pid,
+                signal: match kind {
+                    StopKind::Term => MonitorSignal::Stop,
+                    StopKind::Kill => MonitorSignal::Kill,
+                },
+            };
+            let _ = self.perform_operation(&operation, SignalConfirmation::ActionContract);
         } else if cancel {
             self.confirm_stop = None;
             self.confirm_dialog = None;
@@ -3850,13 +3957,13 @@ impl MonitorApp {
         }
         if self.hit.kill_btn.contains(p) {
             if let Some(pid) = self.selected_pid {
-                self.request_kill(pid, doc, path);
+                self.request_process_control(pid, "kill");
             }
             return true;
         }
         if self.hit.stop_btn.contains(p) {
             if let Some(pid) = self.selected_pid {
-                self.request_stop(pid, doc);
+                self.request_process_control(pid, "stop");
             }
             return true;
         }
@@ -4012,7 +4119,7 @@ impl MonitorApp {
 
     /// Global keys: Esc, selection nav, tree expand/collapse, Kill, and
     /// single-character shortcuts.
-    fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+    fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, _path: &ObjId, handled: &mut bool) {
         match key {
             // Esc pops a pushed detail pane back to the table (narrow).
             Key::Named(NamedKey::Escape) => {
@@ -4050,7 +4157,7 @@ impl MonitorApp {
             // Enter and Delete both kill the selected process.
             Key::Named(NamedKey::Enter | NamedKey::Delete) if self.tab == Tab::Processes => {
                 if let Some(pid) = self.selected_pid {
-                    self.request_kill(pid, doc, path);
+                    self.request_process_control(pid, "kill");
                     *handled = true;
                 }
             }
@@ -4064,7 +4171,7 @@ impl MonitorApp {
     /// Single-character keyboard shortcuts: tab switch, search focus, sort
     /// keys, Stop, and the tree/sum toggles. Returns whether the character
     /// was recognised.
-    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit) -> bool {
+    fn key_character_shortcut(&mut self, s: &str, _doc: &mut AutoCommit) -> bool {
         match s {
             "1" => self.tab = Tab::Processes,
             "2" => self.tab = Tab::Resources,
@@ -4082,7 +4189,7 @@ impl MonitorApp {
                 if self.tab == Tab::Processes
                     && let Some(pid) = self.selected_pid
                 {
-                    self.request_stop(pid, doc);
+                    self.request_process_control(pid, "stop");
                 }
             }
             "g" | "G" => {
@@ -4100,11 +4207,16 @@ impl MonitorApp {
         true
     }
 
-    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hand-painted Monitor surface deliberately keeps every semantic node beside its matching hit geometry"
+    )]
+    fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let button = |rect: Rect, label: &str| {
+        let button = |target: &str, rect: Rect, label: &str| {
             (
+                target.to_string(),
                 rect,
                 AccessNode::new(Role::Button)
                     .with_name(label)
@@ -4113,20 +4225,117 @@ impl MonitorApp {
             )
         };
         let mut targets = vec![
-            button(self.hit.tab_proc, "Processes"),
-            button(self.hit.tab_res, "Resources"),
-            button(self.hit.interval, "Refresh interval"),
-            button(self.hit.kernel_toggle, "Show kernel processes"),
-            button(self.hit.tree_toggle, "Tree or flat process view"),
-            button(self.hit.sum_toggle, "Subtree or per-process totals"),
+            (
+                "monitor.tab.processes".to_string(),
+                self.hit.tab_proc,
+                AccessNode::new(Role::Tab)
+                    .with_name("Processes")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.tab == Tab::Processes),
+                    )
+                    .with_bounds(self.hit.tab_proc),
+            ),
+            (
+                "monitor.tab.resources".to_string(),
+                self.hit.tab_res,
+                AccessNode::new(Role::Tab)
+                    .with_name("Resources")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.tab == Tab::Resources),
+                    )
+                    .with_bounds(self.hit.tab_res),
+            ),
+            (
+                "monitor.interval".to_string(),
+                self.hit.interval,
+                AccessNode::new(Role::ComboBox)
+                    .with_name("Refresh interval")
+                    .with_value(interval_label(self.prefs.interval_ms))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .expanded(self.interval_popover.is_open()),
+                    )
+                    .with_bounds(self.hit.interval),
+            ),
+            (
+                "monitor.kernel-threads".to_string(),
+                self.hit.kernel_toggle,
+                AccessNode::new(Role::Switch)
+                    .with_name("Show kernel processes")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.prefs.show_kernel_threads),
+                    )
+                    .with_bounds(self.hit.kernel_toggle),
+            ),
+            (
+                "monitor.tree-mode".to_string(),
+                self.hit.tree_toggle,
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Tree process view")
+                    .with_state(AccessState::new().focusable(true).checked(self.tree_mode))
+                    .with_bounds(self.hit.tree_toggle),
+            ),
+            (
+                "monitor.sum-mode".to_string(),
+                self.hit.sum_toggle,
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Sum subtree totals")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.sum_mode == SumMode::SumSubtree),
+                    )
+                    .with_bounds(self.hit.sum_toggle),
+            ),
         ];
+        if self.interval_popover.is_open() {
+            let menu = self.interval_popover.rect();
+            for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
+                let y0 = menu.y0 + 6.0 + index as f64 * 30.0;
+                let row = Rect::new(menu.x0, y0, menu.x1, y0 + 30.0);
+                targets.push((
+                    format!("monitor.interval:{ms}"),
+                    row,
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(interval_label(ms))
+                        .with_semantic_key(format!("interval:{ms}"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(self.prefs.interval_ms == ms),
+                        )
+                        .with_bounds(row),
+                ));
+            }
+        }
+        if self.hit.confirm_toggle.area() > 0.0 {
+            targets.push((
+                "monitor.confirm-kills".to_string(),
+                self.hit.confirm_toggle,
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Confirm force kills")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.prefs.confirm_kill),
+                    )
+                    .with_bounds(self.hit.confirm_toggle),
+            ));
+        }
         if self.hit.search.area() > 0.0 {
             let search = self
                 .search_input
                 .accessibility()
                 .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Search processes"))
                 .with_bounds(self.hit.search);
-            targets.push((self.hit.search, search));
+            targets.push(("monitor.search".to_string(), self.hit.search, search));
         }
         for (sort, rect) in &self.hit.sort_headers {
             let label = match sort {
@@ -4137,7 +4346,11 @@ impl MonitorApp {
                 SortKey::Mem => "memory",
                 SortKey::Threads => "threads",
             };
-            targets.push(button(*rect, &format!("Sort by {label}")));
+            targets.push(button(
+                &format!("monitor.sort.{label}"),
+                *rect,
+                &format!("Sort by {label}"),
+            ));
         }
         for (pid, rect) in &self.hit.rows {
             let name = self
@@ -4150,9 +4363,11 @@ impl MonitorApp {
                     |process| format!("{} — PID {pid}", process.name),
                 );
             targets.push((
+                format!("monitor.process:{pid}"),
                 *rect,
                 AccessNode::new(Role::ListItem)
                     .with_name(name)
+                    .with_semantic_key(format!("process:{pid}"))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -4161,64 +4376,83 @@ impl MonitorApp {
                     .with_bounds(*rect),
             ));
         }
-        if self.hit.stop_btn.area() > 0.0 {
-            targets.push(button(self.hit.stop_btn, "Stop selected process"));
+        if self.hit.stop_btn.area() > 0.0
+            && let Some(pid) = self.selected_pid
+        {
+            targets.push(button(
+                &format!("monitor.process:{pid}:stop"),
+                self.hit.stop_btn,
+                "Stop selected process",
+            ));
         }
-        if self.hit.kill_btn.area() > 0.0 {
-            targets.push(button(self.hit.kill_btn, "Kill selected process"));
+        if self.hit.kill_btn.area() > 0.0
+            && let Some(pid) = self.selected_pid
+        {
+            targets.push(button(
+                &format!("monitor.process:{pid}:kill"),
+                self.hit.kill_btn,
+                "Force kill selected process",
+            ));
         }
         targets
             .into_iter()
-            .filter(|(rect, _)| rect.area() > 0.0)
+            .filter(|(_, rect, _)| rect.area() > 0.0)
             .collect()
     }
 }
 
 impl Widget for MonitorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["monitor.refresh", "monitor.signal"]
+        &[MONITOR_OPERATION_TYPE]
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("processes", "monitor.processes", "Processes");
-        root.actions.push(
-            ActionSpec::operation(
-                "refresh",
-                "Refresh processes",
-                OperationKind::Effect,
-                "monitor.refresh",
-                &"",
-            )
-            .expect("monitor operation payload is serializable")
-            .with_contract(ActionContract {
+        if let Ok(refresh) = ActionSpec::operation(
+            "refresh",
+            "Refresh processes",
+            OperationKind::Effect,
+            MONITOR_OPERATION_TYPE,
+            &MonitorOperation::Refresh,
+        ) {
+            root.actions.push(refresh.with_contract(ActionContract {
                 permission: PermissionRequirement::Read,
                 retry: RetryPolicy::Idempotent,
                 ..ActionContract::default()
-            }),
-        );
+            }));
+        }
         for process in &self.model.processes {
             let mut resource = Resource::new(
                 format!("process:{}", process.pid),
                 "monitor.process",
                 format!("{} ({})", process.name, process.pid),
             );
-            for (verb, label) in [("stop", "Stop process"), ("kill", "Force kill")] {
-                let payload = vec![verb.to_string(), process.pid.to_string()];
+            for (verb, label, signal) in [
+                ("stop", "Stop process", MonitorSignal::Stop),
+                ("kill", "Force kill", MonitorSignal::Kill),
+            ] {
                 if let Ok(spec) = ActionSpec::operation(
                     verb,
                     label,
                     OperationKind::Effect,
-                    "monitor.signal",
-                    &payload,
+                    MONITOR_OPERATION_TYPE,
+                    &MonitorOperation::Signal {
+                        pid: process.pid,
+                        signal,
+                    },
                 ) {
                     resource.actions.push(spec.with_contract(ActionContract {
                         permission: PermissionRequirement::Admin,
-                        risk: if verb == "kill" {
+                        risk: if signal == MonitorSignal::Kill {
                             RiskLevel::Destructive
                         } else {
                             RiskLevel::Privileged
                         },
-                        confirmation: ConfirmationPolicy::Confirm,
+                        confirmation: if signal == MonitorSignal::Kill {
+                            ConfirmationPolicy::Confirm
+                        } else {
+                            ConfirmationPolicy::None
+                        },
                         retry: RetryPolicy::AtMostOnce,
                         ..ActionContract::default()
                     }));
@@ -4240,35 +4474,17 @@ impl Widget for MonitorApp {
         if kind != OperationKind::Effect {
             return Ok(false);
         }
-        if type_id == "monitor.refresh" {
-            self.sampler.refresh(&mut self.model);
-            return Ok(true);
-        }
-        if type_id != "monitor.signal" {
+        if type_id != MONITOR_OPERATION_TYPE {
             return Ok(false);
         }
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let pid = args
-            .get(1)
-            .ok_or_else(|| "missing pid".to_string())?
-            .parse::<u32>()
-            .map_err(|e| e.to_string())?;
-        let signal = match args.first().map(String::as_str) {
-            Some("stop") => StopKind::Term,
-            Some("kill") => StopKind::Kill,
-            _ => return Ok(false),
-        };
-        if !self.model.processes.iter().any(|p| p.pid == pid) {
-            return Err("process is no longer running".into());
-        }
-        if !self.sampler.signal(pid, signal) {
-            return Err("The operating system refused the process signal".into());
-        }
-        self.model.processes.retain(|p| p.pid != pid);
-        if self.selected_pid == Some(pid) {
-            self.selected_pid = None;
-        }
+        let operation: MonitorOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
         Ok(true)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -4426,11 +4642,7 @@ impl Widget for MonitorApp {
         let children = self
             .accessibility_targets()
             .into_iter()
-            .enumerate()
-            .map(|(index, (_, node))| {
-                node.with_key(index as u64)
-                    .with_action_target(format!("monitor-target:{index}"))
-            })
+            .map(|(target, _, node)| node.with_action_target(target))
             .collect();
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
@@ -4445,7 +4657,116 @@ impl Widget for MonitorApp {
         };
         self.accessibility_targets()
             .get(*index)
-            .map(|(rect, _)| *rect)
+            .map(|(_, rect, _)| *rect)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        let activated = matches!(action, Action::Activate | Action::ToggleCheck);
+        match target {
+            "monitor.search" => return self.search_input.perform_action(action, state, path),
+            "monitor.tab.processes" if activated => self.tab = Tab::Processes,
+            "monitor.tab.resources" if activated => self.tab = Tab::Resources,
+            "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
+                self.open_interval_popover();
+            }
+            "monitor.kernel-threads" if activated => {
+                self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
+                self.prefs.store(state, path);
+                self.clamp_scroll();
+            }
+            "monitor.tree-mode" if activated => {
+                self.tree_mode = !self.tree_mode;
+                self.scroll_off = 0.0;
+                self.clamp_scroll();
+            }
+            "monitor.sum-mode" if activated && self.tree_mode => {
+                self.sum_mode = self.sum_mode.toggled();
+            }
+            "monitor.confirm-kills" if activated => {
+                self.prefs.confirm_kill = !self.prefs.confirm_kill;
+                self.prefs.store(state, path);
+            }
+            _ => {
+                if let Some(label) = target.strip_prefix("monitor.sort.") {
+                    let sort = match label {
+                        "PID" => SortKey::Pid,
+                        "name" => SortKey::Name,
+                        "user" => SortKey::User,
+                        "CPU" => SortKey::Cpu,
+                        "memory" => SortKey::Mem,
+                        "threads" => SortKey::Threads,
+                        _ => return false,
+                    };
+                    if activated {
+                        self.set_sort(sort);
+                        return true;
+                    }
+                    return false;
+                }
+                if let Some(ms) = target.strip_prefix("monitor.interval:") {
+                    let Ok(ms) = ms.parse::<u64>() else {
+                        return false;
+                    };
+                    if activated && INTERVAL_OPTIONS.contains(&ms) {
+                        self.prefs.interval_ms = ms;
+                        self.prefs.store(state, path);
+                        self.interval_popover.close();
+                        return true;
+                    }
+                    return false;
+                }
+                let Some(process_target) = target.strip_prefix("monitor.process:") else {
+                    return false;
+                };
+                let (pid, command) = process_target
+                    .split_once(':')
+                    .map_or((process_target, None), |(pid, command)| {
+                        (pid, Some(command))
+                    });
+                let Ok(pid) = pid.parse::<u32>() else {
+                    return false;
+                };
+                if !self
+                    .model
+                    .processes
+                    .iter()
+                    .any(|process| process.pid == pid)
+                {
+                    return false;
+                }
+                match (command, action) {
+                    (None, Action::Focus | Action::ScrollIntoView) => {
+                        self.selected_pid = Some(pid);
+                        return true;
+                    }
+                    (None, Action::Activate) => {
+                        self.selected_pid = Some(pid);
+                        if self.is_narrow() {
+                            self.proc_push.show_detail();
+                        }
+                        return true;
+                    }
+                    (Some("stop"), Action::Activate) => {
+                        self.request_process_control(pid, "stop");
+                        return true;
+                    }
+                    (Some("kill"), Action::Activate) => {
+                        self.request_process_control(pid, "kill");
+                        return true;
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        true
     }
 
     fn needs_commit(&self) -> bool {
@@ -4952,57 +5273,54 @@ mod tests {
         let mut a = app();
         let pid = a.selected_pid.unwrap();
         let before = a.model.processes.len();
-        let mut doc = AutoCommit::new();
-        a.do_stop(pid, StopKind::Kill, &mut doc);
+        assert!(a.do_stop(pid, StopKind::Kill));
         assert_eq!(a.model.processes.len(), before - 1);
         assert!(a.selected_pid.is_none());
         assert!(a.model.processes.iter().all(|p| p.pid != pid));
     }
 
-    /// Stop (SIGTERM) and Kill (SIGKILL) are distinct actions: Stop is never
-    /// gated by a confirm, while Kill is gated by the confirm-kill pref.
+    /// Stop and Kill controls queue the same canonical resource addresses the
+    /// host resolves for palette and agent execution.
     #[test]
-    fn stop_is_ungated_kill_is_gated() {
+    fn stop_and_kill_controls_queue_canonical_addresses() {
         let mut a = app();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        a.prefs.confirm_kill = true;
         let pid = a.visible_rows()[0].pid;
-
-        // Stop (SIGTERM) goes through immediately, no modal.
-        a.selected_pid = Some(pid);
-        a.request_stop(pid, &mut doc);
-        assert!(a.confirm_stop.is_none(), "Stop must not pop a confirm");
-        assert!(
-            a.model.processes.iter().all(|p| p.pid != pid),
-            "Stop dropped the row"
-        );
-
-        // Kill (SIGKILL) pops the confirm dialog while the pref is on.
-        let pid2 = a.visible_rows()[0].pid;
-        a.request_kill(pid2, &mut doc, &root);
+        a.request_process_control(pid, "stop");
         assert_eq!(
-            a.confirm_stop,
-            Some((pid2, StopKind::Kill)),
-            "Kill is gated"
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "stop"))
+        );
+        a.request_process_control(pid, "kill");
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
         );
     }
 
     #[test]
-    fn confirm_kill_gated_by_pref() {
+    fn force_kill_contract_does_not_follow_local_dialog_preference() {
         let mut a = app();
         let pid = a.selected_pid.unwrap();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
         a.prefs.confirm_kill = true;
-        a.request_kill(pid, &mut doc, &root);
-        assert_eq!(a.confirm_stop, Some((pid, StopKind::Kill)));
-        // Direct kill when confirmation is off.
-        a.confirm_stop = None;
         a.prefs.confirm_kill = false;
-        a.request_kill(pid, &mut doc, &root);
-        assert!(a.confirm_stop.is_none());
-        assert!(a.model.processes.iter().all(|p| p.pid != pid));
+        let resources = Widget::resources(&a, &AutoCommit::new());
+        let process = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("process:{pid}"))
+            .expect("process resource");
+        assert_eq!(
+            process
+                .actions
+                .iter()
+                .find(|action| action.id == "kill")
+                .expect("kill action")
+                .contract
+                .confirmation,
+            ConfirmationPolicy::Confirm
+        );
     }
 
     #[test]
@@ -5298,11 +5616,10 @@ mod tests {
         );
     }
 
-    /// Clicking the "Stop" item in the open menu dispatches a SIGTERM via the
-    /// production action path (the menu callback records the action, `on_click`
-    /// drains + applies it). Stop is ungated, so the row drops with no modal.
+    /// Clicking the "Stop" item in the open menu queues the canonical action
+    /// address; the host owns the actual system effect.
     #[test]
-    fn context_menu_stop_dispatches_sigterm() {
+    fn context_menu_stop_queues_canonical_control() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let pid = a.model.processes[5].pid;
@@ -5328,17 +5645,17 @@ mod tests {
         a.on_click(rect.center(), &mut doc, &root, &mut h2);
         assert!(h2, "menu item click consumed");
         assert!(!a.context.is_open(), "menu closed after action");
-        assert!(a.confirm_stop.is_none(), "Stop (SIGTERM) is ungated");
-        assert!(
-            a.model.processes.iter().all(|p| p.pid != pid),
-            "process stopped"
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "stop"))
         );
     }
 
-    /// Clicking "Kill" in the menu routes through the gated path: with the
-    /// confirm pref on, it pops the SIGKILL confirm modal.
+    /// Clicking "Kill" in the menu queues the same force-kill action whose
+    /// resource contract requires host-owned confirmation.
     #[test]
-    fn context_menu_kill_gated_by_confirm() {
+    fn context_menu_kill_queues_confirmed_contract() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         a.prefs.confirm_kill = true;
@@ -5363,14 +5680,9 @@ mod tests {
         let mut h2 = false;
         a.on_click(rect.center(), &mut doc, &root, &mut h2);
         assert_eq!(
-            a.confirm_stop,
-            Some((pid, StopKind::Kill)),
-            "Kill popped the confirm"
-        );
-        // The process is NOT yet gone — the modal must be confirmed first.
-        assert!(
-            a.model.processes.iter().any(|p| p.pid == pid),
-            "not killed until confirmed"
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
         );
     }
 
@@ -6017,11 +6329,10 @@ mod tests {
         assert!(a.sort_desc, "MEM is numeric → defaults descending");
     }
 
-    /// Clicking the detail-strip Kill button routes through the gated kill
-    /// path (with confirm on it pops the modal) — via `on_click`, not a direct
-    /// `request_kill`.
+    /// Clicking the detail-strip Kill button queues the canonical resource
+    /// action rather than sending a process signal from the paint surface.
     #[test]
-    fn kill_button_click_requests_gated_kill() {
+    fn kill_button_click_queues_canonical_control() {
         let mut a = app();
         a.prefs.confirm_kill = true;
         let pid = a.selected_pid.unwrap();
@@ -6032,9 +6343,9 @@ mod tests {
         a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
         assert!(h);
         assert_eq!(
-            a.confirm_stop,
-            Some((pid, StopKind::Kill)),
-            "Kill button gated → confirm modal"
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
         );
     }
 
@@ -6460,12 +6771,15 @@ mod tests {
             !Prefs::load(&doc, &root).confirm_kill,
             "persisted to the CRDT"
         );
-        // With confirm off, a kill goes straight through — proving the pill
-        // actually reaches the gating logic.
+        // The preference remains durable UI configuration, but all visible
+        // force-kill routes still enter the host-owned confirmation contract.
         let pid = a.visible_rows()[0].pid;
-        a.request_kill(pid, &mut doc, &root);
-        assert!(a.confirm_stop.is_none(), "confirm off → kill is immediate");
-        assert!(a.model.processes.iter().all(|p| p.pid != pid));
+        a.request_process_control(pid, "kill");
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+        );
     }
 
     /// The confirm pill is actually laid out on the real draw path at a normal
@@ -6520,5 +6834,88 @@ mod tests {
                 "semantic control {index} must activate at its drawn rect"
             );
         }
+    }
+
+    #[test]
+    fn semantic_process_actions_queue_the_same_control_invocation() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let pid = a.selected_pid.expect("sample selects a process");
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            &format!("monitor.process:{pid}:kill"),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+        );
+        assert!(a.model.processes.iter().any(|process| process.pid == pid));
+
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "monitor.confirm-kills",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
+    }
+
+    #[test]
+    fn resource_force_kill_is_typed_contract_confirmed_and_semantic_ids_are_unique() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let pid = a.selected_pid.expect("sample selects a process");
+        let resources = Widget::resources(&a, &AutoCommit::new());
+        let process = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("process:{pid}"))
+            .expect("selected process is a stable resource");
+        let kill = process
+            .actions
+            .iter()
+            .find(|action| action.id == "kill")
+            .expect("force kill is exported");
+        assert_eq!(kill.contract.confirmation, ConfirmationPolicy::Confirm);
+
+        let targets = a.accessibility_targets();
+        let unique: HashSet<&str> = targets
+            .iter()
+            .map(|(target, _, _)| target.as_str())
+            .collect();
+        assert_eq!(
+            unique.len(),
+            targets.len(),
+            "semantic targets are stable and unique"
+        );
+
+        let payload = serde_json::to_vec(&MonitorOperation::Signal {
+            pid,
+            signal: MonitorSignal::Kill,
+        })
+        .expect("typed monitor operation serializes");
+        let doc = AutoCommit::new();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut a,
+                OperationKind::Effect,
+                MONITOR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("the action-contract-confirmed signal executes")
+        );
+        assert!(
+            a.confirm_stop.is_none(),
+            "no inaccessible local dialog is opened"
+        );
+        assert!(a.model.processes.iter().all(|process| process.pid != pid));
     }
 }

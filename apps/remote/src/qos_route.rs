@@ -24,6 +24,11 @@ pub enum QosRouteDecision {
 /// Implementations must only return observations from authenticated discovery.
 pub trait QosRouteProvider: Send + Sync {
     /// Select a route for the saved target hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authenticated discovery has no acceptable
+    /// exact-target route for the saved device.
     fn route(&self, target_hint: &str) -> Result<QosRouteDecision, String>;
 }
 

@@ -163,6 +163,39 @@ impl<W: Widget> Harness<W> {
         if focus.is_some() {
             self.last_focus = focus;
         }
+        self.dispatch_control_invocations();
+    }
+
+    /// Mirror the live host's action-bound control door after each input
+    /// event. Stopping after the leaf emits an invocation makes a working
+    /// effect control look inert in this integration harness.
+    fn dispatch_control_invocations(&mut self) {
+        while let Some(intent) = self.app.take_control_invocation() {
+            let resources = self.app.resources(&self.state.doc);
+            let spec = qos_actions::door::resolve(&resources, &intent.address)
+                .expect("action-bound test control must resolve in the current resource tree");
+            assert!(
+                matches!(
+                    spec.contract.confirmation,
+                    qos_actions::ConfirmationPolicy::None
+                ),
+                "the harness must not manufacture confirmation"
+            );
+            let encoded =
+                qos_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
+                    .expect("bound control arguments must satisfy their contract");
+            self.app
+                .start_resource_operation(
+                    qos_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &self.state.doc,
+                    &self.state.root,
+                )
+                .expect("bound resource operation must not fail")
+                .expect("the app must accept its bound resource operation");
+        }
     }
 
     /// The taffy node of the first widget with `test_id == id` (via `node_map`).

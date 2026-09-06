@@ -715,6 +715,7 @@ pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
                 .get(&participant.id)
                 .copied()
                 .unwrap_or_else(|| ui::presence::user_color(&participant.id));
+            let has_view = participant.active_tab.is_some();
             RosterRow {
                 id: participant.id.clone(),
                 initial: roster_initial(&participant.name),
@@ -730,15 +731,14 @@ pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
                     .and_then(|tab| active_tab_title(tree, tab))
                     .map(|title| format!("Viewing {title}"))
                     .or_else(|| {
-                        (!participant.invited).then(|| {
-                            if is_agent {
-                                "Working now".to_string()
-                            } else {
-                                "Here now".to_string()
-                            }
-                        })
+                        (!participant.invited)
+                            .then(|| if is_agent { "Connected" } else { "Here now" }.to_string())
                     }),
-                followable: !participant.invited,
+                // A headless agent has no pointer/viewport to follow merely
+                // because its session is connected. Follow becomes available
+                // only when it has published a real view; semantic action
+                // targets remain visible through interaction presence.
+                followable: !participant.invited && (!is_agent || has_view),
             }
         })
         .collect();
@@ -746,7 +746,7 @@ pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
     // administration. An agent granted access but not connected belongs in
     // Members; once its live session arrives in `roster`, the name match
     // above tags it as an agent and exposes the same cursor/follow affordance
-    // as any other collaborator.
+    // through truthful semantic activity rather than a fabricated cursor.
     rows
 }
 

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -87,6 +87,10 @@ pub struct NotesApp {
     status_bubble: ui::StatusBubble,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
+    /// Shot-only override for the real save progress/failure presentation.
+    /// Notes opens its workspace synchronously, so this does not alter live
+    /// loading behavior or introduce a second production state source.
+    shots_save_status: Option<SaveStatus>,
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
@@ -174,6 +178,20 @@ pub struct NotesApp {
     /// which must be removed locally too. Without it the unconditional local→doc
     /// mirror would resurrect an undone page every frame.
     known_in_doc: std::collections::HashSet<PageId>,
+    /// A block reveal requested by a brokered view operation. Re-applied after
+    /// the selected page binds to its collaborative block list, because binding
+    /// rebuilds the editor and otherwise resets focus to block zero.
+    pending_block_reveal: Option<(PageId, String)>,
+    /// Search/resource snapshot keyed by each block's durable Automerge Text
+    /// object id, refreshed from the collaborative document on every sync.
+    search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    /// Durable document heads used as the retained search catalogue revision.
+    /// In the normal no-edit frame this avoids snapshotting every page/block
+    /// just to rediscover the catalogue has not changed.
+    search_heads: Option<Vec<ChangeHash>>,
+    /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
+    /// rebuilding/cloning every page and block at open time.
+    search_provider: crate::search_provider::NoteSearchProvider,
 }
 
 impl NotesApp {
@@ -248,6 +266,7 @@ impl NotesApp {
         let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
         let page_saver =
             PageSaver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
+        let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
 
         let mut app = Self {
             workspace,
@@ -256,6 +275,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
+            shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
             sidebar_node: None,
@@ -287,6 +307,10 @@ impl NotesApp {
             content_rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
             known_in_doc: std::collections::HashSet::new(),
+            pending_block_reveal: None,
+            search_blocks: HashMap::new(),
+            search_heads: None,
+            search_provider,
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -327,7 +351,9 @@ impl NotesApp {
             .page_saver
             .as_ref()
             .map_or(SaveStatus::Saved, super::storage::PageSaver::status);
-        let save_status = combine_save_status(workspace_status, page_status);
+        let save_status = self
+            .shots_save_status
+            .unwrap_or_else(|| combine_save_status(workspace_status, page_status));
         let changed = self.status.set_state(StatusBarState {
             save_status,
             page_path: path,
@@ -347,6 +373,16 @@ impl NotesApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// `--shots`: capture an actual save-state presentation deterministically,
+    /// without depending on a timing-sensitive filesystem failure.
+    pub fn set_save_status_for_shots(&mut self, status: SaveStatus) {
+        self.shots_save_status = Some(status);
+        let mut state = self.status.state().clone();
+        state.save_status = status;
+        let _ = self.status.set_state(state);
+        self.arm_status_bubble_for_shots();
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
@@ -453,24 +489,7 @@ impl NotesApp {
     /// span in every block. Returns the page id of the first link
     /// covering that pixel, or `None` if the click missed.
     fn link_under_last_mouse(&self) -> Option<PageId> {
-        let p = self.last_mouse;
-        for b in self.main.editor().blocks() {
-            let rect = b.line.get_rect();
-            if !rect.contains(p) {
-                continue;
-            }
-            // The pixel-precise byte lookup uses the inner
-            // TextInput's per-char advance cache. We need a theme to
-            // resolve padding; conservatively use the dark theme
-            // (the editor cells render in plain-chrome mode where
-            // padding_x is zero, so this is a no-op anyway).
-            let theme = ui::theme::Theme::dark();
-            let byte = b.line.byte_for_pixel_x(&theme, p.x);
-            if let Some(id) = ui::widget::rich_text_line::link_at_byte(b.line.marks(), byte) {
-                return Some(id);
-            }
-        }
-        None
+        self.main.editor().link_at_point(self.last_mouse)
     }
 
     /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
@@ -596,10 +615,12 @@ impl NotesApp {
             self.started = std::time::Instant::now();
             self.synced_once = true;
         }
-        // Apply local deletions to the shared doc BEFORE reading it, so the
-        // pull-loop below doesn't resurrect a just-deleted page.
+        // Apply local deletions through their canonical action BEFORE reading
+        // the document, so the pull-loop below doesn't resurrect a just-
+        // deleted page. `apply_event_for_test` uses this reconciliation path
+        // too, so it must not write straight to Automerge.
         for id in std::mem::take(&mut self.pending_doc_removals) {
-            NotesDoc::remove_page(state, id);
+            self.perform_action(state, &actions::delete_page_action(id));
         }
         let doc_pages = NotesDoc::list_pages(state);
         if !doc_pages.is_empty() {
@@ -654,7 +675,7 @@ impl NotesApp {
                 // carry-over or a test-created page), recording it as known.
                 for p in self.workspace.pages().to_vec() {
                     if !doc_ids.contains(&p.id) {
-                        NotesDoc::upsert_page_meta(state, &p);
+                        self.perform_action(state, &actions::upsert_page_action(&p));
                         self.known_in_doc.insert(p.id);
                     }
                 }
@@ -692,7 +713,7 @@ impl NotesApp {
                 );
             }
             for p in self.workspace.pages().to_vec() {
-                NotesDoc::upsert_page_meta(state, &p);
+                self.perform_action(state, &actions::upsert_page_action(&p));
                 self.known_in_doc.insert(p.id);
             }
             self.seeded = true;
@@ -742,6 +763,21 @@ impl NotesApp {
             .map(|m| m.title.clone())
             .unwrap_or_default();
         let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
+        // A page's first blocks are a durable mutation too. Seed them through
+        // the same action host that owns every subsequent editor delta; the
+        // panel only ever binds/adopts an already-action-owned list.
+        if state.length(&list) == 0 {
+            let action = actions::apply_block_ops_action(sel, MainPanel::seed_block_ops(&body));
+            if let Err(error) = self.actions.try_dispatch_with_context(
+                state,
+                actions::NOTES_ACTION_TYPE,
+                &action,
+                actions::history_context(&action),
+            ) {
+                tracing::error!(%error, page = %sel, "notes: could not seed page blocks");
+                return;
+            }
+        }
         self.main.bind_page(state, sel, &title, list, &body);
         self.bound_page = Some(sel);
     }
@@ -801,7 +837,33 @@ impl NotesApp {
     pub(crate) fn notes_resource_ctx(&self) -> crate::actions::NotesResourceCtx {
         crate::actions::NotesResourceCtx {
             pages: self.workspace.pages().to_vec(),
+            // The palette snapshot does not eagerly materialize block
+            // resources. ResourceProvider::resource resolves a requested
+            // stable block id from the durable document, after stale checks.
+            blocks: HashMap::new(),
         }
+    }
+
+    fn refresh_search_blocks(&mut self, doc: &mut AutoCommit) {
+        let heads = doc.get_heads();
+        if self.search_heads.as_ref() == Some(&heads) {
+            return;
+        }
+        self.search_blocks = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|page| {
+                let blocks = NotesDoc::page_block_snapshots(doc, page.id)
+                    .into_iter()
+                    .map(|(id, text)| crate::actions::NoteBlockResource { id, text })
+                    .collect();
+                (page.id, blocks)
+            })
+            .collect();
+        self.search_provider
+            .update(&self.workspace, &self.search_blocks);
+        self.search_heads = Some(heads);
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
@@ -1024,6 +1086,30 @@ impl NotesApp {
         }
     }
 
+    /// Dispatch action-owned semantic editor deltas. A stale page/block is a
+    /// normal collaborative race, not a silent best-effort write: refuse it,
+    /// then force the panel to rebind from the document on the next sync.
+    fn drain_block_ops(&mut self, state: &mut AutoCommit) {
+        let ops = self.main.take_block_ops();
+        if ops.is_empty() {
+            return;
+        }
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let action = actions::apply_block_ops_action(page, ops);
+        if let Err(error) = self.actions.try_dispatch_with_context(
+            state,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            actions::history_context(&action),
+        ) {
+            tracing::warn!(%error, page = %page, "notes: rejected stale editor operation; reconciling");
+            self.bound_page = None;
+            self.self_dirty = true;
+        }
+    }
+
     /// Complete a first-note request from the empty-state button. This runs
     /// from both the normal event path and `sync`, because an accessibility
     /// activation reaches the child widget directly and then asks the host for
@@ -1035,6 +1121,34 @@ impl NotesApp {
         self.apply_and_dispatch(state, OutEvent::CreateChild { parent: None });
         self.sidebar.sync_from_workspace(&self.workspace);
         true
+    }
+
+    /// Commit either a keyboard/pointer title edit or an accessibility value
+    /// change through the one page-tree action route. Kept callable from sync
+    /// because semantic actions target `MainPanel` directly and naturally
+    /// request a subsequent sync rather than travelling through `handle_event`.
+    fn drain_title_rename(&mut self, state: &mut AutoCommit) {
+        let Some(new_title) = self.main.take_title_rename() else {
+            return;
+        };
+        let Some(id) = self.workspace.selected() else {
+            return;
+        };
+        let trimmed = new_title.trim();
+        let changed = self
+            .workspace
+            .get(id)
+            .is_some_and(|meta| meta.title != trimmed);
+        if !trimmed.is_empty() && changed {
+            self.apply_and_dispatch(
+                state,
+                OutEvent::Rename {
+                    id,
+                    new_title: trimmed.to_string(),
+                },
+            );
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
     }
 
     /// Schedule a debounced save of the current workspace.
@@ -1378,7 +1492,7 @@ impl Widget for NotesApp {
         kind: qos_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == qos_actions::OperationKind::Document {
@@ -1388,13 +1502,21 @@ impl Widget for NotesApp {
             return Ok(false);
         };
         match operation {
-            actions::NotesOperation::OpenPage { page } => {
+            actions::NotesOperation::OpenPage { page, block_id } => {
                 if self.workspace.get(page).is_none() {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.set_selected(Some(page));
-                self.bound_page = None;
-                self.sidebar.sync_from_workspace(&self.workspace);
+                if let Some(block_id) = block_id.as_ref()
+                    && !NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .any(|(id, _)| id == block_id)
+                {
+                    return Err("block no longer exists".into());
+                }
+                self.navigate_to(page);
+                if let Some(block_id) = block_id {
+                    self.pending_block_reveal = Some((page, block_id));
+                }
             }
         }
         Ok(true)
@@ -1406,9 +1528,25 @@ impl Widget for NotesApp {
         // seed/adopt the page tree, then bind the editor to the selected
         // page so its text syncs between instances.
         self.sync_workspace_tree(state);
+        self.drain_title_rename(state);
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+        // Synthetic accessibility buttons do not pass through handle_event;
+        // drain their retained UUID operations here through the same action
+        // host/history path as pointer and keyboard edits.
+        self.drain_block_ops(state);
+        self.refresh_search_blocks(state);
+        if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
+            && self.bound_page == Some(*page)
+            && let Some(index) = self
+                .search_blocks
+                .get(page)
+                .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
+            && self.main.reveal_block(index)
+        {
+            self.pending_block_reveal = None;
+        }
     }
 
     /// Publish the open notebook + its pages (nested by the tree) so the host's
@@ -1417,6 +1555,10 @@ impl Widget for NotesApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before a sidebar affordance dispatched
@@ -1431,20 +1573,7 @@ impl Widget for NotesApp {
     /// every page findable there by title, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::NoteSearchProvider::new(
-            &self.workspace,
-        ))]
-    }
-
-    /// Navigate to the page a chosen palette row identifies. Selection is
-    /// app-local presentation (per-peer, never in the shared doc), so the doc
-    /// args are unused — this mirrors the click-on-link / Cmd-K page jump.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id)
-            && self.workspace.get(id).is_some()
-        {
-            self.navigate_to(id);
-        }
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
@@ -1780,11 +1909,47 @@ impl Widget for NotesApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = Vec::new();
+        if self.built_narrow && self.menu_btn_rect.area() > 0.0 {
+            children.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Pages drawer")
+                    .with_action_target("notes.drawer")
+                    .with_bounds(self.menu_btn_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.drawer.is_open()),
+                    ),
+            );
+        }
         Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+            AccessNode::new(Role::Group)
                 .with_name("Notes")
-                .with_description("Workspace notes and page editor"),
+                .with_description("Workspace notes and page editor")
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "notes.drawer"
+            && self.built_narrow
+            && matches!(
+                action,
+                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+            )
+        {
+            self.set_drawer_open(!self.drawer.is_open());
+            return true;
+        }
+        false
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2282,25 +2447,14 @@ impl NotesApp {
                 taffy,
             );
         }
+        // The panel has only produced local semantic deltas at this point.
+        // Apply them before its next sync so a widget never writes the shared
+        // document behind the action/history/undo path.
+        self.drain_block_ops(state);
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        if let Some(new_title) = self.main.take_title_rename()
-            && let Some(id) = self.workspace.selected()
-        {
-            let trimmed = new_title.trim();
-            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
-            if !trimmed.is_empty() && changed {
-                self.apply_and_dispatch(
-                    state,
-                    OutEvent::Rename {
-                        id,
-                        new_title: trimmed.to_string(),
-                    },
-                );
-                self.sidebar.sync_from_workspace(&self.workspace);
-            }
-        }
+        self.drain_title_rename(state);
         // A fresh workspace has no selected page, so its central first-use
         // action creates a root note. Route it through the same replayable
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
@@ -2439,7 +2593,23 @@ mod tests {
         let welcome = app
             .selected_for_test()
             .expect("welcome page seeded + selected");
+        // `sync` seeded the welcome page's initial blocks through the action
+        // host. The real window host drains that edge at the end of the frame;
+        // mirror that lifecycle here so subsequent tests bracket only the
+        // user action they dispatch.
+        let _ = Widget::take_committed_action(&mut app);
         (app, state, tmp, welcome)
+    }
+
+    #[test]
+    fn unchanged_document_heads_skip_full_search_snapshot_work() {
+        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+        // Prove the fast path before asking NotesDoc for every page's block
+        // list: a matching durable revision leaves the retained snapshot as-is.
+        app.search_blocks.clear();
+        app.search_heads = Some(state.doc.get_heads());
+        app.refresh_search_blocks(&mut state.doc);
+        assert!(app.search_blocks.is_empty());
     }
 
     /// One source of truth: the sidebar's Delete event, dispatched through the
@@ -2501,6 +2671,89 @@ mod tests {
         assert!(
             matches!(action, crate::actions::NotesAction::UpsertPage(_)),
             "a create dispatches an UpsertPage"
+        );
+    }
+
+    #[test]
+    fn brokered_block_reveal_restores_exact_page_and_editor_focus() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        assert!(
+            app.main.editor().blocks().len() > 1,
+            "welcome has several blocks"
+        );
+        let block_id = app.search_blocks[&welcome][1].id.clone();
+        let operation = crate::actions::NotesOperation::OpenPage {
+            page: welcome,
+            block_id: Some(block_id),
+        };
+        let payload = serde_json::to_vec(&operation).unwrap();
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::NOTES_OPERATION_TYPE,
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .expect("broker accepts the exported Notes view operation")
+        );
+        app.sync(&mut state.doc, &state.root);
+
+        assert_eq!(app.selected_for_test(), Some(welcome));
+        assert_eq!(
+            app.main.editor().focused_index(),
+            Some(1),
+            "the canonical block action reveals the exact editor block"
+        );
+    }
+
+    #[test]
+    fn collaborative_identical_insert_preserves_the_original_block_target() {
+        use automerge::ObjType;
+        use automerge::transaction::Transactable as _;
+
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        let original = app.search_blocks[&welcome][1].clone();
+        let old_address = crate::actions::open_block_address(welcome, &original.id);
+        let operation = crate::actions::NotesOperation::OpenPage {
+            page: welcome,
+            block_id: Some(original.id),
+        };
+        let payload = serde_json::to_vec(&operation).unwrap();
+
+        // A collaborator inserts an identical-text block before the target.
+        // Content and index cannot distinguish them; CRDT object identity can.
+        let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
+        let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
+        state.doc.put(&inserted, "kind", "paragraph").unwrap();
+        let text = state
+            .doc
+            .put_object(&inserted, "text", ObjType::Text)
+            .unwrap();
+        state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
+        app.sync(&mut state.doc, &state.root);
+
+        let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
+            .expect("the original block's resource resolves lazily");
+        assert_eq!(resolved.id.0, old_address.resource);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::NOTES_OPERATION_TYPE,
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .expect("durable block identity still resolves")
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.main.editor().focused_index(),
+            Some(2),
+            "the original block moved to index 2; the identical insertion at 0 is not revealed"
         );
     }
 

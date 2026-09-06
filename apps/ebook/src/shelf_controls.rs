@@ -30,6 +30,66 @@ pub(super) struct ShelfControls {
 }
 
 impl ShelfControls {
+    pub(super) fn accessibility_nodes(
+        &self,
+        prefs: LibraryPrefs,
+        focused: Option<&str>,
+    ) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        self.hits
+            .iter()
+            .filter_map(|(rect, action)| {
+                let (target, name, role, state) = match action {
+                    ShelfControlAction::ToggleSortMenu => (
+                        "books.library.sort",
+                        format!("Sort books, currently {}", prefs.sort.label()),
+                        Role::ComboBox,
+                        AccessState::new().expanded(self.sort_menu_open),
+                    ),
+                    ShelfControlAction::SetSort(sort) => (
+                        match sort {
+                            LibrarySort::Recent => "books.library.sort.recent",
+                            LibrarySort::Title => "books.library.sort.title",
+                            LibrarySort::Author => "books.library.sort.author",
+                            LibrarySort::Progress => "books.library.sort.progress",
+                        },
+                        format!("Sort by {}", sort.label()),
+                        Role::RadioButton,
+                        AccessState::new().checked(prefs.sort == *sort),
+                    ),
+                    ShelfControlAction::ToggleHideRead => (
+                        "books.library.hide-read",
+                        "Hide finished books".into(),
+                        Role::Switch,
+                        AccessState::new().checked(prefs.hide_read),
+                    ),
+                    ShelfControlAction::Swallow => return None,
+                };
+                Some(
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_bounds(*rect)
+                        .with_state(state.focusable(true).focused(focused == Some(target)))
+                        .with_action_target(target),
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn semantic_action(target: &str) -> Option<ShelfControlAction> {
+        match target {
+            "books.library.sort" => Some(ShelfControlAction::ToggleSortMenu),
+            "books.library.sort.recent" => Some(ShelfControlAction::SetSort(LibrarySort::Recent)),
+            "books.library.sort.title" => Some(ShelfControlAction::SetSort(LibrarySort::Title)),
+            "books.library.sort.author" => Some(ShelfControlAction::SetSort(LibrarySort::Author)),
+            "books.library.sort.progress" => {
+                Some(ShelfControlAction::SetSort(LibrarySort::Progress))
+            }
+            "books.library.hide-read" => Some(ShelfControlAction::ToggleHideRead),
+            _ => None,
+        }
+    }
+
     pub(super) fn begin_frame(&mut self) {
         self.hits.clear();
     }

@@ -18,10 +18,13 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
-const CLEAN_KEY: &str = "storage.cleanup.confirmed";
-const DISKS_KEY: &str = "storage.open.disks";
-const BACKUPS_KEY: &str = "storage.open.backups";
-const SYNC_FREE_KEY: &str = "storage.sync.free";
+// These are edge-triggered, machine-local command latches, not settings.
+// Buttons may mutate them directly because the `.edit` namespace is never
+// exported or replayed; durable settings go through SettingsAction instead.
+const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
+const DISKS_KEY: &str = "storage.open.disks.edit";
+const BACKUPS_KEY: &str = "storage.open.backups.edit";
+const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
 
 pub struct StoragePane {
     roots: StorageRoots,
@@ -296,6 +299,10 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 }
 
 impl Widget for StoragePane {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass deliberately coordinates the storage snapshot and each independent command latch"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
@@ -325,11 +332,27 @@ impl Widget for StoragePane {
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.refresh_sync();
-                    self.sync_message = Some(format!(
-                        "Freed {} from {} synced files.",
-                        human_bytes(report.freed_bytes),
-                        report.evicted_files
-                    ));
+                    self.sync_message = Some(
+                        if report.queued_files > 0 && report.evicted_files > 0 {
+                            format!(
+                                "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
+                                human_bytes(report.freed_bytes),
+                                report.evicted_files,
+                                report.queued_files
+                            )
+                        } else if report.queued_files > 0 {
+                            format!(
+                                "{} synced file(s) queued for verified background reclamation; nothing is counted as free until GC confirms it.",
+                                report.queued_files
+                            )
+                        } else {
+                            format!(
+                                "Freed {} from {} synced files.",
+                                human_bytes(report.freed_bytes),
+                                report.evicted_files
+                            )
+                        },
+                    );
                 }
                 Ok(Err(error)) => {
                     self.sync_busy = false;

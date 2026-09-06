@@ -32,7 +32,7 @@
 //! leaking into a process not entitled to them.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::entry::{DesktopEntry, EntrySource, EntryType};
@@ -65,9 +65,10 @@ const INHERITED_ENV: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
 ];
 
-/// Variables that are always cleared, whatever the parent had. `DISPLAY` because there's no
-/// `XWayland` (a toolkit that sees one tries X11, fails to connect, and errors instead of
-/// falling back); `QOS_*` because they describe a confinement this process does not have.
+/// Variables that are always cleared, whatever the parent had. `DISPLAY` and
+/// `XAUTHORITY` are accepted only as the explicit, matched rootless-Xwayland
+/// pair in [`LaunchEnv`]; stale values from the preceding desktop can point at
+/// another session. `QOS_*` describe confinement this process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
@@ -156,6 +157,12 @@ pub struct LaunchEnv {
     /// host app connects to the compositor that launched it rather than whatever the launcher's
     /// own environment pointed at.
     pub wayland_socket: Option<PathBuf>,
+    /// Session-wide rootless Xwayland display, when the compositor started a
+    /// compatibility bridge. Native Wayland clients still receive both and
+    /// choose Wayland normally; X11-only applications use this fallback.
+    pub x11_display: Option<String>,
+    /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
+    pub x11_authority: Option<PathBuf>,
     /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
     pub files: Vec<String>,
     /// URLs to open. Feed `%u`/`%U`.
@@ -212,7 +219,7 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
         display_name: entry.name.clone(),
         program: PathBuf::from(program),
         args: argv.collect(),
-        env: build_env(env.wayland_socket.as_deref()),
+        env: build_env(env),
         window_identities: entry.window_identities(),
         source: entry.source.clone(),
     })
@@ -220,7 +227,7 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
 
 /// The child's whole environment: an allowlist of the parent's, plus the overrides the
 /// desktop is authoritative for.
-fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
+fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in INHERITED_ENV {
         if let Some(value) = std::env::var_os(key)
@@ -232,7 +239,7 @@ fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     // The compositor's socket wins over anything inherited. Both halves must move together:
     // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an
     // app ends up connecting to a different compositor.
-    if let Some(socket) = wayland_socket {
+    if let Some(socket) = env_spec.wayland_socket.as_deref() {
         if let Some(name) = socket.file_name() {
             env.insert(
                 "WAYLAND_DISPLAY".to_string(),
@@ -260,6 +267,14 @@ fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
     for key in CLEARED_ENV {
         env.remove(*key);
     }
+    if let (Some(display), Some(authority)) = (&env_spec.x11_display, &env_spec.x11_authority) {
+        env.insert("DISPLAY".to_string(), display.clone());
+        env.insert(
+            "XAUTHORITY".to_string(),
+            authority.to_string_lossy().to_string(),
+        );
+        env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
+    }
     env
 }
 
@@ -281,6 +296,7 @@ pub fn plan_by_id(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostL
 mod tests {
     use super::*;
     use crate::entry::parse;
+    use std::path::Path;
 
     fn entry(src: &str, id: &str) -> DesktopEntry {
         parse(src, id, Path::new("/usr/share/applications/x.desktop"), &[]).expect("parses")
@@ -361,8 +377,33 @@ mod tests {
         );
         assert!(
             !launch.env.contains_key("DISPLAY"),
-            "there is no XWayland, and a DISPLAY a toolkit cannot reach is worse \
-             than none at all"
+            "without an explicit Xwayland bridge, a stale DISPLAY is worse than none"
+        );
+    }
+
+    #[test]
+    fn a_rootless_xwayland_bridge_adds_an_authenticated_x11_fallback() {
+        let launch = plan(
+            &spotify(),
+            &LaunchEnv {
+                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+                x11_display: Some(":1234".into()),
+                x11_authority: Some(PathBuf::from("/run/user/1000/qos-session/Xauthority")),
+                ..Default::default()
+            },
+        )
+        .expect("plans");
+        assert_eq!(launch.env.get("DISPLAY").map(String::as_str), Some(":1234"));
+        assert_eq!(
+            launch.env.get("XAUTHORITY").map(String::as_str),
+            Some("/run/user/1000/qos-session/Xauthority")
+        );
+        assert_eq!(
+            launch
+                .env
+                .get("_JAVA_AWT_WM_NONREPARENTING")
+                .map(String::as_str),
+            Some("1")
         );
     }
 

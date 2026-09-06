@@ -12,7 +12,7 @@
 //! and flags a structural rebuild.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use automerge::transaction::Transactable;
@@ -27,7 +27,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{NavSplit, SplitMode, VideoPlayer, Widget};
+use ui::widget::{ActionEmitter, NavSplit, SplitMode, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
@@ -66,6 +66,10 @@ pub struct TubeApp {
     actions: ui::ActionHost,
     bus: ActionBus,
     worker: Option<Worker>,
+    #[cfg(feature = "grayjay-sync")]
+    device_sync: crate::sync::DeviceSync,
+    #[cfg(feature = "grayjay-sync")]
+    device_sync_seeded: bool,
 
     /// The freshly-built shell tree (top bar + nav rail + screen). Rebuilt
     /// in `build_layout`; raw pointers in the App's `node_map` point into
@@ -126,6 +130,16 @@ pub struct TubeApp {
     /// it (which would restart the video). The engine is opened on a resolved
     /// stream URL when [`Update::StreamResolved`] lands.
     player: SharedPlayer,
+    /// Host-routable bindings for custom-painted watch controls. Rebuilt from
+    /// the published current-video resource, never from parallel constants.
+    play_action: Option<ActionEmitter<()>>,
+    share_action: Option<ActionEmitter<()>>,
+    /// Device buttons enqueue the same resource-addressed invocations that an
+    /// external caller uses.  Keeping only the inert invocation here means the
+    /// host re-resolves availability and applies confirmation policy before an
+    /// effect ever reaches [`perform_resource_operation`](Self::perform_resource_operation).
+    pending_device_actions: VecDeque<qos_actions::ControlInvocation>,
+    bound_watch_video: Option<String>,
     /// The video id whose stream URL is currently loaded into the player engine,
     /// so we open a source exactly once per resolution and can mirror the engine
     /// playhead back onto the model only while it's the open video.
@@ -184,6 +198,10 @@ impl TubeApp {
             actions: ui::ActionHost::new(),
             bus: action::new_bus(),
             worker: None,
+            #[cfg(feature = "grayjay-sync")]
+            device_sync: crate::sync::DeviceSync::default(),
+            #[cfg(feature = "grayjay-sync")]
+            device_sync_seeded: false,
             root_child: None,
             child_node: None,
             rect: Rect::ZERO,
@@ -201,6 +219,10 @@ impl TubeApp {
             player: Rc::new(RefCell::new(
                 VideoPlayer::new().with_engine(media::MediaEngine::new()),
             )),
+            play_action: None,
+            share_action: None,
+            pending_device_actions: VecDeque::new(),
+            bound_watch_video: None,
             player_video: None,
             images: None,
             show_skip_end: None,
@@ -224,7 +246,159 @@ impl TubeApp {
                 ui::clipboard_copy(&url);
                 self.model.push_notice(format!("Link copied: {url}"));
             }
+            crate::actions::TubeOperation::Navigate { route } => {
+                self.navigate_to(route);
+                self.dismiss_overlay_rail();
+            }
+            crate::actions::TubeOperation::OpenVideo { video_id } => {
+                if self.model.video(&video_id).is_some() {
+                    self.open_video(video_id);
+                    self.dismiss_overlay_rail();
+                } else {
+                    self.model.push_notice("That video is no longer available");
+                }
+            }
+            crate::actions::TubeOperation::OpenChannel { channel_id } => {
+                if self.model.channel(&channel_id).is_some() {
+                    self.navigate_to(Route::Channel(channel_id.clone()));
+                    self.dismiss_overlay_rail();
+                    self.request_live(Request::Channel(channel_id));
+                } else {
+                    self.model
+                        .push_notice("That creator is no longer available");
+                }
+            }
+            crate::actions::TubeOperation::OpenPlaylist { playlist_id } => {
+                if self.model.playlist(&playlist_id).is_some() {
+                    self.navigate_to(Route::Playlist(playlist_id.clone()));
+                    self.dismiss_overlay_rail();
+                    self.request_live(Request::PlaylistPage(playlist_id));
+                } else {
+                    self.model
+                        .push_notice("That playlist is no longer available");
+                }
+            }
+            crate::actions::TubeOperation::PairDevice { invite } => {
+                #[cfg(feature = "grayjay-sync")]
+                if !self.device_sync.pair(invite) {
+                    self.model
+                        .push_notice("Device pairing is busy or unavailable");
+                }
+                #[cfg(not(feature = "grayjay-sync"))]
+                let _ = invite;
+            }
+            crate::actions::TubeOperation::SyncDevices => {
+                #[cfg(feature = "grayjay-sync")]
+                if !self
+                    .device_sync
+                    .sync_now(crate::sync::lifecycle_state(&self.model))
+                {
+                    self.model.push_notice("Device sync is busy or unavailable");
+                }
+            }
+            crate::actions::TubeOperation::ApproveDevice { peer_id } => {
+                #[cfg(feature = "grayjay-sync")]
+                if !self.device_sync.approve(&peer_id) {
+                    self.model.push_notice("Could not queue device approval");
+                }
+                #[cfg(not(feature = "grayjay-sync"))]
+                let _ = peer_id;
+            }
+            crate::actions::TubeOperation::RevokeDevice { peer_id } => {
+                #[cfg(feature = "grayjay-sync")]
+                if !self.device_sync.revoke(&peer_id) {
+                    self.model.push_notice("Could not queue device revocation");
+                }
+                #[cfg(not(feature = "grayjay-sync"))]
+                let _ = peer_id;
+            }
         }
+        self.structure_dirty = true;
+    }
+
+    /// Queue a visible device control through its currently published resource
+    /// action.  The resulting invocation contains no authority: the app host
+    /// resolves the address against a fresh resource tree and enforces the
+    /// action's privileged/destructive confirmation contract before calling
+    /// `invoke_resource_operation`.
+    fn queue_device_action(&mut self, action_id: &str, peer_id: Option<&str>) -> bool {
+        #[cfg(feature = "grayjay-sync")]
+        let root = crate::actions::provide_device_resources(self.device_sync.view());
+        #[cfg(not(feature = "grayjay-sync"))]
+        let root = crate::actions::provide_device_resources(&crate::sync::SyncView::default());
+
+        let resource = match peer_id {
+            Some(peer_id) => root
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == format!("tube.device:{peer_id}")),
+            None => Some(&root),
+        };
+        let Some(resource) = resource else {
+            return false;
+        };
+        let binding = if action_id == "pair" {
+            #[cfg(feature = "grayjay-sync")]
+            let invite = self.device_sync.take_pairing_input();
+            #[cfg(not(feature = "grayjay-sync"))]
+            let invite = String::new();
+            if invite.is_empty() {
+                return false;
+            }
+            let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
+                return false;
+            };
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("invite".into(), serde_json::Value::String(invite));
+            qos_actions::ActionBinding::static_json(resource, spec, arguments)
+        } else {
+            qos_actions::ActionBinding::unit_for(resource, action_id)
+        };
+        let Ok(binding) = binding else {
+            return false;
+        };
+        let Ok(invocation) = binding.invoke(()) else {
+            return false;
+        };
+        self.pending_device_actions.push_back(invocation);
+        true
+    }
+
+    /// Rebind custom watch controls to the exact resource/action surface the
+    /// host will authorize. This makes pointer and keyboard activation take
+    /// the same route as Ctrl+K, agents, history, and collaboration.
+    fn refresh_watch_control_bindings(&mut self) {
+        let Some(video_id) = (match &self.model.route {
+            Route::Watch(video_id) => Some(video_id.clone()),
+            _ => None,
+        }) else {
+            self.play_action = None;
+            self.share_action = None;
+            self.bound_watch_video = None;
+            return;
+        };
+        if self.bound_watch_video.as_ref() == Some(&video_id) {
+            return;
+        }
+
+        let current_id = format!("tube.current:{video_id}");
+        let current = crate::actions::provide_resources(&self.model)
+            .into_iter()
+            .flat_map(|resource| resource.children)
+            .find(|resource| resource.id.0 == current_id);
+        let Some(current) = current else {
+            self.play_action = None;
+            self.share_action = None;
+            self.bound_watch_video = None;
+            return;
+        };
+        self.play_action = qos_actions::ActionBinding::unit_for(&current, "play-pause")
+            .ok()
+            .map(ActionEmitter::new);
+        self.share_action = qos_actions::ActionBinding::unit_for(&current, "share")
+            .ok()
+            .map(ActionEmitter::new);
+        self.bound_watch_video = Some(video_id);
     }
 
     /// An instance with no catalogue and no network.
@@ -249,10 +423,14 @@ impl TubeApp {
     /// stay fully offline and deterministic. When online, the first `sync`
     /// spawns the fetch worker and requests the home/trending feed; if the
     /// network is unreachable (or the `live` feature is off) the worker reports
-    /// "offline — sample data" and the bundled catalogue stays on screen.
+    /// an offline state and Home explains that no live catalogue is available.
     #[must_use]
     pub fn online(mut self) -> Self {
         self.online = true;
+        #[cfg(feature = "grayjay-sync")]
+        {
+            self.device_sync = crate::sync::DeviceSync::production("qOS Tube");
+        }
         // No fabricated content: the real app starts with an EMPTY catalogue and
         // populates only from live results (yt-dlp / rustypipe / trending). The
         // bundled `sample` catalogue exists ONLY for the hermetic `--shots`/demo
@@ -297,6 +475,16 @@ impl TubeApp {
         self
     }
 
+    /// `--shots` builder for the terminal offline/empty state after a live
+    /// fetch failed. Kept distinct from the cold-start loading skeleton.
+    #[must_use]
+    pub fn with_empty_home_shot(mut self) -> Self {
+        self.model = TubeModel::default();
+        self.model.data_source.label = "offline — network unavailable".into();
+        self.model.route = Route::Home;
+        self
+    }
+
     /// `--shots` builder: render at the narrow breakpoint with the navigation
     /// rail summoned as an open overlay flap, so the offscreen still shows the
     /// collapsed-sidebar state. The live app never calls this.
@@ -330,6 +518,25 @@ impl TubeApp {
             q.clone_into(&mut self.model.search_query);
         }
         self.model.route = route;
+        self
+    }
+
+    /// Secret-free offscreen proof of the real device lifecycle surface. The
+    /// route is scrolled to the card so wide and narrow screenshots exercise
+    /// pending approval, active sync, revocation, and broker-key messaging.
+    #[cfg(feature = "grayjay-sync")]
+    #[must_use]
+    pub fn with_device_sync_shot(mut self) -> Self {
+        self.model.route = Route::Settings;
+        self.device_sync = crate::sync::DeviceSync::visual_sample();
+        let y = if self.rect.width() < NAV_BREAKPOINT {
+            1_330.0
+        } else {
+            930.0
+        };
+        self.scroll_cells
+            .borrow_mut()
+            .insert("settings".into(), Rc::new(Cell::new((0.0, y))));
         self
     }
 
@@ -518,6 +725,11 @@ impl TubeApp {
         &self.model
     }
 
+    #[cfg(feature = "grayjay-sync")]
+    pub(crate) fn device_sync_view(&self) -> &crate::sync::SyncView {
+        self.device_sync.view()
+    }
+
     /// Test accessor: whether the navigation rail is currently shown (resolves
     /// the session preference against the layout default).
     pub fn sidebar_open_for_test(&self) -> bool {
@@ -533,7 +745,22 @@ impl TubeApp {
             Route::Trending => screens::trending(m, theme, bus, imgs),
             Route::Subscriptions => screens::subscriptions(m, theme, bus, imgs),
             Route::History => screens::history(m, theme, bus, imgs),
-            Route::Settings => screens::settings(m, theme, bus),
+            Route::Settings => {
+                #[cfg(feature = "grayjay-sync")]
+                {
+                    screens::settings_with_sync(
+                        m,
+                        theme,
+                        bus,
+                        self.device_sync.view(),
+                        self.device_sync.pairing_input.clone(),
+                    )
+                }
+                #[cfg(not(feature = "grayjay-sync"))]
+                {
+                    screens::settings(m, theme, bus)
+                }
+            }
             Route::Watch(id) => screens::watch(
                 m,
                 theme,
@@ -1072,7 +1299,10 @@ impl TubeApp {
                 }
             }
             Action::TogglePlay => {
-                self.perform_resource_operation(crate::actions::TubeOperation::TogglePlayback);
+                self.refresh_watch_control_bindings();
+                if let Some(action) = &mut self.play_action {
+                    let _ = action.emit(());
+                }
             }
             Action::ToggleCategory(c) => {
                 self.model.settings.cycle_category(c);
@@ -1129,9 +1359,15 @@ impl TubeApp {
                 self.model.toggle_like(&id);
             }
             Action::Share(id) => {
-                self.perform_resource_operation(crate::actions::TubeOperation::Share {
-                    video_id: id,
-                });
+                // The visible Share control only belongs to the open watch
+                // resource. Refuse stale leaf events rather than copying a URL
+                // for a video the current authorized surface no longer names.
+                if matches!(&self.model.route, Route::Watch(current) if current == &id) {
+                    self.refresh_watch_control_bindings();
+                    if let Some(action) = &mut self.share_action {
+                        let _ = action.emit(());
+                    }
+                }
             }
             Action::OpenPalette => {
                 self.model.palette_open = true;
@@ -1149,6 +1385,28 @@ impl TubeApp {
                 }
                 self.model.palette_open = false;
                 self.dismiss_overlay_rail();
+            }
+            Action::PairDevice => {
+                if !self.queue_device_action("pair", None) {
+                    self.model.push_notice(
+                        "Paste a pairing invite first, or unlock the desktop secret broker",
+                    );
+                }
+            }
+            Action::SyncDevices => {
+                if !self.queue_device_action("sync", None) {
+                    self.model.push_notice("Device sync is unavailable");
+                }
+            }
+            Action::ApproveDevice(id) => {
+                if !self.queue_device_action("approve", Some(&id)) {
+                    self.model.push_notice("Device approval is unavailable");
+                }
+            }
+            Action::RevokeDevice(id) => {
+                if !self.queue_device_action("revoke", Some(&id)) {
+                    self.model.push_notice("Device revocation is unavailable");
+                }
             }
         }
         true
@@ -1526,6 +1784,133 @@ impl TubeApp {
         }
         self.persist(state, root);
     }
+
+    /// Fold the structured collaborative action subtree back into the visible
+    /// model. External/agent actions therefore update the same switches and
+    /// badges as local controls instead of living in a disconnected ledger.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the CRDT maps are deliberately reconciled together so one authoritative read pass updates the visible model atomically"
+    )]
+    fn reconcile_collaborative_actions(&mut self, state: &AutoCommit) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), tube))) = state.get(&automerge::ROOT, "tube")
+        else {
+            return false;
+        };
+        let mut changed = false;
+        if let Ok(Some((Value::Object(ObjType::Map), likes))) = state.get(&tube, "likes") {
+            let liked = self
+                .model
+                .videos
+                .iter()
+                .filter(|video| {
+                    state
+                        .get(&likes, video.id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_bool())
+                        .unwrap_or(false)
+                })
+                .map(|video| video.id.clone())
+                .collect::<Vec<_>>();
+            if liked != self.model.liked {
+                self.model.liked = liked;
+                changed = true;
+            }
+        }
+        if let Ok(Some((Value::Object(ObjType::Map), subscriptions))) =
+            state.get(&tube, "subscriptions")
+        {
+            let subscribed = self
+                .model
+                .channels
+                .iter()
+                .filter(|channel| {
+                    state
+                        .get(&subscriptions, channel.id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_bool())
+                        .unwrap_or(false)
+                })
+                .map(|channel| channel.id.clone())
+                .collect::<Vec<_>>();
+            if subscribed != self.model.subscriptions {
+                self.model.subscriptions = subscribed;
+                changed = true;
+            }
+        }
+        if let Ok(Some((Value::Object(ObjType::Map), settings))) = state.get(&tube, "settings") {
+            for (key, slot) in [
+                (
+                    "sponsorblock",
+                    &mut self.model.settings.sponsorblock_enabled,
+                ),
+                ("dearrow", &mut self.model.settings.dearrow_enabled),
+                ("dearrow_titles", &mut self.model.settings.dearrow_titles),
+                (
+                    "dearrow_thumbnails",
+                    &mut self.model.settings.dearrow_thumbnails,
+                ),
+                (
+                    "return_dislike",
+                    &mut self.model.settings.return_dislike_enabled,
+                ),
+                ("autoplay", &mut self.model.settings.autoplay),
+                ("show_comments", &mut self.model.settings.show_comments),
+            ] {
+                if let Some(enabled) = state
+                    .get(&settings, key)
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.to_bool())
+                    && *slot != enabled
+                {
+                    *slot = enabled;
+                    changed = true;
+                }
+            }
+            if let Some(quality) = state
+                .get(&settings, "preferred_quality")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                && QUALITIES.contains(&quality.as_str())
+                && self.model.settings.preferred_quality != quality
+            {
+                self.model.settings.preferred_quality = quality;
+                changed = true;
+            }
+            if let Ok(Some((Value::Object(ObjType::Map), categories))) =
+                state.get(&settings, "sponsor_categories")
+            {
+                for category in crate::model::Category::ALL {
+                    let Some(mode) = state
+                        .get(&categories, category.api_key())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                        .and_then(|value| match value.as_str() {
+                            "skip" => Some(crate::model::SkipMode::Skip),
+                            "show" => Some(crate::model::SkipMode::Show),
+                            "disabled" => Some(crate::model::SkipMode::Disabled),
+                            _ => None,
+                        })
+                    else {
+                        continue;
+                    };
+                    if self.model.settings.categories.get(category.api_key()) != Some(&mode) {
+                        self.model
+                            .settings
+                            .categories
+                            .insert(category.api_key().to_string(), mode);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
 }
 
 impl Widget for TubeApp {
@@ -1539,6 +1924,47 @@ impl Widget for TubeApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.pending_device_actions
+            .pop_front()
+            .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| self.share_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.root_child
+                    .as_mut()
+                    .and_then(|child| child.take_control_invocation())
+            })
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(action) = &self.play_action {
+            bindings.push(action.metadata("tube.watch.play-pause"));
+        }
+        if let Some(action) = &self.share_action {
+            bindings.push(action.metadata("tube.watch.share"));
+        }
+        if let Some(child) = &self.root_child {
+            bindings.extend(child.control_action_bindings());
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.play_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(action) = &mut self.share_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(child) = &mut self.root_child {
+            child.refresh_control_action_availability(allowed);
+        }
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
@@ -1559,6 +1985,9 @@ impl Widget for TubeApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("Tube operation kind does not match its declared contract".into());
+        }
         self.perform_resource_operation(operation);
         Ok(true)
     }
@@ -1566,6 +1995,23 @@ impl Widget for TubeApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_search_obj(state, path);
         self.adopt_or_seed(state, path);
+        #[cfg(feature = "grayjay-sync")]
+        {
+            if !self.device_sync_seeded {
+                self.device_sync_seeded = true;
+                let _ = self
+                    .device_sync
+                    .sync_now(crate::sync::lifecycle_state(&self.model));
+            }
+            if self.device_sync.pump(&mut self.model) {
+                self.persist(state, path);
+                self.structure_dirty = true;
+            }
+        }
+        if self.reconcile_collaborative_actions(state) {
+            self.persist(state, path);
+            self.structure_dirty = true;
+        }
         // First live frame: spawn the fetch worker and pull the home/trending
         // feed. One-shot (guarded) and online-only, so the offscreen path never
         // reaches here with `online` set.
@@ -1617,6 +2063,7 @@ impl Widget for TubeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.refresh_watch_control_bindings();
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
         // first build runs before any width is known) and rebuild once.
@@ -1877,12 +2324,42 @@ impl Widget for TubeApp {
         let actions = action::drain(&self.bus);
         let mut changed = false;
         for a in actions {
-            if let Action::ToggleLike(id) = &a {
-                // Direct toolbar activation crosses the exact ActionHost
-                // boundary used by the exported resource action.
-                let operation = crate::actions::TubeAction::LikeVideo {
+            let document_action = match &a {
+                Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
                     video_id: id.clone(),
-                };
+                    liked: !self.model.is_liked(id),
+                }),
+                Action::ToggleSubscribe(id) => Some(crate::actions::TubeAction::SetSubscription {
+                    channel_id: id.clone(),
+                    subscribed: !self.model.is_subscribed(id),
+                }),
+                Action::ToggleSetting(setting) => {
+                    let enabled = match setting {
+                        SettingFlag::SponsorBlock => !self.model.settings.sponsorblock_enabled,
+                        SettingFlag::DeArrow => !self.model.settings.dearrow_enabled,
+                        SettingFlag::DeArrowTitles => !self.model.settings.dearrow_titles,
+                        SettingFlag::DeArrowThumbnails => !self.model.settings.dearrow_thumbnails,
+                        SettingFlag::ReturnDislike => !self.model.settings.return_dislike_enabled,
+                        SettingFlag::Autoplay => !self.model.settings.autoplay,
+                        SettingFlag::ShowComments => !self.model.settings.show_comments,
+                    };
+                    Some(crate::actions::TubeAction::SetSetting {
+                        setting: *setting,
+                        enabled,
+                    })
+                }
+                Action::SetQuality(_) => Some(crate::actions::TubeAction::CyclePreferredQuality),
+                Action::ToggleCategory(category) => {
+                    Some(crate::actions::TubeAction::SetSponsorCategory {
+                        category: *category,
+                        mode: self.model.settings.mode_of(*category).next(),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(operation) = document_action {
+                // Visible collaborative mutations cross the exact ActionHost
+                // boundary used by search, agents and replay.
                 self.actions.dispatch_with_context(
                     state,
                     crate::actions::TUBE_ACTION_TYPE,
@@ -1989,6 +2466,45 @@ impl Widget for TubeApp {
             .collect()
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        let route = match &self.model.route {
+            Route::Home => "Home".to_string(),
+            Route::Trending => "Trending".to_string(),
+            Route::Subscriptions => "Subscriptions".to_string(),
+            Route::Watch(id) => self
+                .model
+                .video(id)
+                .map_or_else(|| "Video".to_string(), |video| video.title.clone()),
+            Route::Channel(id) => self
+                .model
+                .channel(id)
+                .map_or_else(|| "Creator".to_string(), |channel| channel.name.clone()),
+            Route::Playlist(id) => self
+                .model
+                .playlist(id)
+                .map_or_else(|| "Playlist".to_string(), |playlist| playlist.title.clone()),
+            Route::Search(query) => format!("Search results for {query}"),
+            Route::History => "Watch history".to_string(),
+            Route::Settings => "Settings".to_string(),
+        };
+        let mut node = AccessNode::new(Role::Window)
+            .with_name(format!("Tube — {route}"))
+            .with_description(if self.model.data_source.live {
+                "Privacy-respecting video client; live catalogue".to_string()
+            } else {
+                "Privacy-respecting video client; offline".to_string()
+            })
+            .with_state(
+                AccessState::new().busy(self.model.feed_loading || self.model.search_loading),
+            );
+        if let Some(notice) = self.model.notices.first() {
+            node.live = Some(Politeness::Polite);
+            node.value = Some(notice.clone());
+        }
+        Some(node)
+    }
+
     fn name(&self) -> &'static str {
         "TubeApp"
     }
@@ -2035,6 +2551,70 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    fn dispatch_control(app: &mut TubeApp, doc: &AutoCommit) {
+        let intent = app
+            .take_control_invocation()
+            .expect("custom control emitted an action-native invocation");
+        let resources = <TubeApp as qos_actions::ResourceProvider>::resources(app, doc);
+        let spec = qos_actions::door::resolve(&resources, &intent.address)
+            .expect("fresh resource surface resolves the control address");
+        let encoded = spec
+            .build_json(&intent.arguments)
+            .expect("control arguments satisfy the published contract");
+        assert!(
+            app.invoke_resource_operation(
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .expect("resource operation dispatch succeeds")
+        );
+    }
+
+    #[cfg(feature = "grayjay-sync")]
+    #[test]
+    fn visible_pair_control_queues_the_published_privileged_effect() {
+        let (mut app, doc) = fresh();
+        app.device_sync = crate::sync::DeviceSync::with_test_view(crate::sync::SyncView {
+            status: crate::sync::SyncStatus::Ready,
+            summary: "ready".into(),
+            device_public_key: Some("public".into()),
+            peers: Vec::new(),
+        });
+        *app.device_sync
+            .pairing_input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = "grayjay://secret-invite".into();
+        assert!(app.apply(Action::PairDevice, &doc, &automerge::ROOT));
+        let invocation = app
+            .take_control_invocation()
+            .expect("visible Pair queues a host-routable invocation");
+        assert_eq!(invocation.address.resource, "tube.device-sync");
+        assert_eq!(invocation.address.action, "pair");
+        assert_eq!(
+            invocation.arguments.get("invite"),
+            Some(&serde_json::Value::String("grayjay://secret-invite".into()))
+        );
+        assert!(
+            app.device_sync
+                .pairing_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "the local field is wiped once its Secret argument is queued"
+        );
+        let resources = <TubeApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let spec = qos_actions::door::resolve(&resources, &invocation.address)
+            .expect("fresh resource tree resolves Pair");
+        assert_eq!(spec.kind, qos_actions::OperationKind::Effect);
+        assert!(!matches!(
+            spec.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ));
     }
 
     #[test]
@@ -2112,6 +2692,23 @@ mod tests {
         assert!(app.model.is_subscribed("ch_synth"));
     }
 
+    #[test]
+    fn externally_applied_subscription_action_updates_visible_model() {
+        let (mut app, mut doc) = fresh();
+        qos_actions::Action::apply(
+            &crate::actions::TubeAction::ToggleSubscription {
+                channel_id: "ch_synth".into(),
+            },
+            &mut doc,
+        )
+        .expect("action applies");
+        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        assert!(
+            app.model.is_subscribed("ch_synth"),
+            "agent/replay actions must update the rendered subscription state"
+        );
+    }
+
     // --- media-engine transport wiring (the real playback path) ---
 
     #[test]
@@ -2182,12 +2779,14 @@ mod tests {
         );
         assert!(app.player.borrow().is_playing());
         app.apply(Action::TogglePlay, &doc, &r);
+        dispatch_control(&mut app, &doc);
         assert!(
             !app.player.borrow().is_playing(),
             "TogglePlay paused the engine"
         );
         assert!(!app.model.playing, "the model mirrors the paused engine");
         app.apply(Action::TogglePlay, &doc, &r);
+        dispatch_control(&mut app, &doc);
         assert!(
             app.player.borrow().is_playing(),
             "TogglePlay resumed the engine"
@@ -2298,7 +2897,9 @@ mod tests {
             "ToggleLike again unlikes it"
         );
 
+        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
         app.apply(Action::Share("vid_donut".into()), &doc, &r);
+        dispatch_control(&mut app, &doc);
         assert!(
             !app.model.is_liked("vid_donut"),
             "Share must not like the video"

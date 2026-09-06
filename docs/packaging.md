@@ -6,15 +6,38 @@ the package contains the compositor, sandbox launcher, unlock helper, PAM policy
 portal registration, display-manager entry, and AGPL-3.0 license text. It does
 not replace the host's boot chain, greeter, or package manager.
 
+The session scans the host's normal XDG application directories, including
+per-user and system Flatpak exports. Those existing applications keep their
+real home directory and their original confinement model, and qOS labels them
+as unconfined host apps rather than implying they use qOS package policy. On
+Fedora, `xwayland-satellite` is a hard package dependency so legacy X11-only
+applications continue to open; native Wayland applications still use the qOS
+socket directly. The complete qOS image remains Wayland-only—this compatibility
+bridge is enabled only by the explicit host-desktop session mode.
+
+The wrapper owns `graphical-session.target` for the lifetime of qOS, clears
+display variables left by the preceding desktop before starting it, and removes
+qOS's desktop identity when the session ends. That is what allows portal and
+other standard user services to use qOS while logged in and ensures they stop
+before GNOME, KDE, or another session is selected next.
+The portal frontend and filtered D-Bus proxy are hard package dependencies, so
+sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
+
 ## Supported outputs
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64` (`aarch64` deferred) |
-| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64` (`aarch64` deferred) |
-| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux` (`aarch64-linux` deferred) |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`; `arm64` when enabled |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`; `arm64` when enabled |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`; `aarch64` when enabled |
+| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
+| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`; `aarch64-linux` when enabled |
+
+The complete ARM64 package definitions and release verifier remain in tree,
+but ARM64 publication is temporarily disabled by
+`QOS_DESKTOP_ARM64_RELEASES` until a native `runner-arm64` host is available.
+Current tags therefore publish the x86-64 set. Changing that single workflow
+switch to `"1"` restores the complete native ARM64 release lane.
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
@@ -37,7 +60,7 @@ test-control socket and ffmpeg-backed HDR decoding so the login-session binary
 does not acquire a distribution-specific libavcodec ABI.
 
 The package version has one source of truth: `dist/VERSION`. Before tagging,
-update it, then create a matching `vX.Y.Z` tag. Debian and Ubuntu receive
+update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu receive
 separate package revisions because each binary is linked and dependency-scanned
 inside its own distribution build root.
 
@@ -59,13 +82,38 @@ sudo apt install qos-session
 ```
 
 Use `trixie` instead of `noble` on Debian 13. Fedora 44 users can add the RPM
-registry and install directly with `dnf`:
+registry and install directly with `dnf` on a traditional mutable system:
 
 ```bash
 sudo dnf config-manager addrepo \
   --from-repofile=https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo
 sudo dnf install qos-session
 ```
+
+On Fedora Atomic desktops such as Silverblue, Kinoite, or an rpm-ostree-based
+derivative, add the same repository and layer the package into the next
+deployment instead:
+
+```bash
+sudo curl --fail --location \
+  --output /etc/yum.repos.d/qos.repo \
+  https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo
+sudo rpm-ostree install qos-session
+```
+
+Save your work and reboot into the prepared deployment. GDM will continue to
+offer the existing desktop and will also offer qOS in its session menu. The
+layering transaction preserves other requested and locally installed packages;
+applications installed system-wide or for your user, including Flatpaks, remain
+installed and discoverable from qOS under **Host Apps**. Select the existing
+desktop in GDM whenever you want to switch back. Removing qOS later uses
+`sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
+development subpackage for an ordinary installation.
+
+When this repository publishes a newer `qos-session`, the normal
+`sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves
+it into the next deployment together with the host OS update. Users do not
+download or reinstall release RPMs by hand.
 
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
@@ -116,8 +164,9 @@ Nix can build or substitute the package declaratively.
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
 that touch packaging or the packaged binaries execute the current x86-64 matrix.
-Version tags execute it regardless of changed paths, wait for every x86-64 install
-test, download the artifacts, require the complete current output set, and only then
+`desktop-v*` tags execute it regardless of changed paths, wait for every enabled
+native-architecture install test, download the artifacts, require the complete
+current output set, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. The five target userspaces run sequentially in one
 capacity-bounded lane.
@@ -129,14 +178,16 @@ architectures through a job-private PRoot and checksum-pinned QEMU without
 registering a host binfmt handler, but that mechanism is not the release gate:
 the Nix closure must be validated on a native ARM64 runner first.
 The package matrix runs as one sequential x86-64 lane; native Cargo builds use
-at most four compiler jobs. ARM64 packaging remains implemented in `dist/ci`,
-but is deliberately excluded until a native runner can verify its Nix closure.
-This leaves capacity for main-branch checks on the shared runner pool.
+at most four compiler jobs. Ordinary changes allocate only that x86-64 lane;
+tags and manual runs with `full_native` add the native ARM64 lane and verify its
+Nix closure without QEMU-user.
 The Debian-family, Fedora, and Arch jobs reuse the runners' optional remote
-compiler cache in isolated distro/architecture namespaces and fail open to an
+compiler cache in an architecture namespace and fail open to an
 ordinary build if that service is unavailable. Cache credentials are only
 forwarded on trusted branch, tag, and manual runs; pull requests build cold.
-Nix builds remain pure.
+The compiler, flags, system headers, and environment are hashed into each
+sccache key, so incompatible distro objects miss while the common Rust graph
+can hit. Nix builds remain pure.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,

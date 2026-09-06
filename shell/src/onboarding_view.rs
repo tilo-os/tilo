@@ -40,6 +40,10 @@ use crate::onboarding::{
 
 const PANEL_MAX_WIDTH: f32 = 720.0;
 const PANEL_MAX_HEIGHT: f32 = 620.0;
+/// The introduction has much less content than the recovery and completion
+/// stages. Giving it the maximum-height scroll viewport made the first thing
+/// a new user saw look like a mostly empty dialog.
+const INTRO_PANEL_HEIGHT: f32 = 420.0;
 const VIEWPORT_GUTTER: f32 = 32.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
@@ -186,6 +190,7 @@ pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
 pub const KEY_TOUR_START: &str = "onboarding.tour.start";
 pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
 pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
+pub const KEY_TOUR_SKIP: &str = "onboarding.tour.skip";
 pub const KEY_FINISH: &str = "onboarding.finish";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -844,8 +849,12 @@ impl OnboardingView {
         };
         actions(vec![
             Box::new(
-                Button::new("onboarding.tour.skip.button", "Skip tour", Some(KEY_FINISH))
-                    .fit_content(40.0),
+                Button::new(
+                    "onboarding.tour.skip.button",
+                    "Skip tour",
+                    Some(KEY_TOUR_SKIP),
+                )
+                .fit_content(40.0),
             ),
             Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
@@ -1433,9 +1442,7 @@ fn terminate_nearby_pairing(child: &mut Option<Child>) {
     // validated PID the process-group ID. A negative target is confined to
     // that group and cannot signal the compositor's own group.
     let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
+    let deadline = Instant::now() + Duration::from_millis(750);
     loop {
         let leader_finished = child.try_wait().ok().flatten().is_some();
         // Signal 0 only checks whether any descendant still occupies the
@@ -1567,7 +1574,8 @@ impl Widget for OnboardingView {
                         let label =
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
-                            .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from);
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
                         let requester = qos_relay::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
@@ -1608,7 +1616,7 @@ impl Widget for OnboardingView {
                                 self.error = None;
                             }
                             Err(error) => {
-                                self.error = Some(format!("Could not start nearby setup: {error}"));
+                                self.error = Some(format!("Could not start nearby setup: {error}"))
                             }
                         }
                     }
@@ -1646,9 +1654,8 @@ impl Widget for OnboardingView {
             .nearby_child
             .as_mut()
             .and_then(|child| child.try_wait().ok().flatten());
-        if let Some(status) = nearby_finished
-            && let Some(mut child) = self.nearby_child.take()
-        {
+        if let Some(status) = nearby_finished {
+            let mut child = self.nearby_child.take().expect("nearby child exists");
             let mut stdout = String::new();
             let mut stderr = String::new();
             if let Some(mut stream) = child.stdout.take() {
@@ -1658,36 +1665,20 @@ impl Widget for OnboardingView {
                 let _ = stream.read_to_string(&mut stderr);
             }
             if status.success() {
-                match serde_json::from_str::<serde_json::Value>(
-                    stdout.lines().last().unwrap_or_default(),
-                ) {
+                match serde_json::from_str::<serde_json::Value>(stdout.lines().last().unwrap_or_default()) {
                     Ok(result) => {
-                        let fingerprint = result
-                            .get("identity")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
-                        let path = result
-                            .get("record_path")
-                            .and_then(serde_json::Value::as_str)
-                            .map(PathBuf::from);
-                        if fingerprint.len() == 64
-                            && let Some(path) = path
-                        {
-                            self.flow
-                                .complete_connected(MintedIdentity { fingerprint, path });
+                        let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                        let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
+                        if fingerprint.len() == 64 && path.is_some() {
+                            self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
-                            self.nearby_status = Some(
-                                "Connected. Your workspaces will appear automatically.".into(),
-                            );
+                            self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
                         } else {
                             self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into());
                         }
                     }
-                    Err(_) => {
-                        self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into());
-                    }
+                    Err(_) => self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into()),
                 }
             } else {
                 let detail = stderr
@@ -1858,11 +1849,29 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_TOUR_SKIP) {
+            let _ = state.put(root, KEY_TOUR_SKIP, ScalarValue::Boolean(false));
+            // This action exists only while a tour page is visible. During
+            // first use, clearing the crash journal is the durable record that
+            // the person deliberately skipped; a reopened tour has no setup
+            // journal and can close immediately.
+            self.finished = self.tour_page.is_some()
+                && (self.tour_only || (self.flow.is_done() && self.finish_persisted_progress()));
+            if self.finished {
+                clear_secret(&self.connect_passphrase);
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+            }
+        }
+
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
             let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
-            self.finished = (self.tour_only && at_tour_end)
+            // A reopened, tour-only flow exposes “Skip tour” on every page.
+            // Its action is KEY_FINISH, so it must dismiss from every page,
+            // not only from the final hand-off page.
+            self.finished = self.tour_only
                 || ((at_tour_end || skipping_tour)
                     && self.flow.is_done()
                     && self.finish_persisted_progress());
@@ -1894,7 +1903,12 @@ impl Widget for OnboardingView {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         self.transition_duration = theme.tokens.motion.durations.slow();
-        let mut composed = self.build_composition(theme, PANEL_MAX_HEIGHT);
+        let panel_height = if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+            INTRO_PANEL_HEIGHT
+        } else {
+            PANEL_MAX_HEIGHT
+        };
+        let mut composed = self.build_composition(theme, panel_height);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -1905,7 +1919,7 @@ impl Widget for OnboardingView {
             cs.size.width = taffy::Dimension::percent(1.0);
             cs.size.height = taffy::Dimension::percent(1.0);
             cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
-            cs.max_size.height = taffy::Dimension::length(PANEL_MAX_HEIGHT);
+            cs.max_size.height = taffy::Dimension::length(panel_height);
             cs.flex_grow = 0.0;
             cs.flex_shrink = 1.0;
             let _ = taffy.set_style(child, cs);
@@ -2002,7 +2016,7 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_FINISH, ScalarValue::Boolean(true));
+            let _ = state.put(path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
             *handled = true;
             return;
         }
@@ -2691,9 +2705,54 @@ mod tests {
             }
         }
 
-        press(&mut doc, KEY_FINISH);
+        press(&mut doc, KEY_TOUR_SKIP);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished(), "Skip tour dismisses a reopened tour");
+    }
+
+    #[test]
+    fn first_use_skip_works_on_every_tour_page_and_clears_progress() {
+        for (stage, page) in [
+            (PersistedStage::TourNavigate, TourPage::Navigate),
+            (PersistedStage::TourOrganise, TourPage::Organise),
+            (PersistedStage::TourCollaborate, TourPage::Collaborate),
+            (PersistedStage::TourStart, TourPage::Start),
+        ] {
+            let directory = TempDir::new().expect("progress directory");
+            write_fixture_identity(directory.path());
+            store_progress(directory.path(), stage).expect("tour progress");
+            let mut view = OnboardingView::new(directory.path().to_path_buf());
+            let mut document = AutoCommit::new();
+
+            assert_eq!(view.tour_page, Some(page));
+            press(&mut document, KEY_TOUR_SKIP);
+            view.sync(&mut document, &automerge::ROOT);
+
+            assert!(view.finished(), "Skip tour must work from {page:?}");
+            assert!(
+                !has_pending_progress(directory.path()),
+                "skipping {page:?} must durably complete first use"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_dismisses_a_reopened_tour_from_every_page() {
+        for next_presses in 0..=3 {
+            let mut view = OnboardingView::new_tour();
+            let mut document = AutoCommit::new();
+            for _ in 0..next_presses {
+                press(&mut document, KEY_TOUR_NEXT);
+                view.sync(&mut document, &automerge::ROOT);
+            }
+
+            assert!(dispatch_escape(&mut view, &mut document));
+            view.sync(&mut document, &automerge::ROOT);
+            assert!(
+                view.finished(),
+                "Escape must close a reopened tour after {next_presses} advances"
+            );
+        }
     }
 
     #[test]
@@ -3157,6 +3216,42 @@ mod tests {
         let panel = view.composed.as_ref().expect("composition").get_rect();
         assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
         assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
+    }
+
+    #[test]
+    fn introduction_uses_a_compact_panel_on_a_large_display() {
+        let (mut view, _) = view();
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
+                },
+                |known, available, node_id, _, _| {
+                    node_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("large setup layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let panel = view.composed.as_ref().expect("composition").get_rect();
+        assert!(
+            panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
+            "intro should not inherit the taller recovery panel: {panel:?}"
+        );
+        assert!(
+            panel.height() >= 300.0,
+            "intro content must retain a readable surface: {panel:?}"
+        );
     }
 
     #[test]

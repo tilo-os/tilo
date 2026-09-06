@@ -78,11 +78,11 @@ impl PersistedContentPeer {
         Ok(())
     }
 
-    /// Decode the optional record-plane bootstrap ticket.
+    /// Decode the bounded workspace ticket, when this endpoint has one.
     ///
     /// # Errors
     ///
-    /// Returns an error if the stored ticket is malformed.
+    /// Returns an error when the stored ticket is malformed.
     pub fn decoded_ticket(&self) -> anyhow::Result<Option<Ticket>> {
         self.ticket.as_deref().map(Ticket::decode).transpose()
     }
@@ -97,12 +97,12 @@ enum PersistedContentPeersFile {
     Legacy(Vec<iroh_base::EndpointAddr>),
 }
 
-/// Load, validate, and deduplicate the durable content-peer catalogue.
+/// Load the bounded, de-duplicated direct content peers for a cache.
 ///
 /// # Errors
 ///
-/// Returns an error if the catalogue cannot be read or decoded, exceeds its
-/// bounded size, or contains a malformed ticket.
+/// Returns an error when the persisted peer file is unreadable, malformed, or
+/// exceeds its configured safety bound.
 pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<PersistedContentPeer>> {
     let path = content_peers_path(cache_dir);
     if !path.exists() {
@@ -220,11 +220,11 @@ mod serde_bytes_64 {
 }
 
 impl WorkspaceAuthorityEnvelope {
-    /// Create a governor-signed authority envelope.
+    /// Sign one monotonic workspace authority revision.
     ///
     /// # Errors
     ///
-    /// Returns an error if the signed payload cannot be serialized.
+    /// Returns an error when the signed payload cannot be encoded.
     pub fn sign(
         workspace: uuid::Uuid,
         revision: u64,
@@ -244,12 +244,11 @@ impl WorkspaceAuthorityEnvelope {
         Ok(envelope)
     }
 
-    /// Verify the workspace, governor, and signature of this envelope.
+    /// Verify this envelope's workspace, governor, and signature.
     ///
     /// # Errors
     ///
-    /// Returns an error if an identity does not match, the governor key is
-    /// invalid, payload serialization fails, or signature verification fails.
+    /// Returns an error when identity, encoding, or signature validation fails.
     pub fn verify(&self, expected_workspace: uuid::Uuid, governor: [u8; 32]) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace == expected_workspace,
@@ -286,12 +285,12 @@ pub struct WorkspaceAuthority {
 }
 
 impl WorkspaceAuthority {
-    /// Open the durable authority projection for a workspace.
+    /// Open the durable authority projection for one workspace.
     ///
     /// # Errors
     ///
-    /// Returns an error if persisted authority cannot be read, decoded, or
-    /// verified.
+    /// Returns an error when the persisted envelope cannot be read, decoded,
+    /// or verified.
     pub fn open(
         path: impl Into<PathBuf>,
         workspace: uuid::Uuid,
@@ -340,11 +339,11 @@ impl WorkspaceAuthority {
     /// Load an atomically-published signed revision written by the local
     /// governor process. This is the bridge from a desktop capability change
     /// into the already-running network authority service.
+    /// Reload and apply the latest atomically published signed revision.
     ///
     /// # Errors
     ///
-    /// Returns an error if the revision cannot be read, decoded, verified, or
-    /// applied.
+    /// Returns an error when the revision cannot be read, decoded, or applied.
     pub fn reload(&self) -> anyhow::Result<bool> {
         let bytes = std::fs::read(&self.path)?;
         let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
@@ -354,11 +353,12 @@ impl WorkspaceAuthority {
     /// Verify, durably replace, and publish a strictly newer authority state.
     /// Equal revisions are accepted only when byte-identical, making retries
     /// idempotent while refusing equivocation at one revision.
+    /// Verify and atomically publish a monotonic authority revision.
     ///
     /// # Errors
     ///
-    /// Returns an error if verification fails, the revision regresses or
-    /// equivocates, serialization fails, or the durable write fails.
+    /// Returns an error for invalid signatures, revision regression,
+    /// equivocation, serialization, durable-write, or lock failures.
     pub fn apply(&self, next: WorkspaceAuthorityEnvelope) -> anyhow::Result<bool> {
         next.verify(self.workspace, self.governor)?;
         let mut current = self
@@ -443,12 +443,12 @@ pub struct ContentPeerResponse {
 }
 
 #[cfg(unix)]
-/// Bind the local content-peer control socket and spawn its accept loop.
+/// Bind the local, group-restricted direct-content registration service.
 ///
 /// # Errors
 ///
-/// Returns an error if a stale socket cannot be removed, the new socket cannot
-/// be bound, or its permissions cannot be restricted.
+/// Returns an error when the existing socket cannot be replaced, bound, or
+/// permissioned.
 pub fn serve_local_content_peer(
     socket: &Path,
     hydrator: std::sync::Arc<crate::Hydrator>,
@@ -543,12 +543,12 @@ pub fn serve_local_content_peer(
 }
 
 #[cfg(unix)]
-/// Register a direct content endpoint with the local filesystem daemon.
+/// Register a discovered direct Files endpoint with the local daemon.
 ///
 /// # Errors
 ///
-/// Returns an error if the socket exchange fails or the daemon rejects the
-/// endpoint.
+/// Returns an error when the local socket exchange fails or the daemon
+/// rejects the endpoint.
 pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
@@ -576,12 +576,13 @@ pub async fn register_local_content_peer(
 /// Remove every direct content endpoint discovered through `relay_service_id`.
 /// This is intentionally separate from registration so removal cannot be
 /// confused with an endpoint refresh.
+#[cfg(unix)]
+/// Remove every locally registered endpoint for one relay service.
 ///
 /// # Errors
 ///
-/// Returns an error if the socket exchange fails or the daemon rejects the
-/// removal.
-#[cfg(unix)]
+/// Returns an error when the local socket exchange fails or the daemon
+/// rejects the removal.
 pub async fn remove_local_content_peers(
     socket: &std::path::Path,
     relay_service_id: [u8; 32],
@@ -604,12 +605,13 @@ pub async fn remove_local_content_peers(
 /// placing the socket in a `root:qos-identity` directory; the socket itself is
 /// group writable so an enrolled desktop can submit a governor-signed update
 /// without being able to alter the root-owned durable cache directly.
+#[cfg(unix)]
+/// Bind the local, group-restricted workspace-authority publisher service.
 ///
 /// # Errors
 ///
-/// Returns an error if a stale socket cannot be removed, the new socket cannot
-/// be bound, or its permissions cannot be restricted.
-#[cfg(unix)]
+/// Returns an error when the existing socket cannot be replaced, bound, or
+/// permissioned.
 pub fn serve_local_authority(
     socket: &Path,
     authority: std::sync::Arc<WorkspaceAuthority>,
@@ -650,12 +652,12 @@ pub fn serve_local_authority(
 
 /// Submit or query a local authority service.  The Unix permissions are the
 /// first gate; the signed envelope remains the authority gate.
+#[cfg(unix)]
+/// Submit or query a local workspace authority service.
 ///
 /// # Errors
 ///
-/// Returns an error if the local socket cannot be reached or the request or
-/// response cannot be framed.
-#[cfg(unix)]
+/// Returns an error when the local socket exchange fails.
 pub async fn local_authority_request(
     socket: &std::path::Path,
     request: AuthorityRequest,
@@ -665,12 +667,12 @@ pub async fn local_authority_request(
     read_frame(&mut stream).await
 }
 
-/// Write one bounded postcard frame.
+/// Write one bounded authority control frame.
 ///
 /// # Errors
 ///
-/// Returns an error if serialization fails, the frame exceeds the protocol
-/// limit, or the writer fails.
+/// Returns an error when serialization, length conversion, or the stream
+/// write fails.
 pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
@@ -686,12 +688,11 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize +
     Ok(())
 }
 
-/// Read and decode one bounded postcard frame.
+/// Read and decode one bounded authority control frame.
 ///
 /// # Errors
 ///
-/// Returns an error if the reader fails, the frame exceeds the protocol limit,
-/// or its payload cannot be decoded.
+/// Returns an error when the stream, frame bound, or payload decoding fails.
 pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {

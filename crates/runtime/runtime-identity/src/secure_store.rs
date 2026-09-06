@@ -19,6 +19,8 @@ use std::process::{Command, Stdio};
 
 use zeroize::Zeroizing;
 
+const MAX_IDENTITY_SECRET_BYTES: u64 = 128 * 1024 + 16;
+
 use crate::{KeyProtection, SecretReference};
 
 const PURPOSE_ATTRIBUTE: &str = "qos-identity-signing-v1";
@@ -253,12 +255,13 @@ impl SecretProvider for BrokerFileProvider {
                 "identity key fallback must be a private regular file",
             ));
         }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(32));
-        file.take(33).read_to_end(&mut bytes)?;
-        if bytes.len() != 32 {
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.take(MAX_IDENTITY_SECRET_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_IDENTITY_SECRET_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "identity key fallback has the wrong size",
+                "identity secret has an invalid size",
             ));
         }
         Ok(bytes)

@@ -8,7 +8,7 @@ use ui::text_render::TextRenderer;
 
 use crate::num;
 
-pub(crate) const MIN: f64 = 0.5;
+pub(crate) const MIN: f64 = 0.4;
 pub(crate) const MAX: f64 = 3.0;
 pub(crate) const STEP: f64 = 0.1;
 

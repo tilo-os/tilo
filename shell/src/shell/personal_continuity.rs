@@ -42,12 +42,6 @@ const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
 pub struct DeviceId(String);
 
 impl DeviceId {
-    /// Creates a validated stable device identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContinuityError::InvalidDeviceId`] when the identifier is
-    /// empty, oversized, or contains disallowed characters.
     pub fn new(value: impl Into<String>) -> Result<Self, ContinuityError> {
         let value = value.into();
         if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
@@ -137,11 +131,6 @@ pub enum LaunchIntent {
 }
 
 impl LaunchIntent {
-    /// Creates a validated application launch intent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContinuityError::InvalidAppId`] for an invalid application id.
     pub fn app(app_id: impl Into<String>) -> Result<Self, ContinuityError> {
         let intent = Self::App {
             app_id: app_id.into(),
@@ -150,12 +139,6 @@ impl LaunchIntent {
         Ok(intent)
     }
 
-    /// Creates a validated durable file-record launch intent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContinuityError::InvalidRecordReference`] when the record id
-    /// is not a valid portable identifier.
     pub fn file_reference(
         record_id: impl Into<String>,
         content_hash: Option<[u8; 32]>,
@@ -258,11 +241,6 @@ pub struct ResumeMetadata {
 }
 
 impl ResumeMetadata {
-    /// Creates validated application-owned resume metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for sensitive or oversized resume data.
     pub fn new(
         schema_version: u16,
         sensitivity: ResumeSensitivity,
@@ -422,12 +400,6 @@ pub struct DeviceContinuationSnapshot {
 }
 
 impl DeviceContinuationSnapshot {
-    /// Creates and validates a device snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot violates continuity schema limits or
-    /// contains invalid or duplicate logical state.
     pub fn new(
         device: DeviceId,
         counter: u64,
@@ -449,12 +421,6 @@ impl DeviceContinuationSnapshot {
         Ok(value)
     }
 
-    /// Validates this snapshot against the current continuity schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns the applicable [`ContinuityError`] for malformed, conflicting,
-    /// or oversized state.
     pub fn validate(&self) -> Result<(), ContinuityError> {
         if self.schema_version != CONTINUITY_SCHEMA_VERSION {
             return Err(ContinuityError::UnsupportedSchema(self.schema_version));
@@ -515,11 +481,6 @@ impl DeviceContinuationSnapshot {
     /// in its preceding snapshot but has now closed. Callers must advance the
     /// Lamport counter past every received checkpoint before constructing
     /// `self`, so the removal causally defeats the offer it observed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the snapshots have different owners or the
-    /// resulting tombstone set violates snapshot limits.
     pub fn record_closures_from(&mut self, previous: &Self) -> Result<(), ContinuityError> {
         if previous.device != self.device {
             return Err(ContinuityError::SnapshotStampDeviceMismatch);
@@ -590,7 +551,7 @@ impl DeviceContinuationSnapshot {
             counter,
             device: device.clone(),
         };
-        let mut redacted_foreign_tabs: u32 = 0;
+        let mut redacted_foreign_tabs = 0;
         let mut workspaces = Vec::new();
 
         for workspace in &tree.workspaces {
@@ -634,7 +595,7 @@ impl DeviceContinuationSnapshot {
                                 // Peer windows are another person's live session,
                                 // not our resumable app instance.
                                 TileContent::PeerWindow { .. } => {
-                                    redacted_foreign_tabs = redacted_foreign_tabs.saturating_add(1);
+                                    redacted_foreign_tabs += 1;
                                     None
                                 }
                             });
@@ -674,14 +635,8 @@ impl DeviceContinuationSnapshot {
         // snapshot rather than publishing a partially unsafe state.
         let mut snapshot = Self::new(device, counter, focus, workspaces).unwrap_or_else(|error| {
             tracing::warn!(%error, "personal continuity capture rejected local state");
-            Self {
-                schema_version: CONTINUITY_SCHEMA_VERSION,
-                device: stamp.device.clone(),
-                stamp: stamp.clone(),
-                focus: None,
-                workspaces: Vec::new(),
-                tombstones: Vec::new(),
-            }
+            Self::new(stamp.device.clone(), counter, None, Vec::new())
+                .expect("an empty continuation snapshot is valid")
         });
         snapshot.tombstones = tree
             .continuation_closed_tabs
@@ -813,11 +768,6 @@ impl PersonalContinuity {
     /// Keep the newest snapshot for its owning device. A same-device,
     /// same-counter but different payload is rejected: accepting based on
     /// arrival order would make replicas diverge.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the incoming snapshot is invalid, conflicts at an
-    /// equal revision, or would exceed collection limits.
     pub fn upsert(
         &mut self,
         incoming: DeviceContinuationSnapshot,
@@ -989,11 +939,6 @@ impl PersonalContinuityWireV1 {
 }
 
 /// Decode the current checkpoint or migrate the exact v1 Postcard shape.
-///
-/// # Errors
-///
-/// Returns [`ContinuityError::InvalidCheckpoint`] when neither supported wire
-/// format can be decoded, or a validation error for malformed decoded state.
 pub fn decode_checkpoint(bytes: &[u8]) -> Result<PersonalContinuity, ContinuityError> {
     if let Ok(current) = postcard::from_bytes::<PersonalContinuity>(bytes) {
         return Ok(current);
@@ -1652,10 +1597,6 @@ mod tests {
             focus: Option<DeviceFocus>,
             workspaces: Vec<WorkspaceContinuation>,
         }
-        #[derive(Serialize)]
-        struct V1Collection {
-            snapshots: Vec<V1Snapshot>,
-        }
         let device = device("legacy-laptop");
         let legacy = V1Snapshot {
             schema_version: 1,
@@ -1670,6 +1611,10 @@ mod tests {
                 apps: vec![safe_app(42, &device, 987)],
             }],
         };
+        #[derive(Serialize)]
+        struct V1Collection {
+            snapshots: Vec<V1Snapshot>,
+        }
         let bytes = postcard::to_allocvec(&V1Collection {
             snapshots: vec![legacy],
         })

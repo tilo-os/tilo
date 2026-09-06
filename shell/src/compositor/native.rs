@@ -3578,8 +3578,7 @@ pub fn run() -> ! {
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_clipboard(state.selection_store());
 
-    // `--backend drm|winit` selects the impl; `Drm` is currently a skeleton
-    // (errors "not yet implemented" at construction) but dispatch is wired so follow-up TTY work plugs in.
+    // `--backend drm|winit` selects the real native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
 
@@ -3664,8 +3663,12 @@ pub fn run() -> ! {
         if crate::compositor::parse_install_mode_from_args()
             == crate::compositor::InstallMode::HostDesktop
         {
+            eprintln!(
+                "nirios compositor: showing host-desktop identity setup from the first frame"
+            );
             frame_builder.enable_host_desktop_onboarding(identity_dir);
         } else {
+            eprintln!("nirios compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
         }
     }
@@ -3758,6 +3761,22 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    // The complete qOS image deliberately remains Wayland-only. A host
+    // desktop session is a different trust tier: it promises to keep the
+    // distro applications the person already installed usable, including
+    // legacy X11 software, and labels those launches as unconfined.
+    let xwayland = if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args())
+    {
+        match super::xwayland::SessionXwayland::start(&socket_name) {
+            Ok(bridge) => Some(bridge),
+            Err(error) => {
+                tracing::warn!(%error, "rootless Xwayland compatibility is unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -4135,19 +4154,34 @@ pub fn run() -> ! {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
                 AccessibilityRequest::Action(request) => {
-                    if !session.is_locked()
-                        && let Some(action) = ui::accesskit_bridge::accesskit_action_to_ours(
-                            request.action,
-                            request.data.as_ref(),
-                        )
-                        && frame_builder.dispatch_a11y_action(
-                            request.target_node,
-                            &action,
-                            &mut test_control_ctx.doc,
-                            &test_control_ctx.root_obj,
-                            &mut test_control_ctx.focus,
-                        )
-                    {
+                    if session.is_locked() {
+                        // The lock owns a deliberately tiny, non-leaking tree.
+                        // Only its password field is actionable; stale ids from
+                        // the hidden desktop are rejected here.
+                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                            match (request.action, request.data.as_ref()) {
+                                (ui::accesskit::Action::Focus, _) => {}
+                                (
+                                    ui::accesskit::Action::SetValue,
+                                    Some(ui::accesskit::ActionData::Value(value)),
+                                ) if !lock.is_verifying() => {
+                                    lock.clear_input();
+                                    lock.push_str(value);
+                                    session_changed = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if let Some(action) = ui::accesskit_bridge::accesskit_action_to_ours(
+                        request.action,
+                        request.data.as_ref(),
+                    ) && frame_builder.dispatch_a11y_action(
+                        request.target_node,
+                        &action,
+                        &mut test_control_ctx.doc,
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    ) {
                         session_changed = true;
                     }
                     // Even an unsupported or stale action gets a fresh tree:
@@ -4948,8 +4982,40 @@ pub fn run() -> ! {
             let t_layout_start = Instant::now();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-            native_accessibility.set_window_focus(!session.is_locked());
-            if !session.is_locked() {
+            native_accessibility.set_window_focus(true);
+            if session.is_locked() {
+                let lock_outputs: Vec<LockOutput> = backend
+                    .outputs()
+                    .iter()
+                    .map(|o| LockOutput {
+                        origin: (f64::from(o.position.0), f64::from(o.position.1)),
+                        size: (f64::from(o.size.0), f64::from(o.size.1)),
+                    })
+                    .collect();
+                let lock_outputs = if lock_outputs.is_empty() {
+                    let vp = frame_builder.viewport();
+                    vec![LockOutput {
+                        origin: (0.0, 0.0),
+                        size: (vp.0, vp.1),
+                    }]
+                } else {
+                    lock_outputs
+                };
+                let now = chrono::Local::now();
+                let clock = now.format("%H:%M").to_string();
+                let date = now.format("%A, %B %-d").to_string();
+                let view = LockView {
+                    password_len: lock.buffer_len(),
+                    error: lock.error(),
+                    clock: &clock,
+                    date: &date,
+                    notification_count: frame_builder.chrome().notification_count(),
+                    verifying: lock.is_verifying(),
+                };
+                native_accessibility.update_if_active(|| {
+                    lock_screen::build_accessibility_tree(&lock_outputs, &view)
+                });
+            } else {
                 native_accessibility.update_if_active(|| {
                     frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
                 });
@@ -5376,6 +5442,7 @@ pub fn run() -> ! {
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
     drop(tool_service);
+    drop(xwayland);
     // Same reasoning again: releases the D-Bus bus name and tears down the
     // notification object server before `process::exit` skips its destructor.
     drop(notif_handle);
@@ -5539,15 +5606,23 @@ mod tests {
             chrome.borrow().collab_unavailable
         );
 
-        // The launcher's real resolver, on a manifest demanding the service —
-        // `resolve_service_binds` returns `RequiredMissing` if it looks where the compositor didn't bind.
+        // The launcher's real resolver, on a manifest demanding the service.
+        // Use the authenticated launch path: collaboration deliberately rejects
+        // a bare socket connection with no app/workspace handoff.
         let mut services = std::collections::BTreeMap::new();
         services.insert(
             launcher::services::COLLAB_SERVICE.to_string(),
             "required@1".to_string(),
         );
-        let resolved = launcher::services::resolve_service_binds(&services, false)
-            .expect("the launcher must find the socket the compositor just bound");
+        let resolved = launcher::services::resolve_service_binds_for_launch(
+            &services,
+            false,
+            launcher::services::ServiceLaunchContext {
+                app_id: "dev.qos.socket-contract-test",
+                workspace_id: Some("socket-contract-workspace"),
+            },
+        )
+        .expect("the launcher must authenticate with the socket the compositor just bound");
 
         assert_eq!(
             resolved.len(),

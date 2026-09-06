@@ -52,17 +52,37 @@ pub enum Error {
     #[error("processed message was not an application message")]
     NotApplicationMessage,
 
-    /// A documented-but-unbuilt operation was called. Member removal needs
-    /// broker commit fan-out and a role-table revoke op class that don't
-    /// exist yet; callers can mint a fresh channel and invite only the
-    /// desired members until it does.
-    #[error("{operation} is not implemented yet: {reason}")]
-    NotImplemented {
-        /// The operation that was called (e.g. `"ChannelGroup::remove_member"`).
+    /// A convenience operation would discard a governance commit that
+    /// existing members must process. The caller must choose the explicit
+    /// commit-returning API and durably fan that commit out before treating
+    /// the membership change as complete.
+    #[error("{operation} requires commit propagation: use {required_api}")]
+    CommitPropagationRequired {
+        /// Convenience operation that cannot safely represent this change.
         operation: &'static str,
-        /// Why it isn't built yet.
-        reason: &'static str,
+        /// Explicit API which returns the commit alongside its other output.
+        required_api: &'static str,
     },
+
+    /// Persistent MLS state could not be read or atomically replaced.
+    #[error("MLS state I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// The sealed state had an unsupported/corrupt shape.
+    #[error("invalid MLS state: {0}")]
+    InvalidState(String),
+
+    /// AEAD authentication failed, or sealing could not be performed.
+    #[error("MLS state cryptography error: {0}")]
+    StateCrypto(&'static str),
+
+    /// Serialization of repository-owned persistent state failed.
+    #[error("MLS state serialization error: {0}")]
+    Serialization(String),
+
+    /// A signed governance frame failed live membership/capability checks.
+    #[error("MLS governance error: {0}")]
+    Governance(String),
 }
 
 impl Error {

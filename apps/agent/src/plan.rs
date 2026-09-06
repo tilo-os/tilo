@@ -602,7 +602,13 @@ pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
             wp::remove_blocks_action(vec![block()]),
         ],
         "heading" => vec![
-            wp::set_paragraph_style_action(vec![block()], "heading", Some(1), None),
+            wp::set_paragraph_style_action(
+                wp::RegionKind::Body,
+                vec![block()],
+                "heading",
+                Some(1),
+                None,
+            ),
             wp::remove_blocks_action(vec![block()]),
         ],
         _ => Vec::new(),

@@ -151,6 +151,14 @@ impl RemoteSeats {
         self.seats.is_empty()
     }
 
+    /// Stable snapshot used by emergency teardown to release every key before
+    /// removing the virtual seats.
+    pub fn peer_ids(&self) -> Vec<PeerId> {
+        let mut peers = self.seats.keys().copied().collect::<Vec<_>>();
+        peers.sort_unstable();
+        peers
+    }
+
     /// Drop the peer's seat — e.g. on `LeaveWorkspace` or when the
     /// share ends.
     pub fn drop_peer(&mut self, peer: PeerId) {

@@ -5,10 +5,11 @@
 //! smithay server, vello+wgpu winit backend); [`Mode::Hosted`] is an
 //! explicit dev opt-in (`--mode hosted`) for the legacy iced-on-winit path.
 //!
-//! Two side-channel modes short-circuit dispatch before `parse_mode`
-//! runs, mutually exclusive: `--portal-server-only` runs only the
-//! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
-//! for `wayland-N`); `--firstboot` runs machine setup and exits.
+//! Side-channel modes are resolved before `parse_mode`: `--portal-server-only`
+//! runs only the `xdg-desktop-portal` D-Bus backend (so it doesn't race the
+//! compositor for `wayland-N`); `--firstboot-only` runs machine setup and
+//! exits, while the host-session `--firstboot` hook performs that idempotent
+//! setup and continues into the compositor.
 
 #![cfg_attr(
     test,
@@ -323,6 +324,19 @@ fn main() -> std::process::ExitCode {
     if let Some(exit_code) = prepare_identity(provision_identity_requested) {
         return exit_code;
     }
+
+    // The handle deliberately lives until the compositor exits. Start it only
+    // for the actual desktop path: portal-only, first-boot-only, verification,
+    // and repair commands must not bind the user's collaboration endpoint.
+    // Startup is fail-closed when the administrator supplied a broken
+    // bind/advertise configuration, so the UI never mints unreachable URLs.
+    let _invite_broker = match identity_provisioning::start_configured_invite_broker() {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("error: cannot start configured invite broker: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
     let enable_portals = compositor::parse_portals_from_args();

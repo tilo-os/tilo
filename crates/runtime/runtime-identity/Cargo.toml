@@ -28,12 +28,14 @@ serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 ed25519-dalek = { workspace = true, features = ["serde"] }
+threshold-identity = { path = "../../collab/threshold-identity" }
 hex.workspace = true
 libc.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
 argon2.workspace = true
 getrandom.workspace = true
+rand_core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

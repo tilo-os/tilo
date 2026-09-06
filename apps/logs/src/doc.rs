@@ -3,8 +3,8 @@
 //! The *journal entries* are external, read-only, and potentially huge —
 //! they live in a render cache on the widget, not the document. What
 //! lives in the Automerge doc is the **view state**: which entry is
-//! selected, the active filters, the search string, and whether live
-//! tail is on. Keeping these in the CRDT is what makes undo/redo and
+//! selected, the active filters, and the search string. Keeping these in the
+//! CRDT is what makes undo/redo and
 //! live collaboration (two peers triaging the same boot together) fall
 //! out for free, exactly as the toolkit intends.
 //!
@@ -15,7 +15,7 @@
 //! ├── "boot_filter"  (Str)   # exact _BOOT_ID, "" = all
 //! ├── "search"       (Text)  # collaborative free-text query
 //! ├── "selected"     (Int)   # selected entry index, -1 = auto
-//! └── "live_tail"    (Bool)
+//! └── "selected_entry" (Str) # stable selected-entry resource id
 //! ```
 
 use automerge::transaction::Transactable;
@@ -28,7 +28,10 @@ pub const K_UNIT: &str = "unit_filter";
 pub const K_BOOT: &str = "boot_filter";
 pub const K_SEARCH: &str = "search";
 pub const K_SELECTED: &str = "selected";
-pub const K_LIVE: &str = "live_tail";
+/// Stable resource id of the selected journal entry. `K_SELECTED` remains a
+/// read-only migration fallback for documents written before entry resources
+/// had content-stable identities.
+pub const K_SELECTED_ENTRY: &str = "selected_entry";
 
 /// Stateless helpers over the app's shared `State::doc`. The `root` `ObjId`
 /// passed in is the document root the toolkit hands to `sync`.
@@ -53,8 +56,8 @@ impl LogsDoc {
         if get_int(doc, root, K_SELECTED).is_none() {
             let _ = doc.put(root, K_SELECTED, -1i64);
         }
-        if get_bool(doc, root, K_LIVE).is_none() {
-            let _ = doc.put(root, K_LIVE, false);
+        if get_str(doc, root, K_SELECTED_ENTRY).is_none() {
+            let _ = doc.put(root, K_SELECTED_ENTRY, "");
         }
     }
 
@@ -115,11 +118,11 @@ impl LogsDoc {
         let _ = doc.put(root, K_SELECTED, v);
     }
 
-    pub fn live_tail(doc: &AutoCommit, root: &ObjId) -> bool {
-        get_bool(doc, root, K_LIVE).unwrap_or(false)
+    pub fn selected_entry(doc: &AutoCommit, root: &ObjId) -> Option<String> {
+        get_str(doc, root, K_SELECTED_ENTRY).filter(|value| !value.is_empty())
     }
-    pub fn set_live_tail(doc: &mut AutoCommit, root: &ObjId, v: bool) {
-        let _ = doc.put(root, K_LIVE, v);
+    pub fn set_selected_entry(doc: &mut AutoCommit, root: &ObjId, value: &str) {
+        let _ = doc.put(root, K_SELECTED_ENTRY, value);
     }
 
     /// Clear every facet back to "show everything".
@@ -146,16 +149,6 @@ impl LogsDoc {
 fn get_int(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<i64> {
     match doc.get(root, key) {
         Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -196,7 +189,6 @@ mod tests {
         assert_eq!(LogsDoc::min_priority(&doc, &ROOT), 7);
         assert_eq!(LogsDoc::unit(&doc, &ROOT), "");
         assert_eq!(LogsDoc::selected(&doc, &ROOT), -1);
-        assert!(!LogsDoc::live_tail(&doc, &ROOT));
     }
 
     #[test]

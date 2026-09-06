@@ -106,13 +106,13 @@ impl TypedPeer {
         else {
             anyhow::bail!("the first request must announce the peer route")
         };
-        self.link = Some(Link::connect_endpoint(
+        self.link = Some(Link::connect_person_endpoint(
             path,
             app_id,
             *cluster_id,
             record.clone(),
             handle.clone(),
-            Some(endpoint_identity(handle.as_deref().unwrap_or(app_id))),
+            endpoint_identity(handle.as_deref().unwrap_or(app_id)),
         )?);
         Ok(())
     }
@@ -214,11 +214,59 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
 ///
 /// Panics if the typed test peer cannot publish to its collaboration broker.
 pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource]) {
+    let actions = exported_actions(resources);
+    let expected: Vec<_> = actions
+        .iter()
+        .map(|action| (action.resource.clone(), action.action.clone()))
+        .collect();
     peer.send(&CollabRequest::PublishActions {
         app_id: app_id.to_string(),
-        actions: exported_actions(resources),
+        actions,
     })
     .unwrap();
+
+    // Publishing and catalogue delivery use separate Cap'n Proto streams.
+    // Observe the level-triggered replacement before a test launches an
+    // agent whose constructor consumes that broker snapshot.
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("five-second catalogue deadline fits in Instant");
+    let mut deferred = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match peer
+            .link
+            .as_mut()
+            .expect("peer announced before publishing actions")
+            .recv(remaining.min(Duration::from_millis(100)))
+            .expect("receive the broker catalogue acknowledgement")
+        {
+            Some(CollabEvent::ActionCatalogue { surfaces })
+                if surfaces.iter().any(|surface| {
+                    surface.app_id == app_id
+                        && expected.iter().all(|(resource, action)| {
+                            surface.actions.iter().any(|published| {
+                                published.resource == resource.as_str()
+                                    && published.action == action.as_str()
+                            })
+                        })
+                }) =>
+            {
+                peer.link
+                    .as_mut()
+                    .expect("peer remains announced")
+                    .defer(deferred);
+                return;
+            }
+            Some(event) => deferred.push(event),
+            None => {}
+        }
+    }
+    peer.link
+        .as_mut()
+        .expect("peer remains announced")
+        .defer(deferred);
+    panic!("broker did not publish {app_id}'s action catalogue in time");
 }
 
 /// Resolve and execute a document invocation through an application's real
@@ -302,6 +350,26 @@ pub fn service_document_invocation(
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
 pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
+    spawn_with_agent_actions(
+        path,
+        &[
+            ("dev.qos.word-processor", "align-center"),
+            ("dev.qos.word-processor", "delete"),
+            ("dev.qos.word-processor", "insert-table"),
+            ("dev.qos.word-processor", "place-image"),
+            ("dev.qos.photos", "rotate-right"),
+        ],
+    )
+}
+
+/// Spawn the production broker harness with precisely the action grants a
+/// scenario reviews. Document-write authority is separate so a denied agent
+/// can still write a human-readable refusal without discovering the denied
+/// action.
+pub fn spawn_with_agent_actions(
+    path: &Path,
+    actions: &[(&str, &str)],
+) -> shell::shell::collab_broker::BrokerHandle {
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -313,37 +381,69 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
         "Agent integration room",
     );
     workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
-    workspace.set_owner(principal);
-    // Every `handle` below is an agent delegation on the production endpoint,
-    // not merely a display name. Keep the harness honest by admitting exactly
-    // the deterministic agents used by these integration tests.
-    for agent in ["quinten", "Scribe", "files", "photos"] {
-        workspace.grant_capability(shell::shell::state::CapOverride::membership(
-            shell::shell::state::Subject::agent(agent),
-            workspace.room.to_string(),
-            collab_types::Verb::Write,
-        ));
+    workspace.set_owner(principal.clone());
+    workspace
+        .grant_as(
+            &principal,
+            ui::permissions::CapOverride::membership(
+                ui::permissions::Subject::agent("Scribe"),
+                workspace.room.to_string(),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the harness owner admits the test agent");
+    workspace
+        .grant_as(
+            &principal,
+            ui::permissions::CapOverride::grant(
+                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the harness owner lets the test agent answer in documents");
+    for (app, action) in actions {
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::grant(
+                    ui::permissions::Subject::agent("Scribe"),
+                    ui::permissions::Scope::Action {
+                        app: (*app).to_string(),
+                        action: (*action).to_string(),
+                    },
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner grants a reviewed test action");
     }
-    // Admission is not action authority: agents deliberately inherit no room
-    // role. Mirror the two app grants exercised by this harness so the broker,
-    // not only Session's local permission view, can expose those actions.
-    for app in ["dev.qos.word-processor", "dev.qos.photos"] {
-        workspace.grant_capability(shell::shell::state::CapOverride::grant(
-            shell::shell::state::Subject::agent("Scribe"),
-            shell::shell::state::Scope::App(app.to_string()),
-            collab_types::Verb::Write,
-        ));
-    }
+    // App fixtures use the same agent-only endpoint as Scribe. Admission and
+    // app authority remain separate, so each host receives only its own app.
     for (host, app) in [
         ("quinten", "dev.qos.word-processor"),
         ("photos", "dev.qos.photos"),
         ("files", "dev.qos.file-explorer"),
     ] {
-        workspace.grant_capability(shell::shell::state::CapOverride::grant(
-            shell::shell::state::Subject::agent(host),
-            shell::shell::state::Scope::App(app.to_string()),
-            collab_types::Verb::Write,
-        ));
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::membership(
+                    ui::permissions::Subject::agent(host),
+                    workspace.room.to_string(),
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner admits an app fixture");
+        workspace
+            .grant_as(
+                &principal,
+                ui::permissions::CapOverride::grant(
+                    ui::permissions::Subject::agent(host),
+                    ui::permissions::Scope::App(app.to_string()),
+                    ui::permissions::Verb::Write,
+                ),
+            )
+            .expect("the harness owner grants an app fixture its own surface");
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.workspaces.push(workspace);

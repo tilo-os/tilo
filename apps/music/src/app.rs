@@ -9,11 +9,15 @@
 //! library + play-state replicate across devices.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use base64::Engine as _;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -263,6 +267,15 @@ struct Hit {
 )]
 pub struct MusicApp {
     lib: Library,
+    /// The document heads that produced `lib`. A sync with unchanged heads
+    /// reuses the projection and avoids even decoding the library document.
+    library_heads: Option<Vec<ChangeHash>>,
+    /// Shared, preindexed Ctrl+K catalog. Cloning the provider is O(1), so
+    /// host/provider retrieval never walks the whole music corpus.
+    library_search_provider: crate::search_type::LibrarySearchProvider,
+    /// Monotonic diagnostic used by tests to prove provider retrieval does not
+    /// trigger a catalog rebuild.
+    library_search_builds: u64,
     pb: Playback,
     view: View,
     nav_back: Vec<View>,
@@ -325,6 +338,10 @@ pub struct MusicApp {
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
+    /// The off-thread portable PNG conversion started after a portal selection.
+    /// Image decoding/resize/encoding never runs in the frame loop.
+    cover_embed: Option<Receiver<Result<String, String>>>,
+    cover_embed_for: Option<String>,
 
     seeded: bool,
     /// When `true`, a first `sync` onto an empty document writes the bundled
@@ -337,6 +354,11 @@ pub struct MusicApp {
     /// (persisted out to the doc on each event) so the smoothly-advancing
     /// playhead isn't clobbered by re-reading the doc each frame.
     playback_loaded: bool,
+    /// The last playback value observed in the shared document. Unlike the
+    /// continuously advancing local playhead, this is only updated on an
+    /// explicit document write/read and lets us identify a peer's transport
+    /// edit without clobbering smooth local progress every frame.
+    document_playback: Option<Playback>,
     /// Track id the playhead is currently bound to (detects track changes
     /// across a doc reload so the live playhead isn't reset spuriously).
     bound_track: Option<String>,
@@ -426,6 +448,10 @@ pub struct MusicApp {
     /// The absolute queue index of the context-menu target, if opened from the
     /// queue view (so "Remove from queue" can target it).
     ctx_queue_index: Option<usize>,
+    /// Membership selected from a Ctrl+K result. It is retained until the
+    /// playlist row is visible, so the view can scroll and highlight the exact
+    /// still-current row rather than merely opening the playlist at its top.
+    revealed_membership: Option<(String, String)>,
 
     /// A name-input overlay (create / rename playlist). When `Some`, a shared
     /// [`ModalDialog`] hosting a real [`TextInput`] is up; `name_input` carries
@@ -539,6 +565,9 @@ enum ShotStage {
     NowPlaying,
     /// The synced-lyrics view with a highlighted current line at ~40s.
     Lyrics,
+    /// A Ctrl+K playlist-membership result activated through its canonical View
+    /// operation, leaving the precise row revealed/highlighted.
+    MembershipOpen,
 }
 
 /// What the inline name-input overlay is collecting.
@@ -586,6 +615,11 @@ impl MusicApp {
         }
         Self {
             lib: Library::default(),
+            library_heads: None,
+            library_search_provider: crate::search_type::LibrarySearchProvider::new(
+                &Library::default(),
+            ),
+            library_search_builds: 0,
             pb: Playback::default(),
             view,
             nav_back: Vec::new(),
@@ -607,9 +641,12 @@ impl MusicApp {
             mpris_last: None,
             cover_pick: None,
             cover_pick_for: None,
+            cover_embed: None,
+            cover_embed_for: None,
             seeded: false,
             seed_samples: false,
             playback_loaded: false,
+            document_playback: None,
             bound_track: None,
             playhead_ms: 0.0,
             last_tick: Instant::now(),
@@ -647,6 +684,7 @@ impl MusicApp {
             ctx_track: None,
             ctx_in_playlist: None,
             ctx_queue_index: None,
+            revealed_membership: None,
             name_prompt: None,
             name_input: String::new(),
             name_dialog: None,
@@ -859,9 +897,34 @@ impl MusicApp {
     /// Refresh just the catalog/playlists/cache from the document. Runs
     /// every `sync` so remote library edits (a playlist gaining a track on
     /// another device) appear without disturbing local playback.
-    fn reload_library(&mut self, state: &AutoCommit) {
-        self.lib = doc::load_library(state);
+    fn reload_library(&mut self, state: &mut AutoCommit) {
+        let heads = state.get_heads();
+        if self.library_heads.as_ref() == Some(&heads) {
+            return;
+        }
+        let next_library = doc::load_library(state);
+        let searchable_catalog_changed = self.lib.tracks != next_library.tracks
+            || self.lib.albums != next_library.albums
+            || self.lib.artists != next_library.artists
+            || self.lib.playlists != next_library.playlists;
+        self.lib = next_library;
+        self.library_heads = Some(heads);
+        // Playback/cache/liked-state document updates need their render
+        // projection refreshed, but they do not change a Ctrl+K row's title,
+        // metadata, membership, or canonical target. Reindex only when those
+        // searchable library entities actually changed.
+        if searchable_catalog_changed {
+            self.refresh_library_search_provider();
+        }
         self.sync_playlist_covers();
+    }
+
+    /// Rebuild the owned catalog only after the library itself changed. The
+    /// provider clones an Arc-backed [`ui::search::SearchCatalog`], so every
+    /// later `search_providers()` call is O(1).
+    fn refresh_library_search_provider(&mut self) {
+        self.library_search_provider = crate::search_type::LibrarySearchProvider::new(&self.lib);
+        self.library_search_builds = self.library_search_builds.wrapping_add(1);
     }
 
     /// Advance every in-flight offline download by the wall clock. Called once
@@ -887,8 +950,11 @@ impl MusicApp {
         }
         for id in done {
             self.downloads.remove(&id);
-            doc::set_cache(state, &id, CacheState::Cached);
-            self.lib.cache.insert(id.clone(), CacheState::Cached);
+            self.perform_action(
+                state,
+                &crate::actions::set_offline_action(std::slice::from_ref(&id), true),
+            );
+            self.reload_library(state);
             let label = self
                 .lib
                 .track(&id)
@@ -914,21 +980,93 @@ impl MusicApp {
 
     /// Adopt the full snapshot (library + playback) from the document. Used
     /// for the initial load and by tests.
-    fn reload(&mut self, state: &AutoCommit) {
-        self.lib = doc::load_library(state);
-        self.sync_playlist_covers();
+    fn reload(&mut self, state: &mut AutoCommit) {
+        self.reload_library(state);
         self.pb = doc::load_playback(state);
+        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
         self.playhead_ms = self.pb.position_ms as f64;
     }
 
     fn persist_playback(&mut self, state: &mut AutoCommit) {
+        // Reducers such as a media-key play/pause can receive an already loaded
+        // track before a queue has been materialised. Canonicalise that local
+        // convenience state before it crosses the durable action boundary, so
+        // peers only ever observe the validated queue/current invariant.
+        if let Some(current) = self.pb.current.clone() {
+            if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
+                self.pb.queue_index = index;
+            } else {
+                self.pb.queue = vec![current];
+                self.pb.queue_index = 0;
+            }
+            self.playhead_ms = self
+                .playhead_ms
+                .clamp(0.0, self.current_duration_ms() as f64);
+        } else {
+            self.pb.playing = false;
+            self.pb.queue_index = 0;
+            self.playhead_ms = 0.0;
+        }
         self.pb.position_ms = self.playhead_ms as u64;
         self.perform_action(
             state,
             &crate::actions::MusicAction::SetPlayback(self.pb.clone()),
         );
+        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
+    }
+
+    /// Adopt a playback edit that arrived through the shared Automerge
+    /// document. This intentionally compares against the last *document*
+    /// snapshot rather than `self.pb`: the latter's position advances locally
+    /// every frame and would otherwise make an unchanged peer snapshot look
+    /// like a conflicting update. A remote play/pause, seek, queue, volume or
+    /// track selection consequently reaches this device promptly and controls
+    /// its local audio engine too.
+    fn reconcile_document_playback(&mut self, state: &AutoCommit) {
+        let remote = doc::load_playback(state);
+        if self.document_playback.as_ref() == Some(&remote) {
+            return;
+        }
+
+        let old = self.pb.clone();
+        let changed_track = old.current != remote.current;
+        let changed_position = old.position_ms != remote.position_ms;
+        self.pb = remote.clone();
+        self.playhead_ms = remote.position_ms as f64;
+        self.bound_track.clone_from(&remote.current);
+        self.shuffle_order.clear();
+        self.audio.set_volume(f32::from(remote.volume) / 100.0);
+
+        if changed_track {
+            self.audio.stop();
+            if remote.playing
+                && let Some(id) = remote.current.as_deref()
+            {
+                self.start_stream(id);
+            }
+        } else if remote.playing != old.playing {
+            if remote.playing {
+                // A peer can resume a track this device previously adopted in
+                // a paused state. In that case there is no local pipeline to
+                // unpause yet, so resolve/load the source instead of reporting
+                // a resumed transport with no audio behind it.
+                if self.audio.current_uri().is_some() {
+                    self.audio.play();
+                } else if let Some(id) = remote.current.as_deref() {
+                    self.start_stream(id);
+                }
+            } else {
+                self.audio.pause();
+            }
+        }
+        if changed_position && !changed_track {
+            self.audio.seek_ms(remote.position_ms);
+        }
+
+        self.document_playback = Some(remote);
+        self.dirty = true;
     }
 
     // ---- action dispatch --------------------------------------------------
@@ -958,27 +1096,165 @@ impl MusicApp {
     /// playlist is a projection of the like set, not a stored playlist, so it is
     /// not surfaced here — only real, mutable playlists are.
     pub(crate) fn music_resource_ctx(&self) -> crate::actions::MusicResourceCtx {
-        let playlists = self
-            .lib
-            .playlists
-            .iter()
+        let mut playlists = self.lib.playlists.iter().collect::<Vec<_>>();
+        playlists.sort_by(|a, b| a.id.cmp(&b.id));
+        let playlists = playlists
+            .into_iter()
+            .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
             .map(|p| crate::actions::PlaylistResource {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 tracks: p
                     .track_ids
                     .iter()
+                    .take(crate::actions::OPEN_PLAYLIST_TRACK_LIMIT)
                     .map(|tid| crate::actions::TrackRef {
                         id: tid.clone(),
                         label: self.track_label(tid),
+                        liked: self.lib.is_liked(tid),
                     })
                     .collect(),
             })
             .collect();
         crate::actions::MusicResourceCtx {
             playlists,
+            tracks: self
+                .lib
+                .tracks
+                .values()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|track| crate::actions::CatalogTrackResource {
+                    id: track.id.clone(),
+                    label: self.track_label(&track.id),
+                    offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                    liked: self.lib.is_liked(&track.id),
+                })
+                .collect(),
+            albums: self
+                .lib
+                .albums
+                .values()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|album| crate::actions::CatalogAlbumResource {
+                    id: album.id.clone(),
+                    label: album.title.clone(),
+                    saved: self.lib.is_album_saved(&album.id),
+                })
+                .collect(),
+            artists: self
+                .lib
+                .artists
+                .values()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|artist| crate::actions::CatalogArtistResource {
+                    id: artist.id.clone(),
+                    label: artist.name.clone(),
+                    followed: self.lib.is_artist_followed(&artist.id),
+                })
+                .collect(),
+            membership: None,
             playback: self.pb.clone(),
         }
+    }
+
+    /// Build only the data needed to resolve one resource at the authority
+    /// door. This is intentionally separate from [`Self::music_resource_ctx`]:
+    /// opening Ctrl+K should stay O(page size), while activating a search hit
+    /// can still re-resolve any stable resource against current library state.
+    pub(crate) fn music_resource_ctx_for_id(
+        &self,
+        id: &str,
+    ) -> Option<crate::actions::MusicResourceCtx> {
+        if id == "music.library" {
+            return Some(self.music_resource_ctx());
+        }
+        let mut ctx = crate::actions::MusicResourceCtx {
+            playback: self.pb.clone(),
+            ..Default::default()
+        };
+        if id == "music.player:player" {
+            ctx.tracks = self
+                .lib
+                .tracks
+                .values()
+                .map(|track| crate::actions::CatalogTrackResource {
+                    id: track.id.clone(),
+                    label: self.track_label(&track.id),
+                    offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                    liked: self.lib.is_liked(&track.id),
+                })
+                .collect();
+            return Some(ctx);
+        }
+        if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
+            let track = self.lib.track(track_id)?;
+            ctx.tracks.push(crate::actions::CatalogTrackResource {
+                id: track.id.clone(),
+                label: self.track_label(&track.id),
+                offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                liked: self.lib.is_liked(&track.id),
+            });
+            return Some(ctx);
+        }
+        if let Some(album_id) = id.strip_prefix("music.album:").filter(|id| !id.is_empty()) {
+            let album = self.lib.album(album_id)?;
+            ctx.albums.push(crate::actions::CatalogAlbumResource {
+                id: album.id.clone(),
+                label: album.title.clone(),
+                saved: self.lib.is_album_saved(&album.id),
+            });
+            return Some(ctx);
+        }
+        if let Some(artist_id) = id.strip_prefix("music.artist:").filter(|id| !id.is_empty()) {
+            let artist = self.lib.artist(artist_id)?;
+            ctx.artists.push(crate::actions::CatalogArtistResource {
+                id: artist.id.clone(),
+                label: artist.name.clone(),
+                followed: self.lib.is_artist_followed(&artist.id),
+            });
+            return Some(ctx);
+        }
+        if let Some((playlist_id, track_id)) = crate::actions::parse_playlist_track_resource_id(id)
+        {
+            let playlist = self.lib.playlist(&playlist_id)?;
+            let index = playlist.track_ids.iter().position(|id| id == &track_id)?;
+            let track = self.lib.track(&track_id)?;
+            ctx.membership = Some(crate::actions::PlaylistMembershipResource {
+                playlist: playlist.id.clone(),
+                track: crate::actions::TrackRef {
+                    id: track.id.clone(),
+                    label: self.track_label(&track.id),
+                    liked: self.lib.is_liked(&track.id),
+                },
+                index,
+                total: playlist.track_ids.len(),
+            });
+            return Some(ctx);
+        }
+        let playlist_id = id
+            .strip_prefix("music.playlist:")
+            .filter(|id| !id.is_empty())?;
+        let playlist = self.lib.playlist(playlist_id)?;
+        // `add-track` needs a current target set to refuse stale resource
+        // arguments; retain only ids/labels once this playlist is directly
+        // requested, never while the palette merely opens.
+        ctx.tracks = self
+            .lib
+            .tracks
+            .values()
+            .map(|track| crate::actions::CatalogTrackResource {
+                id: track.id.clone(),
+                label: self.track_label(&track.id),
+                offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                liked: self.lib.is_liked(&track.id),
+            })
+            .collect();
+        ctx.playlists.push(crate::actions::PlaylistResource {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+            tracks: Vec::new(),
+        });
+        Some(ctx)
     }
 
     /// A one-line "Title — Artist" label for a track id, for the palette.
@@ -1046,7 +1322,7 @@ impl MusicApp {
     /// inert stub, so no code path branches on whether MPRIS is present.
     pub fn enable_mpris(&mut self) {
         let snap = self.mpris_snapshot();
-        self.mpris = MprisHandle::spawn(snap.clone());
+        self.mpris = MprisHandle::spawn(&snap);
         self.mpris_last = Some(snap);
     }
 
@@ -1092,7 +1368,7 @@ impl MusicApp {
             return;
         }
         let snap = self.mpris_snapshot();
-        self.mpris.publish(snap);
+        self.mpris.publish(&snap);
     }
 
     /// Drain external MPRIS control commands (media keys, the desktop media
@@ -1138,9 +1414,9 @@ impl MusicApp {
     }
 
     /// Apply a completed playlist-cover pick from the file portal (if any
-    /// arrived this frame): persist the chosen image path onto the playlist and
-    /// record it for the cover image cache, or toast a failure.
-    fn drain_cover_pick(&mut self, state: &mut AutoCommit) {
+    /// arrived this frame). The selected local file is converted off-thread
+    /// before a portable cover value is persisted onto the playlist.
+    fn drain_cover_pick(&mut self, _state: &mut AutoCommit) {
         let Some(rx) = &self.cover_pick else { return };
         let outcome = match rx.try_recv() {
             Ok(o) => o,
@@ -1158,18 +1434,12 @@ impl MusicApp {
                 let Some(playlist_id) = playlist_id else {
                     return;
                 };
-                // Store as a `file://` URL so the image cache (shared with http
-                // covers) can fetch it off disk.
-                let url = format!("file://{}", path.display());
-                // The pick (the file portal) is app-side, non-deterministic work;
-                // the resulting write of the chosen URL is a replayable action so
-                // the cover replicates to peers like any other playlist edit.
-                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
-                self.reload_library(state);
-                // Overwrite (not `or_insert`) so re-picking a cover replaces the
-                // old one in the image cache.
-                self.art_urls.insert(playlist_id, url);
-                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+                self.cover_embed_for = Some(playlist_id);
+                self.cover_embed = Some(embed_cover_off_thread(path));
+                self.toast = Some((
+                    "Preparing portable playlist cover…".to_string(),
+                    Instant::now(),
+                ));
             }
             PortalOutcome::Cancelled => {}
             PortalOutcome::Failed(reason) => {
@@ -1178,6 +1448,36 @@ impl MusicApp {
                     Instant::now(),
                 ));
             }
+        }
+    }
+
+    fn drain_cover_embed(&mut self, state: &mut AutoCommit) {
+        let Some(receiver) = &self.cover_embed else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.cover_embed = None;
+                self.cover_embed_for = None;
+                self.toast = Some(("Couldn’t prepare playlist cover".into(), Instant::now()));
+                return;
+            }
+        };
+        self.cover_embed = None;
+        let playlist_id = self.cover_embed_for.take();
+        match (playlist_id, result) {
+            (Some(playlist_id), Ok(url)) => {
+                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
+                self.reload_library(state);
+                self.art_urls.insert(playlist_id, url);
+                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+            }
+            (_, Err(reason)) => {
+                self.toast = Some((format!("Couldn’t set cover: {reason}"), Instant::now()));
+            }
+            (None, Ok(_)) => {}
         }
     }
 
@@ -1717,9 +2017,17 @@ impl MusicApp {
         to: usize,
         state: &mut AutoCommit,
     ) {
+        let Some(track) = self
+            .lib
+            .playlist(playlist)
+            .and_then(|playlist| playlist.track_ids.get(from))
+            .cloned()
+        else {
+            return;
+        };
         self.perform_action(
             state,
-            &crate::actions::move_track_action(playlist, from, to),
+            &crate::actions::move_track_action(playlist, &track, from, to),
         );
         self.reload_library(state);
     }
@@ -1881,15 +2189,21 @@ impl MusicApp {
             CacheState::Cached => {
                 // Already offline → drop it.
                 self.downloads.remove(id);
-                doc::set_cache(state, id, CacheState::Streamed);
-                self.lib = doc::load_library(state);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_offline_action(&[id.to_string()], false),
+                );
+                self.reload_library(state);
                 format!("Removed \u{201c}{label}\u{201d} from offline")
             }
             CacheState::Downloading(_) => {
                 // Tapping an in-flight download cancels it.
                 self.downloads.remove(id);
-                doc::set_cache(state, id, CacheState::Streamed);
-                self.lib = doc::load_library(state);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_offline_action(&[id.to_string()], false),
+                );
+                self.reload_library(state);
                 format!("Stopped downloading \u{201c}{label}\u{201d}")
             }
             CacheState::Streamed => {
@@ -1911,13 +2225,17 @@ impl MusicApp {
         // Keep every not-yet-cached track offline in one gesture. Tracks
         // already cached stay as-is (idempotent).
         let mut added = 0usize;
+        let mut to_keep = Vec::new();
         for id in ids {
             if self.lib.cache_state(id) != CacheState::Cached {
-                doc::set_cache(state, id, CacheState::Cached);
+                to_keep.push(id.clone());
                 added += 1;
             }
         }
-        self.lib = doc::load_library(state);
+        if !to_keep.is_empty() {
+            self.perform_action(state, &crate::actions::set_offline_action(&to_keep, true));
+            self.reload_library(state);
+        }
         self.toast = Some((
             if added == 0 {
                 "Already saved for offline".to_string()
@@ -2312,7 +2630,9 @@ impl MusicApp {
     /// snapshot. Idempotent; runs each frame so live tracks survive a `sync`
     /// that reloads the catalog from the document.
     fn inject_live_hits(&mut self) {
+        let mut changed = false;
         for lt in &self.live_hits {
+            let had_artist = self.lib.artists.contains_key(&lt.artist_id);
             self.lib
                 .artists
                 .entry(lt.artist_id.clone())
@@ -2322,6 +2642,8 @@ impl MusicApp {
                     genre: String::new(),
                     monthly_listeners: 0,
                 });
+            changed |= !had_artist;
+            let had_album = self.lib.albums.contains_key(&lt.album_id);
             self.lib
                 .albums
                 .entry(lt.album_id.clone())
@@ -2331,6 +2653,8 @@ impl MusicApp {
                     artist_id: lt.artist_id.clone(),
                     year: 0,
                 });
+            changed |= !had_album;
+            let had_track = self.lib.tracks.contains_key(&lt.track_id);
             self.lib
                 .tracks
                 .entry(lt.track_id.clone())
@@ -2344,6 +2668,10 @@ impl MusicApp {
                     yt_id: lt.yt_id.clone(),
                     plays: 0,
                 });
+            changed |= !had_track;
+        }
+        if changed {
+            self.refresh_library_search_provider();
         }
     }
 
@@ -3103,6 +3431,21 @@ impl MusicApp {
         self.view = View::Album("al_glasslight".into());
     }
 
+    /// Stage the failure state a real unavailable live artist detail uses. This
+    /// keeps screenshot/a11y review honest: an error must settle with a clear
+    /// recovery message rather than look like a loading frame forever.
+    pub fn snap_error_page(&mut self) {
+        let id = "UC_music_shot_unavailable".to_string();
+        self.failed_pages.insert(id.clone());
+        self.view = View::Artist(id);
+    }
+
+    /// Stage a real canonical membership-open operation for `--shots`. The
+    /// post-activation frame shows the target row in its owning playlist.
+    pub fn snap_membership_open(&mut self) {
+        self.shot_stage = Some(ShotStage::MembershipOpen);
+    }
+
     /// Start a bundled track playing at `pos_ms` for a deterministic shot.
     /// Prefers `tk_g1` (it carries bundled synced lyrics).
     fn stage_play_bundled(&mut self, pos_ms: f64) {
@@ -3164,6 +3507,31 @@ impl MusicApp {
             ShotStage::Lyrics => {
                 // ~40s in lands mid-song so a synced line is highlighted.
                 self.stage_play_bundled(40_000.0);
+            }
+            ShotStage::MembershipOpen => {
+                let Some((playlist, track)) = self.lib.playlists.iter().find_map(|playlist| {
+                    playlist
+                        .track_ids
+                        .last()
+                        .map(|track| (playlist.id.clone(), track.clone()))
+                }) else {
+                    return;
+                };
+                let operation =
+                    crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track };
+                let Ok(payload) = serde_json::to_vec(&operation) else {
+                    return;
+                };
+                // This takes the identical operation-decoding/validation path
+                // a Ctrl+K result takes after its canonical resource action
+                // resolves at the authority door.
+                let _ = self.invoke_resource_operation(
+                    qos_actions::OperationKind::View,
+                    crate::actions::MUSIC_OPERATION_TYPE,
+                    &payload,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                );
             }
         }
     }
@@ -3707,39 +4075,91 @@ fn hit_to_live(hit: &TrackHit) -> LiveTrack {
     }
 }
 
-/// Read a **local** cover image (a `file://…` URL or an absolute path) off disk,
-/// so a playlist cover the user picked via the file portal renders in every
-/// build — including the hermetic offline / `--shots` path — without any
-/// network. `None` for non-local URLs (handled by the HTTP fetcher) or an
-/// unreadable / absurdly-large file.
-fn read_local_image(url: &str) -> Option<Vec<u8>> {
-    let path = if let Some(rest) = url.strip_prefix("file://") {
-        // `file:///abs/path` → `/abs/path`; tolerate a missing host segment.
-        std::path::PathBuf::from(rest)
-    } else if url.starts_with('/') {
-        std::path::PathBuf::from(url)
-    } else {
-        return None;
-    };
-    let bytes = std::fs::read(&path).ok()?;
-    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+/// Keep source reads bounded before handing an image decoder potentially
+/// untrusted portal data. The resulting shared payload has the tighter action
+/// budget in [`crate::actions::MAX_PORTABLE_COVER_BYTES`].
+const MAX_COVER_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Decode a portal-selected image and normalize it into a small PNG data URL.
+/// This pure helper lets tests exercise the same path without a real portal.
+fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
+    if source.is_empty() || source.len() as u64 > MAX_COVER_SOURCE_BYTES {
+        return Err("image is empty or larger than 8 MiB".to_string());
+    }
+    let image = image::load_from_memory(source).map_err(|error| error.to_string())?;
+    let image = image.thumbnail(
+        crate::actions::MAX_PORTABLE_COVER_EDGE,
+        crate::actions::MAX_PORTABLE_COVER_EDGE,
+    );
+    let mut output = Cursor::new(Vec::new());
+    image
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| error.to_string())?;
+    let png = output.into_inner();
+    if png.len() > crate::actions::MAX_PORTABLE_COVER_BYTES {
+        return Err("normalized image is larger than 256 KiB".to_string());
+    }
+    let value = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    if !crate::actions::portable_cover_value(&value) {
+        return Err("normalized image did not meet the portable cover policy".to_string());
+    }
+    Ok(value)
+}
+
+fn portable_cover_path(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_COVER_SOURCE_BYTES {
+        return Err("image is larger than 8 MiB".to_string());
+    }
+    let source = std::fs::read(path).map_err(|error| error.to_string())?;
+    portable_cover_data_url(&source)
+}
+
+/// Run local disk I/O and decode/resize/encode work away from the UI thread.
+fn embed_cover_off_thread(path: PathBuf) -> Receiver<Result<String, String>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if let Err(error) = std::thread::Builder::new()
+        .name("music-cover-embed".to_string())
+        .spawn(move || {
+            let _ = sender.send(portable_cover_path(&path));
+        })
+    {
+        let (fallback_sender, fallback_receiver) = std::sync::mpsc::channel();
+        let _ = fallback_sender.send(Err(error.to_string()));
+        return fallback_receiver;
+    }
+    receiver
+}
+
+/// Decode only canonical embedded cover values. Document actions reject local
+/// paths and `file:` URLs, so the renderer never dereferences peer-local files.
+fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
+    if !crate::actions::portable_cover_value(url) {
         return None;
     }
-    Some(bytes)
+    let encoded = url.strip_prefix("data:image/png;base64,")?;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
 }
 
 /// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
 /// the `live` build (a shared blocking `reqwest` client with a connection
-/// pool); a local-file loader otherwise, so a picked playlist cover still
-/// renders and the hermetic `--shots` path never opens a socket.
+/// pool); embedded portable PNG values render in every build, and the
+/// hermetic `--shots` path never opens a socket.
 #[cfg(feature = "live")]
 fn image_fetcher() -> ui::Fetcher {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
-        // Local covers (the portal-picked playlist image) load straight off disk.
-        if let Some(bytes) = read_local_image(url) {
+        if let Some(bytes) = embedded_cover_bytes(url) {
             return Some(bytes);
+        }
+        if !url.starts_with("https://") {
+            return None;
         }
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
@@ -3763,8 +4183,8 @@ fn image_fetcher() -> ui::Fetcher {
 
 #[cfg(not(feature = "live"))]
 fn image_fetcher() -> ui::Fetcher {
-    // No HTTP stack, but a locally-picked playlist cover still renders offline.
-    Arc::new(|url: &str| read_local_image(url))
+    // No HTTP stack, but a portal-picked portable PNG still renders offline.
+    Arc::new(embedded_cover_bytes)
 }
 
 mod render;
@@ -3783,8 +4203,59 @@ mod tests {
         app.seed_sample_library();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
-        app.reload(&doc);
+        app.reload(&mut doc);
         (app, doc)
+    }
+
+    #[test]
+    fn picked_cover_normalizes_to_a_portable_renderable_action_value() {
+        let mut output = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let source = output.into_inner();
+        let portable = portable_cover_data_url(&source).expect("small PNG normalizes");
+        let action = crate::actions::set_cover_action("pl_test", &portable);
+        let crate::actions::MusicAction::SetPlaylistCover { cover, .. } = action else {
+            unreachable!("cover builder returns a cover action");
+        };
+        assert!(crate::actions::portable_cover_value(&cover));
+        assert!(!cover.contains("file:"));
+        assert!(!cover.contains("/tmp/"));
+
+        let decoded = embedded_cover_bytes(&cover).expect("renderer accepts portable value");
+        assert!(
+            image::load_from_memory(&decoded).is_ok(),
+            "the image cache receives a decodable PNG"
+        );
+        assert!(embedded_cover_bytes("file:///tmp/cover.png").is_none());
+        assert!(embedded_cover_bytes("/tmp/cover.png").is_none());
+    }
+
+    #[test]
+    fn completed_portal_cover_write_contains_no_device_local_path() {
+        let (mut app, mut doc) = app_with_doc();
+        let playlist = app.lib.playlists[0].id.clone();
+        let mut output = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let source = output.into_inner();
+        let portable = portable_cover_data_url(&source).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(Ok(portable)).unwrap();
+        app.cover_embed_for = Some(playlist.clone());
+        app.cover_embed = Some(receiver);
+
+        app.drain_cover_embed(&mut doc);
+        let persisted = doc::load_library(&doc)
+            .playlist(&playlist)
+            .unwrap()
+            .cover
+            .clone();
+        assert!(persisted.starts_with("data:image/png;base64,"));
+        assert!(!persisted.contains("file:"));
+        assert!(!persisted.contains("/tmp/"));
     }
 
     #[test]
@@ -3804,6 +4275,35 @@ mod tests {
         assert!(
             !receiver.pb.playing,
             "continuation restore must never autoplay"
+        );
+    }
+
+    #[test]
+    fn remote_playback_action_is_adopted_without_resetting_the_library() {
+        let (mut app, mut doc) = app_with_doc();
+        app.sync(&mut doc, &automerge::ROOT);
+        let remote = Playback {
+            current: Some("tk_g2".into()),
+            queue: vec!["tk_g2".into(), "tk_r1".into()],
+            queue_index: 0,
+            playing: false,
+            position_ms: 12_345,
+            shuffle: true,
+            repeat: RepeatMode::All,
+            volume: 37,
+        };
+        let action = crate::actions::MusicAction::SetPlayback(remote.clone());
+        qos_actions::apply_local(&mut doc, &action, crate::actions::encode(&action))
+            .expect("peer playback action applies");
+
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.pb, remote, "the remote transport snapshot is adopted");
+        assert_eq!(app.playhead_ms, 12_345.0);
+        assert_eq!(app.audio.volume(), 0.37);
+        assert!(
+            app.lib.track("tk_g2").is_some(),
+            "library remains available"
         );
     }
 
@@ -3947,7 +4447,7 @@ mod tests {
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
-        app.reload(&doc);
+        app.reload(&mut doc);
         assert_eq!(
             app.lib.total_tracks(),
             0,
@@ -4056,9 +4556,15 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.pb.current = Some("tk_g1".into());
         let tree = app.accessibility().expect("music semantics");
-        assert_eq!(tree.name.as_deref(), Some("Music player"));
+        assert_eq!(tree.name.as_deref(), Some("Music"));
+        let player = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Music player"))
+            .expect("transport has its own semantic group");
         assert!(
-            tree.children
+            player
+                .children
                 .iter()
                 .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
         );
@@ -4072,6 +4578,48 @@ mod tests {
             app.pb.playing,
             "semantic action uses the live transport path"
         );
+    }
+
+    #[test]
+    fn empty_home_is_honest_and_its_search_action_is_accessible() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let mut app = MusicApp::new();
+        app.set_offline_for_shot();
+        let mut doc = AutoCommit::new();
+        draw_once(&mut app, &mut doc);
+
+        assert!(app.lib.tracks.is_empty());
+        assert!(app.lib.albums.is_empty());
+        assert!(app.lib.artists.is_empty());
+        assert!(app.lib.playlists.is_empty());
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.action == Action::Nav(View::Search)),
+            "the empty-state Search button is a real action"
+        );
+
+        let tree = app.accessibility().expect("music semantics");
+        let empty_library = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Empty music library"))
+            .expect("empty state is separate from transport semantics");
+        let search = empty_library
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("music.empty-search"))
+            .expect("empty-state Search button has an accessible action");
+        assert_eq!(search.name.as_deref(), Some("Search for music"));
+        assert!(app.perform_semantic_action(
+            "music.empty-search",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.view, View::Search);
     }
 
     #[test]
@@ -4598,7 +5146,7 @@ mod tests {
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
-        app.reload(&doc);
+        app.reload(&mut doc);
         assert!(
             app.lib.tracks.is_empty(),
             "default startup has an empty library"
@@ -4672,55 +5220,219 @@ mod tests {
 
     #[test]
     fn ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates() {
-        // The end-to-end seam the global Ctrl+K uses: the host collects the
-        // app's `Widget::search_providers()`, registers them into the shared
-        // `ui::search::SearchRegistry`, and on a chosen row calls
-        // `Widget::activate_search_result` — the exact flow in
-        // `ui::App::open_action_palette` / `action_palette_handle_key`.
-        use crate::search_type::SearchHit;
-        use ui::search::SearchRegistry;
+        // Exercise the real palette broker seam: a result address resolves in
+        // the exported resource tree, queues a typed operation, and never uses
+        // the legacy app callback.
         let (mut app, mut doc) = app_with_doc();
-
-        let mut registry = SearchRegistry::new();
-        for p in Widget::search_providers(&app) {
-            registry.register(p);
-        }
-        assert_eq!(
-            registry.provider_count(),
-            1,
-            "music contributes its library provider"
-        );
-
-        // A real song row activated through the Widget method plays the track.
         let track = app.lib.tracks.values().next().unwrap().clone();
-        let song = registry
-            .query(&track.title)
-            .into_iter()
-            .find(|r| r.action_id == SearchHit::track_link(&track.id))
-            .expect("the song is findable via the registered provider");
-        assert_eq!(song.kind, "Songs");
-        Widget::activate_search_result(&mut app, &song.action_id, &mut doc, &automerge::ROOT);
+        let resources = Widget::resources(&app, &doc);
+        let album = app.lib.albums.values().next().unwrap().clone();
+        let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
+        let playlist = app.lib.playlists.first().unwrap().clone();
+        let providers = Widget::search_providers(&app);
+        for (query, expected) in [
+            (
+                track.title.as_str(),
+                crate::actions::play_track_address(&track.id),
+            ),
+            (
+                album.title.as_str(),
+                crate::actions::open_album_address(&album.id),
+            ),
+            (
+                artist_for_resolution.name.as_str(),
+                crate::actions::open_artist_address(&artist_for_resolution.id),
+            ),
+            (
+                playlist.name.as_str(),
+                crate::actions::open_playlist_address(&playlist.id),
+            ),
+        ] {
+            let hit = providers[0]
+                .search(query)
+                .into_iter()
+                .find(|hit| hit.action_address().as_ref() == Some(&expected))
+                .expect("each searchable Music entity has its canonical hit");
+            let address = hit.action_address().expect("canonical search address");
+            assert!(
+                qos_actions::door::resolve(&resources, &address).is_some(),
+                "{address:?} resolves against the live Music resource tree"
+            );
+        }
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(Widget::search_providers(&app));
+        palette.open();
+        palette.set_query(&track.title);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &track.title)
+            .expect("song search row is present");
+        palette.set_cursor(row);
+        palette.activate_selected();
+        let operation = palette.take_operation().expect("play action queued");
+        assert_eq!(operation.kind, qos_actions::OperationKind::Document);
+        assert!(palette.take_navigation().is_none());
+        let heads = doc.get_heads();
+        let action: crate::actions::MusicAction =
+            serde_json::from_slice(&operation.encoded.payload)
+                .expect("palette emitted MusicAction");
+        qos_actions::apply_local(&mut doc, &action, operation.encoded).expect("playback writes");
+        app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
-            "activating the song row plays the real track through the play path"
+            "the brokered effect plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
+        assert_ne!(doc.get_heads(), heads, "playback is shared with peers");
 
-        // An artist row activated through the same method opens the artist page.
+        // Navigation follows the same path but is explicitly a View operation.
+        let heads = doc.get_heads();
         let artist = app.lib.artists.values().next().unwrap().clone();
-        let arow = registry
-            .query(&artist.name)
-            .into_iter()
-            .find(|r| r.action_id == SearchHit::artist_link(&artist.id))
-            .expect("the artist is findable via the registered provider");
-        assert_eq!(arow.kind, "Artists");
-        Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(Widget::search_providers(&app));
+        palette.open();
+        palette.set_query(&artist.name);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &artist.name)
+            .expect("artist search row is present");
+        palette.set_cursor(row);
+        palette.activate_selected();
+        let operation = palette.take_operation().expect("artist view queued");
+        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
         assert_eq!(
             app.view,
             View::Artist(artist.id),
-            "activation opens the artist page"
+            "brokered view opens the artist page"
         );
+        assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
+    }
+
+    #[test]
+    fn ctrl_k_provider_retrieval_reuses_the_prebuilt_catalog_until_library_changes() {
+        let (mut app, mut doc) = app_with_doc();
+        let builds = app.library_search_builds;
+        let track = app.lib.tracks.values().next().expect("seed track").clone();
+
+        let first = Widget::search_providers(&app);
+        let second = Widget::search_providers(&app);
+        assert_eq!(
+            app.library_search_builds, builds,
+            "retrieval does not reindex"
+        );
+        assert!(first[0].search(&track.title).iter().any(|result| {
+            result.action_address() == Some(crate::actions::play_track_address(&track.id))
+        }));
+        assert!(second[0].search(&track.title).iter().any(|result| {
+            result.action_address() == Some(crate::actions::play_track_address(&track.id))
+        }));
+
+        let mut playback = app.pb.clone();
+        playback.volume = playback.volume.saturating_sub(1);
+        app.perform_action(
+            &mut doc,
+            &crate::actions::MusicAction::SetPlayback(playback),
+        );
+        app.reload_library(&mut doc);
+        assert_eq!(
+            app.library_search_builds, builds,
+            "playback-only document changes do not reindex the library"
+        );
+
+        app.perform_action(
+            &mut doc,
+            &crate::actions::create_playlist_action("pl_provider_refresh", "Refresh proof"),
+        );
+        app.reload_library(&mut doc);
+        assert_eq!(
+            app.library_search_builds,
+            builds + 1,
+            "one changed library revision rebuilds the catalog exactly once"
+        );
+        assert!(
+            Widget::search_providers(&app)[0]
+                .search("Refresh proof")
+                .iter()
+                .any(|result| {
+                    result.action_address()
+                        == Some(crate::actions::open_playlist_address("pl_provider_refresh"))
+                })
+        );
+        assert_eq!(
+            app.library_search_builds,
+            builds + 1,
+            "the refreshed provider remains cached across retrievals"
+        );
+    }
+
+    #[test]
+    fn membership_open_operation_reveals_the_current_row_and_refuses_stale_rows() {
+        let (mut app, mut doc) = app_with_doc();
+        let playlist = app.lib.playlists.first().expect("seed playlist").clone();
+        let track = playlist.track_ids.first().expect("seed membership").clone();
+        let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
+        let resource =
+            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+                .expect("membership resolves lazily");
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| { action.id == "open" && action.label == "Open in playlist" })
+        );
+
+        let operation = crate::actions::MusicOperation::OpenPlaylistMembership {
+            playlist: playlist.id.clone(),
+            track: track.clone(),
+        };
+        let payload = serde_json::to_vec(&operation).expect("operation encodes");
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("current membership opens")
+        );
+        assert_eq!(app.view, View::Playlist(playlist.id.clone()));
+        assert_eq!(
+            app.revealed_membership,
+            Some((playlist.id.clone(), track.clone()))
+        );
+
+        app.perform_action(
+            &mut doc,
+            &crate::actions::remove_track_action(&playlist.id, &track),
+        );
+        app.reload_library(&mut doc);
+        let error = app
+            .invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect_err("stale membership must refuse to open");
+        assert!(error.contains("membership is no longer present"));
     }
 
     #[test]
@@ -6677,22 +7389,21 @@ mod tests {
     #[test]
     fn following_an_artist_toggles_and_persists() {
         let (mut app, mut doc) = app_with_doc();
-        assert!(!app.lib.is_artist_followed("UCdaftpunk"));
-        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        let artist = app.lib.artists.keys().next().cloned().unwrap();
+        assert!(!app.lib.is_artist_followed(&artist));
+        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
         assert!(
-            app.lib.is_artist_followed("UCdaftpunk"),
+            app.lib.is_artist_followed(&artist),
             "Follow adds the artist"
         );
         // Persisted to the CRDT — a fresh load from the document sees it.
         assert!(
-            doc::load_library(&doc)
-                .followed_artists
-                .contains("UCdaftpunk"),
+            doc::load_library(&doc).followed_artists.contains(&artist),
             "follow round-trips through the document",
         );
-        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
         assert!(
-            !app.lib.is_artist_followed("UCdaftpunk"),
+            !app.lib.is_artist_followed(&artist),
             "toggling again unfollows"
         );
     }

@@ -128,6 +128,18 @@ enum Hit {
     ToggleOverflow,
 }
 
+/// One immediately-painted control exposed to assistive technology.  `target`
+/// is deliberately derived from a durable command/id rather than its frame
+/// position: result ordering and responsive reflow must not change what an
+/// agent or screen reader has addressed.
+struct AccessibilityTarget {
+    rect: Rect,
+    label: String,
+    target: String,
+    role: ui::a11y::Role,
+    state: ui::a11y::AccessState,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent render/interaction cache (drag state, focus, \
@@ -302,6 +314,10 @@ impl MapsApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the navigation card is one cohesive painted surface with shared geometry for its drag and end-navigation targets"
+    )]
     fn draw_navigation_surface(
         &mut self,
         scene: &mut Scene,
@@ -4327,56 +4343,241 @@ impl MapsApp {
     /// Immediate-mode controls exported as one semantic list. Keeping this
     /// derived from the same hit targets used by pointer routing prevents the
     /// accessibility tree from advertising controls that are not on screen.
-    fn accessibility_targets(&self) -> Vec<(Rect, String)> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive mapping keeps each painted Maps command next to its stable semantic id, role, and derived state"
+    )]
+    fn accessibility_target_for_hit(&self, hit: &Hit) -> Option<AccessibilityTarget> {
+        use ui::a11y::{AccessState, Role};
+
+        let (label, target, role, state) = match hit {
+            Hit::Consume | Hit::Search(SearchHit::Consume) | Hit::CloseNav => return None,
+            Hit::Search(SearchHit::Field) => (
+                "Search places".to_string(),
+                "maps.search".to_string(),
+                Role::TextInput,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Search(SearchHit::Clear) => (
+                "Clear search".to_string(),
+                "maps.search.clear".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Search(SearchHit::Result(index)) => {
+                let id = self
+                    .search
+                    .result_id(*index)
+                    .map_or_else(|| index.to_string(), str::to_string);
+                (
+                    format!("Search result {}", index + 1),
+                    format!("maps.search-result:{id}"),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                )
+            }
+            Hit::ToggleCollapse => (
+                if self.panel_collapsed {
+                    "Expand panel"
+                } else {
+                    "Collapse panel"
+                }
+                .to_string(),
+                "maps.panel-collapse".to_string(),
+                Role::ToggleButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.panel_collapsed),
+            ),
+            Hit::PanelBack => (
+                "Back to places".to_string(),
+                "maps.panel.back".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Mode(mode) => (
+                format!("Travel by {}", mode.label()),
+                format!("maps.mode:{}", mode.label().to_lowercase()),
+                Role::RadioButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.model.mode == *mode),
+            ),
+            Hit::SelectPlace(id) => (
+                self.model.place(id).map_or_else(
+                    || "Open place".to_string(),
+                    |place| format!("Open {}", place.name),
+                ),
+                format!("maps.place:{id}"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::SelectPoi(id) => (
+                format!("Open nearby place {id}"),
+                format!("maps.poi:{id}"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::ClosePoi => (
+                "Close place details".to_string(),
+                "maps.poi.close".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::PoiDirections => (
+                "Directions to this place".to_string(),
+                "maps.poi.directions".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Recent(query) => (
+                format!("Search again for {query}"),
+                format!("maps.recent:{query}"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::ToggleNav => (
+                if self.nav_open {
+                    "Close map navigation"
+                } else {
+                    "Open map navigation"
+                }
+                .to_string(),
+                "maps.navigation".to_string(),
+                Role::ToggleButton,
+                AccessState::new().focusable(true).checked(self.nav_open),
+            ),
+            Hit::Directions => (
+                "Directions".to_string(),
+                "maps.directions".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Transit => (
+                "Transit".to_string(),
+                "maps.transit".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::ToggleSave => (
+                "Save or unsave place".to_string(),
+                "maps.save".to_string(),
+                Role::ToggleButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.model.selected_place().is_some_and(|place| place.saved)),
+            ),
+            Hit::ClearRoute => (
+                "Clear route".to_string(),
+                "maps.route.clear".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::UseMyLocation => (
+                "Use my location".to_string(),
+                "maps.location".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::TransitTimeMode(TransitTimeMode::Depart) => (
+                "Leave at".to_string(),
+                "maps.transit-time:depart".to_string(),
+                Role::RadioButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.model.transit_time.mode == TransitTimeMode::Depart),
+            ),
+            Hit::TransitTimeMode(TransitTimeMode::Arrive) => (
+                "Arrive by".to_string(),
+                "maps.transit-time:arrive".to_string(),
+                Role::RadioButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.model.transit_time.mode == TransitTimeMode::Arrive),
+            ),
+            Hit::TransitTimeDelta(minutes) => (
+                if *minutes < 0 { "Earlier" } else { "Later" }.to_string(),
+                format!("maps.transit-time:delta:{minutes}"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::TransitTimeNow => (
+                "Leave now".to_string(),
+                "maps.transit-time:now".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::Journey(index) => (
+                format!("Journey option {}", index + 1),
+                format!("maps.journey:{index}"),
+                Role::RadioButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.model.transit_choice == *index),
+            ),
+            Hit::ToggleOverflow => (
+                "More map options".to_string(),
+                "maps.overflow".to_string(),
+                Role::ToggleButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.overflow.is_open()),
+            ),
+        };
+        Some(AccessibilityTarget {
+            rect: Rect::ZERO,
+            label,
+            target,
+            role,
+            state,
+        })
+    }
+
+    fn accessibility_targets(&self) -> Vec<AccessibilityTarget> {
         use crate::map_controls::MapControlAction;
+        use ui::a11y::{AccessState, Role};
 
         let mut targets = vec![
-            (
-                self.map_controls.rect(MapControlAction::ZoomIn),
-                "Zoom in".to_string(),
-            ),
-            (
-                self.map_controls.rect(MapControlAction::ZoomOut),
-                "Zoom out".to_string(),
-            ),
-            (
-                self.map_controls.rect(MapControlAction::Locate),
-                "Use my location".to_string(),
-            ),
-            (
-                self.map_controls.rect(MapControlAction::ToggleTraffic),
-                "Toggle traffic".to_string(),
-            ),
+            AccessibilityTarget {
+                rect: self.map_controls.rect(MapControlAction::ZoomIn),
+                label: "Zoom in".to_string(),
+                target: "maps.control:zoom-in".to_string(),
+                role: Role::Button,
+                state: AccessState::new().focusable(true),
+            },
+            AccessibilityTarget {
+                rect: self.map_controls.rect(MapControlAction::ZoomOut),
+                label: "Zoom out".to_string(),
+                target: "maps.control:zoom-out".to_string(),
+                role: Role::Button,
+                state: AccessState::new().focusable(true),
+            },
+            AccessibilityTarget {
+                rect: self.map_controls.rect(MapControlAction::Locate),
+                label: "Use my location".to_string(),
+                target: "maps.control:locate".to_string(),
+                role: Role::Button,
+                state: AccessState::new().focusable(true),
+            },
+            AccessibilityTarget {
+                rect: self.map_controls.rect(MapControlAction::ToggleTraffic),
+                label: "Traffic".to_string(),
+                target: "maps.control:traffic".to_string(),
+                role: Role::Switch,
+                state: AccessState::new()
+                    .focusable(true)
+                    .checked(self.map_controls.traffic_enabled()),
+            },
         ];
-        targets.retain(|(rect, _)| rect.area() > 0.0);
+        targets.retain(|target| target.rect.area() > 0.0);
         targets.extend(self.click_targets.iter().filter_map(|(rect, hit)| {
-            let label = match hit {
-                Hit::Consume | Hit::Search(SearchHit::Consume) | Hit::CloseNav => return None,
-                Hit::Search(SearchHit::Field) => "Search places".to_string(),
-                Hit::Search(SearchHit::Clear) => "Clear search".to_string(),
-                Hit::Search(SearchHit::Result(index)) => format!("Search result {}", index + 1),
-                Hit::ToggleCollapse => "Collapse or expand panel".to_string(),
-                Hit::PanelBack => "Back to places".to_string(),
-                Hit::Mode(mode) => format!("Travel by {}", mode.label()),
-                Hit::SelectPlace(name) | Hit::Recent(name) => format!("Open {name}"),
-                Hit::SelectPoi(id) => format!("Open nearby place {id}"),
-                Hit::ClosePoi => "Close place details".to_string(),
-                Hit::PoiDirections => "Directions to this place".to_string(),
-                Hit::ToggleNav => "Open map navigation".to_string(),
-                Hit::Directions => "Directions".to_string(),
-                Hit::Transit => "Transit".to_string(),
-                Hit::ToggleSave => "Save or unsave place".to_string(),
-                Hit::ClearRoute => "Clear route".to_string(),
-                Hit::UseMyLocation => "Use my location".to_string(),
-                Hit::TransitTimeMode(TransitTimeMode::Depart) => "Leave at".to_string(),
-                Hit::TransitTimeMode(TransitTimeMode::Arrive) => "Arrive by".to_string(),
-                Hit::TransitTimeDelta(minutes) if *minutes < 0 => "Earlier".to_string(),
-                Hit::TransitTimeDelta(_) => "Later".to_string(),
-                Hit::TransitTimeNow => "Leave now".to_string(),
-                Hit::Journey(index) => format!("Journey option {}", index + 1),
-                Hit::ToggleOverflow => "More map options".to_string(),
-            };
-            (rect.area() > 0.0).then_some((*rect, label))
+            self.accessibility_target_for_hit(hit)
+                .and_then(|mut target| {
+                    (rect.area() > 0.0).then(|| {
+                        target.rect = *rect;
+                        target
+                    })
+                })
         }));
         targets
     }
@@ -4824,22 +5025,20 @@ impl Widget for MapsApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        let root = if let Some(root) = resources.first_mut() {
-            root
-        } else {
+        if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
-            resources.first_mut().expect("Maps root was just inserted")
+        }
+        let Some(root) = resources.first_mut() else {
+            return resources;
         };
-        root.actions.push(
-            ActionSpec::operation(
-                "locate",
-                "Use my location",
-                OperationKind::Effect,
-                "maps.locate",
-                &"",
-            )
-            .expect("Maps operation payload is serializable")
-            .with_contract(ActionContract {
+        if let Ok(spec) = ActionSpec::operation(
+            "locate",
+            "Use my location",
+            OperationKind::Effect,
+            "maps.locate",
+            &"",
+        ) {
+            root.actions.push(spec.with_contract(ActionContract {
                 availability: if !self.online {
                     Availability::Unavailable {
                         code: "location_service_offline".into(),
@@ -4859,23 +5058,22 @@ impl Widget for MapsApp {
                 discovery: DiscoveryScope::Launchable,
                 result: ResultSpec::Job,
                 ..ActionContract::default()
-            }),
-        );
-        root.actions.push(
-            ActionSpec::operation(
-                "toggle-traffic",
-                if self.map_controls.traffic_enabled() {
-                    "Hide traffic"
-                } else {
-                    "Show traffic"
-                },
-                OperationKind::View,
-                "maps.toggle-traffic",
-                &"",
-            )
-            .expect("Maps operation payload is serializable")
-            .with_contract(ActionContract::view()),
-        );
+            }));
+        }
+        if let Ok(spec) = ActionSpec::operation(
+            "toggle-traffic",
+            if self.map_controls.traffic_enabled() {
+                "Hide traffic"
+            } else {
+                "Show traffic"
+            },
+            OperationKind::View,
+            "maps.toggle-traffic",
+            &"",
+        ) {
+            root.actions
+                .push(spec.with_contract(ActionContract::view()));
+        }
         for place in self.model.places.iter().filter(|place| place.saved) {
             if let Some(resource) = root
                 .children
@@ -4886,12 +5084,13 @@ impl Widget for MapsApp {
                     ("open", "Open place", "maps.open-place"),
                     ("directions", "Get directions", "maps.directions"),
                 ] {
-                    resource.actions.insert(
-                        0,
+                    if let Ok(spec) =
                         ActionSpec::operation(id, label, OperationKind::View, type_id, &place.id)
-                            .expect("Maps place id is serializable")
-                            .with_contract(ActionContract::view()),
-                    );
+                    {
+                        resource
+                            .actions
+                            .insert(0, spec.with_contract(ActionContract::view()));
+                    }
                 }
             }
         }
@@ -4914,9 +5113,9 @@ impl Widget for MapsApp {
                 self.use_my_location();
             }
             (OperationKind::View, "maps.toggle-traffic") => {
-                self.set_traffic(!self.map_controls.traffic_enabled())
+                self.set_traffic(!self.map_controls.traffic_enabled());
             }
-            (OperationKind::View, "maps.open-place") | (OperationKind::View, "maps.directions") => {
+            (OperationKind::View, "maps.open-place" | "maps.directions") => {
                 let id: String =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 if self.model.place(&id).is_none() {
@@ -5117,16 +5316,13 @@ impl Widget for MapsApp {
             .accessibility_targets()
             .into_iter()
             .enumerate()
-            .map(|(index, (rect, label))| {
-                ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                    .with_name(label)
-                    .with_state(ui::a11y::AccessState::new().focusable(true))
+            .map(|(index, target)| {
+                ui::a11y::AccessNode::new(target.role)
+                    .with_name(target.label)
+                    .with_state(target.state)
                     .with_key(index as u64)
-                    // A synthetic node is only operable when it carries its
-                    // own target. Activation falls back to this exact rect,
-                    // exercising the same click routing as pointer input.
-                    .with_action_target(format!("maps-target:{index}"))
-                    .with_bounds(rect)
+                    .with_action_target(target.target)
+                    .with_bounds(target.rect)
             })
             .collect();
         Some(
@@ -5142,7 +5338,51 @@ impl Widget for MapsApp {
         };
         self.accessibility_targets()
             .get(*index)
-            .map(|(rect, _)| *rect)
+            .map(|target| target.rect)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(
+            action,
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        let control = match target {
+            "maps.control:zoom-in" => Some(MapControlAction::ZoomIn),
+            "maps.control:zoom-out" => Some(MapControlAction::ZoomOut),
+            "maps.control:locate" => Some(MapControlAction::Locate),
+            "maps.control:traffic" => Some(MapControlAction::ToggleTraffic),
+            _ => None,
+        };
+        if let Some(control) = control {
+            self.dispatch_map_control(control);
+            return true;
+        }
+        // The TextInput needs a genuine pointer press to place its caret, so
+        // leave it to the framework's exact-rect fallback below. Every other
+        // painted action is dispatched directly by its stable semantic target.
+        if target == "maps.search" {
+            return false;
+        }
+        let hit = self.click_targets.iter().find_map(|(_, hit)| {
+            (self
+                .accessibility_target_for_hit(hit)
+                .is_some_and(|candidate| candidate.target == target))
+            .then(|| hit.clone())
+        });
+        if let Some(hit) = hit {
+            self.dispatch(&hit, state);
+            true
+        } else {
+            false
+        }
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -5271,12 +5511,10 @@ impl MapsApp {
             0 => self.info_sheet.open(MapInfo::Attribution),
             1 => self.offline_panel.open(self.tiles.cache_bytes()),
             2 => self.info_sheet.open(MapInfo::Licenses),
-            3 => {
-                if self.model.route.is_some() {
-                    let rect = self.navigation_rect();
-                    self.navigation_placement.detach_to_desktop(rect);
-                    self.pending_floating = self.active_navigation_request();
-                }
+            3 if self.model.route.is_some() => {
+                let rect = self.navigation_rect();
+                self.navigation_placement.detach_to_desktop(rect);
+                self.pending_floating = self.active_navigation_request();
             }
             _ => {}
         }
@@ -8152,17 +8390,55 @@ mod tests {
         let a = app_at(1_280.0, 800.0);
         let node = Widget::accessibility(&a).expect("maps is semantic");
         assert_eq!(node.children.len(), 4, "only drawn controls are exposed");
-        for (index, child) in node.children.iter().enumerate() {
-            let expected_target = format!("maps-target:{index}");
-            assert_eq!(
-                child.action_target.as_deref(),
-                Some(expected_target.as_str())
-            );
+        let expected_targets = [
+            "maps.control:zoom-in",
+            "maps.control:zoom-out",
+            "maps.control:locate",
+            "maps.control:traffic",
+        ];
+        for (index, (child, expected_target)) in
+            node.children.iter().zip(expected_targets).enumerate()
+        {
+            assert_eq!(child.action_target.as_deref(), Some(expected_target));
             assert_eq!(
                 Widget::synthetic_accessibility_rect(&a, &[index]),
                 child.bounds.map(ui::a11y::AccessBounds::to_rect),
                 "control {index} must activate at its visible bounds"
             );
         }
+        let traffic = node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some("maps.control:traffic"))
+            .expect("traffic semantics");
+        assert_eq!(traffic.role, ui::a11y::Role::Switch);
+        assert_eq!(traffic.state.checked, Some(false));
+    }
+
+    #[test]
+    fn semantic_control_targets_are_stable_unique_and_operable() {
+        let mut a = app_at(1_280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        let mut targets: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.as_deref())
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        assert_eq!(
+            targets.len(),
+            node.children.len(),
+            "no duplicate semantic ids"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "maps.control:traffic",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.map_controls.traffic_enabled());
     }
 }

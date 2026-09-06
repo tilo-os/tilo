@@ -77,6 +77,16 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn active_workspace_id(
+    state: &ChromeState,
+) -> Result<crate::shell::state::WorkspaceId, ActionError> {
+    state
+        .tree()
+        .active_workspace()
+        .map(|workspace| workspace.id)
+        .ok_or_else(|| ActionError::Refused("no active workspace".into()))
+}
+
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
@@ -113,6 +123,162 @@ fn active_identity(
         .map_err(|error| ActionError::Refused(error.to_string()))?
         .ok_or_else(|| ActionError::Refused("no identity selected".into()))?;
     Ok((room, profile))
+}
+
+const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+fn active_ownership_signer(
+    state: &ChromeState,
+    expected: collab_types::Ed25519PublicKey,
+) -> Result<runtime_identity::SigningIdentity, ActionError> {
+    let (_, profile) = active_identity(state)?;
+    if profile.user_public_key != *expected.as_bytes() {
+        return Err(ActionError::Refused(
+            "the selected certified identity is not the required transfer signer".into(),
+        ));
+    }
+    runtime_identity::load_from_path(profile.record_path)
+        .map_err(|error| ActionError::Refused(format!("cannot sign ownership transfer: {error}")))
+}
+
+fn apply_ownership_action(
+    state: &ChromeState,
+    action_id: &str,
+    arguments: &ActionArgs,
+) -> Result<(), ActionError> {
+    match action_id {
+        "ownership.propose" => apply_ownership_proposal(state, arguments),
+        "ownership.accept" => apply_ownership_acceptance(state),
+        "ownership.cancel" => apply_ownership_cancellation(state),
+        _ => Err(ActionError::Refused("unknown ownership action".into())),
+    }
+}
+
+fn apply_ownership_proposal(
+    state: &ChromeState,
+    arguments: &ActionArgs,
+) -> Result<(), ActionError> {
+    let now = crate::shell::state::now_unix();
+    let workspace_id = active_workspace_id(state)?;
+    let recipient_text = arguments.text("recipient").unwrap_or_default().trim();
+    let recipient_bytes: [u8; 32] = hex::decode(recipient_text)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| {
+            ActionError::Refused(
+                "choose one certified administrator identity (64 hexadecimal characters)".into(),
+            )
+        })?;
+    let expires_unix = arguments
+        .integer("expires_unix")
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| ActionError::Refused("choose a valid offer expiry".into()))?;
+    let latest = now.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS);
+    if expires_unix <= now || expires_unix > latest {
+        return Err(ActionError::Refused(
+            "ownership offers must expire within the next seven days".into(),
+        ));
+    }
+    let current_owner = state
+        .tree()
+        .active_workspace()
+        .and_then(|workspace| workspace.owner.as_deref())
+        .and_then(|owner| hex::decode(owner).ok())
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(collab_types::Ed25519PublicKey::from_bytes)
+        .ok_or_else(|| ActionError::Refused("workspace owner is not certified".into()))?;
+    let signer = active_ownership_signer(state, current_owner)?;
+    let mut proposal_id = [0_u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut proposal_id);
+    let room = state
+        .tree()
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+    let mut proposal = collab_types::OwnershipTransferProposalV1 {
+        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
+        workspace: room,
+        proposal_id,
+        current_owner,
+        recipient: collab_types::Ed25519PublicKey::from_bytes(recipient_bytes),
+        expires_unix,
+        signature: collab_types::Signature::from_bytes([0; 64]),
+    };
+    proposal.signature = collab_types::Signature::from_bytes(
+        signer
+            .sign(&proposal.signing_bytes().map_err(|error| {
+                ActionError::Refused(format!("cannot encode ownership offer: {error}"))
+            })?)
+            .map_err(|error| ActionError::Refused(error.to_string()))?,
+    );
+    state
+        .tree_mut()
+        .propose_workspace_ownership_transfer(workspace_id, proposal, now)
+        .map_err(|error| ActionError::Refused(error.to_string()))
+}
+
+fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
+    let now = crate::shell::state::now_unix();
+    let workspace_id = active_workspace_id(state)?;
+    let proposal = state
+        .tree()
+        .active_workspace()
+        .and_then(|workspace| workspace.pending_ownership_transfer.clone())
+        .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
+    let signer = active_ownership_signer(state, proposal.recipient)?;
+    let mut acceptance = collab_types::OwnershipTransferAcceptanceV1 {
+        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
+        proposal_digest: proposal
+            .digest()
+            .map_err(|error| ActionError::Refused(error.to_string()))?,
+        recipient: proposal.recipient,
+        accepted_unix: now,
+        signature: collab_types::Signature::from_bytes([0; 64]),
+    };
+    acceptance.signature = collab_types::Signature::from_bytes(
+        signer
+            .sign(&acceptance.signing_bytes().map_err(|error| {
+                ActionError::Refused(format!("cannot encode ownership acceptance: {error}"))
+            })?)
+            .map_err(|error| ActionError::Refused(error.to_string()))?,
+    );
+    let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, now)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    state
+        .tree_mut()
+        .accept_workspace_ownership_transfer(workspace_id, audit, now)
+        .map_err(|error| ActionError::Refused(error.to_string()))
+}
+
+fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> {
+    let now = crate::shell::state::now_unix();
+    let workspace_id = active_workspace_id(state)?;
+    let proposal = state
+        .tree()
+        .active_workspace()
+        .and_then(|workspace| workspace.pending_ownership_transfer.clone())
+        .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
+    let signer = active_ownership_signer(state, proposal.current_owner)?;
+    let mut cancellation = collab_types::OwnershipTransferCancellationV1 {
+        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
+        proposal_digest: proposal
+            .digest()
+            .map_err(|error| ActionError::Refused(error.to_string()))?,
+        current_owner: proposal.current_owner,
+        cancelled_unix: now,
+        signature: collab_types::Signature::from_bytes([0; 64]),
+    };
+    cancellation.signature = collab_types::Signature::from_bytes(
+        signer
+            .sign(&cancellation.signing_bytes().map_err(|error| {
+                ActionError::Refused(format!("cannot encode ownership cancellation: {error}"))
+            })?)
+            .map_err(|error| ActionError::Refused(error.to_string()))?,
+    );
+    state
+        .tree_mut()
+        .cancel_workspace_ownership_transfer(workspace_id, &cancellation)
+        .map_err(|error| ActionError::Refused(error.to_string()))
 }
 
 /// The active workspace's id, room and the caller's own actor id, refusing
@@ -868,6 +1034,46 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
+        let actor = ctx.chrome.active_local_user();
+        let ownership_resource = {
+            let tree = ctx.chrome.tree();
+            tree.active_workspace().map(|workspace| {
+                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+            })
+        };
+        if let Some(resource) = ownership_resource {
+            for action in resource.actions {
+                let subtitle = action.description.clone().unwrap_or_else(|| {
+                    "Signed workspace governance action for the active workspace".into()
+                });
+                if let Some(score) = match_score(
+                    &needle_lower,
+                    &action.label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &action.id,
+                ) {
+                    let action_id = action.id.clone();
+                    let params = action.params().to_vec();
+                    out.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        provider_id: self.id().to_string(),
+                        id: format!("{}#{}", resource.id.as_str(), action.id),
+                        title: action.label,
+                        subtitle: Some(subtitle),
+                        score,
+                        params,
+                        contract: Some(action.contract),
+                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
+                            let mut state = chrome.borrow_mut();
+                            apply_ownership_action(&state, &action_id, arguments)?;
+                            state.bump();
+                            Ok(())
+                        }),
+                        on_invoke: None,
+                    });
+                }
+            }
+        }
         out
     }
 }
@@ -1057,7 +1263,11 @@ mod tests {
             doc: &doc,
             doc_root: &automerge::ROOT,
         });
-        assert_eq!(out.len(), Action::ALL.len());
+        assert!(
+            Action::ALL
+                .iter()
+                .all(|action| out.iter().any(|result| result.id == action.id))
+        );
         assert!(out.iter().all(|r| r.score == 0));
     }
 
@@ -1368,8 +1578,6 @@ mod tests {
             ),
             "even the Operator profile requires an explicit scoped grant"
         );
-        drop(tree);
-        drop(state);
     }
 
     /// A name typed in any case names one agent. Two spellings would be
@@ -1402,6 +1610,55 @@ mod tests {
             members.len(),
             1,
             "three spellings of one name must be one agent, got {members:?}",
+        );
+    }
+
+    #[test]
+    fn ownership_actions_are_typed_and_require_explicit_confirmation() {
+        let chrome = chrome_with_room();
+        let owner = chrome.borrow().active_local_user();
+        chrome
+            .borrow()
+            .tree_mut()
+            .active_workspace_mut()
+            .expect("fixture has a workspace")
+            .set_owner(owner);
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let results = ActionsProvider::new().query(SearchContext {
+            needle: "ownership",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let proposal = results
+            .iter()
+            .find(|result| result.id.ends_with("#ownership.propose"))
+            .expect("active workspace governance resource is searchable");
+        assert!(proposal.id.starts_with("workspace:"));
+        assert_eq!(
+            proposal
+                .params
+                .iter()
+                .map(|parameter| parameter.name.as_ref())
+                .collect::<Vec<_>>(),
+            ["recipient", "expires_unix"]
+        );
+        let contract = proposal.contract.as_ref().expect("ownership contract");
+        assert_eq!(
+            contract.permission,
+            qos_actions::PermissionRequirement::Admin
+        );
+        assert_eq!(
+            contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            Action::ALL
+                .iter()
+                .all(|action| !action.id.starts_with("ownership.")),
+            "the canonical resource must not have a divergent static duplicate"
         );
     }
 }

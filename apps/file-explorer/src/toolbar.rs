@@ -55,7 +55,13 @@ const NAV_H: f32 = 32.0;
 /// Below this width, navigation and location remain visible while view/sort
 /// choices move into the one labelled overflow. Keeping desktop controls in a
 /// 390 px row made the path and segmented control overlap.
-const COMPACT_BREAKPOINT_PX: f64 = 520.0;
+// Full mode needs room for three navigation controls, a readable location,
+// the labelled view switch, optional sort control, overflow, gaps, and safe
+// edge padding.  Switching at 520 px let those fixed controls consume the
+// breadcrumb at tablet/narrow-desktop widths (notably 560 px).  The compact
+// overflow preserves every operation while protecting the primary location
+// and navigation affordances through this entire in-between range.
+const COMPACT_BREAKPOINT_PX: f64 = 760.0;
 
 #[allow(
     clippy::struct_excessive_bools,

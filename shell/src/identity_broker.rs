@@ -8,12 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(test)]
+use collab_types::DocumentMutation;
 use collab_types::caps::{
     Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability, verb_for_opclass,
 };
 use collab_types::{
-    ArtifactKind, DocumentMutation, Ed25519PublicKey, SignedOp, document_artifact_id,
-    document_attestation_id, role_permits,
+    ArtifactKind, Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id,
+    role_permits,
 };
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{Handshake, Request, Response};
@@ -276,8 +278,8 @@ fn sign_collaboration_op(
     if op.author != author
         || op.artifact != expected_artifact
         || op.attestation_id != expected_attestation
-        || op.encryption.is_some()
-        || DocumentMutation::decode(&op.payload).is_err()
+        || collab_types::validate_document_payload_route(app_id, workspace_id, record_id, &op)
+            .is_err()
         || op.timestamp < earliest
         || op.timestamp > latest
     {
@@ -603,6 +605,48 @@ mod tests {
                 &Signature::from_bytes(&signature),
             )
             .expect("device signature");
+
+        let encrypted = SignedOp::new_unsigned_with_encryption(
+            b"opaque MLS application frame".to_vec(),
+            document_artifact_id(app_id, &workspace_id, record_id),
+            author,
+            document_attestation_id(app_id, &workspace_id, record_id),
+            collab_types::OpClass::Splice,
+            now,
+            2,
+            collab_types::EncryptionMetadata {
+                epoch: 3,
+                channel: collab_types::document_channel_id(app_id, &workspace_id, record_id),
+            },
+        );
+        let encrypted_unsigned = postcard::to_stdvec(&encrypted).expect("encrypted envelope");
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &encrypted_unsigned,
+            ),
+            Response::Signature(_)
+        ));
+        let mut wrong_channel = encrypted;
+        wrong_channel.encryption.as_mut().expect("metadata").channel =
+            collab_types::ChannelId::new();
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &postcard::to_stdvec(&wrong_channel).expect("wrong channel envelope"),
+            ),
+            Response::Denied(_)
+        ));
 
         assert!(matches!(
             sign_collaboration_op(

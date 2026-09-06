@@ -539,17 +539,19 @@ themed, clipboard-correct version — do **not** keep forking.
    `containers/combobox.rs` documents this exact gap ("belongs in `ui` next to
    `Dropdown`") because `Dropdown` commits only fixed options.
 
-7. **Non-CRDT value binding on `Toggle` / `Slider`.** Both bind to an Automerge
-   path, so apps whose state lives in an audio engine / `ActionBus` can't use
-   them: `tube/controls.rs:3` ("its `Toggle` is CRDT-path bound"), `tube` SeekBar,
-   `music` scrubber+volume, `video_editor` filter drags. Add a plain-value /
-   callback binding alongside the CRDT-path one.
+7. **Non-CRDT value binding on `Toggle` / `Slider`. — DONE.** Both controls now
+   support typed process-local two-way binding through `LocalState`, observation
+   callbacks, and resource-action bindings alongside their Automerge form. The
+   remaining Tube/Music/Video Editor work is adoption or domain-specific media
+   behavior, not a missing binding primitive.
 
 8. **`Slider` with overlay segment bands.** `tube/seek_bar.rs` needs SponsorBlock
    category bands drawn over the track — extend `Slider` with a decoration hook.
 
-9. **`NumberInput` with click-to-type + drag-step.** `ebook num_edit` forks
-   digit-filtered entry; `NumberInput` exists — extend with drag-step and adopt.
+9. **`NumberInput` drag-step.** Click-to-type, validation, steppers, local/CRDT/
+   action binding, and Ebook adoption have landed. Drag-to-step remains a
+   possible inspector affordance; it is no longer blocking Ebook on an
+   app-local numeric editor.
 
 10. **`TreeView` with inline rename + arbitrary hierarchy.** Forced `notes`'
     `NoteTreeView` fork (`sidebar.rs:133`). Add inline-rename + free hierarchy.

@@ -65,7 +65,7 @@ use ui::{App, PresenceCtx, State, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use word_processor::{WordProcessorWidget, open_document};
+use word_processor::{WordProcessorWidget, open_document, word_processor::Caret};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 
@@ -112,7 +112,13 @@ fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
             .max_positionals(1)
-            .allowed_flags(&["--history"])
+            .allowed_flags(&[
+                "--history",
+                "--styles",
+                "--comments",
+                "--error",
+                "--image-object",
+            ])
             .shot_handler(run_shot)
             .live_handler(run_live),
     );
@@ -142,23 +148,128 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // takes, then open the strip.
         let (mut state, mut wp) = build_concrete(file)?;
         seed_revisions(&mut state, &mut wp)?;
-        // Pin the floating status readout visible so the shot captures it.
-        wp.arm_status_bubble_for_shots();
         render_shot(state, Box::new(wp), (1000, 700), out)?;
         return Ok(());
     }
 
-    // Plain `--shots`: build the concrete widget so the transient status bubble
-    // (which replaced the bottom strip) can be armed — pinned fully visible — for
-    // the single headless frame, then render.
+    // Plain and scenario shots share the real widget. Scenario flags only seed
+    // state that a user could reach through the normal UI, keeping visual
+    // review representative rather than maintaining a second mock renderer.
     let (state, mut wp) = build_concrete(file)?;
-    wp.arm_status_bubble_for_shots();
+    let mut state = state;
+    if args.has("--comments") {
+        seed_review(&mut state, &mut wp)?;
+    }
+    if args.has("--image-object") {
+        seed_selected_image(&mut state, &mut wp)?;
+    }
+    if args.has("--styles") {
+        wp.set_styles_panel_open(true);
+    }
+    if args.has("--error") {
+        wp.stage_error_for_shot();
+    }
     render_shot(
         state,
         Box::new(wp),
         args.viewport.unwrap_or((1000, 700)),
         out,
     )?;
+    Ok(())
+}
+
+/// A real, selected document image for visual regression shots of the object
+/// inspector. The image follows the production insertion model; the scenario
+/// only chooses a deterministic caret/panel state that a user can reach.
+fn seed_selected_image(
+    state: &mut State,
+    wp: &mut WordProcessorWidget,
+) -> Result<(), Box<dyn Error>> {
+    // A tiny valid RGB PNG. Its pixels are intentionally unimportant: this is
+    // a control-layout scenario, while using real decodable bytes still covers
+    // the renderer's normal blob and image-cache path.
+    const SHOT_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+        66, 96, 130,
+    ];
+
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut()
+        .insert_str(&mut state.doc, "Product direction image");
+    wp.model_mut().enter(&mut state.doc);
+    wp.model_mut().insert_image_bytes(&mut state.doc, SHOT_PNG);
+    wp.sync(&mut state.doc, &state.root);
+
+    let c = qdoc::model::open(&state.doc, &state.root)?;
+    let image = qdoc::model::materialize(&state.doc, &c)
+        .blocks
+        .into_iter()
+        .find(|block| block.kind == "image")
+        .ok_or("image shot did not insert an image block")?;
+    // Set an intentional frame size so the canvas itself visibly exercises the
+    // selected object alongside the inspector controls.
+    wp.model_mut()
+        .set_image_size(&mut state.doc, &image.id, 300.0, 180.0);
+    wp.model_mut().set_caret(Caret {
+        block: image.id,
+        offset: 0,
+    });
+    wp.set_styles_panel_open(true);
+    wp.sync(&mut state.doc, &state.root);
+    Ok(())
+}
+
+fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
+    // A blank headless document has not been through its first draw yet. Bind it
+    // before opening the qdoc containers, just as the interactive widget does
+    // at the start of that draw. Otherwise the review scenario attempts to read
+    // an uninitialised root record and cannot seed a representative comment.
+    wp.sync(&mut state.doc, &state.root);
+    let containers = qdoc::model::open(&state.doc, &state.root)?;
+    let has_reviewable_text = qdoc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .any(|id| {
+            qdoc::model::block_text(&state.doc, &containers, &id)
+                .is_some_and(|text| !text.is_empty())
+        });
+    if !has_reviewable_text {
+        // A fresh document has no paragraph until its first edit. Seed the
+        // reviewable content through the real editing model, rather than making
+        // the screenshot renderer special-case a fake annotation card.
+        wp.model_mut()
+            .insert_str(&mut state.doc, "Quarterly planning summary");
+        wp.sync(&mut state.doc, &state.root);
+    }
+    let containers = qdoc::model::open(&state.doc, &state.root)?;
+    let Some(block) = qdoc::model::blocks_in_order(&state.doc, &containers)
+        .into_iter()
+        .find(|id| {
+            qdoc::model::block_text(&state.doc, &containers, id).is_some_and(|t| !t.is_empty())
+        })
+    else {
+        return Ok(());
+    };
+    let len = qdoc::model::block_text(&state.doc, &containers, &block)
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let mut doc = qdoc::DocMut {
+        doc: &mut state.doc,
+        c: &containers,
+        ids: &mut ids,
+    };
+    doc.add_comment(
+        &block,
+        0,
+        len.min(12),
+        "Maya Chen",
+        "Could we make this opening more specific?",
+    );
+    doc.track_insert(&block, len, " — reviewed", "Jonas Weber", "2026-09-05");
+    wp.sync(&mut state.doc, &state.root);
     Ok(())
 }
 
@@ -397,6 +508,10 @@ fn render_shot(
         &presence,
         &permission,
     );
+    // A real frame always runs the widget's top-layer pass after its body.
+    // Keep shots honest: this is where recovery/error toasts, menus, and other
+    // transient surfaces are painted.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

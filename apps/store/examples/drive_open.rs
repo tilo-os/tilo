@@ -20,7 +20,9 @@ use automerge::transaction::Transactable;
 use ui::widget::Widget;
 
 use store::StoreApp;
-use store::model::{ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource};
+use store::model::{
+    ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
+};
 
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
@@ -44,12 +46,14 @@ fn main() {
         description: "driven by verify-open-flow.sh".into(),
         categories: vec!["System".into()],
         icon_url: None,
+        screenshot_urls: Vec::new(),
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: "local test registry".into(),
         },
+        trust: StoreTrust::PublisherSigned,
         versions: vec![StoreItemVersion {
             version: "0.1.0".into(),
             released_at_unix: 0,

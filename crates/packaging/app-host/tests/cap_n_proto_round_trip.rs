@@ -46,7 +46,16 @@ impl Harness {
         let mut last = None;
         for _ in 0..40 {
             match tokio::net::UnixStream::connect(&self.socket).await {
-                Ok(stream) => return Ok(client_for(stream)),
+                Ok(mut stream) => {
+                    use tokio::io::AsyncWriteExt;
+                    let handoff = br#"{"protocol":1,"app_id":"dev.qos.store"}"#;
+                    stream.write_all(b"QAH1").await?;
+                    stream
+                        .write_all(&u32::try_from(handoff.len())?.to_be_bytes())
+                        .await?;
+                    stream.write_all(handoff).await?;
+                    return Ok(client_for(stream));
+                }
                 Err(e) => {
                     last = Some(e);
                     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -86,6 +95,12 @@ fn install_list_pin_resolve_over_capnp() {
 
         // Build a real qpkg the server can accept.
         let (bytes, expected_id) = common::build_qpkg(2);
+        let expected_publisher = app_registry::qpkg::load(&bytes)
+            .unwrap()
+            .manifest
+            .publisher
+            .identity_bytes()
+            .unwrap();
 
         // install
         let mut req = client.install_request();
@@ -93,6 +108,11 @@ fn install_list_pin_resolve_over_capnp() {
             let mut p = req.get();
             p.set_qpkg_bytes(&bytes);
             p.set_pinning(WirePinning::Tried);
+            p.set_expected_root(expected_id.as_bytes());
+            p.set_expected_publisher(&expected_publisher);
+            p.set_expected_app_id("dev.qos.editor");
+            p.set_expected_version("1.4.2");
+            p.set_expected_size_bytes(bytes.len() as u64);
         }
         let resp = req.send().promise.await.unwrap();
         let installed_id: Vec<u8> = resp.get().unwrap().get_id().unwrap().to_vec();

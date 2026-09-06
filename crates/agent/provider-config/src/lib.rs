@@ -265,12 +265,11 @@ impl ProviderConfig {
     }
 
     pub fn load_at(path: &Path) -> Self {
-        Self::from_section(
-            &settings_store::load_at(path)
-                .remove(SETTINGS_SECTION)
-                .and_then(|value| value.as_object().cloned())
-                .unwrap_or_default(),
-        )
+        let section = settings_store::load_at(path)
+            .remove(SETTINGS_SECTION)
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        Self::from_section(&section)
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
@@ -288,7 +287,8 @@ impl ProviderConfig {
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when serialization or the atomic settings update fails.
+    /// Returns an error if the configuration cannot be serialised or the
+    /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
         let config = self.clone().sanitised();
         let mut section = Map::new();
@@ -299,11 +299,12 @@ impl ProviderConfig {
         settings_store::update_section(SETTINGS_SECTION, section)
     }
 
-    /// Saves the provider configuration to an explicit settings path.
+    /// Save this configuration to the shared settings document at `path`.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when serialization or the atomic settings update fails.
+    /// Returns an error if the configuration cannot be serialised or the
+    /// settings document at `path` cannot be updated.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
         let config = self.clone().sanitised();
         let mut section = Map::new();

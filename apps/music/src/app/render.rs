@@ -350,6 +350,11 @@ impl Widget for MusicApp {
         self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
+            // Library and playback are both shared. Reload the catalog every
+            // frame, but only adopt playback when the document itself changed
+            // so a peer's play/pause/seek immediately controls this device
+            // without jittering the local clock between edits.
+            self.reconcile_document_playback(state);
         } else {
             self.reload(state);
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
@@ -360,10 +365,11 @@ impl Widget for MusicApp {
         self.advance_downloads(state);
         // External media control (media keys / desktop widget) and a completed
         // file-portal cover pick both mutate the document, so they run here
-        // where the CRDT handle is available; then publish the fresh state to
-        // the desktop's media controls.
+        // where the CRDT handle is available. The portal conversion completion
+        // follows the pick; decode/resize work itself runs off-thread.
         self.drain_mpris(state);
         self.drain_cover_pick(state);
+        self.drain_cover_embed(state);
         self.publish_mpris();
     }
 
@@ -382,25 +388,94 @@ impl Widget for MusicApp {
         self.actions.take_committed()
     }
 
-    /// Fold the user's library into the unified Ctrl+K palette: a snapshot
-    /// [`LibrarySearchProvider`](crate::search_type::LibrarySearchProvider)
-    /// makes every saved song / album / artist / playlist findable there as a
-    /// typed result, alongside the actions the app exports. The provider is
+    /// Fold the user's library into the unified Ctrl+K palette. The app retains
+    /// one prebuilt [`LibrarySearchProvider`](crate::search_type::LibrarySearchProvider)
+    /// per library revision, and this returns an O(1) shared-catalog clone;
+    /// opening Ctrl+K therefore never reindexes the corpus. The provider is
     /// synchronous and offline-safe; the live YouTube-Music search is async and
     /// lives in the app's own search view.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_type::LibrarySearchProvider::new(
-            &self.lib,
-        ))]
+        vec![Box::new(self.library_search_provider.clone())]
     }
 
-    /// Route a chosen palette row onto the real navigate/play path. The row's
-    /// opaque `action_id` is a `music://…` deep link, so this is the same
-    /// router the OS-search host and an in-app hit both use
-    /// ([`MusicApp::open_deep_link`]) — playing a song, or opening an album /
-    /// artist / playlist page.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        self.open_deep_link(action_id, doc);
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::MUSIC_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayTrack { id },
+            ) => {
+                if !self.lib.tracks.contains_key(&id) {
+                    return Err("track is no longer in the library".into());
+                }
+                self.pb.queue = vec![id.clone()];
+                self.shuffle_order.clear();
+                self.play_index(0);
+                self.start_stream(&id);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenAlbum { id },
+            ) => {
+                if !self.lib.albums.contains_key(&id) {
+                    return Err("album is no longer in the library".into());
+                }
+                self.on_nav(View::Album(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenArtist { id },
+            ) => {
+                if !self.lib.artists.contains_key(&id) {
+                    return Err("artist is no longer in the library".into());
+                }
+                self.on_nav(View::Artist(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenPlaylist { id },
+            ) => {
+                if self.lib.playlist(&id).is_none() {
+                    return Err("playlist is no longer in the library".into());
+                }
+                self.on_nav(View::Playlist(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track },
+            ) => {
+                let Some(current_playlist) = self.lib.playlist(&playlist) else {
+                    return Err("playlist is no longer in the library".into());
+                };
+                if !current_playlist.track_ids.iter().any(|id| id == &track) {
+                    return Err("playlist membership is no longer present".into());
+                }
+                let playlist_name = current_playlist.name.clone();
+                let track_label = self.track_label(&track);
+                self.on_nav(View::Playlist(playlist.clone()));
+                self.revealed_membership = Some((playlist, track));
+                self.toast = Some((
+                    format!("Opened “{track_label}” in “{playlist_name}”"),
+                    Instant::now(),
+                ));
+            }
+            _ => return Ok(false),
+        }
+        self.dirty = true;
+        Ok(true)
     }
 
     fn build_layout(
@@ -591,13 +666,41 @@ impl Widget for MusicApp {
                 .with_action_target("music.toggle-mute")
                 .with_state(AccessState::new().checked(self.pb.volume == 0)),
         ];
+        let player = AccessNode::new(Role::Group)
+            .with_name("Music player")
+            .with_value(format!("{current}; volume {}%", self.pb.volume))
+            .with_description("Playback controls")
+            .with_state(AccessState::new().focusable(true).busy(self.pb.playing))
+            .with_children(controls);
+        let mut page_content = Vec::new();
+        // The custom-painted empty-state button is page content, not a
+        // transport control. Give it a separate semantic group and route it to
+        // the same reducer as the visible button.
+        if matches!(self.view, View::Home)
+            && !self.home_is_loading()
+            && self.lib.playlists.is_empty()
+            && self.lib.albums.is_empty()
+            && self.lib.tracks.is_empty()
+        {
+            page_content.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Empty music library")
+                    .with_description("Your music starts here")
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Search for music")
+                            .with_description("Search for a song, album, or artist")
+                            .with_action_target("music.empty-search"),
+                    ]),
+            );
+        }
+        let mut children = vec![player];
+        children.extend(page_content);
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Music player")
-                .with_value(format!("{current}; volume {}%", self.pb.volume))
+                .with_name("Music")
                 .with_description("Music library and playback controls")
-                .with_state(AccessState::new().focusable(true).busy(self.pb.playing))
-                .with_children(controls),
+                .with_children(children),
         )
     }
 
@@ -619,6 +722,7 @@ impl Widget for MusicApp {
             "music.toggle-play" => Action::TogglePlay,
             "music.next" => Action::Next,
             "music.toggle-mute" => Action::ToggleMute,
+            "music.empty-search" => Action::Nav(View::Search),
             _ => return false,
         };
         self.dispatch(action, state);
@@ -2566,6 +2670,12 @@ impl MusicApp {
             }
             if hovered {
                 fill_rrect(scene, t, rr, 8.0, c.white5);
+            } else if playlist.is_some_and(|playlist| {
+                self.revealed_membership
+                    .as_ref()
+                    .is_some_and(|(owner, track)| owner == playlist && track == &tk.id)
+            }) {
+                fill_rrect(scene, t, rr, 8.0, c.accent.multiply_alpha(0.16));
             }
             if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
                 self.draw_track_row_content(
@@ -3955,6 +4065,30 @@ impl MusicApp {
         let pad = 28.0;
         self.draw_playlist_management_row(scene, t, tr, c, body, y - 8.0, id, &ids);
         y += 36.0;
+
+        // A Ctrl+K membership hit names a specific row, not merely its owning
+        // playlist. Move it into view on the next paint (the current paint has
+        // already established its geometry), and keep the row visibly marked.
+        if let Some((playlist, track)) = &self.revealed_membership
+            && playlist == id
+        {
+            if let Some(index) = ids.iter().position(|candidate| candidate == track) {
+                let row_document_y = y + self.scroll + index as f64 * 52.0;
+                let content_document_end = y + self.scroll + ids.len() as f64 * 52.0 + 24.0;
+                let max_scroll = (content_document_end - body.y0 - body.height()).max(0.0);
+                let desired =
+                    (row_document_y - body.y0 - body.height() * 0.42).clamp(0.0, max_scroll);
+                if (self.scroll - desired).abs() > 0.5 {
+                    self.scroll = desired;
+                    self.dirty = true;
+                }
+            } else {
+                // The authority-door check should have caught this, but never
+                // leave a stale local highlight around if a peer changes the
+                // list between operation delivery and the following frame.
+                self.revealed_membership = None;
+            }
+        }
 
         if ids.is_empty() {
             draw_text(

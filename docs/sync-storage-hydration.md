@@ -21,10 +21,13 @@ states are explanations, not decorative controls.
 
 ## Reclaim invariants
 
-A file is reclaimable only while online and when it is clean, unpinned, not in
-flight, fully local, and every component was previously fetched and
-bao-verified from one peer. Locally authored content is not assumed durable:
-the sync protocol does not yet expose a remote replication acknowledgement.
+A file on the legacy namespace/hydration path is reclaimable only while online
+and when it is clean, unpinned, not in flight, fully local, and every component
+was previously fetched and bao-verified from one peer. Locally authored content
+is not assumed durable on that path. The record replication plane now has an
+authenticated, signed exact-version acknowledgement protocol and a durable
+`AvailabilityRegistry`, but this Settings-facing namespace storage authority
+does not consume those receipts yet.
 
 Apply is preview/commit rather than path deletion. The client submits stable
 node identity, inode and content hash. After remote verification, QuickFS
@@ -41,10 +44,11 @@ it does not expose document bytes or general filesystem mutation.
 
 ## Deliberate conservative boundaries
 
-- Remote-durability provenance currently lives for the daemon lifetime. After
-  restart previously fetched files remain local but are not offered for
-  reclaim until re-verified through normal hydration. Persisting provenance
-  requires an authenticated replication receipt, not an optimistic flag.
+- Remote-durability provenance for this legacy path currently lives for the
+  daemon lifetime. After restart previously fetched files remain local but are
+  not offered for reclaim until re-verified through normal hydration. The
+  missing work is integration with the existing authenticated replica receipts
+  and durable availability projection, not invention of another receipt type.
 - A file whose chunks came from different peers is retained. Per-blob source
   receipts can relax this later without changing the public protocol.
 - Application totals require the explicit app namespace. Legacy workspace

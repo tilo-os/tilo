@@ -344,7 +344,7 @@ impl PeerView {
         });
     }
 
-    fn modifier_bits(modifiers: Modifiers) -> u32 {
+    fn modifier_bits(modifiers: &Modifiers) -> u32 {
         let state = modifiers.state();
         u32::from(state.shift_key())
             | (u32::from(state.control_key()) << 2)
@@ -516,10 +516,12 @@ impl Widget for PeerView {
                     && point.y <= self.rect.y1;
                 self.set_pointer_inside(inside);
                 if inside && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-                    let (width, height) = self.latest.as_ref().map_or_else(
-                        || (self.rect.width(), self.rect.height()),
-                        |frame| (f64::from(frame.width), f64::from(frame.height)),
-                    );
+                    let (width, height) = self
+                        .latest
+                        .as_ref()
+                        .map_or((self.rect.width(), self.rect.height()), |frame| {
+                            (f64::from(frame.width), f64::from(frame.height))
+                        });
                     let x = ((point.x - self.rect.x0) / self.rect.width() * width)
                         .clamp(0.0, width.max(1.0) - 1.0);
                     let y = ((point.y - self.rect.y0) / self.rect.height() * height)
@@ -549,7 +551,7 @@ impl Widget for PeerView {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),
-                        Self::modifier_bits(*modifiers),
+                        Self::modifier_bits(modifiers),
                     );
                     *handled = true;
                 }

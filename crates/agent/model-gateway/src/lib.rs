@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,7 +15,7 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "QOS_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 1;
+pub const RPC_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
@@ -27,6 +28,7 @@ pub enum Request {
         profile_id: String,
         model_id: String,
         body: serde_json::Value,
+        timeout_ms: u64,
     },
     SecretStatus {
         profile_id: String,
@@ -83,8 +85,9 @@ pub fn available() -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error when the service is unavailable, framing fails, or the
-/// gateway rejects the request.
+/// Returns [`ClientError::Unavailable`] when the launcher service descriptor or
+/// gateway connection is unavailable, [`ClientError::Protocol`] for malformed
+/// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
 pub fn request(request: Request) -> Result<Response, ClientError> {
     let fd = std::env::var(SERVICE_FD_ENV)
         .ok()
@@ -117,31 +120,36 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
     }
 }
 
-/// Requests a model-generated plan from the selected provider profile.
+/// Ask the isolated model gateway to plan against one configured provider.
 ///
 /// # Errors
 ///
-/// Returns an error when the gateway request fails or contains no response.
+/// Returns [`ClientError`] when the gateway is unavailable, rejects the
+/// request, returns a malformed response, or the provider request fails.
 pub fn plan(
     profile_id: &str,
     model_id: &str,
     body: serde_json::Value,
+    timeout: Duration,
 ) -> Result<String, ClientError> {
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let response = request(Request::Plan {
         profile_id: profile_id.to_string(),
         model_id: model_id.to_string(),
         body,
+        timeout_ms,
     })?;
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
 }
 
-/// Reports whether a secret is configured for a provider profile.
+/// Query whether the profile has a secret stored by the isolated gateway.
 ///
 /// # Errors
 ///
-/// Returns an error when the gateway request fails.
+/// Returns [`ClientError`] when the gateway cannot be reached or rejects or
+/// malforms the response.
 pub fn secret_configured(profile_id: &str) -> Result<bool, ClientError> {
     Ok(request(Request::SecretStatus {
         profile_id: profile_id.to_string(),
@@ -150,11 +158,12 @@ pub fn secret_configured(profile_id: &str) -> Result<bool, ClientError> {
     .unwrap_or(false))
 }
 
-/// Stores an API key through the privileged gateway.
+/// Store a profile API key in the isolated gateway.
 ///
 /// # Errors
 ///
-/// Returns an error when the gateway request fails or is rejected.
+/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
+/// update, or returns a malformed response.
 pub fn set_api_key(profile_id: &str, api_key: String) -> Result<(), ClientError> {
     request(Request::SetApiKey {
         profile_id: profile_id.to_string(),
@@ -163,11 +172,12 @@ pub fn set_api_key(profile_id: &str, api_key: String) -> Result<(), ClientError>
     Ok(())
 }
 
-/// Removes the API key associated with a provider profile.
+/// Remove a profile API key from the isolated gateway.
 ///
 /// # Errors
 ///
-/// Returns an error when the gateway request fails or is rejected.
+/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
+/// update, or returns a malformed response.
 pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
     request(Request::RemoveApiKey {
         profile_id: profile_id.to_string(),
@@ -175,11 +185,12 @@ pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
     Ok(())
 }
 
-/// Writes one size-bounded JSON frame.
+/// Write one size-bounded JSON frame to a gateway stream.
 ///
 /// # Errors
 ///
-/// Returns an error when serialization, size validation, or socket I/O fails.
+/// Returns [`ClientError::Protocol`] when serialization fails or the frame is
+/// too large, and [`ClientError::Unavailable`] when writing fails.
 pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), ClientError> {
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
@@ -200,11 +211,12 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
     stream.flush().map_err(|_| ClientError::Unavailable)
 }
 
-/// Reads and decodes one size-bounded JSON frame.
+/// Read and decode one size-bounded JSON frame from a gateway stream.
 ///
 /// # Errors
 ///
-/// Returns an error when socket I/O, size validation, or decoding fails.
+/// Returns [`ClientError::Unavailable`] when reading fails and
+/// [`ClientError::Protocol`] for an invalid length or payload.
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
     let mut length = [0_u8; 4];
     stream

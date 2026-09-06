@@ -19,7 +19,8 @@
 //!   and a discovered-qOS-device picker.
 //! * **Session** — the live surface. SSH opens an embedded terminal grid;
 //!   VNC/RDP open a remote-framebuffer canvas with a toolbar (fullscreen,
-//!   scaling, clipboard, disconnect).
+//!   scaling, disconnect). Clipboard synchronization is not advertised until
+//!   the transports provide a real consent-aware channel.
 //!
 //! ## qOS relay
 //!

@@ -70,15 +70,11 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(
-                Text::new("SETTINGS").with_size(12.0).with_color(dim()),
-            ))
+            .push(Box::new(Text::new("SETTINGS").with_size(12.0).dimmed()))
             .push(vgap(5.0))
             .push(Box::new(Text::new(title).with_size(24.0)))
             .push(vgap(5.0))
-            .push(Box::new(
-                Text::new(subtitle).with_size(13.0).with_color(dim()),
-            )),
+            .push(Box::new(Text::new(subtitle).with_size(13.0).dimmed())),
     )
 }
 
@@ -131,15 +127,13 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(top))
-            .push(Box::new(
-                Text::new(description).with_size(12.0).with_color(dim()),
-            )),
+            .push(Box::new(Text::new(description).with_size(12.0).dimmed())),
     )
 }
 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
-    Box::new(Text::new(text).with_size(12.0).with_color(dim()))
+    Box::new(Text::new(text).with_size(12.0).dimmed())
 }
 
 /// Default width (logical px) a compact right-aligned control (dropdown,
@@ -199,24 +193,13 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(title).with_size(20.0)))
         .push(vgap(3.0))
-        .push(Box::new(
-            Text::new(subtitle).with_size(12.0).with_color(dim()),
-        ));
+        .push(Box::new(Text::new(subtitle).with_size(12.0).dimmed()));
     let row = Row::new()
         .push(Box::new(IconWidget::new(icon, 34.0).with_color(accent)))
         .push(hgap(14.0))
         .push(Box::new(text_block))
         .push(Box::new(Spacer::new()));
     Box::new(ui::widget::Card::new(Box::new(row)))
-}
-
-/// The dim foreground colour. Pulled from the theme at draw time normally,
-/// but the helper builders run before `draw`, so we read the dark theme's
-/// token here — the same value the OS dark theme ships. Panels that need
-/// exact theme-following colour should set it in their own `draw`; for the
-/// captions/descriptions this is indistinguishable in practice.
-fn dim() -> vello::peniko::Color {
-    ui::Theme::dark().text_dim
 }
 
 /// Vertical gap (logical px) between rows inside a single card. Smaller

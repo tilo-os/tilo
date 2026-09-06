@@ -34,7 +34,7 @@ use winit::keyboard::{
     Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey, SmolStr,
 };
 
-use super::devices::{ModeInfo, filter_kms_nodes};
+use super::devices::{ModeInfo, filter_kms_nodes, order_by_connected_connectors};
 #[cfg(test)]
 use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
@@ -72,6 +72,9 @@ pub enum DrmBackendError {
 
     #[error("no KMS-capable DRM devices found (need /dev/dri/cardN)")]
     NoDevices,
+
+    #[error("none of the KMS devices have a usable live scanout: {0:?}")]
+    NoScanout(Vec<PathBuf>),
 
     #[error("failed to initialise libinput: {0}")]
     Libinput(String),
@@ -1078,10 +1081,11 @@ pub struct DrmRuntime {
     pub dispatch: DrmDispatchState,
     /// Kept alive so libseat doesn't close the seat — the notifier is inserted into `event_loop` and its source token lives there.
     session: LibSeatSession,
-    /// Detected primary GPU card path. `None` if enumeration finds no `card*` nodes (construction would already return `NoDevices` then).
+    /// KMS card path that successfully acquired at least one scanout.
     pub primary_gpu: Option<PathBuf>,
-    /// Live scanouts — one per connected output. Empty if modeset failed
-    /// for every connector (compositor runs headless rather than crashing); ordered by `OutputId`, `scanouts[0]` is the primary (`OutputId(0)`).
+    /// Live scanouts — one per connected output. Construction requires at
+    /// least one; the vector can become empty later if every display is
+    /// unplugged. Ordered by `OutputId`; `scanouts[0]` is the primary.
     pub scanouts: Vec<ScanoutEntry>,
     /// Receiving end of the reconfiguration channel — held here while the backend owns the scanouts inline; moved into the presenter along with them by [`super::Backend::take_presenter`].
     pub commands: Option<Receiver<ScanoutCommand>>,
@@ -1144,56 +1148,78 @@ pub(crate) fn logical_output_size(
     }
 }
 
-/// Bring up scanout(s) on the primary GPU, keeping the card fd open as DRM
-/// master. `open_all_scanouts` opens the card once and modesets every
-/// connected connector, each on its own crtc, sharing a dup'd fd. libseat
-/// refuses a second `open` of the same node, so the connector-enumeration
-/// pass in [`enumerate_secondary_connectors`] excludes it. A total modeset
-/// failure is non-fatal: log and run headless (`None` card, empty builds)
-/// rather than failing [`DrmRuntime::new`] outright. Extracted from that
-/// constructor to keep it a readable top-level sequence.
-fn bring_up_primary_scanouts(
+/// Bring up scanout(s) on the first usable GPU, keeping its card fd open as
+/// DRM master. Candidates are already ranked by connected connectors, but a
+/// card can still fail at open or modeset time. Trying the remaining cards is
+/// important on hybrid systems and when firmware exposes an unusable KMS node.
+///
+/// `open_all_scanouts` opens a card once and modesets every connected
+/// connector, each on its own crtc, sharing a dup'd fd. libseat refuses a
+/// second `open` of the selected node, so the connector-enumeration pass in
+/// [`enumerate_secondary_connectors`] excludes it.
+fn bring_up_first_scanouts(
     session: &LibSeatSession,
-    primary_gpu: Option<&PathBuf>,
-) -> (Option<CardHandle>, Vec<ScanoutBuild>) {
-    let Some(path) = primary_gpu else {
-        return (None, Vec::new());
-    };
-    let mut scanout_session = session.clone();
-    match open_all_scanouts(&mut scanout_session, path) {
-        Ok((card, b)) => {
-            tracing::info!(count = b.len(), "DRM backend: scanout live on primary GPU");
-            (Some(card), b)
-        }
-        Err(e) => {
-            tracing::warn!("DRM backend: scanout setup failed ({e}); running headless");
-            (None, Vec::new())
+    kms_gpus: &[PathBuf],
+) -> Option<(PathBuf, CardHandle, Vec<ScanoutBuild>)> {
+    for path in kms_gpus {
+        eprintln!(
+            "nirios compositor: trying KMS scanout device {}",
+            path.display()
+        );
+        let mut scanout_session = session.clone();
+        match open_all_scanouts(&mut scanout_session, path) {
+            Ok((card, builds)) if !builds.is_empty() => {
+                eprintln!(
+                    "nirios compositor: {} live DRM output(s) on {}",
+                    builds.len(),
+                    path.display()
+                );
+                tracing::info!(
+                    count = builds.len(),
+                    device = %path.display(),
+                    "DRM backend: scanout live"
+                );
+                return Some((path.clone(), card, builds));
+            }
+            Ok((_card, _)) => {
+                eprintln!(
+                    "nirios compositor: no connected DRM output on {}",
+                    path.display()
+                );
+                tracing::warn!(device = %path.display(), "DRM backend: no connected scanout");
+            }
+            Err(error) => {
+                eprintln!(
+                    "nirios compositor: cannot use DRM output on {}: {error}",
+                    path.display()
+                );
+                tracing::warn!(
+                    device = %path.display(),
+                    %error,
+                    "DRM backend: scanout setup failed"
+                );
+            }
         }
     }
+    None
 }
 
 /// Connector enumeration on the GPUs scanout does not own (the primary is
-/// held open by [`bring_up_primary_scanouts`]). Driving connectors on
+/// held open by [`bring_up_first_scanouts`]). Driving connectors on
 /// secondary GPUs needs a second card fd plus cross-GPU buffer handling, so
 /// this pass is diagnostic-only (logs what's attached). Failures are logged
 /// and skipped, not fatal; `LibSeatSession` is cheap to clone. Extracted
 /// from [`DrmRuntime::new`] for the same reason as
-/// [`bring_up_primary_scanouts`].
+/// [`bring_up_first_scanouts`].
 fn enumerate_secondary_connectors(
     session: &LibSeatSession,
     kms_gpus: Vec<PathBuf>,
-    primary_gpu: Option<&PathBuf>,
-    have_scanouts: bool,
+    primary_gpu: &PathBuf,
 ) -> Vec<ConnectorInfo> {
-    let enum_gpus: Vec<PathBuf> = if have_scanouts {
-        kms_gpus
-            .iter()
-            .filter(|p| Some(*p) != primary_gpu)
-            .cloned()
-            .collect()
-    } else {
-        kms_gpus
-    };
+    let enum_gpus: Vec<PathBuf> = kms_gpus
+        .into_iter()
+        .filter(|path| path != primary_gpu)
+        .collect();
     let mut session_for_enum = session.clone();
     let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
     tracing::info!(
@@ -1283,26 +1309,30 @@ impl DrmRuntime {
             UdevBackend::new(&seat_name).map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
         let raw_gpus: Vec<PathBuf> =
             all_gpus(&seat_name).map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
-        let kms_gpus = filter_kms_nodes(raw_gpus);
+        let kms_gpus =
+            order_by_connected_connectors(filter_kms_nodes(raw_gpus), Path::new("/sys/class/drm"));
         if kms_gpus.is_empty() {
             return Err(DrmBackendError::NoDevices);
         }
-        let primary_gpu = kms_gpus.first().cloned();
         tracing::info!(
             count = kms_gpus.len(),
-            primary = ?primary_gpu,
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // Bring up scanout(s) on the primary GPU first, then diagnostically
-        // enumerate whatever's attached to the rest — see each helper's doc
-        // comment for why the two are split and in this order (the primary
-        // must claim its card before the second pass excludes it).
-        let (card, scanout_builds) = bring_up_primary_scanouts(&session, primary_gpu.as_ref());
-        let have_scanouts = !scanout_builds.is_empty();
+        // Bring up scanout(s) on the highest-ranked usable GPU, then
+        // diagnostically enumerate whatever is attached to the rest.
+        let Some((primary_gpu, card, scanout_builds)) =
+            bring_up_first_scanouts(&session, &kms_gpus)
+        else {
+            // `--backend headless` is the explicit display-free mode. A real
+            // DRM login that cannot drive a connector must return control to
+            // the display manager instead of staying alive behind the stale
+            // grey framebuffer left by the greeter.
+            return Err(DrmBackendError::NoScanout(kms_gpus));
+        };
         // Diagnostic-only (logs internally); nothing later in construction
         // consults the result — see the helper's doc comment.
-        enumerate_secondary_connectors(&session, kms_gpus, primary_gpu.as_ref(), have_scanouts);
+        enumerate_secondary_connectors(&session, kms_gpus, &primary_gpu);
 
         // The session-interface adapter routes libinput's `open`/`close` calls through libseat so it inherits privileged FDs without root.
         let mut libinput_ctx =
@@ -1344,7 +1374,7 @@ impl DrmRuntime {
 
         let mut dispatch = DrmDispatchState::new(
             session_state,
-            card,
+            Some(card),
             input,
             accessibility,
             scale_override,
@@ -1360,7 +1390,7 @@ impl DrmRuntime {
             event_loop,
             dispatch,
             session,
-            primary_gpu,
+            primary_gpu: Some(primary_gpu),
             scanouts,
             commands: Some(rx),
             last_display_transaction_check: std::time::Instant::now(),

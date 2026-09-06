@@ -12,6 +12,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::widgets::{caption, card, choice_row_described, rows, value_row};
 
 pub struct PersonalAppsPane {
@@ -19,6 +20,7 @@ pub struct PersonalAppsPane {
     defaults: PersonalDefaults,
     needs_seed: bool,
     commit_context_pending: bool,
+    actions: ui::ActionHost,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -34,6 +36,7 @@ impl PersonalAppsPane {
             defaults,
             needs_seed: true,
             commit_context_pending: false,
+            actions: ui::ActionHost::new(),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -91,7 +94,8 @@ impl PersonalAppsPane {
                     |a| Self::option(a),
                 );
             let label = resource.display_label();
-            let picker = Dropdown::new(options, &Self::key(resource))
+            let picker_path = Self::draft_key(&Self::key(resource));
+            let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
             file_rows.push(choice_row_described(
@@ -140,6 +144,19 @@ impl PersonalAppsPane {
             },
             _ => None,
         }
+    }
+
+    fn draft_key(canonical: &str) -> String {
+        format!("{canonical}.edit")
+    }
+
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
     }
 }
 
@@ -205,24 +222,57 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 impl Widget for PersonalAppsPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
-            let resolver = DefaultAppResolver::new(&self.candidates);
-            for resource in self.resources() {
-                if let Some(selected) = resolver.resolve(&resource, "", &self.defaults, None)
-                    && let Some(app) = self
-                        .candidates
-                        .iter()
-                        .find(|a| a.package_id == selected.package_id)
-                {
-                    let _ = state.put(root, Self::key(&resource), Self::option(app));
+            let initial_values = {
+                let resolver = DefaultAppResolver::new(&self.candidates);
+                let mut initial_values = Vec::new();
+                for resource in self.resources() {
+                    if let Some(selected) = resolver.resolve(&resource, "", &self.defaults, None)
+                        && let Some(app) = self
+                            .candidates
+                            .iter()
+                            .find(|a| a.package_id == selected.package_id)
+                    {
+                        initial_values.push((Self::key(&resource), Self::option(app)));
+                    }
                 }
+                initial_values
+            };
+            for (key, value) in initial_values {
+                self.dispatch(state, &set_text_action(key, value));
             }
             self.needs_seed = false;
         }
         let mut changed = false;
         for resource in self.resources() {
-            let Some(option) = Self::read_str(state, root, &Self::key(&resource)) else {
+            let key = Self::key(&resource);
+            let canonical = Self::read_str(state, root, &key);
+            let draft_key = Self::draft_key(&key);
+            let draft = Self::read_str(state, root, &draft_key);
+            let Some(option) = canonical.clone() else {
                 continue;
             };
+            if canonical.as_deref()
+                == self
+                    .defaults
+                    .handlers
+                    .get(&resource)
+                    .and_then(|id| {
+                        self.apps_for(&resource)
+                            .into_iter()
+                            .find(|app| &app.package_id == id)
+                    })
+                    .map(Self::option)
+                    .as_deref()
+                && draft.as_deref().is_some_and(|draft| draft != option)
+            {
+                self.dispatch(state, &set_text_action(&key, draft.unwrap_or_default()));
+                continue;
+            }
+            if let Some(canonical) = canonical
+                && Self::read_str(state, root, &draft_key).as_deref() != Some(&canonical)
+            {
+                let _ = state.put(root, draft_key, canonical);
+            }
             let Some(app) = self
                 .apps_for(&resource)
                 .into_iter()

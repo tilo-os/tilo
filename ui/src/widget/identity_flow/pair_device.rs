@@ -10,8 +10,9 @@
 //! publish the round-2 reply with an HMAC, then wait for the host's own
 //! round-2 reply and adopt the DKG outcome.
 //!
-//! The end-to-end test exercises the full state machine via the in-memory
-//! `PairingHandshake`.
+//! Shell integration tests exercise the complete state machine through an
+//! independently listening pinned-TLS broker; narrow widget tests can still
+//! inject the in-memory backend.
 
 use std::collections::HashMap;
 
@@ -31,12 +32,13 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{
-    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, compute_pairing_mac,
-    derive_pairing_code, derive_pairing_mac_key, format_pairing_code,
+    IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
+    format_pairing_code,
 };
 
 /// The pairing code is exactly six digits, one per input box.
 const CODE_LEN: usize = 6;
+const MAX_PAIRING_PAYLOAD_TEXT_BYTES: usize = 256 * 1024;
 const PAYLOAD_PLACEHOLDER: &str = "Paste the pairing payload from your other device";
 
 /// Composes `transform` with a translation to `(x, y)` for one draw call.
@@ -129,7 +131,12 @@ impl PairDeviceScreen {
     }
 
     pub fn set_payload_text(&mut self, payload: impl Into<String>) {
-        self.payload_text = payload.into();
+        let payload = payload.into();
+        if payload.len() > MAX_PAIRING_PAYLOAD_TEXT_BYTES {
+            self.error = Some("Pairing payload is larger than 256 KiB.".to_string());
+            return;
+        }
+        self.payload_text = payload;
         self.error = None;
     }
 
@@ -187,12 +194,11 @@ impl PairDeviceScreen {
         hs: &PairingHandshake,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
         let nonce = payload.nonce()?;
-        let mac_key = derive_pairing_mac_key(&nonce);
         let host_round1 = payload.initiator_round1()?;
         // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
         let mut rng = OsRng;
         let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-        let (mut my_session, _my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
+        let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
         // Process the host's round-1 → produce our round-2 reply.
         let outgoing = my_session.receive_round1(std::slice::from_ref(&host_round1))?;
         let reply = outgoing
@@ -202,19 +208,29 @@ impl PairDeviceScreen {
             .ok_or_else(|| {
                 IdentityFlowError::DecodeFailed("DKG produced no round-2 reply to share 1".into())
             })?;
-        let reply_bytes = postcard::to_allocvec(&reply)
-            .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
-        let mac = compute_pairing_mac(&mac_key, &reply_bytes);
+        let mac = super::pairing_transcript_mac(payload, "pairer-to-host", &my_round1, &reply)?;
+        hs.publish_pairer_round1(&nonce, my_round1.clone());
         hs.publish_pairer_reply(&nonce, reply, mac);
         // The pairer also needs the host's round-1 contribution, sent as the
-        // host's own round-2 message; block-poll the in-memory shim for it.
+        // host's own round-2 message; bounded-poll the broker mailbox for it.
         let mut host_reply: Option<EnrolmentRound2> = None;
-        for _ in 0..16 {
-            if let Some((r, _mac)) = hs.take_host_round2(&nonce) {
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(15))
+            .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
+        loop {
+            if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
+                let expected =
+                    super::pairing_transcript_mac(payload, "host-to-pairer", &my_round1, &r)?;
+                if expected != host_mac {
+                    return Err(IdentityFlowError::PairingMacInvalid);
+                }
                 host_reply = Some(r);
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let host_reply = host_reply.ok_or_else(|| {
             IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
@@ -224,6 +240,21 @@ impl PairDeviceScreen {
         self.completed = true;
         self.status = "Paired.".to_string();
         Ok(my_identity)
+    }
+
+    /// Connect to the exact pinned broker carried by `payload` and run the
+    /// pairer's complete DKG half.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint/pin is invalid or any authenticated
+    /// DKG exchange fails or times out.
+    pub fn perform_pairing_from_payload(
+        &mut self,
+        payload: &PairingPayload,
+    ) -> Result<ThresholdIdentity, IdentityFlowError> {
+        let broker = payload.remote_broker()?;
+        self.perform_pairing(payload, &broker)
     }
 
     /// Companion to `perform_pairing` that *exposes* the round-1 the
@@ -342,8 +373,15 @@ impl PairDeviceScreen {
                             if c == '\u{8}' || c == '\u{7f}' {
                                 continue;
                             }
-                            self.payload_text.push(c);
-                            *handled = true;
+                            if self.payload_text.len().saturating_add(c.len_utf8())
+                                <= MAX_PAIRING_PAYLOAD_TEXT_BYTES
+                            {
+                                self.payload_text.push(c);
+                                *handled = true;
+                            } else {
+                                self.error =
+                                    Some("Pairing payload is larger than 256 KiB.".to_string());
+                            }
                         }
                     }
                 }

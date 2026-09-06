@@ -28,9 +28,10 @@
 //!   [`validator::ChannelState`] snapshot.
 //!
 //! Non-goals: no network code (the validator operates on a snapshot;
-//! lazy-fetch of unknown attestations lives in the broker); no MLS/
-//! encryption (the wire format here is plaintext); no FROST/threshold
-//! sharing (`Identity::public_key` is a single Ed25519 key); no persistence.
+//! lazy-fetch of unknown attestations lives in the broker); no cryptographic
+//! key handling (this crate carries signed MLS metadata and opaque ciphertext,
+//! while `channel-crypto` owns group secrets); no FROST/threshold sharing
+//! (`Identity::public_key` is a single Ed25519 key); no persistence.
 //!
 //! Every on-wire struct derives `Serialize`/`Deserialize` and carries
 //! `#[serde(deny_unknown_fields)]` so an extension field can't quietly
@@ -62,7 +63,9 @@ pub mod file_invite;
 pub mod files;
 pub mod identity;
 pub mod invite;
+pub mod mls_governance;
 pub mod op;
+pub mod ownership_transfer;
 pub mod peer;
 pub mod recipient_control;
 pub mod redaction;
@@ -116,9 +119,18 @@ pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
+pub use mls_governance::{
+    MLS_GOVERNANCE_VERSION, MlsGovernanceAction, MlsGovernanceContext, MlsGovernanceError,
+    MlsGovernanceFrameV1,
+};
 pub use op::{
-    DocumentMutation, DocumentMutationError, EncryptionMetadata, SignedOp, document_artifact_id,
-    document_attestation_id,
+    DocumentMutation, DocumentMutationError, EncryptionMetadata, RoutedDocumentPayload, SignedOp,
+    document_artifact_id, document_attestation_id, document_channel_id,
+    validate_document_payload_route,
+};
+pub use ownership_transfer::{
+    OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
+    OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use recipient_control::{

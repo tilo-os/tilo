@@ -83,6 +83,7 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
 homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
+site_publish="$repo/apps/imager/packaging/publish-site-release.sh"
 if ! grep -Fq 'declare -A' "$mac_broker" \
    && grep -Fq '"$broker" "$platform" "$lease" >/dev/null' "$mac_broker" \
    && grep -Fq '$null = & $Trusted windows $Lease' \
@@ -96,6 +97,18 @@ if ! grep -Fq 'declare -A' "$mac_broker" \
   ok 'native release credential and promotion paths support stock macOS Bash and Windows PowerShell'
 else
   bad 'native release automation exposes broker stdout, depends on Bash 4/GNU sort, or writes a non-UTF-8 Windows environment file'
+fi
+
+source <(sed -n '/^version_is_newer()/,/^}/p' "$site_publish")
+if version_is_newer 1.10.0 1.9.999 \
+   && version_is_newer 10000000000.0.0 9999999999.999.999 \
+   && ! version_is_newer 1.0.0 1.0.0 \
+   && ! version_is_newer 1.2.3 2.0.0 \
+   && ! grep -Fq 'sort -V' "$site_publish" \
+   && grep -Fq 'existing landing-page release has invalid tag' "$site_publish"; then
+  ok 'landing-page promotion validates and compares release versions without numeric truncation'
+else
+  bad 'landing-page promotion can overwrite malformed or newer release state'
 fi
 
 # Load only the side-effect-free comparator, then exercise boundaries which a
@@ -119,7 +132,7 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
   && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
     "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
-  && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
+  && grep -Fq 'qos-imager-linux-*.flatpak.asc' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
 
@@ -155,6 +168,21 @@ if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
 else
   bad 'a host package can ship with its media writer disabled'
 fi
+flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.qos.Imager.yml"
+flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
+if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
+  && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
+    "$repo/apps/imager/src/write.rs" \
+  && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
+  && grep -Fq 'apps/imager/packaging/package-flatpak.sh' "$workflow" \
+  && grep -Fq -- '--qos-flatpak-probe-smoke' "$flatpak_package" \
+  && grep -Fq -- '--disable-download' "$flatpak_package"; then
+  ok 'Flatpak uses only a polkit-mediated exclusive UDisks2 descriptor and is release-gated'
+else
+  bad 'Flatpak raw-media authority or release packaging is too broad/incomplete'
+fi
 if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq 'with administrator privileges' "$mac_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
@@ -172,6 +200,7 @@ fi
 
 for artifact in \
   'qos-imager-linux-*.AppImage' \
+  'qos-imager-linux-*.flatpak' \
   'qos-imager-windows-x86_64.exe' \
   'qos-imager-setup-windows-x86_64.exe' \
   'qos-imager-macos-*.dmg'; do
@@ -179,10 +208,10 @@ for artifact in \
     && ok "$artifact is carried into the release" \
     || bad "$artifact is absent from the release workflow"
 done
-grep -Fq 'runner: runner-arm64' "$workflow" \
-  && grep -Fq 'runner: macos-x64' "$workflow" \
-  && grep -Fq 'runner: macos-arm64' "$workflow" \
-  && grep -Fq 'runs-on: windows' "$workflow" \
+grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
+  && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
+  && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
+  && grep -Fq 'runs-on: imager-windows-x86_64' "$workflow" \
   && ok 'Linux ARM64, Windows x64, and both macOS architectures have native lanes' \
   || bad 'the requested native release architecture matrix is incomplete'
 grep -Fq 'Require the complete native release matrix' "$workflow" \
@@ -249,6 +278,7 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
 cycle="$repo/os/dev/test-installer-cycle.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
+  && grep -Fq 'needs: plan' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -270,6 +300,10 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
   && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
+  && grep -Fq 'install_mode=%s' "$cycle" \
+  && grep -Fq '"$install_mode" "$storage"' "$cycle" \
+  && grep -Fq 'cold_boot_to_greeter_seconds=' "$cycle" \
+  && grep -Fq 'boot-timing.txt' "$cycle" \
   && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Windows EFI loader bytes changed during alongside install' "$cycle" \
@@ -302,7 +336,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq "wait_screen 12-tour-share" "$cycle" \
   && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
-  ok 'every tagged medium must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
+  ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
 fi
@@ -314,14 +348,16 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
   || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
-[ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "shell/**"' "$workflow")" -eq 2 ] \
+[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
+  && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
+  && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
+  && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'QOS_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
   && ! grep -Fq 'QOS_REGISTRY_CREDS:' "$workflow" \
-  && ok 'installer-medium changes trigger native, short-lived-authenticated architecture-matched builds' \
-  || bad 'installer-medium trigger, architecture, or registry-auth boundary is incomplete'
+  && ok 'installer media runs only on explicit, architecture-matched native release hosts' \
+  || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
   && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \

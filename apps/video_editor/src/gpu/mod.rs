@@ -1301,7 +1301,7 @@ mod tests {
             Some(CpuFrame {
                 width: 4,
                 height: 4,
-                rgba: Arc::new(vec![255, 0, 255, 255].repeat(16)),
+                rgba: Arc::new([255, 0, 255, 255].repeat(16)),
                 identity: 0,
             })
         });
@@ -1424,6 +1424,7 @@ mod tests {
     /// this collapses to zero; a real decoded picture never does. It is
     /// the one measurement that tells "showing the footage" apart from
     /// "showing a coloured rectangle".
+    #[cfg(feature = "decode")]
     fn horizontal_detail(buf: &[u8], w: u32, h: u32) -> f64 {
         let mut total = 0.0;
         for y in 0..h as usize {
@@ -1565,6 +1566,7 @@ mod tests {
     /// but asking it for a picture that has not arrived yet and then rendering
     /// immediately is precisely how a stand-in gets captured as though it were
     /// the footage.
+    #[cfg(feature = "decode")]
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_apps_own_frame_source_puts_real_footage_on_the_canvas() {
@@ -1673,6 +1675,7 @@ mod tests {
     /// a saved web page whose extension says video. It is deliberately *not*
     /// checked through `probe`, because probing is the guard that already
     /// works — this asserts the decode path gives up on its own.
+    #[cfg(feature = "decode")]
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn a_file_that_never_decodes_is_given_up_on() {

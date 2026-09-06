@@ -151,14 +151,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         &LaunchSpec::new("dev.qos.tube", live_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .allowed_flags(&["--narrow", "--palette", "--play-demo", "--empty"])
-            .allowed_options(&["--route", "--palette-query"]),
+            .allowed_flags(&[
+                "--narrow",
+                "--palette",
+                "--play-demo",
+                "--empty",
+                "--loading",
+                "--device-sync",
+            ])
+            .allowed_options(&["--route", "--palette-query"])
+            .configure_app(configure_app),
     )?;
     Ok(())
 }
 
 fn live_root() -> Box<dyn Widget> {
     Box::new(tube::TubeApp::new().online())
+}
+
+/// Install the document-action decoders used by Tube's published resource
+/// surface. The standard launcher applies this callback to the live `ui::App`
+/// before its event loop starts, so Ctrl+K, agents, and remote replay all use
+/// the same registry.
+fn configure_app(app: &mut ui::App) {
+    tube::actions::register(app.action_registry_mut());
 }
 
 #[allow(
@@ -169,7 +185,14 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let (vw, vh) = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
     if args.has("--empty") {
+        app = app.with_empty_home_shot();
+    } else if args.has("--loading") {
         app = app.with_loading_home_shot();
+    } else if args.has("--device-sync") {
+        #[cfg(feature = "grayjay-sync")]
+        {
+            app = app.with_device_sync_shot();
+        }
     } else if args.has("--palette") {
         app = app.with_palette_open_for_test(args.value("--palette-query").unwrap_or("rust"));
     } else if args.has("--play-demo") {
@@ -1696,4 +1719,44 @@ fn checksum(rgba: &[u8]) -> u64 {
         h = h.wrapping_mul(1_099_511_628_211);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qos_actions::ActionInput;
+
+    /// Regression for the live-launch boundary: an action emitted by Tube's
+    /// production resource provider must be decodable by the registry installed
+    /// on the actual live host. This deliberately does not build a standalone
+    /// test registry; it exercises the callback passed to `LaunchSpec` above.
+    #[test]
+    fn live_host_registers_the_published_document_action_type() {
+        let mut model = tube::sample::model();
+        let video_id = model.videos[0].id.clone();
+        model.route = tube::model::Route::Watch(video_id);
+        let resources = tube::actions::provide_resources(&model);
+        let published = qos_actions::flatten(&resources)
+            .into_iter()
+            .find(|flat| {
+                flat.resource_id.0.starts_with("tube.current:") && flat.action.id == "like"
+            })
+            .map(|flat| flat.action)
+            .expect("watch resource publishes its document-backed like action");
+        let ActionInput::Immediate(encoded) = &published.input else {
+            panic!("like is an immediate document action");
+        };
+        assert_eq!(encoded.type_id, tube::actions::TUBE_ACTION_TYPE);
+
+        let mut app = ui::App::new(ui::State::new(), live_root());
+        configure_app(&mut app);
+        assert!(
+            app.action_registry_mut()
+                .contains(tube::actions::TUBE_ACTION_TYPE),
+            "the live launch callback must install Tube's document decoder"
+        );
+        app.action_registry_mut()
+            .decode(encoded)
+            .expect("the live host decodes an action from Tube's published surface");
+    }
 }

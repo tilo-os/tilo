@@ -53,8 +53,7 @@ landlock   = "strict"
 
 [sandbox.net]
 # The agent has no direct egress; model-gateway owns the provider allowlist.
-mode  = "allowlist"
-hosts = []
+mode = "off"
 
 [sandbox.portals]
 

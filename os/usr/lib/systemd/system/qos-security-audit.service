@@ -9,8 +9,8 @@ Wants=fs.service
 Type=oneshot
 ExecStart=/usr/libexec/qos-security-audit
 RemainAfterExit=yes
-# Reporting only — never let the audit affect boot.
-SuccessExitStatus=0 1
+# WantedBy (rather than RequiredBy) keeps diagnostics from blocking boot. A
+# non-zero result intentionally remains visible as a failed health unit.
 
 [Install]
 WantedBy=multi-user.target
