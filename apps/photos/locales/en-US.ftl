@@ -1,4 +1,7 @@
 photos-open = Open
+photos-library = Library
+photos-library-empty-title = Your library is empty
+photos-library-empty-body = Import a photograph to start a shared library.
 photos-open-title = Open a photograph
 photos-filter-images = Images
 photos-rotate-left = Rotate left

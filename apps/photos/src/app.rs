@@ -22,6 +22,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -37,7 +38,8 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, EmptyState, ImageViewer, Widget};
+use ui::widget::{Button, EmptyState, ImageViewer, TextInput, Widget};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::doc::PhotosDoc;
 use crate::model::{Edits, OpenImage, Rect01};
@@ -88,12 +90,26 @@ const CANVAS_INSET: f32 = 10.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
     Open,
+    Library,
     RotateLeft,
     RotateRight,
     CropToView,
     Reset,
     Copy,
     Save,
+}
+
+/// Controls inside the in-grid album editor. They are intentionally a small
+/// local presentation state machine; every durable outcome is still one
+/// `PhotosAction::SaveAlbum` action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AlbumEditorHit {
+    New,
+    Edit,
+    Save,
+    Cancel,
+    Delete,
+    ConfirmDelete,
 }
 
 /// How a toolbar item presents itself.
@@ -148,6 +164,7 @@ enum Slot {
 /// glyphs is `ui::icons` work, out of this app's scope.
 const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
     (Hit::Open, "photos-open", Icon::Folder, Face::Labelled),
+    (Hit::Library, "photos-library", Icon::Image, Face::Labelled),
     (
         Hit::RotateLeft,
         "photos-rotate-left",
@@ -175,14 +192,15 @@ const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
 /// the photograph out, pushed to the trailing edge.
 const SLOTS: &[Slot] = &[
     Slot::Item(0),
-    Slot::Separator,
     Slot::Item(1),
+    Slot::Separator,
     Slot::Item(2),
     Slot::Item(3),
     Slot::Item(4),
-    Slot::Spacer,
     Slot::Item(5),
+    Slot::Spacer,
     Slot::Item(6),
+    Slot::Item(7),
 ];
 
 /// Width a button needs to show `face` with `label`.
@@ -247,6 +265,10 @@ struct Rendered {
     rgba: Rgba,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
+)]
 pub struct PhotosApp {
     /// Canonical dispatcher shared by toolbar edits and exported document actions.
     actions: ui::ActionHost,
@@ -277,6 +299,37 @@ pub struct PhotosApp {
     pending_resource_open: Option<(qos_actions::InvocationId, String)>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
+    /// Heads that produced the cached immutable/Arc-backed search catalogue.
+    /// An unchanged `sync` must not rebuild a full-library index.
+    search_heads: Vec<automerge::ChangeHash>,
+    /// The library is deliberately a bounded presentation slice.  The CRDT
+    /// can hold considerably more entries than a window can paint or an
+    /// assistive technology should receive in one update.
+    library_items: Vec<(String, String, bool)>,
+    library_total: usize,
+    library_offset: usize,
+    library_albums: Vec<(String, String, usize)>,
+    active_album: Option<String>,
+    album_cards: Vec<(Option<String>, Rect)>,
+    album_editor: bool,
+    album_editor_id: Option<String>,
+    album_editor_creating: bool,
+    album_name_input: TextInput,
+    album_editor_members: HashSet<String>,
+    album_delete_confirm: bool,
+    /// Tab order inside the transient sheet: name, cancel, delete (when
+    /// editing), save. The `TextInput` remains the actual focused widget.
+    album_editor_focus: usize,
+    album_editor_rect: Rect,
+    album_editor_hits: Vec<(AlbumEditorHit, Rect)>,
+    /// At most two viewportfuls of decoded thumbnails.  Originals are never
+    /// scanned at draw time, and a large library cannot turn a frame into a
+    /// disk-I/O loop.
+    library_thumbnails: HashMap<String, ImageData>,
+    /// Stable-id hit targets for the currently materialised grid cards.
+    library_cards: Vec<(String, Rect, bool)>,
+    pointer: Point,
+    library_mode: bool,
 }
 
 impl Default for PhotosApp {
@@ -314,6 +367,26 @@ impl PhotosApp {
             pending_resource_open: None,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
+            search_heads: Vec::new(),
+            library_items: Vec::new(),
+            library_total: 0,
+            library_offset: 0,
+            library_albums: Vec::new(),
+            active_album: None,
+            album_cards: Vec::new(),
+            album_editor: false,
+            album_editor_id: None,
+            album_editor_creating: false,
+            album_name_input: TextInput::local().with_id("photos-album-name"),
+            album_editor_members: HashSet::new(),
+            album_delete_confirm: false,
+            album_editor_focus: 0,
+            album_editor_rect: Rect::ZERO,
+            album_editor_hits: Vec::new(),
+            library_thumbnails: HashMap::new(),
+            library_cards: Vec::new(),
+            pointer: Point::ZERO,
+            library_mode: false,
         }
     }
 
@@ -425,6 +498,25 @@ impl PhotosApp {
     /// Whether a photograph is loaded and rendered.
     pub fn has_image(&self) -> bool {
         self.viewer.is_some()
+    }
+
+    /// Reveal the bounded library grid.  Kept public for the deterministic
+    /// offscreen gallery; ordinary interaction reaches it through the same
+    /// toolbar button and semantic action as a user.
+    pub fn show_library(&mut self) {
+        self.library_mode = true;
+    }
+
+    /// Pose the ordinary library editor for deterministic offscreen coverage.
+    /// The production entry point is the visible “Edit album” control; shot
+    /// rendering has no window event stream to click it through.
+    pub fn show_album_editor_for_shot(&mut self, doc: &AutoCommit) {
+        self.show_library();
+        self.active_album = PhotosDoc::library(doc)
+            .albums
+            .first()
+            .map(|album| album.id.clone());
+        self.begin_edit_album(doc);
     }
 
     /// Zoom the canvas, as the scroll wheel would. Lets a caller frame a crop
@@ -581,6 +673,255 @@ impl PhotosApp {
         self.notice = None;
     }
 
+    /// Every card interaction routes through the same typed, replayable
+    /// action registry as resources and search results.  The canvas never
+    /// writes document fields directly.
+    fn commit_library_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::actions::PhotosAction,
+    ) {
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::PHOTOS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
+        );
+    }
+
+    fn begin_new_album(&mut self, doc: &AutoCommit) {
+        let library = PhotosDoc::library(doc);
+        let mut suffix = 1_u32;
+        let id = loop {
+            let candidate = format!("photos.album:untitled-{suffix}");
+            if library.album(&candidate).is_none() {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        self.album_editor = true;
+        self.album_editor_creating = true;
+        self.album_editor_id = Some(id);
+        self.album_name_input.set_text("Untitled album");
+        self.album_name_input.set_focus(true);
+        self.album_editor_members.clear();
+        self.album_delete_confirm = false;
+        self.album_editor_focus = 0;
+        self.notice = Some("Name the album, choose photographs, then save".to_owned());
+    }
+
+    fn begin_edit_album(&mut self, doc: &AutoCommit) {
+        let Some(id) = self.active_album.clone() else {
+            self.notice = Some("Choose an album to edit".to_owned());
+            return;
+        };
+        let Some(album) = PhotosDoc::library(doc).album(&id).cloned() else {
+            self.notice = Some("That album is no longer available".to_owned());
+            self.active_album = None;
+            return;
+        };
+        self.album_editor = true;
+        self.album_editor_creating = false;
+        self.album_editor_id = Some(album.id);
+        self.album_name_input.set_text(&album.name);
+        self.album_name_input.set_focus(true);
+        self.album_editor_members = album.photo_ids.into_iter().collect();
+        self.album_delete_confirm = false;
+        self.album_editor_focus = 0;
+    }
+
+    fn cancel_album_editor(&mut self) {
+        self.album_editor = false;
+        self.album_editor_id = None;
+        self.album_editor_members.clear();
+        self.album_delete_confirm = false;
+        self.album_name_input.set_focus(false);
+        self.album_editor_focus = 0;
+        self.notice = Some("Album changes discarded".to_owned());
+    }
+
+    fn save_album_editor(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.album_editor_id.clone() else {
+            return;
+        };
+        let name = self.album_name_input.value().trim().to_owned();
+        let library = PhotosDoc::library(doc);
+        let stale = if self.album_editor_creating {
+            library.album(&id).is_some()
+        } else {
+            library.album(&id).is_none()
+        };
+        if stale
+            || name.is_empty()
+            || !self
+                .album_editor_members
+                .iter()
+                .all(|photo| library.photo(photo).is_some())
+        {
+            self.notice = Some(if stale {
+                "Album changed elsewhere; review and save again".to_owned()
+            } else {
+                "An album needs a name and photographs still in this library".to_owned()
+            });
+            return;
+        }
+        let action = crate::actions::PhotosAction::SaveAlbum {
+            id: id.clone(),
+            name,
+            // Preserve the library's stable browse order. HashSet iteration
+            // would make two otherwise identical UI edits serialize to
+            // arbitrary membership order and create needless collaboration
+            // conflicts.
+            photo_ids: library
+                .photos
+                .iter()
+                .filter(|photo| self.album_editor_members.contains(&photo.id))
+                .map(|photo| photo.id.clone())
+                .collect(),
+            create: self.album_editor_creating,
+        };
+        self.commit_library_action(doc, &action);
+        self.active_album = Some(id);
+        self.album_editor = false;
+        self.album_delete_confirm = false;
+        self.album_name_input.set_focus(false);
+        self.album_editor_focus = 0;
+        self.notice = Some("Album saved for everyone in this workspace".to_owned());
+    }
+
+    fn delete_active_album(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self
+            .album_editor_id
+            .clone()
+            .or_else(|| self.active_album.clone())
+        else {
+            return;
+        };
+        self.commit_library_action(doc, &crate::actions::PhotosAction::RemoveAlbum { id });
+        self.active_album = None;
+        self.album_editor = false;
+        self.album_editor_id = None;
+        self.album_delete_confirm = false;
+        self.album_editor_focus = 0;
+        self.notice = Some("Album deleted; photographs remain in the library".to_owned());
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "embedded TextInput uses the Widget event contract"
+    )]
+    fn handle_album_editor_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.album_editor {
+            return false;
+        }
+        let mut sink = None;
+        self.album_name_input.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            doc,
+            path,
+            handled,
+            &mut sink,
+            node_id,
+            taffy,
+        );
+        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    let steps = if self.album_editor_creating { 3 } else { 4 };
+                    self.album_editor_focus = if modifiers.state().shift_key() {
+                        (self.album_editor_focus + steps - 1) % steps
+                    } else {
+                        (self.album_editor_focus + 1) % steps
+                    };
+                    self.album_name_input
+                        .set_focus(self.album_editor_focus == 0);
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.cancel_album_editor();
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter)
+                    if modifiers.state().control_key() || modifiers.state().super_key() =>
+                {
+                    self.save_album_editor(doc);
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    match (self.album_editor_creating, self.album_editor_focus) {
+                        (_, 1) => self.cancel_album_editor(),
+                        (false, 2) if self.album_delete_confirm => self.delete_active_album(doc),
+                        (false, 2) => self.album_delete_confirm = true,
+                        (true, 2) | (false, 3) => self.save_album_editor(doc),
+                        _ => {}
+                    }
+                    *handled = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) {
+            if let Some((hit, _)) = self
+                .album_editor_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .copied()
+            {
+                match hit {
+                    AlbumEditorHit::Save => self.save_album_editor(doc),
+                    AlbumEditorHit::Cancel => self.cancel_album_editor(),
+                    AlbumEditorHit::Delete => {
+                        self.album_delete_confirm = true;
+                        self.notice = Some("Press Delete album? again to keep photographs and delete only the album".to_owned());
+                    }
+                    AlbumEditorHit::ConfirmDelete => self.delete_active_album(doc),
+                    _ => {}
+                }
+                *handled = true;
+                return true;
+            }
+            if let Some((id, _, _)) = self
+                .library_cards
+                .iter()
+                .find(|(_, rect, _)| rect.contains(self.pointer))
+                .cloned()
+            {
+                if !self.album_editor_members.insert(id.clone()) {
+                    self.album_editor_members.remove(&id);
+                }
+                self.album_delete_confirm = false;
+                *handled = true;
+                return true;
+            }
+        }
+        true
+    }
+
     fn perform_effect(&mut self, operation: crate::actions::PhotosOperation, doc: &AutoCommit) {
         match operation {
             // Resource/search routing has already brought this Photos
@@ -608,8 +949,27 @@ impl PhotosApp {
                 }
             }
             crate::actions::PhotosOperation::View
+            | crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
+    }
+
+    /// Navigate to an extant stable album id without producing a CRDT action.
+    /// This is deliberately separate from `perform_effect`: callers need a
+    /// useful stale-address error instead of silently falling back to all
+    /// photographs if a collaborator removed the album after search indexed
+    /// it.
+    fn view_album(&mut self, doc: &AutoCommit, album_id: &str) -> Result<(), String> {
+        if PhotosDoc::library(doc).album(album_id).is_none() {
+            return Err("that album is no longer in the library".to_owned());
+        }
+        self.library_mode = true;
+        self.active_album = Some(album_id.to_owned());
+        self.library_offset = 0;
+        self.album_editor = false;
+        self.album_delete_confirm = false;
+        self.notice = Some("Showing selected album".to_owned());
+        Ok(())
     }
 
     /// Re-derive the rendering if the path or the edits have moved.
@@ -683,6 +1043,10 @@ impl PhotosApp {
             Hit::Open => {
                 self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
             }
+            Hit::Library => {
+                self.library_mode = true;
+                self.notice = None;
+            }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
             Hit::CropToView => {
@@ -739,6 +1103,10 @@ impl PhotosApp {
     /// app supplies the file name and current edit state that a sighted person
     /// gets from the status bar. The status remains a polite live region for
     /// copy/save/open failures without stealing keyboard focus.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the synthetic canvas accessibility tree keeps each visual hit target beside its stable semantic route"
+    )]
     fn accessibility_tree(&self) -> AccessNode {
         let image_label = || {
             self.original.as_ref().map_or_else(
@@ -756,14 +1124,152 @@ impl PhotosApp {
             ),
             None => self.empty_state_text(),
         };
-        let mut children = vec![
-            self.toolbar_semantics(),
+        let canvas = if self.library_mode {
+            let mut cards: Vec<_> = self
+                .library_cards
+                .iter()
+                .filter_map(|(id, bounds, favorite)| {
+                    let (_, name, _) = self
+                        .library_items
+                        .iter()
+                        .find(|(item_id, _, _)| item_id == id)?;
+                    let open_target = format!("photos:library-photo:{id}");
+                    let favorite_target = format!("photos:library-favorite:{id}");
+                    let children = vec![
+                        if self.album_editor {
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name(name.clone())
+                                .with_description("Included in this album")
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    checked: Some(self.album_editor_members.contains(id)),
+                                    ..Default::default()
+                                })
+                                .with_action_target(open_target)
+                        } else {
+                            AccessNode::new(Role::Button)
+                                .with_name(name.clone())
+                                .with_description(tr("photos-open"))
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(open_target)
+                        },
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name("Favorite")
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                checked: Some(*favorite),
+                                ..Default::default()
+                            })
+                            .with_action_target(favorite_target),
+                    ];
+                    Some(
+                        AccessNode::new(Role::ListItem)
+                            .with_name(name.clone())
+                            .with_bounds(*bounds)
+                            .with_hashed_key(format!("photos:library-item:{id}"))
+                            .with_children(children),
+                    )
+                })
+                .collect();
+            cards.extend(self.album_cards.iter().map(|(id, bounds)| {
+                let label = id
+                    .as_ref()
+                    .and_then(|id| {
+                        self.library_albums
+                            .iter()
+                            .find(|(album_id, _, _)| album_id == id)
+                    })
+                    .map_or_else(
+                        || "All photos".to_owned(),
+                        |(_, name, count)| format!("{name} ({count})"),
+                    );
+                let target = format!("photos:library-album:{}", id.as_deref().unwrap_or("all"));
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(label)
+                    .with_bounds(*bounds)
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked: Some(id.as_ref() == self.active_album.as_ref()),
+                        ..Default::default()
+                    })
+                    .with_action_target(target)
+            }));
+            if self.album_editor {
+                cards.push(
+                    AccessNode::new(Role::TextInput)
+                        .with_name("Album name")
+                        .with_value(self.album_name_input.value())
+                        .with_bounds(self.album_name_input.get_rect())
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.album_name_input.is_focused(),
+                            ..Default::default()
+                        })
+                        .with_hashed_key("photos:album-editor:name"),
+                );
+                for (hit, bounds) in &self.album_editor_hits {
+                    let (name, target) = match hit {
+                        AlbumEditorHit::Save => ("Save album", "photos:album-editor:save"),
+                        AlbumEditorHit::Cancel => {
+                            ("Cancel album editing", "photos:album-editor:cancel")
+                        }
+                        AlbumEditorHit::Delete => ("Delete album", "photos:album-editor:delete"),
+                        AlbumEditorHit::ConfirmDelete => (
+                            "Confirm deleting album",
+                            "photos:album-editor:confirm-delete",
+                        ),
+                        AlbumEditorHit::New | AlbumEditorHit::Edit => continue,
+                    };
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
+            } else {
+                for (hit, bounds) in &self.album_editor_hits {
+                    let (name, target) = match hit {
+                        AlbumEditorHit::New => ("New album", "photos:album-editor:new"),
+                        AlbumEditorHit::Edit => ("Edit selected album", "photos:album-editor:edit"),
+                        _ => continue,
+                    };
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
+            }
+            AccessNode::new(Role::List)
+                .with_name(tr("photos-library"))
+                .with_description(format!("{} photographs", self.library_total))
+                .with_bounds(self.canvas_rect)
+                .with_hashed_key("photos:library-grid")
+                .with_children(cards)
+        } else {
             AccessNode::new(Role::Image)
                 .with_name(image_name)
                 .with_description(image_description)
                 .with_bounds(self.canvas_rect)
-                .with_hashed_key("photos:canvas"),
-        ];
+                .with_hashed_key("photos:canvas")
+        };
+        let mut children = vec![self.toolbar_semantics(), canvas];
         if !self.status.is_empty() {
             children.push(
                 AccessNode::new(Role::StaticText)
@@ -817,6 +1323,74 @@ impl PhotosApp {
             }
             _ => false,
         }
+    }
+
+    fn perform_library_semantic_action(
+        &mut self,
+        target: &str,
+        action: &AccessAction,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        if let Some(command) = target.strip_prefix("photos:album-editor:") {
+            if !matches!(action, AccessAction::Activate) {
+                return matches!(action, AccessAction::Focus);
+            }
+            match command {
+                "new" => self.begin_new_album(doc),
+                "edit" => self.begin_edit_album(doc),
+                "save" => self.save_album_editor(doc),
+                "cancel" => self.cancel_album_editor(),
+                "delete" => self.album_delete_confirm = true,
+                "confirm-delete" => self.delete_active_album(doc),
+                _ => return false,
+            }
+            return true;
+        }
+        if let Some(album_id) = target.strip_prefix("photos:library-album:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            self.active_album = (album_id != "all").then(|| album_id.to_owned());
+            self.library_offset = 0;
+            return true;
+        }
+        let (photo_id, set_favorite) =
+            if let Some(id) = target.strip_prefix("photos:library-photo:") {
+                (id, false)
+            } else if let Some(id) = target.strip_prefix("photos:library-favorite:") {
+                (id, true)
+            } else {
+                return false;
+            };
+        if !matches!(action, AccessAction::Activate) {
+            return matches!(action, AccessAction::Focus);
+        }
+        let Some((_, _, favorite)) = self.library_items.iter().find(|(id, _, _)| id == photo_id)
+        else {
+            return false;
+        };
+        if set_favorite {
+            self.commit_library_action(
+                doc,
+                &crate::actions::PhotosAction::SetFavorite {
+                    photo_id: photo_id.to_owned(),
+                    favorite: !favorite,
+                },
+            );
+        } else if self.album_editor {
+            if !self.album_editor_members.insert(photo_id.to_owned()) {
+                self.album_editor_members.remove(photo_id);
+            }
+        } else {
+            self.commit_library_action(
+                doc,
+                &crate::actions::PhotosAction::SelectPhoto {
+                    photo_id: photo_id.to_owned(),
+                },
+            );
+            self.library_mode = false;
+        }
+        true
     }
 
     /// Collect a chosen file from the portal, if one has arrived.
@@ -880,7 +1454,7 @@ impl PhotosApp {
     /// an image; Reset additionally needs something to undo.
     fn enabled(hit: Hit, has_image: bool, edited: bool) -> bool {
         match hit {
-            Hit::Open => true,
+            Hit::Open | Hit::Library => true,
             Hit::Reset => has_image && edited,
             _ => has_image,
         }
@@ -1072,6 +1646,443 @@ impl PhotosApp {
             })
             .unwrap()
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the grid paint keeps its pixel geometry and bounded materialisation together"
+    )]
+    /// Render the visible part of the library; the remainder stays reachable
+    /// through cursor-paged search and canonical resources.
+    fn draw_library(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+
+        self.library_cards.clear();
+        self.album_cards.clear();
+        if self.library_items.is_empty() {
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.canvas_rect,
+                Some(Icon::Image),
+                &tr("photos-library-empty-title"),
+                Some(&tr("photos-library-empty-body")),
+                None,
+                Point::ZERO,
+            );
+            // Empty collections are useful before the first import too; keep
+            // the same New album affordance available rather than stranding
+            // the user behind an empty-state dead end.
+            self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+            return;
+        }
+        let bounds = self.canvas_rect;
+        let columns: usize = if bounds.width() < 540.0 { 2 } else { 4 };
+        let gap = if columns == 2 { 8.0 } else { 12.0 };
+        let card_w =
+            ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
+                / columns as f64)
+                .max(1.0);
+        let album_h = if self.library_albums.is_empty() {
+            0.0
+        } else {
+            38.0
+        };
+        let heading_y = bounds.y0 + f64::from(PAD);
+        text_renderer.draw_text_weighted(
+            scene,
+            &tr("photos-library"),
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((bounds.x0 + f64::from(PAD), heading_y)),
+            Some((bounds.width() - f64::from(PAD * 2.0)) as f32),
+            TextWeight::Medium,
+        );
+        let count = if self.library_total == 0 {
+            "0".to_owned()
+        } else {
+            let first = self.library_offset + 1;
+            let last = (self.library_offset + self.library_items.len()).min(self.library_total);
+            format!("{first}–{last} / {}", self.library_total)
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &count,
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((bounds.x1 - f64::from(PAD) - 100.0, heading_y + 3.0)),
+            Some(100.0),
+            TextWeight::Regular,
+        );
+        if !self.library_albums.is_empty() {
+            let mut x = bounds.x0 + f64::from(PAD);
+            let y = heading_y + 24.0;
+            let mut albums = vec![(None, format!("All photos ({})", self.library_total))];
+            albums.extend(
+                self.library_albums
+                    .iter()
+                    .map(|(id, name, count)| (Some(id.clone()), format!("{name} ({count})"))),
+            );
+            for (album_id, label) in albums {
+                let width = (label.chars().count() as f64 * 7.2 + 18.0).min(150.0);
+                if x + width > bounds.x1 - f64::from(PAD) {
+                    break;
+                }
+                let chip = Rect::new(x, y, x + width, y + 26.0);
+                let selected = album_id == self.active_album;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if selected {
+                        theme.tokens.colors.neutral[3]
+                    } else {
+                        theme.tokens.colors.surfaces.raised
+                    },
+                    None,
+                    &chip,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Rect::new(chip.x0, chip.y1 - 1.0, chip.x1, chip.y1),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &label,
+                    12.0,
+                    theme.text_primary,
+                    transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 6.0)),
+                    Some((width - 16.0) as f32),
+                    TextWeight::Regular,
+                );
+                self.album_cards.push((album_id, chip));
+                x += width + 8.0;
+            }
+        }
+        let top = heading_y + 31.0 + album_h;
+        let preview_h = (card_w * 0.62).clamp(68.0, 144.0);
+        let card_h = preview_h + 38.0;
+        let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
+        let visible = columns.saturating_mul(rows.max(1));
+        for (index, (id, name, favorite)) in self.library_items.iter().take(visible).enumerate() {
+            let col = index % columns;
+            let row = index / columns;
+            let x = bounds.x0 + f64::from(PAD) + col as f64 * (card_w + gap);
+            let y = top + row as f64 * (card_h + gap);
+            let card = Rect::new(x, y, x + card_w, y + card_h);
+            let preview = Rect::new(x, y, x + card_w, y + preview_h);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if card.contains(self.pointer) {
+                    theme.tokens.colors.neutral[3]
+                } else {
+                    theme.tokens.colors.surfaces.window_card
+                },
+                None,
+                &card,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.neutral[2],
+                None,
+                &preview,
+            );
+            if let Some(image) = self.library_thumbnails.get(id) {
+                let scale = (preview.width() / f64::from(image.width))
+                    .min(preview.height() / f64::from(image.height));
+                let drawn_w = f64::from(image.width) * scale;
+                let drawn_h = f64::from(image.height) * scale;
+                let image_transform = transform
+                    * Affine::translate((
+                        preview.x0 + (preview.width() - drawn_w) * 0.5,
+                        preview.y0 + (preview.height() - drawn_h) * 0.5,
+                    ))
+                    * Affine::scale(scale);
+                scene.draw_image(image, image_transform);
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(card.x0, card.y1 - 1.0, card.x1, card.y1),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                name,
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((x + 9.0, preview.y1 + 9.0)),
+                Some((card_w - 34.0) as f32),
+                TextWeight::Regular,
+            );
+            if *favorite {
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "★",
+                    14.0,
+                    theme.tokens.colors.accent[6],
+                    transform * Affine::translate((card.x1 - 22.0, preview.y1 + 8.0)),
+                    Some(16.0),
+                    TextWeight::Medium,
+                );
+            }
+            if self.album_editor && self.album_editor_members.contains(id) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Rect::new(card.x0, card.y0, card.x1, card.y0 + 3.0),
+                );
+            }
+            self.library_cards.push((id.clone(), card, *favorite));
+        }
+        self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+    }
+
+    /// Paint the album editor directly over the library, keeping the selected
+    /// photographs visible behind it. On narrow screens it becomes a full
+    /// width sheet, avoiding a tiny side panel with clipped controls.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact/wide album-sheet geometry and its shared-widget paint path must remain auditable together"
+    )]
+    fn draw_album_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.album_editor_hits.clear();
+        if !self.library_mode {
+            return;
+        }
+        let bounds = self.canvas_rect;
+        let narrow = bounds.width() < 620.0;
+        let panel_w = if narrow { bounds.width() - 16.0 } else { 360.0 };
+        // A phone must keep actual photographs reachable while editing; a
+        // compact bottom sheet leaves the upper grid visible instead of
+        // turning “choose photographs” into an instruction with no surface.
+        let panel_h = if narrow { 230.0 } else { 332.0 };
+        let panel_y = if narrow {
+            bounds.y1 - panel_h - 8.0
+        } else {
+            bounds.y0 + 10.0
+        };
+        let panel = Rect::new(
+            if narrow {
+                bounds.x0 + 8.0
+            } else {
+                bounds.x1 - panel_w - 12.0
+            },
+            panel_y,
+            if narrow {
+                bounds.x1 - 8.0
+            } else {
+                bounds.x1 - 12.0
+            },
+            panel_y + panel_h,
+        );
+        self.album_editor_rect = panel;
+        if !self.album_editor {
+            let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 36.0);
+            let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 36.0);
+            for (hit, rect, label, enabled) in [
+                (AlbumEditorHit::New, new, "New album", true),
+                (
+                    AlbumEditorHit::Edit,
+                    edit,
+                    "Edit album",
+                    self.active_album.is_some(),
+                ),
+            ] {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    if enabled {
+                        theme.tokens.colors.surfaces.raised
+                    } else {
+                        theme.tokens.colors.neutral[2]
+                    },
+                    None,
+                    &rect,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    13.0,
+                    if enabled {
+                        theme.text_primary
+                    } else {
+                        theme.text_dim
+                    },
+                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
+                    Some(100.0),
+                    TextWeight::Medium,
+                );
+                if enabled {
+                    self.album_editor_hits.push((hit, rect));
+                }
+            }
+            return;
+        }
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            if self.album_editor_creating {
+                "New album"
+            } else {
+                "Edit album"
+            },
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Album name",
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0)),
+            Some(180.0),
+            TextWeight::Regular,
+        );
+        let name_rect = Rect::new(
+            panel.x0 + 16.0,
+            panel.y0 + 66.0,
+            panel.x1 - 16.0,
+            panel.y0 + 106.0,
+        );
+        self.album_name_input.apply_layout_external(name_rect);
+        self.album_name_input
+            .draw(scene, transform, text_renderer, theme, presence);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Choose photographs in the grid",
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 122.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("{} selected", self.album_editor_members.len()),
+            14.0,
+            theme.text_primary,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 146.0)),
+            Some(150.0),
+            TextWeight::Medium,
+        );
+        let y = panel.y1 - 48.0;
+        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 34.0);
+        let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 34.0);
+        let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 34.0);
+        for (hit, rect, label) in [
+            (AlbumEditorHit::Cancel, cancel, "Cancel"),
+            (AlbumEditorHit::Save, save, "Save"),
+        ] {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.neutral[3],
+                None,
+                &rect,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
+                Some((rect.width() - 16.0) as f32),
+                TextWeight::Medium,
+            );
+            let focused = matches!(hit, AlbumEditorHit::Cancel) && self.album_editor_focus == 1
+                || matches!(hit, AlbumEditorHit::Save)
+                    && self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 };
+            if focused {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 2.0),
+                );
+            }
+            self.album_editor_hits.push((hit, rect));
+        }
+        if !self.album_editor_creating {
+            let (hit, label) = if self.album_delete_confirm {
+                (AlbumEditorHit::ConfirmDelete, "Delete album?")
+            } else {
+                (AlbumEditorHit::Delete, "Delete")
+            };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.semantic.danger,
+                None,
+                &delete,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((delete.x0 + 7.0, delete.y0 + 9.0)),
+                Some((delete.width() - 10.0) as f32),
+                TextWeight::Medium,
+            );
+            if self.album_editor_focus == 2 {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Rect::new(delete.x0, delete.y0, delete.x1, delete.y0 + 2.0),
+                );
+            }
+            self.album_editor_hits.push((hit, delete));
+        }
+    }
 }
 
 /// The region of a `w`×`h` image `viewer` currently frames, in normalized
@@ -1168,6 +2179,9 @@ impl Widget for PhotosApp {
             return Ok(false);
         };
         match operation {
+            crate::actions::PhotosOperation::ViewAlbum { album_id } => {
+                self.view_album(doc, &album_id)?;
+            }
             crate::actions::PhotosOperation::Open { path: Some(_) } => {
                 return Err("direct open requires lifecycle dispatch".into());
             }
@@ -1264,7 +2278,60 @@ impl Widget for PhotosApp {
             button.set_enabled(Self::enabled(*hit, has_image, edited));
         }
         self.status = self.status_text(doc);
-        self.search_provider = crate::search::PhotosSearchProvider::new(doc);
+        let heads = doc.get_heads();
+        if heads != self.search_heads {
+            self.search_provider = crate::search::PhotosSearchProvider::new(doc);
+            self.search_heads = heads;
+        }
+        let library = PhotosDoc::library(doc);
+        let membership = self.active_album.as_ref().and_then(|id| {
+            library
+                .albums
+                .iter()
+                .find(|album| &album.id == id)
+                .map(|album| &album.photo_ids)
+        });
+        self.library_total = library
+            .photos
+            .iter()
+            .filter(|photo| membership.is_none_or(|ids| ids.contains(&photo.id)))
+            .count();
+        self.library_offset = self
+            .library_offset
+            .min(self.library_total.saturating_sub(1));
+        self.library_items = library
+            .photos
+            .iter()
+            .filter(|photo| membership.is_none_or(|ids| ids.contains(&photo.id)))
+            .skip(self.library_offset)
+            .take(120)
+            .map(|photo| (photo.id.clone(), photo.image.name.clone(), photo.favorite))
+            .collect();
+        self.library_albums = library
+            .albums
+            .iter()
+            .take(24)
+            .map(|album| (album.id.clone(), album.name.clone(), album.photo_ids.len()))
+            .collect();
+        let thumbnail_sources: Vec<_> = library
+            .photos
+            .iter()
+            .filter(|photo| membership.is_none_or(|ids| ids.contains(&photo.id)))
+            .skip(self.library_offset)
+            .take(24)
+            .map(|photo| (photo.id.clone(), photo.image.path.clone()))
+            .collect();
+        self.library_thumbnails
+            .retain(|id, _| thumbnail_sources.iter().any(|(wanted, _)| wanted == id));
+        for (id, source) in thumbnail_sources {
+            if !self.library_thumbnails.contains_key(&id)
+                && let Some(decoded) = std::fs::read(source)
+                    .ok()
+                    .and_then(|bytes| pixels::decode(&bytes))
+            {
+                self.library_thumbnails.insert(id, to_peniko(&decoded));
+            }
+        }
     }
 
     #[allow(
@@ -1431,7 +2498,9 @@ impl Widget for PhotosApp {
             button.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        if let Some(v) = self.viewer.as_mut() {
+        if self.library_mode {
+            self.draw_library(scene, transform, text_renderer, theme, presence);
+        } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
         } else {
             let (title, body) = self.empty_state_text();
@@ -1463,6 +2532,10 @@ impl Widget for PhotosApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the widget event entry point preserves explicit precedence between album chips, grid cards, toolbar, and viewer"
+    )]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -1475,6 +2548,123 @@ impl Widget for PhotosApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        if self.library_mode
+            && self.handle_album_editor_event(
+                event,
+                scale_factor,
+                *modifiers,
+                doc,
+                path,
+                handled,
+                node_id,
+                taffy,
+            )
+        {
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .album_editor_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .copied()
+        {
+            match hit {
+                AlbumEditorHit::New => self.begin_new_album(doc),
+                AlbumEditorHit::Edit => self.begin_edit_album(doc),
+                _ => {}
+            }
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((album_id, _)) = self
+                .album_cards
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .cloned()
+        {
+            self.active_album = album_id;
+            self.library_offset = 0;
+            *handled = true;
+            return;
+        }
+        if self.library_mode
+            && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let direction = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum(),
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
+            };
+            let page = 24_usize;
+            if direction < 0.0 {
+                self.library_offset =
+                    (self.library_offset + page).min(self.library_total.saturating_sub(1));
+            } else if direction > 0.0 {
+                self.library_offset = self.library_offset.saturating_sub(page);
+            }
+            *handled = true;
+            return;
+        }
+
+        // A library card is a direct manipulation surface, but it is still
+        // only a front end for a canonical action.  The star has its own hit
+        // area so changing a favourite does not unexpectedly open the editor.
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((photo_id, card, favorite)) = self
+                .library_cards
+                .iter()
+                .find(|(_, card, _)| card.contains(self.pointer))
+                .cloned()
+        {
+            if self.pointer.x >= card.x1 - 34.0 {
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SetFavorite {
+                        photo_id,
+                        favorite: !favorite,
+                    },
+                );
+            } else {
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto { photo_id },
+                );
+                self.library_mode = false;
+            }
+            *handled = true;
+            return;
+        }
         let children = taffy.children(node_id).unwrap_or_default();
         if let Some(&bar) = children.first() {
             let bar_children = taffy.children(bar).unwrap_or_default();
@@ -1539,6 +2729,7 @@ impl Widget for PhotosApp {
         _path: &ObjId,
     ) -> bool {
         self.perform_toolbar_semantic_action(target, action, state)
+            || self.perform_library_semantic_action(target, action, state)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -1614,10 +2805,81 @@ impl ui::widget::AppWidget for PhotosApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::PhotosResources;
+    use crate::actions::{PHOTOS_OPERATION_TYPE, PhotosOperation, PhotosResources};
+    use crate::model::{Album, LibraryPhoto};
     use crate::shots_pattern;
     use automerge::ROOT;
     use qos_actions::ResourceProvider;
+
+    fn has_resource_id(resource: &qos_actions::Resource, id: &str) -> bool {
+        resource.id.0 == id
+            || resource
+                .children
+                .iter()
+                .any(|child| has_resource_id(child, id))
+    }
+
+    #[test]
+    fn opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
+        let mut library = crate::model::PhotoLibrary::default();
+        library.photos.push(photo.clone());
+        library.albums.push(Album {
+            id: "photos.album:trip".into(),
+            name: "Trip".into(),
+            photo_ids: vec![photo.id],
+        });
+        PhotosDoc::set_library(&mut doc, &library);
+        let before = PhotosDoc::library(&doc);
+        let payload = qos_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ViewAlbum {
+                album_id: "photos.album:trip".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+                &doc,
+                &ROOT,
+            )
+            .unwrap()
+        );
+        assert!(app.library_mode);
+        assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
+        assert_eq!(
+            PhotosDoc::library(&doc),
+            before,
+            "navigation must not alter membership"
+        );
+
+        let stale = qos_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ViewAlbum {
+                album_id: "photos.album:gone".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &stale.payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(PhotosDoc::library(&doc), before);
+    }
 
     #[test]
     fn accessibility_exposes_and_routes_every_toolbar_control() {
@@ -1636,7 +2898,13 @@ mod tests {
             Some("photos:toolbar:photos-open")
         );
         assert!(
-            empty.children[0].children[1].state.disabled,
+            empty.children[0]
+                .children
+                .iter()
+                .find(|node| {
+                    node.action_target.as_deref() == Some("photos:toolbar:photos-rotate-right")
+                })
+                .is_some_and(|node| node.state.disabled),
             "rotate must be unavailable without a photograph"
         );
         assert!(
@@ -1695,7 +2963,7 @@ mod tests {
         assert!(
             app.buttons
                 .iter()
-                .filter(|(hit, _)| *hit != Hit::Open)
+                .filter(|(hit, _)| !matches!(hit, Hit::Open | Hit::Library))
                 .all(|(_, button)| !button.is_enabled())
         );
 
@@ -1717,17 +2985,24 @@ mod tests {
         let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
         PhotosDoc::set_image(&mut doc, Some(&image));
         app.sync(&mut doc, &ROOT);
+        let before = app.search_provider.stats();
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(
+            app.search_provider.stats(),
+            before,
+            "unchanged sync rebuilt search"
+        );
 
         let providers = Widget::search_providers(&app);
         assert_eq!(providers.len(), 1);
         let hit = providers[0].search("夏").pop().unwrap();
         let address = hit.action_address().unwrap();
-        assert_eq!(address.action, "view");
+        assert!(matches!(address.action.as_str(), "view" | "open"));
         assert!(
             PhotosResources
                 .resources(&doc)
                 .iter()
-                .any(|resource| resource.id.0 == address.resource)
+                .any(|resource| has_resource_id(resource, &address.resource))
         );
     }
 }
