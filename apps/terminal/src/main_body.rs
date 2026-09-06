@@ -1974,6 +1974,16 @@ impl Widget for TerminalWidget {
             } if *element_state == ElementState::Pressed => {
                 self.handle_key_press_event(logical_key, text.as_deref(), *modifiers, handled);
             }
+            // Preedit is owned by the platform IME and must not be sent to a
+            // terminal process. Once it commits, however, it is ordinary
+            // UTF-8 terminal input just like `KeyEvent::text`.
+            WindowEvent::Ime(winit::event::Ime::Commit(text))
+                if self.focused && !text.is_empty() =>
+            {
+                self.write_input(text.as_bytes());
+                self.scroll_offset = 0;
+                *handled = true;
+            }
             _ => {}
         }
     }
@@ -1994,6 +2004,10 @@ impl Widget for TerminalWidget {
 
     fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        true
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {

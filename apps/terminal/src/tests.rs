@@ -1282,6 +1282,49 @@ fn focus_reporting_uses_xterm_focus_in_and_out_sequences() {
 }
 
 #[test]
+fn ime_commit_writes_composed_text_to_the_focused_terminal() {
+    use ui::widget::Widget;
+    use winit::event::{Modifiers, WindowEvent};
+
+    let (mut w, rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.set_focus(true);
+    let mut handled = false;
+    let mut focus = None;
+    let taffy = taffy::TaffyTree::<()>::new();
+    w.handle_event(
+        &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
+        1.0,
+        &Modifiers::default(),
+        &mut doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        taffy::NodeId::new(0),
+        &taffy,
+    );
+
+    assert!(handled, "focused terminal consumes an IME commit");
+    assert_eq!(drain_writes(&rx), "漢字".as_bytes());
+}
+
+#[test]
+fn app_wrapper_routes_ime_commit_to_the_focused_terminal() {
+    let (widget, rx) = build_test_widget();
+    let mut app = ui::headless::Driver::new(State::new(), Box::new(widget), (800, 480));
+    app.tab(false);
+    app.send(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+        "Grüße".into(),
+    )));
+
+    assert_eq!(
+        drain_writes(&rx),
+        "Grüße".as_bytes(),
+        "the app wrapper delivers the committed IME text to the terminal PTY"
+    );
+}
+
+#[test]
 fn accessibility_exposes_visible_terminal_output_and_focus() {
     use ui::a11y::Role;
     use ui::widget::Widget;
