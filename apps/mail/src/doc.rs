@@ -225,21 +225,30 @@ impl MailDoc {
             else {
                 continue;
             };
+            let mut changed = false;
             if let Some(m) = mb.get_mut(id) {
                 if let Some(r) = Self::read_bool(doc, &entry, "read") {
+                    changed |= m.read != r;
                     m.read = r;
                 }
                 if let Some(s) = Self::read_bool(doc, &entry, "starred") {
+                    changed |= m.starred != s;
                     m.starred = s;
                 }
                 if let Some(f) =
                     Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
                 {
+                    changed |= m.folder != f;
                     m.folder = f;
                 }
                 if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&entry, "labels") {
-                    m.labels = read_str_list(doc, &list);
+                    let labels = read_str_list(doc, &list);
+                    changed |= m.labels != labels;
+                    m.labels = labels;
                 }
+            }
+            if changed {
+                mb.touch_search_revision();
             }
         }
     }
