@@ -7107,9 +7107,8 @@ impl AppHandler {
             let map_phase = |p: winit::event::TouchPhase| match p {
                 winit::event::TouchPhase::Started => GesturePhase::Begin,
                 winit::event::TouchPhase::Moved => GesturePhase::Update,
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                    GesturePhase::End
-                }
+                winit::event::TouchPhase::Ended => GesturePhase::End,
+                winit::event::TouchPhase::Cancelled => GesturePhase::Cancel,
             };
             let nav = match &event {
                 WindowEvent::MouseWheel { delta, phase, .. } => {

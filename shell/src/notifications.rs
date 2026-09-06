@@ -26,6 +26,7 @@
 )]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -330,6 +331,138 @@ impl NotificationService {
             package,
         ))
     }
+
+    /// Resolve the identity used solely for ordinary notification policy.
+    /// The bool reports a foreign Flatpak fallback so wire-only qOS
+    /// extensions (badges/contact handles) remain unavailable to it.
+    async fn resolve_notification_caller(
+        &self,
+        sender: Option<&OwnedUniqueName>,
+    ) -> (Option<PortalCaller>, bool) {
+        // A palette-launched Flatpak can also appear in the generic launch
+        // registry under its desktop-file id. Its sandbox runtime ID is more
+        // canonical (and is what Settings exposes), so prefer it before that
+        // fallback. A qOS package is not a Flatpak and proceeds unchanged.
+        if let (Some(connection), Some(sender)) = (self.connection.as_ref(), sender)
+            && let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await
+            && let Ok(name) = zbus::names::BusName::try_from(sender.as_str())
+            && let Ok(pid) = bus.get_connection_unix_process_id(name).await
+            && let Some(app_id) = verified_foreign_notification_identity(pid)
+        {
+            // Foreign callers have no qOS workspace capability. This default
+            // workspace is an attribution placeholder only; policy keys come
+            // from the verified id, never this workspace or Notify's name.
+            return (
+                Some(PortalCaller::new(
+                    crate::shell::state::WorkspaceId::default(),
+                    app_id,
+                )),
+                true,
+            );
+        }
+        (self.resolve_caller(sender).await, false)
+    }
+}
+
+/// Return a policy identity for a foreign desktop notification sender only
+/// when the process is demonstrably inside an installed Flatpak sandbox.
+///
+/// Plain RPM/host processes are deliberately not guessed from their argv or
+/// the `Notify.app_name` field: when qOS launched one, the trusted launcher
+/// ancestry above supplies its desktop id; otherwise it remains global-policy
+/// only. Flatpak provides two independent pieces of immutable runtime
+/// metadata — its per-process `.flatpak-info` and systemd cgroup — which are
+/// checked against an installed desktop entry before a per-app rule is used.
+fn verified_foreign_notification_identity(pid: u32) -> Option<String> {
+    let entries = &desktop_entry::cache::cached_scan().entries;
+    verified_foreign_notification_identity_from(Path::new("/proc"), pid, entries)
+}
+
+fn verified_foreign_notification_identity_from(
+    proc_root: &Path,
+    pid: u32,
+    entries: &[desktop_entry::DesktopEntry],
+) -> Option<String> {
+    let proc = proc_root.join(pid.to_string());
+    let app_id = flatpak_application_id(&proc.join("root/.flatpak-info"))?;
+    let cgroup = read_bounded(&proc.join("cgroup"), 16 * 1024)?;
+    if !flatpak_cgroup_matches(&cgroup, &app_id) {
+        return None;
+    }
+    entries
+        .iter()
+        .any(|entry| {
+            matches!(
+                &entry.source,
+                desktop_entry::EntrySource::Flatpak { app_id: installed } if installed == &app_id
+            )
+        })
+        .then_some(app_id)
+}
+
+fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
+}
+
+fn valid_notification_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 160
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn flatpak_application_id(info_path: &Path) -> Option<String> {
+    let info = read_bounded(info_path, 16 * 1024)?;
+    let mut application_section = false;
+    for line in info.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            application_section = line == "[Application]";
+            continue;
+        }
+        if application_section && let Some(id) = line.strip_prefix("name=") {
+            let id = id.trim();
+            return valid_notification_app_id(id).then(|| id.to_string());
+        }
+    }
+    None
+}
+
+fn flatpak_cgroup_matches(cgroup: &str, app_id: &str) -> bool {
+    let raw_prefix = format!("app-flatpak-{app_id}");
+    let escaped_prefix = format!("app-flatpak-{}", systemd_escape(app_id));
+    cgroup.lines().any(|line| {
+        let Some((_, path)) = line.rsplit_once(':') else {
+            return false;
+        };
+        path.split('/').any(|component| {
+            [raw_prefix.as_str(), escaped_prefix.as_str()]
+                .iter()
+                .any(|prefix| {
+                    component.strip_prefix(prefix).is_some_and(|suffix| {
+                        suffix == ".scope"
+                            || (suffix.starts_with('-') && suffix.ends_with(".scope"))
+                    })
+                })
+        })
+    })
+}
+
+fn systemd_escape(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut out, byte| {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_') {
+            out.push(char::from(byte));
+        } else {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            out.push('\\');
+            out.push('x');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        out
+    })
 }
 
 #[interface(name = "org.freedesktop.Notifications")]
@@ -357,7 +490,7 @@ impl NotificationService {
             self.bridge.alloc_id()
         };
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = self.resolve_caller(sender.as_ref()).await;
+        let (caller, foreign_identity) = self.resolve_notification_caller(sender.as_ref()).await;
         tracing::debug!(
             "Notifications.Notify: app={app_name:?} id={id} caller_ws={:?}",
             caller.as_ref().map(|c| c.workspace_id)
@@ -371,8 +504,15 @@ impl NotificationService {
             expire_timeout,
             urgency: parse_urgency(&hints),
             caller,
-            badge_count: parse_badge_count(&hints),
-            contact_endpoint: parse_contact_endpoint(&hints),
+            // Per-app banner/sound rules may use a verified Flatpak identity,
+            // but badges and contact routing are qOS-only extensions. Do not
+            // let foreign identity prove authority for either extension.
+            badge_count: (!foreign_identity)
+                .then(|| parse_badge_count(&hints))
+                .flatten(),
+            contact_endpoint: (!foreign_identity)
+                .then(|| parse_contact_endpoint(&hints))
+                .flatten(),
         });
         id
     }
@@ -522,6 +662,37 @@ mod tests {
     use super::*;
     use crate::shell::state::WorkspaceId;
 
+    fn flatpak_entries(root: &Path, app_id: &str) -> Vec<desktop_entry::DesktopEntry> {
+        let apps = root.join("applications");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(
+            apps.join(format!("{app_id}.desktop")),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Trusted Chat\nExec=/bin/true\nX-Flatpak={app_id}\n"
+            ),
+        )
+        .unwrap();
+        desktop_entry::scan_dirs(&[apps], &[desktop_entry::scan::CURRENT_DESKTOP.to_string()])
+            .entries
+    }
+
+    fn write_flatpak_proc(root: &Path, pid: u32, app_id: &str, cgroup_app_id: &str) {
+        let proc = root.join(pid.to_string());
+        std::fs::create_dir_all(proc.join("root")).unwrap();
+        std::fs::write(
+            proc.join("root/.flatpak-info"),
+            format!("[Application]\nname={app_id}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            proc.join("cgroup"),
+            format!(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-{cgroup_app_id}-123.scope\n"
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn alloc_id_is_monotonic_and_never_zero() {
         let b = NotificationBridge::new();
@@ -631,6 +802,39 @@ mod tests {
             OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
         );
         assert_eq!(parse_contact_endpoint(&hints), None);
+    }
+
+    #[test]
+    fn foreign_flatpak_identity_requires_matching_runtime_cgroup_and_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_id = "org.example.Chat";
+        let entries = flatpak_entries(tmp.path(), app_id);
+        write_flatpak_proc(tmp.path(), 404, app_id, app_id);
+
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 404, &entries).as_deref(),
+            Some(app_id),
+            "identity comes from runtime metadata/cgroup, not Notify.app_name"
+        );
+
+        write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 405, &entries),
+            None,
+            "a mismatched cgroup leaves a foreign sender global-only"
+        );
+
+        write_flatpak_proc(
+            tmp.path(),
+            406,
+            "org.example.Missing",
+            "org.example.Missing",
+        );
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 406, &entries),
+            None,
+            "an uninstalled Flatpak id is never accepted as a policy key"
+        );
     }
 
     // D-Bus round-trip over an in-process p2p connection, mirroring

@@ -68,6 +68,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
+use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
     combined_geometry, headless,
@@ -136,8 +137,8 @@ use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
-    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, parse_command,
-    serialise_response,
+    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
+    parse_command, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
@@ -1480,6 +1481,10 @@ struct TestControlCtx {
     root_obj: ObjId,
     focus: Option<NodeId>,
     cursor: PhysicalPosition<f64>,
+    /// The headless E2E fixture has no libinput device, but it must exercise
+    /// precisely the ownership handoff DRM uses before emitting real
+    /// `wl_touch` traffic to its Wayland clients.
+    direct_touch: DirectTouchOwnership,
 }
 
 impl TestControlCtx {
@@ -1490,6 +1495,7 @@ impl TestControlCtx {
             root_obj: automerge::ROOT,
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
+            direct_touch: DirectTouchOwnership::default(),
         }
     }
 }
@@ -1655,6 +1661,146 @@ fn dispatch_synth_event(
     );
 }
 
+/// Build the shell-side raw touch event for the test-control adapter. The
+/// adapter delegates ownership to [`DirectTouchOwnership`]; this merely puts
+/// that decision on the same chrome event wire as DRM's `touch_input_event`.
+fn test_touch_input_event(
+    slot: u32,
+    x: f64,
+    y: f64,
+    phase: winit::event::TouchPhase,
+) -> WindowEvent {
+    WindowEvent::Touch(winit::event::Touch {
+        device_id: unsafe { std::mem::zeroed() },
+        phase,
+        location: PhysicalPosition::new(x, y),
+        force: None,
+        id: u64::from(slot),
+    })
+}
+
+/// Send an already arbitrated direct-touch event across the real Wayland
+/// `wl_touch` seat. `touch_target` deliberately runs only for `Down`, where
+/// Wayland establishes touch focus.
+fn forward_test_control_touch(
+    state: &mut Option<&mut State>,
+    fb: &FrameBuilder,
+    touch: crate::compositor::backend::TouchEvent,
+) {
+    let Some(state) = state.as_deref_mut() else {
+        return;
+    };
+    let target = client_input::touch_target(state, fb, &touch);
+    state.forward_client_touch(touch, target);
+}
+
+/// Run one explicit test-control touchscreen edge. This intentionally uses
+/// the DRM ownership arena rather than reimplementing a test-only notion of
+/// "third finger": E2E assertions therefore cover the exact cancel/frame
+/// decision production hardware uses before the native loop forwards it.
+fn dispatch_test_control_touch(
+    device: &str,
+    slot: u32,
+    phase: TouchPhaseKind,
+    x: f64,
+    y: f64,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut Option<&mut State>,
+) {
+    use crate::compositor::backend::TouchEvent as BackendTouchEvent;
+    use winit::event::TouchPhase;
+
+    let key = DirectTouchOwnership::key(device, slot);
+    let raw = |id, raw_x, raw_y, raw_phase, fb: &mut FrameBuilder, ctx: &mut TestControlCtx| {
+        let event = test_touch_input_event(id, raw_x, raw_y, raw_phase);
+        // Direct touch belongs to the shell gesture arena. Unlike pointer
+        // input it must not first be routed as a client pointer event.
+        fb.dispatch_event(
+            &event,
+            &ctx.modifiers,
+            &mut ctx.doc,
+            &ctx.root_obj,
+            &mut ctx.focus,
+        );
+    };
+    let frame = |ownership: &mut DirectTouchOwnership,
+                 state: &mut Option<&mut State>,
+                 fb: &FrameBuilder| {
+        if ownership.take_client_frame() {
+            forward_test_control_touch(state, fb, BackendTouchEvent::Frame);
+        }
+    };
+
+    match phase {
+        TouchPhaseKind::Down => match ctx.direct_touch.down(key, (x, y)) {
+            DirectTouchDown::ForwardToClient(id) => {
+                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                forward_test_control_touch(state, fb, BackendTouchEvent::Down { slot: id, x, y });
+            }
+            DirectTouchDown::CancelClientForShell(id) => {
+                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
+                frame(&mut ctx.direct_touch, state, fb);
+            }
+            DirectTouchDown::ShellOwned(id) => raw(id, x, y, TouchPhase::Started, fb, ctx),
+        },
+        TouchPhaseKind::Motion => {
+            if let Some((id, to_client)) = ctx.direct_touch.motion(&key, (x, y)) {
+                raw(id, x, y, TouchPhase::Moved, fb, ctx);
+                if to_client {
+                    forward_test_control_touch(
+                        state,
+                        fb,
+                        BackendTouchEvent::Motion { slot: id, x, y },
+                    );
+                }
+            }
+        }
+        TouchPhaseKind::Up => {
+            if let Some(((last_x, last_y), id, to_client, emulate_pointer)) =
+                ctx.direct_touch.up(&key)
+            {
+                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx);
+                if to_client {
+                    forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
+                }
+                if emulate_pointer {
+                    for event in [
+                        WindowEvent::CursorMoved {
+                            device_id: unsafe { std::mem::zeroed() },
+                            position: PhysicalPosition::new(last_x, last_y),
+                        },
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: ElementState::Pressed,
+                            button: MouseButton::Left,
+                        },
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: ElementState::Released,
+                            button: MouseButton::Left,
+                        },
+                    ] {
+                        dispatch_synth_event(&event, fb, ctx, state);
+                    }
+                }
+            }
+        }
+        TouchPhaseKind::Cancel => {
+            let forward_cancel = ctx.direct_touch.client_stream_active();
+            for (id, (last_x, last_y)) in ctx.direct_touch.cancel() {
+                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx);
+            }
+            if forward_cancel {
+                forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
+            }
+            frame(&mut ctx.direct_touch, state, fb);
+        }
+        TouchPhaseKind::Frame => frame(&mut ctx.direct_touch, state, fb),
+    }
+}
+
 /// Re-resolve and run one `InvokeAction` — split out of
 /// [`execute_planned_action`] because catalog resolution, arg binding and
 /// invoke-failure handling alone were half that function's line budget.
@@ -1775,6 +1921,13 @@ fn execute_planned_action(
             };
             dispatch_synth_event(&event, fb, ctx, &mut state);
         }
+        PlannedAction::Touch {
+            device,
+            slot,
+            phase,
+            x,
+            y,
+        } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -1876,6 +2029,7 @@ fn execute_locked_action(
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
+        | PlannedAction::Touch { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -3825,6 +3979,9 @@ pub fn run() -> ! {
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
     let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    frame_builder
+        .host_mut()
+        .set_session_inhibitors(inhibit_registry.clone());
     let portal_backend = start_portal_backend(
         &mut frame_builder,
         tree_handle.clone(),
@@ -4021,12 +4178,14 @@ pub fn run() -> ! {
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
-    // lock-overlay paints. `QOS_IDLE_BLANK_SECS`/`QOS_IDLE_LOCK_SECS` config
-    // (default: blank after 5 min, no auto-lock). Power policy from
-    // `settings.json`, read once at session start — the contract is the JSON on disk, not a shared crate.
+    // lock-overlay paints. The power policy from `settings.json` owns the
+    // blank and suspend timeouts at startup and on live reload; environment
+    // values only seed the headless/default config before that policy applies.
     let mut power_policy = qos_power_mgmt::config::load_policy();
     let mut session = SessionManager::new(
-        IdleConfig::from_env().with_suspend(power_policy.idle_suspend),
+        IdleConfig::from_env()
+            .with_blank(power_policy.idle_blank)
+            .with_suspend(power_policy.idle_suspend),
         Instant::now(),
     );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
@@ -4509,6 +4668,13 @@ pub fn run() -> ! {
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
+                            // Chrome input can change the active tab/group/workspace. The
+                            // backend may have already queued the next physical key in this
+                            // same batch, so move the Wayland seat now rather than only after
+                            // the batch: click-tab then type must never send the first key to
+                            // the tab that was active before the click.
+                            frame_builder.host_mut().flush_active_tab_writeback();
+                            client_input::sync_keyboard_focus(&mut state, &frame_builder);
                         }
                     }
                 }
@@ -4554,9 +4720,21 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Touch(touch) => {
-                    // The same finger also arrives as pointer events (backend emits both),
-                    // driving shell chrome; this half is `wl_touch` for real multi-touch clients.
-                    if !session.is_locked() && client_input_allowed(&frame_builder) {
+                    // Direct touch reaches the shell as raw touch first; a
+                    // confirmed one-finger tap later gets one synthesized
+                    // pointer click for chrome. This half is `wl_touch` for
+                    // real multi-touch clients.
+                    // A direct-touch stream can be transferred to a shell
+                    // three-finger gesture after its first contacts reached a
+                    // client. Its mandatory `wl_touch.cancel` must still get
+                    // through even if that gesture also opened chrome which
+                    // now captures ordinary input.
+                    if matches!(
+                        touch,
+                        crate::compositor::backend::TouchEvent::Cancel
+                            | crate::compositor::backend::TouchEvent::Frame
+                    ) || (!session.is_locked() && client_input_allowed(&frame_builder))
+                    {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         state.forward_client_touch(touch, target);
                     }
@@ -4617,8 +4795,19 @@ pub fn run() -> ! {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // Shortcut ownership is decided before a focused client sees the
+            // press. Refresh the host's validated snapshot in the same settings
+            // transaction so changes made in Settings take effect live rather
+            // than only after the next compositor session.
+            if let Err(error) = frame_builder
+                .host_mut()
+                .set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
+            {
+                tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
+            }
             let policy = qos_power_mgmt::config::load_policy();
             power_policy = policy;
+            session.set_blank_timeout(policy.idle_blank);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
@@ -4694,6 +4883,21 @@ pub fn run() -> ! {
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+
+        // The power menu is shell UI only.  Its Lock row requests this
+        // compositor-owned transition through ChromeState; drain the edge
+        // here so it takes the exact same SessionManager path as Super+L and
+        // hardware/power-service locks (including focus and input cutoff).
+        let mut shell_lock_requested = false;
+        frame_builder.with_chrome(|chrome| {
+            shell_lock_requested = chrome.take_session_lock_request();
+        });
+        if shell_lock_requested {
+            for t in session.request_lock(Instant::now()) {
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+            }
+            session_changed = true;
+        }
 
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
         for t in session.tick(Instant::now()) {
@@ -4860,6 +5064,12 @@ pub fn run() -> ! {
             // separately emits `InputStateReset`, because those paths really
             // can lose an up edge.
             state.set_client_keyboard_focus(None);
+            // A lock cuts off the client-facing input stream before its
+            // physical release is guaranteed. Cancel both sides now: the DRM
+            // backend queues `wl_touch.cancel` + frame, while the overlay
+            // clears contacts without committing a terminal shell gesture.
+            backend.cancel_touch();
+            frame_builder.host_mut().cancel_direct_touch_gestures();
             lock.reset();
         }
         if session.is_locked() != prev_locked {
@@ -6050,7 +6260,7 @@ mod tests {
             fb.host_mut().focus_window_widget(strip, group, first),
             "the existing tab can be focused through the production widget path"
         );
-        fb.host_mut().tick_active_tab_writeback_for_tests();
+        fb.host_mut().flush_active_tab_writeback();
         let _ = fb.paint_settled();
         assert_eq!(
             visible_tiled_surface_rects(&fb)

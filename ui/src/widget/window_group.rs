@@ -662,8 +662,14 @@ impl WindowGroup {
     /// per-frame harvest mirrors it into the persisted tree), so a
     /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
-        if self.bar.active_id() == id || !self.bar.tabs().iter().any(|t| t.id == id) {
+        if !self.bar.tabs().iter().any(|t| t.id == id) {
             return false;
+        }
+        // An already-selected tab is still a valid address. Callers use the
+        // return value to distinguish a live target from a stale window id;
+        // `false` must therefore mean "missing", not merely "no repaint".
+        if self.bar.active_id() == id {
+            return true;
         }
         self.bar.set_active(id);
         true

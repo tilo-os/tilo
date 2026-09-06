@@ -34,6 +34,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
+use ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
@@ -49,6 +50,7 @@ use wayland_client::protocol::{
     wl_shm::{Format, WlShm},
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
+    wl_touch::{self, WlTouch},
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::primary_selection::zv1::client::{
@@ -464,6 +466,14 @@ impl Compositor {
         );
     }
 
+    fn chrome_copy_image(&self) {
+        let resp = self.control(&serde_json::json!({"op": "clipboard_copy_image"}));
+        assert!(
+            resp.get("ok").is_some(),
+            "chrome image copy was refused: {resp:?}"
+        );
+    }
+
     fn chrome_paste(&self, primary: bool) -> Option<String> {
         let resp = self.control(&serde_json::json!({
             "op": "clipboard_paste", "primary": primary,
@@ -675,6 +685,8 @@ struct ClientState {
     wm_base: Option<XdgWmBase>,
     seat: Option<WlSeat>,
     seat_name: Option<String>,
+    /// Keep the verified protocol endpoint alive for the whole client.
+    touch: Option<WlTouch>,
     data_manager: Option<WlDataDeviceManager>,
     primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
     shm: Option<WlShm>,
@@ -702,6 +714,13 @@ struct ClientState {
     /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
     pointer_entered: bool,
     pointer_button_serial: Option<u32>,
+    /// Set after the seat advertised touch and this client issued
+    /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
+    touch_bound: bool,
+    /// Exact `wl_touch` events observed on the real client connection.
+    touch_events: Vec<TouchTrace>,
+    /// Pointer traffic observed after the test clears setup noise.
+    pointer_events: Vec<&'static str>,
 
     /// Mime types on the most recent clipboard offer, and the offer itself.
     clipboard_offer: Option<WlDataOffer>,
@@ -725,6 +744,15 @@ struct ClientState {
     send_requests: Vec<String>,
     /// Set when the compositor told our source it was superseded.
     source_cancelled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TouchTrace {
+    Down(i32),
+    Motion(i32),
+    Up(i32),
+    Cancel,
+    Frame,
 }
 
 struct TestClient {
@@ -795,6 +823,11 @@ impl TestClient {
 
     fn clear_keyboard_trace(&mut self) {
         self.state.keyboard_events.clear();
+    }
+
+    fn clear_touch_and_pointer_trace(&mut self) {
+        self.state.touch_events.clear();
+        self.state.pointer_events.clear();
     }
 
     fn wait_for_keyboard_events(&mut self, at_least: usize) {
@@ -1039,6 +1072,11 @@ impl TestClient {
     /// when another client in this process owns the selection, it must be
     /// dispatched to answer the `send` request or nothing gets written.
     fn read_clipboard(&mut self, peer: Option<&mut TestClient>) -> String {
+        let bytes = self.read_clipboard_bytes(TEXT_MIME, peer);
+        String::from_utf8(bytes).expect("selection bytes were not UTF-8")
+    }
+
+    fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         self.wait_until(
             |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
             "no clipboard offer ever arrived",
@@ -1047,17 +1085,17 @@ impl TestClient {
             self.state
                 .clipboard_offer_mimes
                 .iter()
-                .any(|m| m == TEXT_MIME),
-            "clipboard offer did not advertise {TEXT_MIME}; got {:?}",
+                .any(|offered| offered == mime),
+            "clipboard offer did not advertise {mime}; got {:?}",
             self.state.clipboard_offer_mimes,
         );
         self.step("clipboard offer received, requesting the bytes");
         let offer = self.state.clipboard_offer.clone().expect("clipboard offer");
         let (read_fd, write_fd) = make_pipe();
-        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        offer.receive(mime.to_string(), write_fd.as_fd_ref());
         drop(write_fd);
         self.conn.flush().expect("flush the receive request");
-        drain(read_fd, self, peer)
+        drain_bytes(read_fd, self, peer)
     }
 
     fn read_primary(&mut self, peer: Option<&mut TestClient>) -> String {
@@ -1096,6 +1134,123 @@ impl TestClient {
         self.conn.flush().expect("flush the receive request");
         drain_bytes(read_fd, self, peer)
     }
+}
+
+#[test]
+fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.image-sink");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    compositor.chrome_copy("caption survives image copy", false);
+    compositor.chrome_copy_image();
+
+    let png = client.read_clipboard_bytes("image/png", None);
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
+    let mut reader = decoder.read_info().expect("PNG header");
+    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
+    let info = reader.next_frame(&mut frame).expect("PNG frame");
+    assert_eq!((info.width, info.height), (2, 1));
+    assert_eq!(
+        &frame[..info.buffer_size()],
+        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+
+    // One compositor-owned selection advertises both formats, so image copy
+    // must not make the previously copied text disappear.
+    assert_eq!(client.read_clipboard(None), "caption survives image copy");
+}
+
+/// A real `wl_touch` client sees the partial two-contact stream, then exactly
+/// the protocol cancellation boundary when a third direct contact transfers
+/// ownership to the shell. This reaches the actual native Wayland seat; the
+/// headless input adapter reuses DRM's ownership arena rather than faking a
+/// client trace.
+#[test]
+fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leaks() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.touch-owner");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |state| state.touch_bound,
+        "the client did not finish binding wl_touch before injection",
+    );
+    // `get_touch` is issued while dispatching the seat-capability event.
+    // Complete one more roundtrip so that request is on the server before
+    // the test-control path emits its first `wl_touch.down`.
+    client.roundtrip();
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    // `pointer_target` deliberately scans a coarse grid and may return the
+    // last pixel inside a tile. Keep every initial contact at that proven
+    // in-surface point rather than offsetting it outside the client rect.
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "down", x, y);
+    }
+    client.wait_until(
+        |state| state.touch_events.len() >= 3,
+        "the third contact did not cancel the real wl_touch client stream",
+    );
+    assert_eq!(
+        client.state.touch_events,
+        vec![TouchTrace::Down(0), TouchTrace::Down(1), TouchTrace::Cancel,],
+        "the client receives its first two downs, then the complete cancellation boundary"
+    );
+
+    // These are physical events arriving after ownership already moved to the
+    // shell. No down/motion/up or pointer emulation may escape to the client.
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "motion", x, y);
+    }
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "up", x, y);
+    }
+    for _ in 0..4 {
+        client.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        client.state.touch_events,
+        vec![TouchTrace::Down(0), TouchTrace::Down(1), TouchTrace::Cancel,],
+        "no post-cancel touch event may leak to the client"
+    );
+    assert!(
+        client.state.pointer_events.is_empty(),
+        "a shell-owned multi-touch gesture must not manufacture client pointer motion, click, or drag: {:?}",
+        client.state.pointer_events
+    );
+}
+
+#[test]
+fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.qos.test.app-clipboard");
+    app.assert_is_qos_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+
+    // This is the app-side backend, not HostClipboard: its publication worker
+    // owns a second wl_data_device on the app connection and must observe the
+    // focused seat before accepting the queued copy.
+    assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
+    assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+
+    let mut sink = TestClient::new(compositor.connect(), "org.qos.test.app-sink");
+    sink.assert_is_qos_compositor();
+    sink.map_window(&compositor);
+    let png = sink.read_clipboard_bytes("image/png", None);
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
+    let mut reader = decoder.read_info().expect("PNG header");
+    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
+    let info = reader.next_frame(&mut frame).expect("PNG frame");
+    assert_eq!((info.width, info.height), (2, 1));
+    assert_eq!(
+        &frame[..info.buffer_size()],
+        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+    assert_eq!(sink.read_clipboard(None), "app caption");
 }
 
 /// An `OwnedFd` plus a borrow helper, so `receive` can take `&fd`.
@@ -1229,6 +1384,10 @@ impl Dispatch<WlSeat, ()> for ClientState {
                 if caps.contains(wl_seat::Capability::Pointer) {
                     seat.get_pointer(qh, ());
                 }
+                if caps.contains(wl_seat::Capability::Touch) {
+                    state.touch = Some(seat.get_touch(qh, ()));
+                    state.touch_bound = true;
+                }
             }
             _ => {}
         }
@@ -1305,15 +1464,21 @@ impl Dispatch<WlPointer, ()> for ClientState {
             wl_pointer::Event::Enter { serial, .. } => {
                 state.pointer_entered = true;
                 state.last_serial = serial;
+                state.pointer_events.push("enter");
             }
             wl_pointer::Event::Leave { serial, .. } => {
                 state.pointer_entered = false;
                 state.last_serial = serial;
+                state.pointer_events.push("leave");
+            }
+            wl_pointer::Event::Motion { .. } => {
+                state.pointer_events.push("motion");
             }
             wl_pointer::Event::Button {
                 serial, state: s, ..
             } => {
                 state.last_serial = serial;
+                state.pointer_events.push("button");
                 if matches!(
                     s,
                     wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)
@@ -1321,6 +1486,26 @@ impl Dispatch<WlPointer, ()> for ClientState {
                     state.pointer_button_serial = Some(serial);
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlTouch, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &WlTouch,
+        event: wl_touch::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_touch::Event::Down { id, .. } => state.touch_events.push(TouchTrace::Down(id)),
+            wl_touch::Event::Motion { id, .. } => state.touch_events.push(TouchTrace::Motion(id)),
+            wl_touch::Event::Up { id, .. } => state.touch_events.push(TouchTrace::Up(id)),
+            wl_touch::Event::Cancel => state.touch_events.push(TouchTrace::Cancel),
+            wl_touch::Event::Frame => state.touch_events.push(TouchTrace::Frame),
             _ => {}
         }
     }
@@ -2297,6 +2482,66 @@ fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
     );
 }
 
+/// Lock from the visible power menu must enter qOS's own session lifecycle,
+/// rather than merely asking the surrounding login manager to lock.  Drive
+/// the production shortcut and menu keyboard path, then prove both the
+/// compositor state and a real Wayland client's focus/input boundary.
+#[test]
+fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.power-menu-lock");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
+
+    // Open Quick Settings through its configured default (Super+Q), then
+    // Keyboard-navigate its visible action row to Power and open it. Focus
+    // starts on Edit, followed by Settings, Privacy, Notifications and Power;
+    // the next Enter activates the default Lock row in the real modal.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("q");
+    compositor.modifiers(false, false, false, false);
+    for _ in 0..4 {
+        compositor.key("Tab");
+    }
+    compositor.key("Enter");
+    compositor.key("Enter");
+
+    let started = Instant::now();
+    loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        if state
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("session_locked"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "power-menu Lock did not enter the qOS locked state. {}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "power-menu Lock left the real Wayland client focused",
+    );
+    // A post-lock key is routed only to the lock controller.  No menu or
+    // shortcut input from the whole sequence may leak to the hidden client.
+    compositor.key("x");
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "power-menu Lock leaked input to the hidden client: {:?}",
+        client.state.keyboard_events
+    );
+}
+
 /// The desktop's core lifecycle must be true at the protocol boundary, not
 /// only after directly mutating a `WorkspaceTree`: two actual xdg clients
 /// sharing an app-id remain separate; real shortcut input navigates and
@@ -2921,6 +3166,21 @@ impl Compositor {
     fn pointer_button(&self, pressed: bool) {
         let resp = self.control(&serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
+    }
+
+    /// Feed one direct-touch hardware edge through the explicit test-control
+    /// socket. The native adapter uses DRM's real ownership arena before it
+    /// forwards anything to the Wayland seat.
+    fn touch(&self, device: &str, slot: u32, phase: &str, x: f64, y: f64) {
+        let resp = self.control(&serde_json::json!({
+            "op": "touch",
+            "device": device,
+            "slot": slot,
+            "phase": phase,
+            "x": x,
+            "y": y,
+        }));
+        assert!(resp.get("ok").is_some(), "touch {phase:?} failed: {resp:?}");
     }
 
     /// The on-screen rect `[x, y, w, h]` of a named chrome target this frame.

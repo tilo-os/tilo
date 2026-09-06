@@ -618,6 +618,11 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
+    /// The effective shortcut table for this compositor session.  Input is
+    /// routed to a focused foreign client before it reaches this host, so the
+    /// router must consult this same snapshot rather than reconstructing the
+    /// default chord set on its own.
+    shortcut_config: settings_store::hardware::ShortcutConfig,
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
@@ -726,6 +731,10 @@ pub struct ShellOverlayHost {
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
+    /// Portal session-operation inhibitors shared with the backend serving
+    /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
+    /// this exact registry before any irreversible OS action is spawned.
+    session_inhibitors: qos_power_mgmt::InhibitRegistry,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
@@ -1647,6 +1656,7 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
+            shortcut_config: settings_store::hardware::ShortcutConfig::load(),
             content,
             workspace_scene_parts: None,
             onboarding: None,
@@ -1685,6 +1695,7 @@ impl ShellOverlayHost {
             qs_notification_history_start: 0,
             qs_notification_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
+            session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
@@ -2543,6 +2554,12 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().peer_sync_enabled = enabled;
         }
+    }
+
+    /// Attach the registry exported by this compositor's portal backend.
+    /// Headless and screenshot hosts keep an empty private registry.
+    pub fn set_session_inhibitors(&mut self, registry: qos_power_mgmt::InhibitRegistry) {
+        self.session_inhibitors = registry;
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -4476,11 +4493,10 @@ impl ShellOverlayHost {
         self.harvest_pending_new_tab()
     }
 
-    /// Test-only: mirrors the widget-side active tab into the tree. Must run
-    /// before the focus-follow scroll, or the tree reads one frame behind
-    /// the clicks that just happened.
-    #[cfg(any(test, debug_assertions))]
-    pub fn tick_active_tab_writeback_for_tests(&mut self) {
+    /// Mirrors the widget-side active tab into the tree immediately after
+    /// input dispatch. The native compositor uses this before routing the
+    /// next event in a backend batch; tests use it to model the same boundary.
+    pub fn flush_active_tab_writeback(&mut self) {
         self.harvest_active_tab_writeback();
     }
 
@@ -5741,6 +5757,12 @@ impl ShellOverlayHost {
         self.last_cursor = Some(p);
     }
 
+    /// Retire raw direct-touch contacts at a compositor ownership boundary
+    /// without interpreting the disappearance as a completed shell gesture.
+    pub fn cancel_direct_touch_gestures(&mut self) {
+        self.touch_gestures.cancel_all();
+    }
+
     /// Whether the workspace wheel is summoned. Read alongside
     /// [`Self::palette_visible`] so Escape is taken from the focused
     /// client only when the shell has something up to dismiss with it.
@@ -5949,6 +5971,21 @@ impl ShellOverlayHost {
         } else {
             self.qs_root.set_edit_mode_for_visual_test(true);
         }
+    }
+
+    /// Open the real session menu and optionally arm Shut down, then pin its
+    /// entrance animation so deterministic screenshots capture the resting
+    /// production surface rather than a wall-clock-dependent intermediate.
+    pub fn force_power_menu_for_visual_test(&mut self, arm_shutdown: bool) {
+        self.power_menu.open();
+        if arm_shutdown {
+            use winit::keyboard::{Key, NamedKey};
+            for _ in 0..5 {
+                let _ = self.power_menu.key(&Key::Named(NamedKey::ArrowDown), false);
+            }
+            let _ = self.power_menu.key(&Key::Named(NamedKey::Enter), false);
+        }
+        self.power_menu.force_settled_for_visual_test();
     }
 
     /// Folds every reading the quick-settings workers delivered into
@@ -7574,13 +7611,9 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Global shortcuts: `Ctrl+K` opens search scoped to the focused
-    /// tab; `Super+K`/`Super+Space`/`Alt+Space` open in global scope
-    /// (`Alt+Space` is the nested-Wayland-client substitute, since a
-    /// host DE running qOS as a client swallows Super first).
-    /// `Super+H` toggles workspace history; `Alt+Tab` changes windows,
-    /// `Ctrl+Tab` changes tabs, `Super+Tab` toggles the overview; Esc closes
-    /// the top overlay. Only called for a `Pressed` `KeyboardInput`.
+    /// Capture a chord for the shortcut editor.  Validation is shared with
+    /// Settings and persisted loading, so capture cannot create an effective
+    /// table the compositor would later reject or repair.
     fn capture_shortcut_chord(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
@@ -7595,16 +7628,25 @@ impl ShellOverlayHost {
                 Some("Add Super, Ctrl, Alt or Shift to printable keys.".into());
             return;
         }
-        let mut config = settings_store::hardware::ShortcutConfig::load();
-        if let Err(other) = config.set(action, chord) {
-            self.shortcut_rebind_message = Some(format!(
-                "Already used to {}. Press another shortcut.",
-                shortcut_action_label(other)
-            ));
+        let mut config = self.shortcut_config.clone();
+        if let Err(error) = config.set(action, chord) {
+            self.shortcut_rebind_message = Some(match error {
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
+                    "Already used to {}. Press another shortcut.",
+                    shortcut_action_label(other)
+                ),
+                settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
+                    "F1 and Print Screen are reserved by the desktop.".into()
+                }
+                settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                    "That shortcut is not supported. Press another shortcut.".into()
+                }
+            });
             return;
         }
         match config.save() {
             Ok(()) => {
+                self.shortcut_config = config;
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }
@@ -7615,21 +7657,35 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Whether the current user-edited shortcut table claims this key.
+    /// Replace the effective shortcut table after Settings has accepted a
+    /// change.  The compositor's foreign-client pre-routing reads this
+    /// snapshot, so dispatch and client ownership cannot disagree.
+    ///
+    /// Settings storage has no change-notification transport today: an
+    /// external writer must make this validated handoff after saving, or its
+    /// file change takes effect at the next compositor session.  The shell's
+    /// own shortcut guide does the handoff synchronously after its save.
+    pub fn set_shortcut_config(
+        &mut self,
+        config: settings_store::hardware::ShortcutConfig,
+    ) -> Result<(), settings_store::hardware::ShortcutConfigError> {
+        config.validate()?;
+        self.shortcut_config = settings_store::hardware::ShortcutConfig::normalise(config);
+        Ok(())
+    }
+
+    /// Resolve a press against the effective user-edited shortcut table.
     ///
     /// The compositor asks before offering a press to a focused Wayland
-    /// client. Reloading here makes a binding changed in Settings effective
-    /// without restarting the session, matching the dispatcher below.
-    pub(crate) fn configured_shortcut_matches(
+    /// client, and the shell dispatcher uses the returned action.  This is
+    /// deliberately one resolver over the same cached table, including any
+    /// custom binding accepted in Settings.
+    pub(crate) fn configured_shortcut_action(
         &self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
-    ) -> bool {
-        configured_shortcut_matches(
-            &settings_store::hardware::ShortcutConfig::load(),
-            logical_key,
-            modifiers,
-        )
+    ) -> Option<settings_store::hardware::ShortcutAction> {
+        configured_shortcut_action(&self.shortcut_config, logical_key, modifiers)
     }
 
     fn reset_shortcut_pair(
@@ -7638,7 +7694,7 @@ impl ShellOverlayHost {
         second: settings_store::hardware::ShortcutAction,
     ) {
         let defaults = settings_store::hardware::ShortcutConfig::default();
-        let mut candidate = settings_store::hardware::ShortcutConfig::load();
+        let mut candidate = self.shortcut_config.clone();
         candidate.bindings.remove(&first);
         candidate.bindings.remove(&second);
         let restore = [first, second].into_iter().try_for_each(|action| {
@@ -7646,18 +7702,25 @@ impl ShellOverlayHost {
                 .bindings
                 .get(&action)
                 .cloned()
-                .ok_or(action)
+                .ok_or(settings_store::hardware::ShortcutConfigError::InvalidChord)
                 .and_then(|chord| candidate.set(action, chord))
         });
-        if let Err(other) = restore {
-            self.shortcut_rebind_message = Some(format!(
-                "A default is already used to {}. Change that shortcut first.",
-                shortcut_action_label(other)
-            ));
+        if let Err(error) = restore {
+            self.shortcut_rebind_message = Some(match error {
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
+                    "A default is already used to {}. Change that shortcut first.",
+                    shortcut_action_label(other)
+                ),
+                settings_store::hardware::ShortcutConfigError::ReservedSystemKey
+                | settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                    "Could not restore the default shortcuts.".into()
+                }
+            });
             return;
         }
         match candidate.save() {
             Ok(()) => {
+                self.shortcut_config = candidate;
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }
@@ -7673,7 +7736,7 @@ impl ShellOverlayHost {
     )]
     fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
         use settings_store::hardware::ShortcutAction as A;
-        let config = settings_store::hardware::ShortcutConfig::load();
+        let config = &self.shortcut_config;
         let defaults = settings_store::hardware::ShortcutConfig::default();
         let rows = [
             (A::FocusPreviousWindow, A::FocusNextWindow),
@@ -7845,8 +7908,6 @@ impl ShellOverlayHost {
     ) -> bool {
         let mstate = modifiers.state();
         let super_down = mstate.super_key();
-        let alt_down = mstate.alt_key();
-        let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
         // The session action sheet is modal. It owns every key while open so
         // typing cannot leak into a hosted or Wayland app behind it; the
@@ -7897,13 +7958,8 @@ impl ShellOverlayHost {
         ) {
             return true;
         }
-        let shortcut_config = settings_store::hardware::ShortcutConfig::load();
-        let shortcut_pressed = |action| {
-            shortcut_config
-                .bindings
-                .get(&action)
-                .is_some_and(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
-        };
+        let configured_action = self.configured_shortcut_action(logical_key, modifiers);
+        let shortcut_pressed = |action| configured_action == Some(action);
         let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
             || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
         if help_chord {
@@ -7992,6 +8048,100 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Alt+Tab is the conventional window ring and remains a stable
+        // fallback even when spatial navigation is rebound in Settings.
+        // This also keeps first-run discoverability consistent with other
+        // Linux desktops.
+        if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let direction = if shift_down { -1 } else { 1 };
+            let _ = self.cycle_focus_along_strip(direction);
+            *handled = true;
+            return true;
+        }
+        // Alt+F4 is the stable Linux close gesture. qOS owns the frame and
+        // its durable tab/group state, so forwarding this to the client would
+        // let toolkits disagree about whether the window actually closed.
+        if mstate.alt_key()
+            && !mstate.control_key()
+            && !super_down
+            && !shift_down
+            && matches!(logical_key, Key::Named(NamedKey::F4))
+        {
+            let _ = self.close_focused_tab();
+            *handled = true;
+            return true;
+        }
+        // Keep the conventional GNOME workspace aliases in addition to the
+        // editable spatial bindings. They are deliberately clamped by the
+        // same workspace primitive as Super+Up/Down.
+        if super_down
+            && !mstate.control_key()
+            && !mstate.alt_key()
+            && !shift_down
+            && matches!(
+                logical_key,
+                Key::Named(NamedKey::PageUp | NamedKey::PageDown)
+            )
+        {
+            let direction = if matches!(logical_key, Key::Named(NamedKey::PageUp)) {
+                -1
+            } else {
+                1
+            };
+            if let Some(chrome) = self.chrome.clone() {
+                let _ = chrome.borrow_mut().switch_workspace(direction);
+            }
+            *handled = true;
+            return true;
+        }
+        // Optional Vim navigation is intentionally a full Super+Ctrl layer,
+        // never a bare/Ctrl-only text chord. This keeps H/J/K/L available to
+        // terminals and editors and matches the promise in Settings.
+        if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+            && super_down
+            && mstate.control_key()
+            && !mstate.alt_key()
+            && let Key::Character(key) = logical_key
+        {
+            let action = match (key.to_ascii_lowercase().as_str(), shift_down) {
+                ("h", false) => Some(ShortcutAction::FocusPreviousWindow),
+                ("l", false) => Some(ShortcutAction::FocusNextWindow),
+                ("k", false) => Some(ShortcutAction::PreviousStrip),
+                ("j", false) => Some(ShortcutAction::NextStrip),
+                ("h", true) => Some(ShortcutAction::MoveGroupLeft),
+                ("l", true) => Some(ShortcutAction::MoveGroupRight),
+                _ => None,
+            };
+            if let Some(action) = action {
+                match action {
+                    ShortcutAction::FocusPreviousWindow => {
+                        let _ = self.step_focus_along_strip(-1);
+                    }
+                    ShortcutAction::FocusNextWindow => {
+                        let _ = self.step_focus_along_strip(1);
+                    }
+                    ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                        let direction = if action == ShortcutAction::PreviousStrip {
+                            -1
+                        } else {
+                            1
+                        };
+                        if let Some(chrome) = self.chrome.clone() {
+                            let _ = chrome.borrow_mut().switch_strip(direction);
+                        }
+                    }
+                    ShortcutAction::MoveGroupLeft => {
+                        let _ = self.reorder_focused_group(-1);
+                    }
+                    ShortcutAction::MoveGroupRight => {
+                        let _ = self.reorder_focused_group(1);
+                    }
+                    _ => {}
+                }
+                *handled = true;
+                return true;
+            }
+        }
         let navigation = [
             ShortcutAction::PreviousTab,
             ShortcutAction::NextTab,
@@ -8030,10 +8180,10 @@ impl ShellOverlayHost {
                     let _ = self.reorder_focused_group(1);
                 }
                 ShortcutAction::FocusPreviousWindow => {
-                    let _ = self.cycle_focus_along_strip(-1);
+                    let _ = self.step_focus_along_strip(-1);
                 }
                 ShortcutAction::FocusNextWindow => {
-                    let _ = self.cycle_focus_along_strip(1);
+                    let _ = self.step_focus_along_strip(1);
                 }
                 ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
                     let direction = if action == ShortcutAction::PreviousStrip {
@@ -8060,34 +8210,19 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Captured ahead of the modifier-only branch so Character('K')
-        // further down can't also fire.
+        // Super+Space remains an immutable, hardware-neutral global-search
+        // escape hatch. Alt+Space is configurable-free application input.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && (super_down || alt_down) {
+        if is_space && super_down {
             self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
             self.refresh_search_results(state, path);
-            *handled = true;
-            return true;
-        }
-        // Keep the two conventional navigation families as stable aliases
-        // even when somebody experiments with the editable bindings. This
-        // also makes an old/partial settings file harmless after upgrade.
-        if alt_down && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            let direction = if shift_down { -1 } else { 1 };
-            let _ = self.cycle_focus_along_strip(direction);
-            *handled = true;
-            return true;
-        }
-        if mstate.control_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            let direction = if shift_down { -1 } else { 1 };
-            let _ = self.cycle_focused_tab(direction);
             *handled = true;
             return true;
         }
         if self.handle_overview_keyboard_nav(logical_key, handled) {
             return true;
         }
-        if is_mod
+        if super_down
             && self.handle_shell_mod_chords(
                 logical_key,
                 super_down,
@@ -8174,9 +8309,9 @@ impl ShellOverlayHost {
         true
     }
 
-    /// The `is_mod` (Ctrl or Super held) chord set: search, the
-    /// projection and overview toggles, window-creation chords, and
-    /// focus/workspace stepping.
+    /// Immutable Super-key shell chords: projection/capture actions,
+    /// workspace history, and window creation. Configurable actions are
+    /// resolved before this function from `ShortcutConfig`.
     #[allow(
         clippy::too_many_lines,
         reason = "the existing shell chord router remains one auditable precedence table"
@@ -8211,26 +8346,6 @@ impl ShellOverlayHost {
                 !st.overlays.room_activity
             };
             st.bump();
-            *handled = true;
-            return true;
-        }
-        if let Key::Character(s) = logical_key
-            && s.as_str().eq_ignore_ascii_case("k")
-        {
-            use crate::shell::chrome_state::SearchScope;
-            // Ctrl+K searches the focused app; Super+K searches
-            // the whole machine, including apps not open.
-            // `ActiveApp` widens to every provider (or `All`)
-            // when nothing claims/has the focused tab.
-            let scope = if super_down {
-                SearchScope::All
-            } else {
-                SearchScope::ActiveApp
-            };
-            self.open_palette_with_scope(scope);
-            // So the palette lands populated (chrome actions
-            // for an empty query) instead of blank.
-            self.refresh_search_results(state, path);
             *handled = true;
             return true;
         }
@@ -8306,82 +8421,6 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && self.handle_shell_window_open_chords(s.as_str(), super_down, state, path, handled)
         {
-            return true;
-        }
-        self.handle_shell_focus_and_strip_chords(logical_key, super_down, shift_down, handled)
-    }
-
-    /// Focus/workspace stepping: Super+Left/Right along the strip,
-    /// Shift+Up/Down between strips, and unmodified-within-`is_mod`
-    /// Up/Down between workspaces. Split out of `handle_shell_mod_chords`.
-    fn handle_shell_focus_and_strip_chords(
-        &mut self,
-        logical_key: &Key,
-        super_down: bool,
-        shift_down: bool,
-        handled: &mut bool,
-    ) -> bool {
-        // Super+ArrowLeft/Right moves focus one window along the
-        // strip — Super only, not the `is_mod` alias the vertical
-        // pair uses: Ctrl+Left/Right is word-wise cursor motion in
-        // nearly every text field.
-        if super_down
-            && matches!(
-                logical_key,
-                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
-            )
-        {
-            let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowLeft)) {
-                -1
-            } else {
-                1
-            };
-            if self.step_focus_along_strip(dir) {
-                *handled = true;
-            }
-            return true;
-        }
-        // Super+Shift+ArrowUp/Down move focus between strips —
-        // workspaces already own the unshifted pair.
-        if super_down
-            && shift_down
-            && matches!(
-                logical_key,
-                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-            )
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
-                -1
-            } else {
-                1
-            };
-            let mut st = chrome.borrow_mut();
-            if st.switch_strip(dir) {
-                *handled = true;
-            }
-            return true;
-        }
-        // Super+ArrowUp / Super+ArrowDown — switch active workspace. Ctrl's
-        // arrow chords stay with terminals, editors and text fields.
-        if super_down
-            && matches!(logical_key, Key::Named(NamedKey::ArrowUp))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            if st.switch_workspace(-1) {
-                *handled = true;
-            }
-            return true;
-        }
-        if super_down
-            && matches!(logical_key, Key::Named(NamedKey::ArrowDown))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            if st.switch_workspace(1) {
-                *handled = true;
-            }
             return true;
         }
         false
@@ -8979,7 +9018,48 @@ impl ShellOverlayHost {
         match outcome {
             PowerMenuClick::Ignored => false,
             PowerMenuClick::Consumed => true,
+            PowerMenuClick::Lock => {
+                // Do not delegate this to logind: its lock-session request
+                // cannot establish qOS's lock scene or revoke our clients'
+                // focus/input.  The native loop drains this edge through its
+                // compositor-owned SessionManager instead.
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().request_session_lock();
+                } else {
+                    tracing::error!(
+                        target: "qos::power",
+                        "power-menu Lock requested without compositor chrome state"
+                    );
+                }
+                true
+            }
             PowerMenuClick::Execute(action) => {
+                let inhibit_scope = match action {
+                    os_actions::SessionAction::Logout => {
+                        Some(qos_power_mgmt::inhibit::INHIBIT_LOGOUT)
+                    }
+                    os_actions::SessionAction::SwitchUser => {
+                        Some(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH)
+                    }
+                    _ => None,
+                };
+                if let Some(scope) = inhibit_scope
+                    && self.session_inhibitors.is_inhibited_for(scope)
+                {
+                    let reasons = self.session_inhibitors.active_reasons_for(scope);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_notification(
+                            "Session action blocked",
+                            &format!(
+                                "{} — close the app or finish its work first.",
+                                reasons
+                                    .first()
+                                    .map_or("An app has unsaved work", String::as_str)
+                            ),
+                        );
+                    }
+                    return true;
+                }
                 std::thread::spawn(move || {
                     os_actions::log_result(
                         "session_action",
@@ -10075,15 +10155,26 @@ pub(crate) fn shortcut_chord_matches(
         && chord.modifiers.contains("Shift") == state.shift_key()
 }
 
+/// The sole configurable shortcut resolver.  The input pre-router owns a
+/// press exactly when this returns an action; the shell dispatcher performs
+/// that same action from the same result.
+fn configured_shortcut_action(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> Option<settings_store::hardware::ShortcutAction> {
+    shortcuts.bindings.iter().find_map(|(action, chord)| {
+        shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+    })
+}
+
+#[cfg(test)]
 fn configured_shortcut_matches(
     shortcuts: &settings_store::hardware::ShortcutConfig,
     logical_key: &Key,
     modifiers: winit::event::Modifiers,
 ) -> bool {
-    shortcuts
-        .bindings
-        .values()
-        .any(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
+    configured_shortcut_action(shortcuts, logical_key, modifiers).is_some()
 }
 
 fn shortcut_key_name(logical_key: &Key) -> Option<String> {
@@ -10105,6 +10196,7 @@ fn shortcut_key_name(logical_key: &Key) -> Option<String> {
             NamedKey::Backspace => "backspace",
             NamedKey::Delete => "delete",
             NamedKey::Insert => "insert",
+            NamedKey::PrintScreen => "printscreen",
             NamedKey::F1 => "f1",
             NamedKey::F2 => "f2",
             NamedKey::F3 => "f3",
@@ -10190,15 +10282,17 @@ fn shortcut_reference_rows(
     };
     vec![
         ("Screenshot", "Print Screen".into()),
+        ("Switch windows", "Alt+Tab".into()),
+        ("Close tab", "Alt+F4".into()),
         ("Close tab", "Super+W".into()),
+        ("Previous workspace", "Super+Page Up".into()),
+        ("Next workspace", "Super+Page Down".into()),
         ("New window", "Super+N".into()),
         ("Add tab here", "Super+T".into()),
         ("Duplicate tab", "Super+D".into()),
         ("Open terminal", "Super+Enter".into()),
         ("Global search", chord(ShortcutAction::Search)),
         ("Global search", "Super+Space".into()),
-        ("Global search", "Alt+Space".into()),
-        ("Search this app", "Ctrl+K".into()),
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
@@ -10224,6 +10318,10 @@ fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
 }
 
 impl Widget for ShellOverlayHost {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
         self.interaction = environment;
         for child in self.children_mut() {
@@ -10835,9 +10933,8 @@ impl Widget for ShellOverlayHost {
             let phase = match touch.phase {
                 winit::event::TouchPhase::Started => ui::gesture::GesturePhase::Begin,
                 winit::event::TouchPhase::Moved => ui::gesture::GesturePhase::Update,
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                    ui::gesture::GesturePhase::End
-                }
+                winit::event::TouchPhase::Ended => ui::gesture::GesturePhase::End,
+                winit::event::TouchPhase::Cancelled => ui::gesture::GesturePhase::Cancel,
             };
             let point = Point::new(
                 touch.location.x / scale_factor,
@@ -11203,7 +11300,7 @@ impl Widget for ShellOverlayHost {
                 }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
-                    let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                    let shortcuts = &self.shortcut_config;
                     let chord = |action| {
                         shortcuts
                             .bindings
@@ -12736,7 +12833,7 @@ impl ShellOverlayHost {
             }
             ui::InputModality::Keyboard | ui::InputModality::Pointer => {
                 use settings_store::hardware::ShortcutAction;
-                let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                let shortcuts = &self.shortcut_config;
                 let defaults = settings_store::hardware::ShortcutConfig::default();
                 let binding = |action| {
                     let chord = shortcuts.bindings.get(&action);
@@ -16482,6 +16579,58 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn logout_and_switch_user_respect_their_portal_inhibitors() {
+        let (mut host, chrome) = host_with_chrome();
+        let registry = qos_power_mgmt::InhibitRegistry::new();
+        host.set_session_inhibitors(registry.clone());
+
+        let _logout_hold = registry.acquire_for(
+            "Editor has an unsaved document",
+            qos_power_mgmt::inhibit::INHIBIT_LOGOUT,
+        );
+        assert!(
+            host.apply_power_menu_outcome(PowerMenuClick::Execute(
+                os_actions::SessionAction::Logout
+            ))
+        );
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        assert!(
+            chrome.borrow().notifications()[0]
+                .body
+                .contains("Editor has an unsaved document")
+        );
+
+        let _switch_hold = registry.acquire_for(
+            "Call is sharing the screen",
+            qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
+        );
+        assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(
+            os_actions::SessionAction::SwitchUser
+        )));
+        assert_eq!(chrome.borrow().notifications().len(), 2);
+        assert!(
+            chrome.borrow().notifications()[1]
+                .body
+                .contains("Call is sharing the screen")
+        );
+    }
+
+    #[test]
+    fn logout_inhibitor_does_not_cross_block_switch_user() {
+        let (mut host, chrome) = host_with_chrome();
+        let registry = qos_power_mgmt::InhibitRegistry::new();
+        host.set_session_inhibitors(registry.clone());
+        let _logout_hold =
+            registry.acquire_for("Unsaved work", qos_power_mgmt::inhibit::INHIBIT_LOGOUT);
+
+        assert!(!registry.is_inhibited_for(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH));
+        // Do not apply SwitchUser here: an uninhibited action deliberately
+        // reaches the real narrow OS wrapper. The registry assertion proves
+        // the scope separation without invoking a host session action.
+        assert!(chrome.borrow().notifications().is_empty());
+    }
+
+    #[test]
     fn shortcut_capture_builds_the_pressed_named_chord() {
         let modifiers = winit::event::Modifiers::from(
             winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
@@ -16603,15 +16752,17 @@ mod palette_dispatch_tests {
             .collect::<Vec<_>>();
         for expected in [
             "Screenshot:Print Screen",
+            "Switch windows:Alt+Tab",
+            "Close tab:Alt+F4",
             "Close tab:Super+W",
+            "Previous workspace:Super+Page Up",
+            "Next workspace:Super+Page Down",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
             "Global search:Super+K",
             "Global search:Super+Space",
-            "Global search:Alt+Space",
-            "Search this app:Ctrl+K",
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
@@ -16663,6 +16814,54 @@ mod palette_dispatch_tests {
             &Key::Character("g".into()),
             winit::event::Modifiers::default(),
         ));
+    }
+
+    #[test]
+    fn effective_shortcut_handoff_rejects_reserved_or_ambiguous_tables() {
+        let (mut host, _) = host_with_chrome();
+        let mut reserved = settings_store::hardware::ShortcutConfig::default();
+        reserved.bindings.insert(
+            settings_store::hardware::ShortcutAction::Search,
+            settings_store::hardware::KeyChord {
+                modifiers: std::collections::BTreeSet::from(["Ctrl".into()]),
+                key: "f1".into(),
+            },
+        );
+        assert_eq!(
+            host.set_shortcut_config(reserved),
+            Err(settings_store::hardware::ShortcutConfigError::ReservedSystemKey)
+        );
+
+        let mut duplicate = settings_store::hardware::ShortcutConfig::default();
+        duplicate.bindings.insert(
+            settings_store::hardware::ShortcutAction::Search,
+            settings_store::hardware::KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        duplicate.bindings.insert(
+            settings_store::hardware::ShortcutAction::NextTab,
+            settings_store::hardware::KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        assert_eq!(
+            host.set_shortcut_config(duplicate),
+            Err(settings_store::hardware::ShortcutConfigError::Conflict(
+                settings_store::hardware::ShortcutAction::Search
+            ))
+        );
+    }
+
+    #[test]
+    fn shortcut_capture_explains_reserved_f1_and_print_screen() {
+        use settings_store::hardware::ShortcutAction;
+
+        let (mut host, _) = host_with_chrome();
+        for key in [Key::Named(NamedKey::F1), Key::Named(NamedKey::PrintScreen)] {
+            host.capture_shortcut_chord(ShortcutAction::Search, &key, Modifiers::default());
+            assert_eq!(
+                host.shortcut_rebind_message.as_deref(),
+                Some("F1 and Print Screen are reserved by the desktop."),
+                "{key:?} must not enter the editable shortcut table"
+            );
+        }
     }
 
     #[test]
@@ -18060,6 +18259,16 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        })
+    }
+
     fn left_button_released() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -18086,6 +18295,113 @@ mod overlay_event_absorb_tests {
             &h.taffy,
         );
         handled
+    }
+
+    #[test]
+    fn lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions() {
+        let mut h = build_harness();
+        h.chrome
+            .borrow_mut()
+            .tree_mut()
+            .append_empty_workspace("Second");
+        let active_before = h.chrome.borrow().tree().active;
+
+        // This is the exact lock-boundary call made by native.rs after it
+        // cancels the backend stream. Late End events must not turn a partial
+        // vertical three-finger swipe into a workspace switch.
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    400.0 + id as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 0..3 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    400.0 + id as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        h.host.cancel_direct_touch_gestures();
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    400.0 + id as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        // Physical removal runs through the raw Cancelled phase instead of
+        // the explicit lock helper. It must have the same no-terminal-action
+        // property even if stale End edges arrive after unplug.
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Cancelled,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        let chrome = h.chrome.borrow();
+        assert_eq!(
+            chrome.tree().active,
+            active_before,
+            "a cancelled touch stream cannot switch workspaces"
+        );
+        assert!(
+            !chrome.overlays.overview,
+            "a cancelled touch stream cannot commit overview"
+        );
     }
 
     fn left_button_pressed() -> WindowEvent {
@@ -19039,8 +19355,14 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
-        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        build_harness_with_host(host, chrome)
+    }
 
+    fn build_harness_with_host(
+        mut host: ShellOverlayHost,
+        chrome: crate::shell::chrome_state::Chrome,
+    ) -> Harness {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
@@ -19626,10 +19948,12 @@ mod tests {
 
     #[test]
     fn alt_tab_walks_the_window_strip_and_shift_reverses() {
-        let mut h = build_harness();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let (host, chrome) = crate::shell::build_nirios_overlay_host_with_chrome(&tree);
+        let mut h = build_harness_with_host(host, chrome);
         let first = {
             let state = h.chrome.borrow();
-            crate::compositor::client_input::step_active_window(&state.tree(), 1)
+            crate::compositor::client_input::cycle_active_window(&state.tree(), 1)
                 .expect("the demo strip contains another window")
         };
         let alt = Modifiers::from(ModifiersState::ALT);
@@ -19648,7 +19972,7 @@ mod tests {
 
         let previous = {
             let state = h.chrome.borrow();
-            crate::compositor::client_input::step_active_window(&state.tree(), -1)
+            crate::compositor::client_input::cycle_active_window(&state.tree(), -1)
                 .expect("the forward step can be reversed")
         };
         let alt_shift = Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
@@ -19905,8 +20229,8 @@ mod tests {
     /// ever in.
     fn adopt_rooms(h: &Harness) {
         let st = h.chrome.borrow();
-        let user = st.local_user_id.clone();
-        st.tree_mut().adopt_ownerless_workspaces(&user);
+        st.tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     }
 
     /// The dropdown's subject is who is in this room, so it must offer both
@@ -20141,7 +20465,7 @@ mod tests {
     }
 
     /// Opening the palette with a stale query must both focus the input
-    /// and clear it. Drives the production Ctrl+K path through
+    /// and clear it. Drives the configured Super+K path through
     /// `handle_event`.
     #[test]
     fn toggle_palette_focuses_input() {
@@ -20152,17 +20476,20 @@ mod tests {
         assert!(!h.host.palette.is_focused(), "palette must start unfocused");
         assert!(!h.host.palette_visible(), "palette must start hidden");
 
-        let mods = Modifiers::from(ModifiersState::CONTROL);
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
+        let mods = Modifiers::from(ModifiersState::SUPER);
         let handled = pump(&mut h, &key_press(Key::Character("k".into())), mods);
 
-        assert!(handled, "Ctrl+K must be consumed by the overlay host");
+        assert!(handled, "Super+K must be consumed by the overlay host");
         assert!(
             h.host.palette_visible(),
-            "Ctrl+K must open the global-search palette"
+            "Super+K must open the global-search palette"
         );
         assert!(
             h.host.palette.is_focused(),
-            "opening the palette via Ctrl+K must focus its input \
+            "opening the palette via Super+K must focus its input \
              (so the very first keystroke after open lands in the search box)"
         );
         assert_eq!(
@@ -20200,13 +20527,11 @@ mod tests {
         .unwrap();
     }
 
-    /// `Ctrl+K` scopes to the focused app (Notes, from `bootstrap_demo`,
-    /// which `NotesProvider` claims via `owns_tab`) so an installed-but-
-    /// unopened app is not among its answers; `Super+K` is the global
-    /// surface and must offer it.
+    /// The configured Search action opens the global surface and reaches
+    /// installed apps, rather than relying on a legacy hard-coded chord.
     #[test]
     #[serial_test::serial(process_env)]
-    fn ctrl_k_scopes_to_the_focused_app_and_super_k_reaches_installed_apps() {
+    fn configured_search_reaches_installed_apps() {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -20216,47 +20541,13 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
-        // Precondition: the focused tab must be provider-owned, or
-        // `ActiveApp` excludes nothing and the test passes vacuously.
-        let owner = {
-            let st = h.chrome.borrow();
-            active_tab_provider_id(&st, &h.host.search_registry)
-        };
-        assert_eq!(
-            owner.as_deref(),
-            Some("notes"),
-            "fixture precondition: the focused tab must be owned by a \
-             provider, otherwise ActiveApp scope excludes nothing"
-        );
-
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
         let doc = AutoCommit::new();
 
-        // Ctrl+K: scoped to the app in front of you.
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), ctrl));
-        assert_eq!(
-            h.chrome.borrow().search_scope,
-            SearchScope::ActiveApp,
-            "Ctrl+K searches within the focused app"
-        );
-        h.host.palette.set_query("zzyzx");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-        assert!(
-            !h.host
-                .search_results
-                .iter()
-                .any(|r| r.provider_id == "applications"),
-            "scoped to Notes, an app that is not open is not an answer; got {:?}",
-            h.host
-                .search_results
-                .iter()
-                .map(|r| (&r.provider_id, &r.title))
-                .collect::<Vec<_>>()
-        );
-
-        // Super+K: the global surface. Closed first so the chord opens
-        // rather than toggles the already-open palette shut.
-        h.host.palette_visible = false;
+        // Super+K is the default Search action.  Any rebind goes through the
+        // same effective-action resolver used by this dispatcher.
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(
@@ -20291,16 +20582,19 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Ctrl+K scoped-search must reach the focused app's own *content*,
-    /// not just its tab title. `nir` appears only in the note's body, so
+    /// Search must reach the focused app's own *content*, not just its tab
+    /// title. `nir` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
-    fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
+    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::notes_app::NotesApp;
 
         let mut h = build_harness();
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
         let doc = AutoCommit::new();
         // The document as `TileHost::sync` hands it to the app every
         // frame: the tab's own record.
@@ -20317,9 +20611,9 @@ mod tests {
             notes.sync(d, &automerge::ROOT);
         });
 
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), ctrl));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
         h.host.palette.set_query("nir");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
@@ -21334,6 +21628,8 @@ mod resync_strips_tests {
             Some(group_id),
             "stale focus must not dislodge the selected group either"
         );
+        drop(tree);
+        drop(state);
 
         // The inverse race is just as important: a close may be durable
         // before the next widget resync, leaving the old tab momentarily

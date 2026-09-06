@@ -739,6 +739,10 @@ impl Backend for DrmBackend {
         self.inner.reload_input_settings();
     }
 
+    fn cancel_touch(&mut self) {
+        self.inner.cancel_touch();
+    }
+
     fn switch_vt(&mut self, vt: i32) {
         self.inner.change_vt(vt);
     }

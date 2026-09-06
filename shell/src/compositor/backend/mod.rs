@@ -266,6 +266,10 @@ pub trait Backend {
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
 
+    /// Cancel raw direct-touch contacts at a compositor ownership boundary.
+    /// Display-only and hosted backends have no such source to retire.
+    fn cancel_touch(&mut self) {}
+
     /// Switch to another virtual terminal.
     ///
     /// Default no-op: a hosted backend has no VT of its own to leave.

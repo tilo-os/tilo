@@ -2934,7 +2934,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(host_portal_launch)]
+    #[serial_test::serial(process_env)]
     fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
         let _ = drain_events();
         let command = LaunchCommand {
