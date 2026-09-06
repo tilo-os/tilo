@@ -4873,11 +4873,10 @@ pub fn run() -> ! {
             st.pump_dbus_notifications();
         });
 
-        // Mirror the live fullscreen state (`XdgShellHandler` fullscreen path) into
-        // the rendered scene so a promoted group takes the whole output and exit
-        // restores prior tiling. The overlay host guards against an unhosted group
-        // id (client tree and rendered tree aren't unified yet) — a safe no-op, not a blanked shell.
-        frame_builder.set_fullscreen(state.fullscreen_group);
+        // Client fullscreen is a per-output overlay, never a combined-scene
+        // layout collapse.  Keep the chrome state's legacy group promotion
+        // clear so another monitor's desktop remains visible and interactive.
+        frame_builder.set_fullscreen(None);
 
         {
             // A close affordance mutates the rendered/persisted tree first, then
@@ -4955,6 +4954,29 @@ pub fn run() -> ! {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
+        reconcile_fullscreen_overlay(
+            &mut state,
+            &mut frame_builder,
+            &output_globals,
+            backend.outputs(),
+        );
+        state.popup_manager.cleanup();
+        // Popup geometry is relative to its parent surface, whose actual
+        // rectangle lives in the rendered widget tree.  Resolve that live
+        // geometry before asking State to apply xdg-positioner constraints and
+        // emit the first/reposition configure.
+        let mut popup_parents = HashMap::new();
+        for parent_id in state.popup_parent_ids() {
+            if let Some(rect) = frame_builder.foreign_surface_rect(parent_id) {
+                popup_parents.insert(parent_id, rect);
+            } else if let Some(rect) = frame_builder.floating_surface_rect(parent_id) {
+                popup_parents.insert(parent_id, rect);
+            } else if let Some(rect) = frame_builder.popup_surface_rect(parent_id) {
+                popup_parents.insert(parent_id, rect);
+            }
+        }
+        let popup_surfaces = state.layout_xdg_popups(&popup_parents);
+        frame_builder.set_popup_surfaces(&popup_surfaces);
 
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);
@@ -4979,6 +5001,12 @@ pub fn run() -> ! {
                 (surface.surface_id, (center.x, center.y))
             }));
             placements.extend(state.output_presentation_placements());
+            placements.extend(frame_builder.popup_surface_rects().into_iter().map(
+                |(surface_id, rect)| {
+                    let center = rect.center();
+                    (surface_id, (center.x, center.y))
+                },
+            ));
             state.update_surface_scales(&placements);
         }
         // An output change has already installed the backend's new geometry,
@@ -7039,6 +7067,10 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
 fn visible_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
     let mut surfaces = visible_tiled_surface_rects(frame_builder);
     surfaces.extend(frame_builder.floating_surface_rects());
+    if let Some(surface) = frame_builder.fullscreen_surface_rect() {
+        surfaces.push(surface);
+    }
+    surfaces.extend(frame_builder.popup_surface_rects());
     if let Some(surface) = frame_builder.osk_surface_rect() {
         surfaces.push(surface);
     }
@@ -7184,6 +7216,75 @@ fn output_geometry(
             height: f64::from(o.size.1),
         })
         .collect()
+}
+
+/// Resolve an xdg fullscreen request to one live backend output and paint it
+/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// removed, use the output currently containing the window's centre, then the
+/// first live output as a deterministic hotplug fallback.
+fn reconcile_fullscreen_overlay(
+    state: &mut State,
+    frame: &mut FrameBuilder,
+    globals: &output_globals::OutputGlobals,
+    outputs: &[crate::compositor::backend::Output],
+) {
+    let Some(target) = state.fullscreen_target.as_mut() else {
+        frame.set_fullscreen_surface(None);
+        return;
+    };
+    let requested_id = target
+        .requested_output
+        .as_ref()
+        .and_then(|output| globals.id_for_resource(output));
+    let current_rect = frame.foreign_surface_rect(target.surface_id);
+    let centre = current_rect.map(|rect| rect.center());
+    let output = select_fullscreen_output(requested_id, centre, outputs);
+    let Some(output) = output else {
+        frame.set_fullscreen_surface(None);
+        return;
+    };
+    let size = size_to_signed(output.size);
+    if target.configured_size != Some(size) {
+        target.surface.with_pending_state(|pending| {
+            pending.states.set(
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+            );
+            pending.size = Some(size.into());
+        });
+        target.surface.send_configure();
+        target.configured_size = Some(size);
+    }
+    let rect = vello::kurbo::Rect::new(
+        f64::from(output.position.0),
+        f64::from(output.position.1),
+        f64::from(output.position.0) + f64::from(output.size.0),
+        f64::from(output.position.1) + f64::from(output.size.1),
+    );
+    frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+}
+
+fn select_fullscreen_output(
+    requested: Option<crate::compositor::backend::OutputId>,
+    current_center: Option<vello::kurbo::Point>,
+    outputs: &[crate::compositor::backend::Output],
+) -> Option<&crate::compositor::backend::Output> {
+    requested
+        .and_then(|id| outputs.iter().find(|output| output.id == id))
+        .or_else(|| {
+            current_center.and_then(|point| {
+                outputs.iter().find(|output| {
+                    point.x >= f64::from(output.position.0)
+                        && point.x < f64::from(output.position.0) + f64::from(output.size.0)
+                        && point.y >= f64::from(output.position.1)
+                        && point.y < f64::from(output.position.1) + f64::from(output.size.1)
+                })
+            })
+        })
+        .or_else(|| {
+            outputs
+                .iter()
+                .find(|output| output.size.0 > 0 && output.size.1 > 0)
+        })
 }
 
 /// Logical output rectangles exposed as `InputCapture` zones.  Invalid outputs
@@ -7378,7 +7479,7 @@ mod gesture_wireup_tests {
 
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::output_geometry;
+    use super::{output_geometry, select_fullscreen_output};
     use crate::compositor::backend::{Output, OutputId};
 
     /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
@@ -7422,6 +7523,39 @@ mod output_geometry_tests {
             Output::new(OutputId(1), (0, 0), 1.0),
         ];
         assert_eq!(output_geometry(&outs).len(), 1);
+    }
+
+    #[test]
+    fn fullscreen_prefers_requested_output_then_rehomes_after_hotplug() {
+        let outputs = [
+            Output::new(OutputId(0), (1600, 900), 1.0),
+            Output {
+                id: OutputId(1),
+                position: (1600, 0),
+                size: (1920, 1080),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+            },
+        ];
+        let centre = vello::kurbo::Point::new(2000.0, 400.0);
+        assert_eq!(
+            select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs).map(|out| out.id),
+            Some(OutputId(1)),
+            "requested wl_output wins over the old tiled placement"
+        );
+        let remaining = &outputs[..1];
+        assert_eq!(
+            select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining).map(|out| out.id),
+            Some(OutputId(0)),
+            "removed requested output deterministically rehomes fullscreen"
+        );
+        assert_eq!(
+            select_fullscreen_output(None, Some(vello::kurbo::Point::new(300.0, 400.0)), &outputs)
+                .map(|out| out.id),
+            Some(OutputId(0)),
+            "no requested output uses the window's owning display"
+        );
     }
 }
 
