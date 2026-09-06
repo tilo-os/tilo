@@ -181,6 +181,54 @@ impl LinkPopover {
         Some(Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT))
     }
 
+    /// The filtered result row under a logical point.  Keeping this in the
+    /// popover makes pointer and keyboard selection share the exact same
+    /// scrolling window and bounds checks.
+    fn row_at(&self, point: Point) -> Option<usize> {
+        if !self.visible_flag || !self.rect().contains(point) {
+            return None;
+        }
+        let relative = point.y - self.rows_top();
+        if relative < 0.0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "relative is non-negative screen geometry and the visible result count is bounded"
+        )]
+        let slot = (relative / ROW_HEIGHT).floor() as usize;
+        let index = self.window_start().saturating_add(slot);
+        (index < self.visible.len()).then_some(index)
+    }
+
+    /// Highlight the result under the pointer. Returns whether a redraw is
+    /// needed; filtering and keyboard navigation use the same cursor.
+    pub fn hover_at(&mut self, point: Point) -> bool {
+        match self.row_at(point) {
+            Some(index) if index != self.cursor => {
+                self.cursor = index;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Pick a row as if Enter had been pressed.  A click outside rows remains
+    /// a parent-owned dismiss gesture, mirroring the slash menu.
+    pub fn click_at(&mut self, point: Point) -> Option<PageEntry> {
+        let index = self.row_at(point)?;
+        let entry = self
+            .visible
+            .get(index)
+            .and_then(|&item| self.items.get(item))?
+            .clone();
+        self.cursor = index;
+        self.pending = Some(entry.clone());
+        self.set_visible(false);
+        Some(entry)
+    }
+
     fn rebuild_visible(&mut self) {
         let needle = self.filter.to_lowercase();
         self.visible.clear();
@@ -632,6 +680,23 @@ mod tests {
         p.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
         let chosen = p.take_selection().unwrap();
         assert_eq!(chosen.title, "Welcome");
+        assert!(!p.is_visible());
+    }
+
+    #[test]
+    fn pointer_hover_and_click_select_the_visible_row() {
+        let mut p = seed_three();
+        p.set_anchor(Point::new(20.0, 30.0));
+        p.set_visible(true);
+        let row = p.row_rect(1).expect("second row is painted");
+        assert!(p.hover_at(row.center()));
+        assert_eq!(
+            p.highlighted().map(|entry| entry.title.as_str()),
+            Some("Roadmap")
+        );
+        let chosen = p.click_at(row.center()).expect("click selects row");
+        assert_eq!(chosen.title, "Roadmap");
+        assert_eq!(p.take_selection(), Some(chosen));
         assert!(!p.is_visible());
     }
 
