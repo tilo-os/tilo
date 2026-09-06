@@ -1,4 +1,0 @@
-   Compiling shell v0.1.0 (/home/user/qos/shell)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.60s
-     Running `target/debug/examples/redraw_bench`
-Error: "QOS_REDRAW_BENCH_PROFILE=1 is required when QOS_REDRAW_BENCH_SCENE_REUSE=1; resolved-upload reuse telemetry is diagnostic-only"

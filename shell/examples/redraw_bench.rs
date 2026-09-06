@@ -4393,10 +4393,9 @@ mod tests {
     #[test]
     #[ignore = "explicit native-4K causal fixed-order Area replay diagnostic"]
     fn native_4k_fixed_quick_settings_pose_225_segment_order_is_causal() {
-        let fixture: SegmentOrderReplayFixture = serde_json::from_str(include_str!(
-            "../../docs/benchmarks/2026-09-06-segment-order-replay/captured-orders.json"
-        ))
-        .expect("saved segment-order fixture");
+        let fixture: SegmentOrderReplayFixture =
+            serde_json::from_str(include_str!("fixtures/captured-segment-orders.json"))
+                .expect("saved segment-order fixture");
         assert_eq!(fixture.native_extent, [WIDTH, HEIGHT]);
         assert_eq!(fixture.pose_permille, 225);
         assert_eq!(fixture.command_tag, 1);
