@@ -7204,7 +7204,7 @@ impl ShellOverlayHost {
                 app_id,
                 label = %target.label,
                 detail = %error,
-                "room activity application launch was refused"
+                "workspace activity application launch was refused"
             );
             chrome.borrow_mut().push_notification_full(
                 crate::shell::notification::Notification::new(
