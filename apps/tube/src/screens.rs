@@ -2163,6 +2163,11 @@ fn device_sync_card(
         add_device_identity_and_pairing(&mut rows, theme, bus, state, input);
         add_pending_devices(&mut rows, theme, bus, state);
         add_active_devices(&mut rows, theme, bus, state);
+    } else if !capability.available {
+        // Builds intentionally compiled without the Noise transport must be
+        // explicit: a bare "Unavailable" badge looks like a transient outage
+        // and invites users to hunt for a pairing button that cannot exist.
+        rows.push(device_sync_not_included(theme));
     }
     settings_card(theme, "Device sync", rows)
 }
@@ -2210,7 +2215,19 @@ fn device_sync_unavailable(theme: &Theme) -> Flex {
         .surface(subtle_surface(theme))
         .push(dim(
             theme,
-            "Unlock the desktop keyring, then reopen Tube to enable encrypted device sync.",
+            "Encrypted device sync is unavailable on this desktop. Ensure the desktop secret broker is available and unlocked, then reopen Tube.",
+            12.5,
+        ))
+}
+
+fn device_sync_not_included(theme: &Theme) -> Flex {
+    Flex::row()
+        .fill_w()
+        .pad(16.0)
+        .surface(subtle_surface(theme))
+        .push(dim(
+            theme,
+            "This Tube build does not include Grayjay device sync. Install a build with device sync support to pair or synchronize devices.",
             12.5,
         ))
 }

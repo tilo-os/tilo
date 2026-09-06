@@ -37,9 +37,9 @@ pub enum Request {
     Branding(String),
     /// Run a search through the data-source backend.
     Search { query: String },
-    /// Fetch the home / trending catalogue. Only a *live* backend answers this
-    /// — the offline "feed" is just the sample already on screen, so a failed
-    /// or absent live backend leaves the bundled catalogue untouched.
+    /// Fetch the home / trending catalogue. Only a *live* backend answers this;
+    /// a failed or absent backend leaves the real app in its explicit empty,
+    /// offline state rather than substituting demo content.
     Feed,
     /// Fetch full metadata + real "up next" recommendations for a video the
     /// user just opened.
@@ -439,9 +439,11 @@ impl Worker {
             .name("tube-fetch".into())
             .spawn(move || {
                 let client = client();
-                // The data-source seam. The offline sample is always available
-                // as a fallback; the live rustypipe backend is present only
-                // under `--features live` *and* if it constructed. SponsorBlock /
+                // The offline backend supplies hermetic test/demo data only; the
+                // live app never falls back to it, so a failed network request
+                // cannot present fabricated videos as current content. The live
+                // rustypipe backend is present only under `--features live` *and*
+                // if it constructed. SponsorBlock /
                 // DeArrow keep their own direct `sponsor.ajay.app` path (they are
                 // orthogonal to the InnerTube source).
                 let offline = crate::backend::default_backend();
@@ -506,6 +508,10 @@ impl Worker {
                             // Always emit a (possibly empty) result so the UI can
                             // drop its loading skeleton and show either real hits
                             // or an honest "no results".
+                            #[allow(
+                                unused_mut,
+                                reason = "live-only enrichment mutates this result list"
+                            )]
                             let mut videos = match fetch(
                                 live.as_deref(),
                                 offline.as_ref(),
@@ -519,7 +525,15 @@ impl Worker {
                                 }
                                 _ => Vec::new(),
                             };
+                            #[allow(
+                                unused_mut,
+                                reason = "live-only enrichment fills these result lists"
+                            )]
                             let mut playlists: Vec<Playlist> = Vec::new();
+                            #[allow(
+                                unused_mut,
+                                reason = "live-only enrichment fills these result lists"
+                            )]
                             let mut channels: Vec<Channel> = Vec::new();
                             // Enrich with rustypipe: real creator avatars for the
                             // yt-dlp videos (which have none), plus the playlists
@@ -556,9 +570,9 @@ impl Worker {
                             });
                         }
                         Request::Feed => {
-                            // Live only: an offline feed is the sample already on
-                            // screen, so a missing/failed live backend just marks
-                            // the source offline and leaves the catalogue as-is.
+                            // Live only: a missing/failed backend marks the source
+                            // offline and leaves the intentionally empty catalogue
+                            // in its explicit offline state.
                             //
                             // First choice is YouTube's dedicated trending browse.
                             // That endpoint (`FEtrending`) has been retired and now
@@ -595,6 +609,10 @@ impl Worker {
                             // yt-dlp resolves playlists reliably; the rustypipe
                             // enricher is a fallback. Live-only — the offline build
                             // has no playlist data.
+                            #[allow(
+                                unused_mut,
+                                reason = "the live-only enricher is a playlist fallback"
+                            )]
                             let mut resolved = live.as_ref().and_then(|b| b.playlist(&id).ok());
                             #[cfg(feature = "live")]
                             if resolved.is_none() {
@@ -769,7 +787,7 @@ fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String,
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
 /// initialises. Returns `None` in the default build or on a construction error
-/// (the worker then serves the offline sample). Never panics.
+/// (the UI then shows its explicit offline/no-data state). Never panics.
 #[cfg(feature = "live")]
 fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     // Primary: yt-dlp, the community-maintained extractor. A subprocess, so it
@@ -796,7 +814,7 @@ fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
         }
         Err(e) => {
             let _ = up_tx.send(Update::Note(format!(
-                "live backend unavailable ({e}); using offline sample"
+                "live backend unavailable ({e}); no live catalogue available"
             )));
             None
         }
@@ -870,10 +888,11 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
     }
 }
 
-/// Run `query` against the live backend first (when present); on a live error,
-/// optionally fall back to the offline sample. Returns the result together with
-/// whether the *live* backend produced it — that boolean drives the on-screen
-/// "Live" vs "Sample" status. Live errors are surfaced as a status note.
+/// Run `query` against the live backend first (when present); callers may opt
+/// into the offline backend only for hermetic/demo use. The real app passes
+/// `false`, so it never represents sample data as current content. Returns the
+/// result together with whether the *live* backend produced it. Live errors are
+/// surfaced as a status note.
 fn fetch(
     live: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
@@ -899,7 +918,7 @@ fn fetch(
 /// the honest status-pill label. Tries `YouTube`'s dedicated trending browse
 /// first; on failure (the endpoint has been retired) composes a real "popular
 /// right now" feed. Returns `None` only when there is no live data at all
-/// (offline / default build) so the caller keeps the bundled sample.
+/// (offline / default build) so the caller keeps its explicit empty state.
 fn feed_trending(
     live: Option<&dyn YtBackend>,
     enrich: Option<&dyn YtBackend>,
@@ -925,7 +944,7 @@ fn feed_trending(
 /// backend for the most-viewed videos uploaded in the last week, then
 /// round-robin interleave for variety and de-duplicate. Every video is genuine
 /// `YouTube` data (view-count-sorted search), not the offline sample. Returns
-/// `None` when there is no live backend so the caller keeps the sample.
+/// `None` when there is no live backend so the caller keeps the empty state.
 fn live_popular_feed(
     backend: Option<&dyn YtBackend>,
     up_tx: &Sender<Update>,
@@ -973,7 +992,7 @@ fn send_status(up_tx: &Sender<Update>, live: bool) {
     let label = if live {
         "live (rustypipe)"
     } else {
-        "offline — sample data"
+        "offline — no live data"
     };
     let _ = up_tx.send(Update::Status {
         live,
