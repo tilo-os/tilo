@@ -5946,10 +5946,10 @@ impl ShellOverlayHost {
         self.workspace_settings_overlay.force_settled();
     }
 
-    /// Font size the overview sets the current room's name at — the
-    /// largest thing on the panel, since naming where you are is the
-    /// first question it answers. A method, not a constant, so it tracks
-    /// the active theme's typography token.
+    /// Font size the overview sets the current room's name at. It leads the
+    /// panel without becoming a display headline that overwhelms the actual
+    /// destinations below. A method, not a constant, so it tracks the active
+    /// theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
     }
@@ -6022,8 +6022,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        // Largest step in the type scale — currently 40 px.
-        tokens.typography.scale.x4l
+        tokens.typography.scale.x3l
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -9671,6 +9670,56 @@ fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'
     }
 }
 
+/// Compact, non-editable reference shown below the configurable navigation
+/// pairs. Configurable global actions use their live chord so the guide never
+/// promises a default the user has rebound; the remaining entries correspond
+/// directly to unconditional branches in the production shell dispatcher.
+fn shortcut_reference_rows(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> Vec<(&'static str, String)> {
+    use settings_store::hardware::ShortcutAction;
+    let chord = |action| {
+        shortcuts
+            .bindings
+            .get(&action)
+            .map(shortcut_guide_chord)
+            .unwrap_or_else(|| "Unassigned".into())
+    };
+    vec![
+        ("Screenshot", "Print Screen".into()),
+        ("Close tab", "Super+W".into()),
+        ("New window", "Super+N".into()),
+        ("Add tab here", "Super+T".into()),
+        ("Duplicate tab", "Super+D".into()),
+        ("Open terminal", "Super+Enter".into()),
+        ("Global search", chord(ShortcutAction::Search)),
+        ("Global search", "Super+Space".into()),
+        ("Global search", "Alt+Space".into()),
+        ("Search this app", "Ctrl+K".into()),
+        ("Overview", chord(ShortcutAction::WorkspaceOverview)),
+        ("Lock", chord(ShortcutAction::Lock)),
+        ("Quick Settings", chord(ShortcutAction::QuickSettings)),
+        ("This guide", chord(ShortcutAction::ShortcutHelp)),
+        ("Workspace wheel", "Super+S".into()),
+        ("Wireless display", "Super+P".into()),
+        ("Capture screenshot", "Super+Shift+S".into()),
+        ("Picture in picture", "Super+Shift+P".into()),
+        ("Save recent replay", "Super+Shift+R".into()),
+    ]
+}
+
+fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
+    let display = chord.display();
+    let Some((modifiers, key)) = display.rsplit_once('+') else {
+        return display;
+    };
+    if key.chars().count() == 1 {
+        format!("{modifiers}+{}", key.to_uppercase())
+    } else {
+        display
+    }
+}
+
 impl Widget for ShellOverlayHost {
     fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
         self.interaction = environment;
@@ -10555,20 +10604,29 @@ impl Widget for ShellOverlayHost {
                         shortcuts
                             .bindings
                             .get(&action)
-                            .map(settings_store::hardware::KeyChord::display)
+                            .map(shortcut_guide_chord)
                             .unwrap_or_else(|| "unassigned".to_string())
                     };
+                    let essential_summary = shortcut_reference_rows(&shortcuts)
+                        .into_iter()
+                        .map(|(label, chord)| format!("{label}: {chord}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     root.children.push(
                         AccessNode::new(Role::Dialog)
                             .with_name("Desktop keyboard and mouse guide")
                             .with_description(format!(
-                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; workspaces with {} or {}; move groups with {} or {}; resize with {} or {}. Essential desktop actions: {essential_summary}. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
                                 chord(ShortcutAction::FocusPreviousWindow),
                                 chord(ShortcutAction::FocusNextWindow),
                                 chord(ShortcutAction::PreviousTab),
                                 chord(ShortcutAction::NextTab),
                                 chord(ShortcutAction::PreviousStrip),
                                 chord(ShortcutAction::NextStrip),
+                                chord(ShortcutAction::PreviousWorkspace),
+                                chord(ShortcutAction::NextWorkspace),
+                                chord(ShortcutAction::MoveGroupLeft),
+                                chord(ShortcutAction::MoveGroupRight),
                                 chord(ShortcutAction::ResizeNarrower),
                                 chord(ShortcutAction::ResizeWider),
                             ))
@@ -11198,7 +11256,12 @@ impl ShellOverlayHost {
 
         // Sidebar wheel: above desktop content, below every overlay
         // (including scrims) — it's part of the desktop, so it dims with it.
-        if let Some(sidebar) = self.sidebar.as_mut() {
+        // The wheel and overview are two ways to navigate the same workspace
+        // set. Showing both under one modal creates competing destinations;
+        // the wheel returns as soon as the overview closes.
+        if !self.overlay_flags().overview
+            && let Some(sidebar) = self.sidebar.as_mut()
+        {
             sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
@@ -11725,9 +11788,11 @@ impl ShellOverlayHost {
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {
-        let width = (self.rect.width() - 40.0).clamp(0.0, 760.0);
-        let max_height = if width < 620.0 { 620.0 } else { 500.0 };
-        let height = (self.rect.height() - 40.0).clamp(0.0, max_height);
+        // The guide is a desktop reference, not only a binding editor.  The
+        // wider card leaves room for the fixed launch/capture actions without
+        // turning six navigation pairs into a tall, clipped single column.
+        let width = (self.rect.width() - 40.0).clamp(0.0, 1040.0);
+        let height = (self.rect.height() - 40.0).clamp(0.0, 620.0);
         Rect::new(
             self.rect.center().x - width / 2.0,
             self.rect.center().y - height / 2.0,
@@ -12086,12 +12151,11 @@ impl ShellOverlayHost {
                         ShortcutAction::ResizeWider,
                     ),
                 ];
-                let narrow = body.width() < 560.0;
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = if narrow { 0 } else { index % 2 };
-                    let row = if narrow { index } else { index / 2 };
+                    let column = index % 2;
+                    let row = index / 2;
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + usize_to_f64_lossy(row) * if narrow { 55.0 } else { 88.0 };
+                    let y = body.y0 + usize_to_f64_lossy(row) * 62.0;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -12183,31 +12247,86 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let pointer_y = body.y0 + if narrow { 342.0 } else { 286.0 };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[3],
-                    None,
-                    &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
-                );
-                text_renderer.draw_text(
+                let essentials_y = body.y0 + 196.0;
+                text_renderer.draw_text_weighted(
                     scene,
-                    "Mouse · click a window · drag a tab or group · drag an edge to resize · scroll horizontally to move the view",
-                    theme.tokens.typography.scale.xs,
-                    colors.text_dim,
-                    transform.pre_translate((body.x0, pointer_y + 20.0).into()),
-                    Some(f64_to_f32_lossy(body.width())),
+                    "Essential desktop actions",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform.pre_translate((body.x0, essentials_y).into()),
+                    None,
+                    TextWeight::Semibold,
                 );
-                if settings_store::hardware::DesktopControlsConfig::load().vim_mode {
+                let references = shortcut_reference_rows(&shortcuts);
+                for (index, (label, chord)) in references.iter().enumerate() {
+                    let column = index % 4;
+                    let row = index / 4;
+                    let cell_width = body.width() / 4.0;
+                    let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
+                    let y = essentials_y + 28.0 + usize_to_f64_lossy(row) * 38.0;
                     text_renderer.draw_text(
                         scene,
-                        "Vim mode · h j k l",
+                        label,
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
-                        transform.pre_translate((body.x0, pointer_y + 50.0).into()),
-                        None,
+                        transform.pre_translate((x, y).into()),
+                        Some(f64_to_f32_lossy(cell_width - 12.0)),
                     );
+                    let chord_size = theme.tokens.typography.scale.xs;
+                    let (chord_width, chord_height) =
+                        text_renderer.measure(chord, chord_size, None);
+                    let pill = Rect::new(
+                        x,
+                        y + 15.0,
+                        (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
+                        y + 15.0 + f64::from(chord_height) + 8.0,
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.neutral[2],
+                        None,
+                        &RoundedRect::from_rect(pill, 5.0),
+                    );
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        chord,
+                        chord_size,
+                        colors.text_primary,
+                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 4.0).into()),
+                        None,
+                        TextWeight::Semibold,
+                    );
+                }
+                let pointer_y = essentials_y + 28.0 + 5.0 * 38.0 + 6.0;
+                if pointer_y + 34.0 < body.y1 {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.neutral[3],
+                        None,
+                        &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        "Mouse · click a window · drag tabs or groups to reorder · drag an edge to resize · horizontal scroll moves the view",
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                        Some(f64_to_f32_lossy(body.width())),
+                    );
+                    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+                        && pointer_y + 58.0 < body.y1
+                    {
+                        text_renderer.draw_text(
+                            scene,
+                            "Vim mode · h j k l",
+                            theme.tokens.typography.scale.xs,
+                            colors.text_dim,
+                            transform.pre_translate((body.x0, pointer_y + 50.0).into()),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -12658,6 +12777,18 @@ impl ShellOverlayHost {
             );
         } else if hover {
             scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
+        } else {
+            // A destination occupies the whole row, not only its label and
+            // avatar. The quiet surface makes that click target legible and
+            // gives the otherwise empty horizontal space a job.
+            scene.fill(Fill::NonZero, transform, colors.neutral[1], None, &rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_standard.with_alpha_factor(0.55),
+                None,
+                &rr,
+            );
         }
 
         let pad = 14.0_f64;
@@ -15558,6 +15689,71 @@ mod palette_dispatch_tests {
         let chord = shortcut_chord_from_event(&Key::Named(NamedKey::ArrowDown), modifiers)
             .expect("a supported named key becomes a shortcut chord");
         assert_eq!(chord.display(), "Super+Shift+Down");
+    }
+
+    #[test]
+    fn shortcut_reference_covers_every_production_essential() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let visible = rows
+            .iter()
+            .map(|(label, chord)| format!("{label}:{chord}"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "Screenshot:Print Screen",
+            "Close tab:Super+W",
+            "New window:Super+N",
+            "Add tab here:Super+T",
+            "Duplicate tab:Super+D",
+            "Open terminal:Super+Enter",
+            "Global search:Super+K",
+            "Global search:Super+Space",
+            "Global search:Alt+Space",
+            "Search this app:Ctrl+K",
+            "Overview:Super+Tab",
+            "Lock:Super+L",
+            "Quick Settings:Super+Q",
+            "This guide:Super+/",
+            "Workspace wheel:Super+S",
+            "Wireless display:Super+P",
+            "Capture screenshot:Super+Shift+S",
+            "Picture in picture:Super+Shift+P",
+            "Save recent replay:Super+Shift+R",
+        ] {
+            assert!(
+                visible.iter().any(|row| row == expected),
+                "missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_reference_never_promises_a_rebound_default() {
+        let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+        shortcuts
+            .set(
+                settings_store::hardware::ShortcutAction::Search,
+                settings_store::hardware::KeyChord::parse("Alt+G").unwrap(),
+            )
+            .unwrap();
+        let rows = shortcut_reference_rows(&shortcuts);
+        assert!(rows.contains(&("Global search", "Alt+G".into())));
+        assert!(!rows.contains(&("Global search", "Super+K".into())));
+    }
+
+    #[test]
+    fn shortcut_accessibility_names_workspace_and_group_navigation() {
+        let (host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let root = host.accessibility().expect("shell semantics");
+        let guide = root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .expect("guide dialog semantics");
+        let description = guide.description.as_deref().expect("guide description");
+        assert!(description.contains("workspaces with"));
+        assert!(description.contains("move groups with"));
+        assert!(description.contains("Screenshot: Print Screen"));
     }
 
     #[test]
