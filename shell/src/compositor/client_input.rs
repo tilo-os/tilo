@@ -872,6 +872,24 @@ fn mint_serial(state: &mut State) -> Serial {
     Serial::from(state.serial_counter)
 }
 
+fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    let now = Instant::now();
+    state
+        .activation_serials
+        .push_back((serial, surface_id, now));
+    while state
+        .activation_serials
+        .front()
+        .is_some_and(|(_, _, issued)| {
+            now.saturating_duration_since(*issued)
+                > crate::compositor::activation::MAX_ACTIVATION_AGE
+        })
+        || state.activation_serials.len() > 512
+    {
+        let _ = state.activation_serials.pop_front();
+    }
+}
+
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
     // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
@@ -897,7 +915,10 @@ impl State {
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
-        keyboard.set_focus(self, target.map(|(_, s)| s), serial);
+        keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
+        if let Some((surface_id, _)) = target {
+            record_activation_serial(self, serial, surface_id);
+        }
     }
 
     /// Push one key press/release through the seat, forwarding to the focused
@@ -933,7 +954,11 @@ impl State {
                 }
             },
         );
-        forward && has_focus && intercepted.is_none()
+        let delivered = forward && has_focus && intercepted.is_none();
+        if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            record_activation_serial(self, serial, surface_id);
+        }
+        delivered
     }
 
     /// Move the seat pointer to `global` and focus it on `target` (`(surface
@@ -954,6 +979,7 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        let previous_focus = self.client_input.pointer_focus;
         self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
         let serial = mint_serial(self);
         let time = event_time(self);
@@ -967,6 +993,15 @@ impl State {
             },
         );
         pointer.frame(self);
+        // `wl_pointer.motion` itself has no serial. Smithay uses this serial
+        // only when the motion changes focus and emits `wl_pointer.enter`, so
+        // recording every motion would bless predictable numbers the client
+        // never received.
+        if previous_focus != self.client_input.pointer_focus
+            && let Some(surface_id) = self.client_input.pointer_focus
+        {
+            record_activation_serial(self, serial, surface_id);
+        }
     }
 
     /// Forward a pointer button press/release to the surface the pointer is focused on — no-op when the pointer is over chrome.
@@ -994,6 +1029,9 @@ impl State {
             },
         );
         pointer.frame(self);
+        if let Some(surface_id) = self.client_input.pointer_focus {
+            record_activation_serial(self, serial, surface_id);
+        }
         true
     }
 

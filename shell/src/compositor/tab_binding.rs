@@ -290,6 +290,69 @@ pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<Gro
     None
 }
 
+/// Bring the already-adopted foreign toplevel to the front, including a
+/// workspace/strip transition when it lives outside the current view.
+///
+/// This is the compositor-side effect of an accepted `xdg_activation_v1`
+/// request. It deliberately mutates only local focus pointers; no window is
+/// created, moved, or written into collaborative continuity state.
+pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
+    let location = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().find_map(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+                    .then_some((workspace.id, strip.id, group.id, tab.id))
+                })
+            })
+        })
+    });
+    let Some((workspace_id, strip_id, group_id, tab_id)) = location else {
+        return false;
+    };
+
+    let Some(workspace) = tree.workspaces.iter_mut().find(|ws| ws.id == workspace_id) else {
+        return false;
+    };
+    let Some(group) = workspace
+        .strips
+        .iter_mut()
+        .find(|strip| strip.id == strip_id)
+        .and_then(|strip| {
+            strip
+                .window_groups
+                .iter_mut()
+                .find(|group| group.id == group_id)
+        })
+    else {
+        return false;
+    };
+    group.active_tab = tab_id;
+    tree.active = workspace_id;
+    tree.active_strip.insert(workspace_id, strip_id);
+    tree.set_active_group(strip_id, group_id);
+    true
+}
+
+/// App id recorded for a foreign surface, if it has been adopted.
+pub fn app_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<&str> {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            TileContent::Foreign {
+                surface_id: id,
+                app_id,
+            } if *id == surface_id => Some(app_id.as_str()),
+            _ => None,
+        })
+}
+
 /// Walk the tree for a `TileContent::Foreign` tab whose `surface_id` matches
 /// `destroyed_surface_id`, remove it, return `true` if found. The widget tree handles close animation; this just records absence.
 pub fn close_tab_for_destroyed_surface(
@@ -863,6 +926,29 @@ mod tests {
         );
         // An unknown surface resolves to nothing — a fullscreen request that raced surface teardown is a safe no-op.
         assert_eq!(group_id_for_surface(&tree, 9999), None);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn activation_reveals_exact_surface_without_moving_it() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 7001, Some("org.example.Editor".into()));
+        let original_workspace = tree.active;
+        let original_group = group_of(&tree, 7001).id;
+        let other = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id != original_workspace)
+            .map(|workspace| workspace.id)
+            .expect("demo has another workspace");
+        tree.active = other;
+
+        assert!(activate_surface(&mut tree, 7001));
+        assert_eq!(tree.active, original_workspace);
+        assert_eq!(group_id_for_surface(&tree, 7001), Some(original_group));
+        assert_eq!(app_id_for_surface(&tree, 7001), Some("org.example.Editor"));
+        assert!(!activate_surface(&mut tree, 9999));
     }
 
     #[test]
