@@ -770,10 +770,10 @@ impl Widget for WeatherApp {
         vec![&mut self.nav]
     }
 
-    /// Fold the saved cities into the unified Ctrl+K palette: a snapshot
-    /// [`CitySearchProvider`](crate::search_provider::CitySearchProvider) makes
-    /// every saved city findable there by name, region, or country, without
-    /// touching the geocoder.
+    /// Fold the complete saved-location catalogue into the unified Ctrl+K
+    /// palette. [`CitySearchProvider`](crate::search_provider::CitySearchProvider)
+    /// keeps every city findable by name, region, or country through bounded
+    /// pages, without touching the geocoder.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::CitySearchProvider::new(
             &self.core.borrow().model.locations,
@@ -1320,8 +1320,8 @@ mod interaction_tests {
         h.key(Key::Named(NamedKey::ArrowDown), None);
         assert_eq!(
             h.app.core.borrow().search_highlight_label().as_deref(),
-            Some("Paris"),
-            "Arrow Down highlights the first suggestion"
+            Some("Paris — Île-de-France, France"),
+            "Arrow Down exposes the first suggestion's place context"
         );
         h.key(Key::Named(NamedKey::Enter), None);
 
