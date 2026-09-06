@@ -14,9 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, GestureBeginEvent, GestureEndEvent,
-    GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as InputDevice, GestureBeginEvent,
+    GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState,
+    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
+    TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
@@ -187,6 +188,11 @@ pub struct DrmDispatchState {
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
+    /// Libinput's optional per-touch-device output binding, keyed by its
+    /// short-lived device id. Connector names, rather than [`OutputId`]s,
+    /// survive an output being unplugged and later reconnected; each touch
+    /// event resolves the name against the current layout.
+    touch_output_bindings: HashMap<String, Option<String>>,
     /// `display.scale` from the settings store, when the user has set one — overrides the per-output derivation.
     pub scale_override: Option<f64>,
     /// Accumulates touchpad swipes and pinches into shell navigation.
@@ -287,6 +293,7 @@ impl DrmDispatchState {
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
             devices: Vec::new(),
+            touch_output_bindings: HashMap::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
                 natural_scroll: input.natural_scroll_for(true),
@@ -768,6 +775,27 @@ impl DrmDispatchState {
         );
     }
 
+    /// Remember libinput's output association while the device is live.
+    ///
+    /// A touchscreen's coordinates are relative to its own panel, never to
+    /// the desktop bounding box. `output_name` is libinput's authoritative
+    /// association when udev has one; a missing association deliberately
+    /// falls back to the first (primary) live output in [`touch_position`],
+    /// rather than allowing an internal panel to span external monitors.
+    fn remember_touch_output_binding(&mut self, device: &smithay::reexports::input::Device) {
+        if !device.has_capability(smithay::reexports::input::DeviceCapability::Touch) {
+            return;
+        }
+        let id = device.id();
+        let output_name = device.output_name().map(str::to_owned);
+        tracing::debug!(
+            device = %id,
+            output = ?output_name,
+            "DRM input: recorded touchscreen output association"
+        );
+        self.touch_output_bindings.insert(id, output_name);
+    }
+
     /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
     #[allow(clippy::needless_pass_by_value)]
     fn handle_gesture(&mut self, ev: GestureEvent) {
@@ -1022,6 +1050,7 @@ impl DrmDispatchState {
         match event {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
+                self.remember_touch_output_binding(&device);
                 self.devices.push(device);
             }
             InputEvent::DeviceRemoved { device } => {
@@ -1038,6 +1067,7 @@ impl DrmDispatchState {
                     // can type into a newly focused client.
                     self.push(BackendEvent::InputStateReset);
                 }
+                self.touch_output_bindings.remove(&device.id());
                 self.devices.retain(|d| *d != device);
             }
             _ => {}
@@ -1857,13 +1887,111 @@ fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(id.max(0)).unwrap_or(0)
 }
 
-/// Map a normalised touch position onto the combined output space.
+/// One output's geometry needed to calibrate a touchscreen. Kept separate
+/// from [`LiveEntry`] so the selection and coordinate transform stay pure
+/// and can be covered without opening DRM or libinput.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TouchOutputGeometry<'a> {
+    connector_name: &'a str,
+    position: (i32, i32),
+    physical_size: (u32, u32),
+    transform: settings_store::hardware::OutputTransform,
+}
+
+impl<'a> From<&'a LiveEntry> for TouchOutputGeometry<'a> {
+    fn from(output: &'a LiveEntry) -> Self {
+        Self {
+            connector_name: &output.connector_name,
+            position: output.position,
+            physical_size: output.size,
+            transform: output.transform,
+        }
+    }
+}
+
+/// Pick a touchscreen's output from libinput's connector name. The input is
+/// in layout order, whose first member is the configured primary (then the
+/// stable `OutputId` order), making missing and stale associations safe and
+/// deterministic after a hotplug.
+fn touch_output_for_name<'a>(
+    outputs: impl IntoIterator<Item = TouchOutputGeometry<'a>>,
+    output_name: Option<&str>,
+) -> Option<TouchOutputGeometry<'a>> {
+    let mut fallback = None;
+    for output in outputs {
+        if fallback.is_none() {
+            fallback = Some(output);
+        }
+        if output_name.is_some_and(|name| name == output.connector_name) {
+            return Some(output);
+        }
+    }
+    fallback
+}
+
+/// Convert a clamped device-normalised touch coordinate to the selected
+/// output's global logical coordinate. The transform is the inverse of the
+/// logical-to-physical scanout transform, so touch, cursor and rendering all
+/// agree when a panel is rotated.
+fn calibrate_touch_position(
+    output: TouchOutputGeometry<'_>,
+    normalized_x: f64,
+    normalized_y: f64,
+) -> (f64, f64) {
+    use settings_store::hardware::OutputTransform as T;
+
+    let x = normalized_x.clamp(0.0, 1.0);
+    let y = normalized_y.clamp(0.0, 1.0);
+    let (logical_w, logical_h) = logical_output_size(output.physical_size, output.transform);
+    // Output rectangles use an exclusive right/bottom edge. Stay inside the
+    // final pixel even when libinput reports an exact normalised `1.0`, or a
+    // touch at the panel's far edge could route to an adjacent monitor.
+    let logical_w = f64::from(logical_w.saturating_sub(1));
+    let logical_h = f64::from(logical_h.saturating_sub(1));
+    let (local_x, local_y) = match output.transform {
+        T::Normal => (x * logical_w, y * logical_h),
+        // Inverse of `logical_to_physical_point` in `scanout.rs`, expressed
+        // continuously, using the inclusive final pixel of the logical
+        // rectangle rather than its exclusive edge.
+        T::Rotate90 => (y * logical_w, (1.0 - x) * logical_h),
+        T::Rotate180 => ((1.0 - x) * logical_w, (1.0 - y) * logical_h),
+        T::Rotate270 => ((1.0 - y) * logical_w, x * logical_h),
+    };
+    (
+        f64::from(output.position.0) + local_x,
+        f64::from(output.position.1) + local_y,
+    )
+}
+
+/// Map a touchscreen position onto its associated output, rather than the
+/// desktop's combined extent. Both the `wl_touch` event and synthesized
+/// pointer event consume this one result in the caller.
 fn touch_position<E>(state: &DrmDispatchState, event: &E) -> (f64, f64)
 where
     E: AbsolutePositionEvent<LibinputInputBackend>,
 {
-    let (w, h) = state.output_size;
-    (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)))
+    let device = event.device();
+    let output_name = state
+        .touch_output_bindings
+        .get(&device.id())
+        .and_then(Option::as_deref);
+    let Some(output) = touch_output_for_name(
+        state.live.iter().map(TouchOutputGeometry::from),
+        output_name,
+    ) else {
+        return (0.0, 0.0);
+    };
+    let width = i32::try_from(output.physical_size.0)
+        .unwrap_or(i32::MAX)
+        .max(1);
+    let height = i32::try_from(output.physical_size.1)
+        .unwrap_or(i32::MAX)
+        .max(1);
+    calibrate_touch_position(
+        output,
+        event.x_transformed(width) / f64::from(width),
+        event.y_transformed(height) / f64::from(height),
+    )
 }
 
 /// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
@@ -2820,6 +2948,114 @@ mod tests {
     #[test]
     fn side_by_side_layout_empty_is_empty() {
         assert!(side_by_side_layout(&[]).is_empty());
+    }
+
+    fn touch_geometry(
+        connector_name: &'static str,
+        position: (i32, i32),
+        physical_size: (u32, u32),
+        transform: settings_store::hardware::OutputTransform,
+    ) -> TouchOutputGeometry<'static> {
+        TouchOutputGeometry {
+            connector_name,
+            position,
+            physical_size,
+            transform,
+        }
+    }
+
+    #[test]
+    fn touchscreen_output_binding_routes_panel_corners_without_crossing_monitors() {
+        use settings_store::hardware::OutputTransform::Normal;
+
+        // eDP-1's right edge is adjacent to HDMI-A-1, which is the precise
+        // layout that exposed a panel spanning the combined desktop.
+        let outputs = [
+            touch_geometry("eDP-1", (0, 0), (1920, 1080), Normal),
+            touch_geometry("HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+        ];
+        let panel = touch_output_for_name(outputs, Some("eDP-1")).expect("bound panel");
+
+        assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (0.0, 0.0));
+        assert_eq!(
+            calibrate_touch_position(panel, 1.0, 1.0),
+            (1919.0, 1079.0),
+            "the panel corner remains inside eDP-1, not on HDMI's first pixel"
+        );
+        assert_eq!(calibrate_touch_position(panel, 0.5, 0.5), (959.5, 539.5));
+    }
+
+    #[test]
+    fn touchscreen_binding_uses_the_named_output_in_a_nontrivial_layout() {
+        use settings_store::hardware::OutputTransform::Normal;
+
+        let outputs = [
+            touch_geometry("eDP-1", (0, 360), (1920, 1080), Normal),
+            touch_geometry("DP-1", (1920, 0), (2560, 1440), Normal),
+        ];
+        let dock_touch = touch_output_for_name(outputs, Some("DP-1")).expect("bound dock");
+
+        assert_eq!(
+            calibrate_touch_position(dock_touch, 0.0, 0.0),
+            (1920.0, 0.0)
+        );
+        assert_eq!(
+            calibrate_touch_position(dock_touch, 1.0, 1.0),
+            (4479.0, 1439.0)
+        );
+    }
+
+    #[test]
+    fn missing_or_hot_unplugged_touch_output_falls_back_to_current_primary() {
+        use settings_store::hardware::OutputTransform::Normal;
+
+        // A connected eDP touchscreen loses its named output during a
+        // hot-unplug. Resolving against the *current* layout must not retain
+        // an old output id or re-expand across a now-gone desktop extent.
+        let after_unplug = [touch_geometry("HDMI-A-1", (0, 0), (2560, 1440), Normal)];
+        let fallback =
+            touch_output_for_name(after_unplug, Some("eDP-1")).expect("primary fallback");
+        assert_eq!(fallback.connector_name, "HDMI-A-1");
+        assert_eq!(
+            calibrate_touch_position(fallback, 0.5, 0.5),
+            (1279.5, 719.5)
+        );
+
+        // Libinput is also allowed to report no association. It follows the
+        // same deterministic primary rule instead of the combined extent.
+        let no_metadata = [
+            touch_geometry("eDP-1", (0, 0), (1920, 1080), Normal),
+            touch_geometry("HDMI-A-1", (1920, 0), (2560, 1440), Normal),
+        ];
+        let fallback = touch_output_for_name(no_metadata, None).expect("primary fallback");
+        assert_eq!(calibrate_touch_position(fallback, 0.5, 0.5), (959.5, 539.5));
+    }
+
+    #[test]
+    fn rotated_touch_calibration_and_synthesized_pointer_share_coordinates() {
+        use settings_store::hardware::OutputTransform::Rotate90;
+
+        let output = touch_geometry("eDP-1", (100, 50), (1920, 1080), Rotate90);
+        // The physical panel's top-left maps to the post-transform logical
+        // top-right corner; this is the inverse of scanout's rotation.
+        let (x, y) = calibrate_touch_position(output, 0.0, 0.0);
+        assert_eq!((x, y), (100.0, 1969.0));
+
+        // The runtime feeds these exact values to both delivery paths.
+        let touch = QosTouchEvent::Motion { slot: 4, x, y };
+        let pointer = cursor_moved_event(x, y);
+        assert_eq!(
+            touch,
+            QosTouchEvent::Motion {
+                slot: 4,
+                x: 100.0,
+                y: 1969.0
+            }
+        );
+        let WindowEvent::CursorMoved { position, .. } = pointer else {
+            panic!("expected synthesized cursor movement")
+        };
+        assert_eq!((position.x, position.y), (x, y));
     }
 
     // Hotplug + session reconciliation, on the production methods
