@@ -38,6 +38,10 @@ zbus.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
+# NFC makes a person or group's identity independent of whether an input
+# method produced a precomposed or decomposed spelling.  Keeping this local to
+# Contacts avoids widening the public SDK for an app-level matching policy.
+unicode-normalization = "0.1.25"
 
 # --- Host-native file open/save (XDG Desktop Portal) ------------------
 # Import (open) and Export (save) go through
