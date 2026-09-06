@@ -294,12 +294,16 @@ pub struct BrowserWidget {
     current_uri: String,
     load_error: Option<String>,
     forced_load_error: bool,
+    forced_loading: bool,
 
     // User-facing browser state.
     settings: Settings,
     settings_dirty: bool,
     history: History,
     bookmarks: Bookmarks,
+    /// Retained full-corpus index. Provider handles are cheap and unchanged
+    /// frames compare only the durable corpus revision tokens.
+    search_index: crate::search_provider::BrowserSearchIndex,
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
     /// tree child: driven here and painted in `draw_overlay`).
     suggestions: AddressSuggestions,
@@ -394,6 +398,8 @@ impl BrowserWidget {
         } else {
             Bookmarks::load()
         };
+        let search_index = crate::search_provider::BrowserSearchIndex::default();
+        search_index.sync(&history, &bookmarks);
         Self {
             rect: Rect::ZERO,
             engine,
@@ -408,10 +414,12 @@ impl BrowserWidget {
             current_uri: String::new(),
             load_error: None,
             forced_load_error: false,
+            forced_loading: false,
             settings,
             settings_dirty: false,
             history,
             bookmarks,
+            search_index,
             suggestions: AddressSuggestions::new(),
             show_settings: false,
             show_library: false,
@@ -480,6 +488,15 @@ impl BrowserWidget {
         self.load_error =
             Some("The site did not respond. Check your connection and try again.".into());
         self.forced_load_error = true;
+    }
+
+    /// Headless visual-review hook for the in-flight navigation state.
+    pub fn debug_show_loading(&mut self) {
+        self.current_uri = "https://loading.example.test".into();
+        self.initial_url = self.current_uri.clone();
+        self.title = "Opening loading.example.test".into();
+        self.progress = 0.42;
+        self.forced_loading = true;
     }
 
     /// Seed the responsive breakpoint before a single-frame offscreen render.
@@ -671,6 +688,17 @@ impl BrowserWidget {
         match self.unit_binding(resource, action) {
             Some(binding) => button.on_action(binding),
             None => button,
+        }
+    }
+
+    /// Route a keyboard equivalent through the same canonical resource action
+    /// as the corresponding toolbar control.  Focus movement is local UI
+    /// state; navigation itself remains observable/replayable to the host.
+    fn queue_unit_operation(&mut self, resource: &str, action: &str) {
+        if let Some(binding) = self.unit_binding(resource, action)
+            && let Ok(invocation) = binding.invoke(())
+        {
+            self.pending_controls.push_back(invocation);
         }
     }
 
@@ -968,7 +996,8 @@ impl BrowserWidget {
         let back = self.bind_button(
             Button::new("browser.back", "", Some(BACK_FLAG))
                 .with_icon(Icon::ArrowLeft)
-                .tooltip("Back")
+                .with_accessible_name("Back")
+                .tooltip("Back (Alt+Left)")
                 .with_size(NAV_BTN.0, NAV_BTN.1)
                 .with_enabled(self.can_go_back),
             "browser.page",
@@ -977,7 +1006,8 @@ impl BrowserWidget {
         let forward = self.bind_button(
             Button::new("browser.forward", "", Some(FORWARD_FLAG))
                 .with_icon(Icon::ArrowRight)
-                .tooltip("Forward")
+                .with_accessible_name("Forward")
+                .tooltip("Forward (Alt+Right)")
                 .with_size(NAV_BTN.0, NAV_BTN.1)
                 .with_enabled(self.can_go_forward),
             "browser.page",
@@ -986,7 +1016,8 @@ impl BrowserWidget {
         let reload = self.bind_button(
             Button::new("browser.reload", "", Some(RELOAD_FLAG))
                 .with_icon(Icon::Refresh)
-                .tooltip("Reload")
+                .with_accessible_name("Reload")
+                .tooltip("Reload (Ctrl+R)")
                 .with_size(NAV_BTN.0, NAV_BTN.1),
             "browser.page",
             "reload",
@@ -1408,6 +1439,7 @@ impl BrowserWidget {
         };
         if incoming != self.bookmarks {
             self.bookmarks = incoming;
+            self.search_index.invalidate();
             if !self.headless {
                 let _ = self.bookmarks.save();
             }
@@ -1513,12 +1545,15 @@ impl BrowserWidget {
                     self.current_uri = uri;
                 }
                 WebViewEvent::TitleChanged(title) => self.title = title,
-                WebViewEvent::LoadProgress(p) => self.progress = p,
+                WebViewEvent::LoadProgress(p) if !self.forced_loading => self.progress = p,
+                WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error {
                         self.load_error = None;
                     }
-                    self.progress = 1.0;
+                    if !self.forced_loading {
+                        self.progress = 1.0;
+                    }
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if !self.headless && self.current_uri.starts_with("http") {
@@ -1708,6 +1743,67 @@ impl BrowserWidget {
         }
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         rects.get(rects.len().checked_sub(2)?).copied()
+    }
+
+    /// Keep the transient `PiP` guidance card wholly inside the Browser's
+    /// viewport. On compact chrome its logical anchor can sit near either
+    /// edge, so anchoring only the card's trailing side would clip the text
+    /// and first action offscreen.
+    fn pip_feedback_rect_for_anchor(
+        viewport: Rect,
+        anchor: Rect,
+        has_actions: bool,
+    ) -> Option<Rect> {
+        const INSET: f64 = 12.0;
+        let available_width = viewport.width() - INSET * 2.0;
+        if available_width <= 0.0 {
+            return None;
+        }
+        let desired_width: f64 = if has_actions { 354.0 } else { 326.0 };
+        let width = desired_width.min(available_width);
+        let height = if has_actions { 112.0 } else { 64.0 };
+        let left_bound = viewport.x0 + INSET;
+        let right_bound = (viewport.x1 - INSET - width).max(left_bound);
+        let x0 = (anchor.x1 + 2.0 - width).clamp(left_bound, right_bound);
+        let top_bound = viewport.y0 + INSET;
+        let bottom_bound = (viewport.y1 - INSET - height).max(top_bound);
+        let y0 = (anchor.y1 + 8.0).clamp(top_bound, bottom_bound);
+        Some(Rect::new(x0, y0, x0 + width, y0 + height))
+    }
+
+    fn sync_search_and_suggestions(&mut self, state: &AutoCommit, path: &ObjId) {
+        self.search_index.sync(&self.history, &self.bookmarks);
+        self.update_suggestions(state, path);
+    }
+
+    fn handle_browser_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed || self.show_settings || self.show_library {
+            return false;
+        }
+        let modifiers = modifiers.state();
+        let alt_navigation =
+            modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
+        let reload = (modifiers.control_key() || modifiers.super_key())
+            && !modifiers.alt_key()
+            && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("r"));
+        let action = match (&key.logical_key, alt_navigation, reload) {
+            (WKey::Named(WNamedKey::ArrowLeft), true, _) => Some("back"),
+            (WKey::Named(WNamedKey::ArrowRight), true, _) => Some("forward"),
+            (_, _, true) => Some("reload"),
+            _ => None,
+        };
+        if let Some(action) = action {
+            self.queue_unit_operation("browser.page", action);
+            return true;
+        }
+        false
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -2155,9 +2251,7 @@ impl Widget for BrowserWidget {
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::BrowserSearchProvider::new(&self.history, &self.bookmarks),
-        )]
+        vec![Box::new(self.search_index.provider())]
     }
 
     fn invoke_resource_operation(
@@ -2332,7 +2426,7 @@ impl Widget for BrowserWidget {
         self.apply_settings_intents(state, path);
         self.publish_settings_if_dirty(state, path);
         self.sync_bookmarks(state, path);
-        self.update_suggestions(state, path);
+        self.sync_search_and_suggestions(state, path);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
@@ -2465,11 +2559,10 @@ impl Widget for BrowserWidget {
             }
             if let Some(anchor) = self.pip_button_rect() {
                 let has_actions = feedback.kind == PipFeedbackKind::NoVideo;
-                let desired_width: f64 = if has_actions { 354.0 } else { 326.0 };
-                let width = desired_width.min((self.rect.width() - 24.0).max(220.0));
-                let x1 = (anchor.x1 + 2.0).min(self.rect.x1 - 12.0);
-                let height = if has_actions { 112.0 } else { 64.0 };
-                let rect = Rect::new(x1 - width, anchor.y1 + 8.0, x1, anchor.y1 + 8.0 + height);
+                let Some(rect) = Self::pip_feedback_rect_for_anchor(self.rect, anchor, has_actions)
+                else {
+                    return;
+                };
                 self.pip_feedback_rect = rect;
                 let card = match feedback.kind {
                     PipFeedbackKind::Finding => {
@@ -2622,6 +2715,16 @@ impl Widget for BrowserWidget {
                 *handled = true;
                 return;
             }
+        }
+
+        // Conventional browser navigation keys. These must be handled before
+        // forwarding into the page: an embedded site should not be able to
+        // steal the browser's own history controls. The queued invocation is
+        // the same canonical action the toolbar exposes to history, agents,
+        // and collaboration.
+        if self.handle_browser_shortcut(event, *modifiers) {
+            *handled = true;
+            return;
         }
 
         // The suggestion dropdown gets first crack at input while it's up
@@ -2798,6 +2901,71 @@ mod tests {
         assert_eq!(
             BrowserWidget::read_url(&state, &root).as_deref(),
             Some(DEFAULT_URL)
+        );
+    }
+
+    #[test]
+    fn narrow_chrome_keeps_a_nonzero_page_viewport() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_set_viewport_width(390);
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        widget.sync(&mut state, &root);
+        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        widget.sync(&mut state, &root);
+        let layout_root = tree
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(390.0),
+                        height: Dimension::length(844.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_nodes = nodes.clone();
+        tree.compute_layout_with_measure(
+            layout_root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(390.0),
+                height: taffy::AvailableSpace::Definite(844.0),
+            },
+            |known, available, node, _, _| {
+                measure_nodes
+                    .get(&node)
+                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut text)
+                    })
+            },
+        )
+        .unwrap();
+        widget.apply_layout(&tree, child, Point::ORIGIN);
+        let viewport = widget.find_rect("browser.surface").unwrap();
+        assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
+        assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+    }
+
+    #[test]
+    fn narrow_pip_feedback_is_clamped_inside_viewport_safe_bounds() {
+        let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+        // Compact chrome has no dedicated PiP button; its semantic fallback
+        // anchor is close enough to the trailing edge that trailing-only
+        // alignment used to put the left side of this card offscreen.
+        let anchor = Rect::new(278.0, 12.0, 322.0, 52.0);
+        let card = BrowserWidget::pip_feedback_rect_for_anchor(viewport, anchor, true).unwrap();
+        assert!(card.x0 >= viewport.x0 + 12.0);
+        assert!(card.x1 <= viewport.x1 - 12.0);
+        assert!(card.y0 >= viewport.y0 + 12.0);
+        assert!(card.y1 <= viewport.y1 - 12.0);
+        assert!(
+            (card.width() - 354.0).abs() < f64::EPSILON,
+            "the full action card still fits"
         );
     }
 
