@@ -41,7 +41,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
-use crate::session::{SessionStatus, TransportReadiness, can_attempt_live, transport_readiness};
+use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
@@ -237,6 +237,51 @@ impl Field {
     }
 }
 
+/// Validation visibility belongs to this editing interaction, rather than to
+/// the draft itself. A fresh draft is allowed to be incomplete without being
+/// announced as an error; a field shows its own feedback once it has lost
+/// focus, and Save reveals every remaining problem.
+#[derive(Default)]
+struct FormValidation {
+    submitted: bool,
+    /// Name, host, and port in that order; these are the only fields with
+    /// field-local validation feedback.
+    touched: (bool, bool, bool),
+}
+
+impl FormValidation {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn touch(&mut self, field: Field) {
+        match field {
+            Field::Name => self.touched.0 = true,
+            Field::Host => self.touched.1 = true,
+            Field::Port => self.touched.2 = true,
+            Field::Search | Field::User | Field::Group => {}
+        }
+    }
+
+    fn shows_problem(&self, problem: &str) -> bool {
+        if self.submitted {
+            return true;
+        }
+        match problem {
+            p if p.starts_with("Name is required") => self.touched.0,
+            p if p.starts_with("Host is required")
+                || p.starts_with("qOS device node must be an exact certified endpoint id") =>
+            {
+                self.touched.1
+            }
+            p if p.starts_with("Port") => self.touched.2,
+            // Cross-field/protocol errors have no single field to repair, so
+            // reserve them for an explicit Save attempt.
+            _ => false,
+        }
+    }
+}
+
 impl AuthMethod {
     fn target_name(self) -> &'static str {
         match self {
@@ -344,6 +389,8 @@ pub struct RemoteApp {
     search: String,
     /// In-progress add/edit draft (only meaningful on the form screen).
     draft: ConnectionDraft,
+    /// Interaction-local validation state for the current add/edit form.
+    form_validation: FormValidation,
     /// Which text field currently has keyboard focus.
     focus: Option<Field>,
     /// The shared [`TextInput`] behind each editable field.
@@ -443,6 +490,7 @@ impl RemoteApp {
             selected,
             search: String::new(),
             draft: ConnectionDraft::default(),
+            form_validation: FormValidation::default(),
             focus: None,
             inputs: FieldInputs::new(),
             live: None,
@@ -567,6 +615,7 @@ impl RemoteApp {
             }
             Action::NewConnection => {
                 self.draft = ConnectionDraft::default();
+                self.form_validation.reset();
                 self.screen = Screen::Form { editing: None };
                 self.reload_inputs();
                 self.focus_field(Field::Name);
@@ -575,6 +624,7 @@ impl RemoteApp {
             Action::EditConnection(id) => {
                 if let Some(c) = self.workspace.get(id) {
                     self.draft = ConnectionDraft::from_connection(c);
+                    self.form_validation.reset();
                     self.screen = Screen::Form { editing: Some(id) };
                     self.reload_inputs();
                     self.focus_field(Field::Name);
@@ -604,6 +654,11 @@ impl RemoteApp {
                     self.draft.auth = AuthMethod::DeviceIdentity;
                 } else if self.draft.port.trim().is_empty() || self.draft.port.trim() == "0" {
                     self.draft.port = k.default_port().to_string();
+                }
+                if !self.draft.auth.is_supported_by(k)
+                    && let Some(auth) = AuthMethod::available_for(k).first().copied()
+                {
+                    self.draft.auth = auth;
                 }
                 self.reload_inputs();
             }
@@ -737,7 +792,7 @@ impl RemoteApp {
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
-        let readiness = transport_readiness(c.kind);
+        let readiness = connection_readiness(&c);
         if readiness.can_connect() {
             let live = self.start_live(&c);
             self.live = Some(live);
@@ -834,10 +889,14 @@ impl RemoteApp {
                     decoder: qos_callstream::H264Decoder::new(),
                 })
             }
-            other => LiveSession::Error(format!(
-                "{} transport is not implemented yet",
-                other.label()
-            )),
+            // `open_session` preflights RDP as `BackendUnavailable` before
+            // reaching this constructor. Keep the defensive branch explicit
+            // anyway, so a future caller cannot turn a persisted legacy RDP
+            // profile into a generic, misleading transport failure.
+            ConnectionKind::Rdp => LiveSession::Unavailable {
+                readiness: TransportReadiness::BackendUnavailable,
+                kind: ConnectionKind::Rdp,
+            },
         }
     }
 
@@ -864,7 +923,6 @@ impl RemoteApp {
                     changed = true;
                 }
             }
-            Some(LiveSession::Qos(_)) => {}
             _ => {}
         }
         // Reflect a freshly-established connection in the row's presence.
@@ -1019,7 +1077,11 @@ impl RemoteApp {
     /// Commit the form draft into the workspace + CRDT.
     fn save_form(&mut self, state: &mut AutoCommit) {
         if !self.draft.problems().is_empty() {
-            return; // validation gate; the form shows the problems
+            self.form_validation.submitted = true;
+            if let Some(field) = self.first_invalid_form_field() {
+                self.focus_field(field);
+            }
+            return;
         }
         let editing = match &self.screen {
             Screen::Form { editing } => *editing,
@@ -1047,6 +1109,33 @@ impl RemoteApp {
         self.selected = Some(id);
         self.screen = Screen::List;
         self.blur_field();
+    }
+
+    /// The first field a person can directly repair for the current invalid
+    /// draft. Keeping this beside the save gate ensures pointer, keyboard, and
+    /// accessibility activation all land on the same recovery path.
+    fn first_invalid_form_field(&self) -> Option<Field> {
+        if self.draft.name.trim().is_empty() {
+            Some(Field::Name)
+        } else if self.draft.host.trim().is_empty()
+            || (self.draft.kind == ConnectionKind::Qos
+                && !self.draft.host.trim().is_empty()
+                && !self.draft.problems().is_empty())
+        {
+            Some(Field::Host)
+        } else if self.draft.port.trim().is_empty() {
+            Some(Field::Port)
+        } else {
+            None
+        }
+    }
+
+    fn visible_form_problems(&self) -> Vec<String> {
+        self.draft
+            .problems()
+            .into_iter()
+            .filter(|problem| self.form_validation.shows_problem(problem))
+            .collect()
     }
 
     /// Read-only handle to a field's current text.
@@ -1081,6 +1170,13 @@ impl RemoteApp {
     /// switching the connection kind (which resets the port), or filling the
     /// form from a discovered device — where the string is the newer of the two.
     fn reload_inputs(&mut self) {
+        self.inputs
+            .get(Field::Host)
+            .set_placeholder(if self.draft.kind == ConnectionKind::Qos {
+                "certified qOS endpoint id"
+            } else {
+                Field::Host.placeholder()
+            });
         for f in Field::ALL {
             let value = self.field_value(f).to_string();
             let input = self.inputs.get(f);
@@ -1126,6 +1222,9 @@ impl RemoteApp {
     fn blur_field(&mut self) {
         if let Some(f) = self.focus.take() {
             self.inputs.get(f).set_focus(false);
+            if matches!(self.screen, Screen::Form { .. }) {
+                self.form_validation.touch(f);
+            }
             self.dirty = true;
         }
     }
@@ -1235,6 +1334,7 @@ fn seed_connections() -> Vec<Connection> {
 /// First half of [`seed_connections`]' roster — split out only to stay under
 /// the line-count limit; order matters (it's the on-screen list order).
 fn seed_connections_lab_and_office() -> Vec<Connection> {
+    let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     vec![
         seeded_connection(
             "Build Box",
@@ -1250,7 +1350,7 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
         ),
         seeded_connection(
             "Studio Node",
-            "studio-node",
+            &studio_node,
             0,
             "",
             ConnectionKind::Qos,
@@ -1290,6 +1390,7 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
 /// Second half of [`seed_connections`]' roster — see
 /// [`seed_connections_lab_and_office`].
 fn seed_connections_remote_and_backup() -> Vec<Connection> {
+    let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     vec![
         seeded_connection(
             "Edge Gateway",
@@ -1317,7 +1418,7 @@ fn seed_connections_remote_and_backup() -> Vec<Connection> {
         ),
         seeded_connection(
             "Workshop Laptop",
-            "workshop-laptop",
+            &workshop_laptop,
             0,
             "",
             ConnectionKind::Qos,
@@ -1343,25 +1444,29 @@ fn seed_connections_remote_and_backup() -> Vec<Connection> {
 }
 
 fn seed_qos_devices() -> Vec<QosDevice> {
+    let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
+    let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
+    let living_room_tv = iroh::SecretKey::from_bytes(&[41; 32]).public().to_string();
+    let garage_pi = iroh::SecretKey::from_bytes(&[53; 32]).public().to_string();
     vec![
         QosDevice {
             name: "Studio Node".into(),
-            node: "studio-node".into(),
+            node: studio_node,
             online: true,
         },
         QosDevice {
             name: "Workshop Laptop".into(),
-            node: "workshop-laptop".into(),
+            node: workshop_laptop,
             online: true,
         },
         QosDevice {
             name: "Living Room TV".into(),
-            node: "lr-display".into(),
+            node: living_room_tv,
             online: true,
         },
         QosDevice {
             name: "Garage Pi".into(),
-            node: "garage-pi".into(),
+            node: garage_pi,
             online: false,
         },
     ]
@@ -1566,8 +1671,16 @@ impl Widget for RemoteApp {
                 let Some(connection) = self.workspace.get(connection_id) else {
                     return Err("saved connection no longer exists".into());
                 };
-                if !can_attempt_live(connection.kind) {
-                    return Err("this live remote transport is disabled".into());
+                let readiness = connection_readiness(connection);
+                if !readiness.can_connect() {
+                    let reason = if readiness == TransportReadiness::InvalidProfile {
+                        connection
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                    } else {
+                        readiness.detail(connection.kind)
+                    };
+                    return Err(reason.to_string());
                 }
                 self.open_session(connection_id);
                 match self.live.as_ref().map(LiveSession::status) {
@@ -1934,6 +2047,10 @@ impl Widget for RemoteApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the widget trait requires one exhaustive event router so pointer, keyboard, IME, and accessibility routing share one ordering contract"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -2159,18 +2276,30 @@ impl Widget for RemoteApp {
                             self.action_bounds(Action::EditConnection(id)),
                         ),
                     ];
-                    if can_attempt_live(connection.kind) {
+                    if connection_readiness(connection).can_connect() {
                         actions.push(button(
                             "Connect",
                             format!("remote.connection:{id}:connect"),
                             self.action_bounds(Action::Connect(id)),
                         ));
                     }
+                    let readiness = connection_readiness(connection);
+                    let availability = if readiness.can_connect() {
+                        "ready to connect".to_string()
+                    } else if readiness == TransportReadiness::InvalidProfile {
+                        connection
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                            .to_string()
+                    } else {
+                        readiness.detail(connection.kind).to_string()
+                    };
                     let row_name = format!(
-                        "{}, {}, {}, last used {}",
+                        "{}, {}, {}, {}, last used {}",
                         connection.name,
                         connection.kind.label(),
                         presence,
+                        availability,
                         connection.last_used
                     );
                     let mut row = AccessNode::new(Role::ListItem)
@@ -2282,6 +2411,13 @@ impl Widget for RemoteApp {
                                     .collect(),
                             ),
                     );
+                    children.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name(
+                                "Authentication: qOS device identity. No password is stored or requested.",
+                            )
+                            .with_hashed_key("remote.form.qos-authentication"),
+                    );
                 }
                 for (field, name) in [
                     (Field::Name, "Connection name"),
@@ -2297,8 +2433,9 @@ impl Widget for RemoteApp {
                     (Field::User, "User name"),
                     (Field::Group, "Group"),
                 ] {
-                    if self.draft.kind == ConnectionKind::Qos
-                        && matches!(field, Field::Port | Field::User | Field::Group)
+                    if (self.draft.kind == ConnectionKind::Qos
+                        && matches!(field, Field::Port | Field::User | Field::Group))
+                        || (self.draft.kind == ConnectionKind::Vnc && field == Field::User)
                     {
                         continue;
                     }
@@ -2317,9 +2454,9 @@ impl Widget for RemoteApp {
                             .with_name("Authentication")
                             .with_hashed_key("remote.form.authentication")
                             .with_children(
-                                AuthMethod::all()
-                                    .into_iter()
-                                    .filter(|auth| *auth != AuthMethod::DeviceIdentity)
+                                AuthMethod::available_for(self.draft.kind)
+                                    .iter()
+                                    .copied()
                                     .map(|auth| {
                                         AccessNode::new(Role::RadioButton)
                                             .with_name(auth.label())
@@ -2338,7 +2475,7 @@ impl Widget for RemoteApp {
                             ),
                     );
                 }
-                let problems = self.draft.problems();
+                let problems = self.visible_form_problems();
                 if !problems.is_empty() {
                     children.push(
                         AccessNode::new(Role::StaticText)
@@ -2357,7 +2494,7 @@ impl Widget for RemoteApp {
                         .with_name("Save connection")
                         .with_action_target("remote.form.save")
                         .with_optional_bounds(self.action_bounds(Action::SaveForm))
-                        .with_state(focusable().disabled(!problems.is_empty())),
+                        .with_state(focusable()),
                 ];
                 if let Some(id) = editing {
                     form_actions.push(button(
@@ -2503,8 +2640,12 @@ impl Widget for RemoteApp {
         if let Some(name) = target.strip_prefix("remote.auth:")
             && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
         {
-            self.apply(Action::SetAuth(AuthMethod::from_target_name(name)), state);
-            return true;
+            let auth = AuthMethod::from_target_name(name);
+            if auth.is_supported_by(self.draft.kind) {
+                self.apply(Action::SetAuth(auth), state);
+                return true;
+            }
+            return false;
         }
         if let Some(index) = target
             .strip_prefix("remote.device:")
@@ -2549,9 +2690,7 @@ impl Widget for RemoteApp {
             ("remote.nav.list", A11yAction::Activate) => Action::GoList,
             ("remote.connection.new", A11yAction::Activate) => Action::NewConnection,
             ("remote.form.cancel", A11yAction::Activate) => Action::Back,
-            ("remote.form.save", A11yAction::Activate) if self.draft.problems().is_empty() => {
-                Action::SaveForm
-            }
+            ("remote.form.save", A11yAction::Activate) => Action::SaveForm,
             ("remote.session.disconnect", A11yAction::Activate) => Action::Disconnect,
             ("remote.session.scale", A11yAction::Activate | A11yAction::ToggleCheck) => {
                 Action::ToggleScale
@@ -3215,6 +3354,10 @@ impl RemoteApp {
     }
 
     /// Draw a connection-list header (title + stats + new button + search).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom list keeps responsive header, empty state, scrolling, and rows in one geometry pass so hit regions match what is drawn"
+    )]
     fn draw_list(
         &mut self,
         scene: &mut Scene,
@@ -3249,7 +3392,7 @@ impl RemoteApp {
             .workspace
             .connections()
             .iter()
-            .filter(|connection| can_attempt_live(connection.kind))
+            .filter(|connection| connection_readiness(connection).can_connect())
             .count();
         let stat = if connectable < total {
             format!("{total} saved · {online} online · {connectable} connectable here")
@@ -3630,7 +3773,7 @@ impl RemoteApp {
                 row.center().y + 16.0,
             )
         };
-        let readiness = transport_readiness(c.kind);
+        let readiness = connection_readiness(c);
         let can_connect = readiness.can_connect();
         if can_connect {
             self.draw_button(
@@ -3722,6 +3865,7 @@ impl RemoteApp {
                 (tokens.colors.semantic.warning, "Needs access")
             }
             TransportReadiness::BackendUnavailable => (tokens.colors.neutral[5], "Not supported"),
+            TransportReadiness::InvalidProfile => (tokens.colors.semantic.warning, "Fix profile"),
         };
         let badge = RoundedRect::from_rect(rect, 8.0);
         scene.fill(Fill::NonZero, transform, color.at_alpha(0.12), None, &badge);
@@ -3822,6 +3966,7 @@ impl RemoteApp {
     /// next section starts, exactly as the inline version did.
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "matches ui's draw dispatch shape (scene/transform/text_renderer/theme) \
                   plus this screen's own presence/content/editing state"
     )]
@@ -3935,6 +4080,7 @@ impl RemoteApp {
     /// `draw_form`'s protocol kind selector (segmented control).
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "one draw_form section threading the shared card geometry \
                   (x/width) and running layout cursor `y` through the shaped \
                   protocol-kind row"
@@ -4116,9 +4262,10 @@ impl RemoteApp {
                     None,
                     TextWeight::Medium,
                 );
+                let compact_node = crate::model::compact_qos_endpoint(&d.node);
                 text_renderer.draw_text(
                     scene,
-                    &d.node,
+                    &compact_node,
                     12.0,
                     tokens.colors.text_dim,
                     transform * Affine::translate((chip.x1 - 160.0, chip.center().y - 7.0)),
@@ -4231,6 +4378,7 @@ impl RemoteApp {
     /// info card for qOS.
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "one draw_form section threading the shared card geometry \
                   (x/width) and running layout cursor `y` through the User/Group \
                   row and auth method selector"
@@ -4278,20 +4426,35 @@ impl RemoteApp {
             );
             y += 56.0;
         } else {
-            y = Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
-            let half = (card_w - 12.0) / 2.0;
-            let user = Rect::new(card_x, y, card_x + half, y + 40.0);
-            self.draw_field(
+            let has_user = self.draft.kind != ConnectionKind::Vnc;
+            y = Self::draw_form_label(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                presence,
-                user,
-                Field::User,
+                card_x,
+                y,
+                if has_user { "User" } else { "Group" },
             );
-            self.push_hit(user, Action::FocusField(Field::User));
-            let group = Rect::new(card_x + half + 12.0, y, card_x + card_w, y + 40.0);
+            if has_user {
+                let half = (card_w - 12.0) / 2.0;
+                let user = Rect::new(card_x, y, card_x + half, y + 40.0);
+                self.draw_field(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    user,
+                    Field::User,
+                );
+                self.push_hit(user, Action::FocusField(Field::User));
+            }
+            let group = if has_user {
+                Rect::new(card_x + card_w.midpoint(12.0), y, card_x + card_w, y + 40.0)
+            } else {
+                Rect::new(card_x, y, card_x + card_w, y + 40.0)
+            };
             self.draw_field(
                 scene,
                 transform,
@@ -4314,8 +4477,9 @@ impl RemoteApp {
                 y,
                 "Authentication",
             );
-            let aseg = card_w / 3.0;
-            for (i, a) in AuthMethod::all().into_iter().enumerate() {
+            let auth_methods = AuthMethod::available_for(self.draft.kind);
+            let aseg = card_w / auth_methods.len() as f64;
+            for (i, a) in auth_methods.iter().copied().enumerate() {
                 let seg = Rect::new(
                     card_x + i as f64 * aseg,
                     y,
@@ -4332,7 +4496,7 @@ impl RemoteApp {
                     a.label(),
                     active,
                     i == 0,
-                    i == 2,
+                    i.saturating_add(1) == auth_methods.len(),
                 );
                 self.push_hit(seg, Action::SetAuth(a));
             }
@@ -4363,7 +4527,7 @@ impl RemoteApp {
         let tokens = &theme.tokens;
 
         // -- Validation messages --
-        let problems = self.draft.problems();
+        let problems = self.visible_form_problems();
         if !problems.is_empty() {
             let msg = problems.join(" · ");
             text_renderer.draw_text(
@@ -4375,23 +4539,24 @@ impl RemoteApp {
                 Some(card_w as f32),
             );
         }
-        let y = y + 28.0;
+        let y = if problems.is_empty() {
+            text_renderer.draw_text(
+                scene,
+                "Enter a name and target to save this connection.",
+                12.5,
+                tokens.colors.text_dim,
+                transform * Affine::translate((card_x, y)),
+                Some(card_w as f32),
+            );
+            y + 28.0
+        } else {
+            y + 28.0
+        };
 
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
-        let can_save = problems.is_empty();
-        self.draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            save,
-            "Save",
-            can_save,
-        );
-        if can_save {
-            self.push_hit(save, Action::SaveForm);
-        }
+        self.draw_button(scene, transform, text_renderer, theme, save, "Save", true);
+        self.push_hit(save, Action::SaveForm);
         let cancel = Rect::new(save.x0 - 110.0, y, save.x0 - 12.0, y + 40.0);
         self.draw_button(
             scene,
@@ -4519,7 +4684,11 @@ impl RemoteApp {
     }
 
     /// Draw the session surface for a connection.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the live-state match deliberately composes all session status surfaces beside the shared toolbar and canvas geometry"
+    )]
     fn draw_session(
         &mut self,
         scene: &mut Scene,
@@ -5426,16 +5595,18 @@ fn kind_color(kind: ConnectionKind, theme: &Theme) -> Color {
 /// Tab order across the form fields, respecting which fields the current
 /// kind shows.
 fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
-    let order: Vec<Field> = if kind == ConnectionKind::Qos {
-        vec![Field::Name, Field::Host]
-    } else {
-        vec![
-            Field::Name,
-            Field::Host,
-            Field::Port,
-            Field::User,
-            Field::Group,
-        ]
+    let order: Vec<Field> = match kind {
+        ConnectionKind::Qos => vec![Field::Name, Field::Host],
+        ConnectionKind::Vnc => vec![Field::Name, Field::Host, Field::Port, Field::Group],
+        ConnectionKind::Ssh | ConnectionKind::Rdp => {
+            vec![
+                Field::Name,
+                Field::Host,
+                Field::Port,
+                Field::User,
+                Field::Group,
+            ]
+        }
     };
     match cur {
         Some(f) => {
@@ -5661,6 +5832,13 @@ mod tests {
             .find_map(|child| find_semantic_target(child, target))
     }
 
+    fn find_live_region(node: &AccessNode) -> Option<&AccessNode> {
+        if node.live.is_some() {
+            return Some(node);
+        }
+        node.children.iter().find_map(find_live_region)
+    }
+
     #[test]
     fn accessibility_exposes_and_routes_every_connection_control() {
         let mut app = RemoteApp::new_demo();
@@ -5669,7 +5847,7 @@ mod tests {
             .workspace
             .connections()
             .iter()
-            .find(|connection| can_attempt_live(connection.kind))
+            .find(|connection| connection_readiness(connection).can_connect())
             .expect("demo has a production-available qOS connection")
             .id;
         let tree = app.accessibility().expect("Remote window semantics");
@@ -5774,7 +5952,7 @@ mod tests {
         assert!(app.needs_animation_frame());
         app.set_motion_reduced(true);
         assert!(!app.needs_animation_frame());
-        assert_eq!(app.rail.reveal(), 1.0);
+        assert!((app.rail.reveal() - 1.0).abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -5880,6 +6058,52 @@ mod tests {
         // Empty name + host → blocked, stays on the form.
         app.apply(Action::SaveForm, &mut doc());
         assert!(matches!(app.screen, Screen::Form { .. }));
+        assert!(app.form_validation.submitted);
+        assert_eq!(app.focus, Some(Field::Name));
+        assert_eq!(
+            app.visible_form_problems(),
+            vec!["Name is required", "Host is required"],
+            "a Save attempt reveals every problem, including the unfocused host"
+        );
+    }
+
+    #[test]
+    fn new_form_stays_quiet_until_a_field_is_touched_or_save_is_attempted() {
+        let mut app = RemoteApp::new();
+        app.apply(Action::NewConnection, &mut doc());
+
+        assert!(app.visible_form_problems().is_empty());
+        let tree = app.accessibility().expect("form semantics");
+        assert!(
+            find_live_region(&tree).is_none(),
+            "a fresh blank draft is guidance, not an accessibility error announcement"
+        );
+
+        app.apply(Action::FocusField(Field::Host), &mut doc());
+        assert_eq!(
+            app.visible_form_problems(),
+            vec!["Name is required"],
+            "blurring a blank field reveals only feedback for that touched field"
+        );
+    }
+
+    #[test]
+    fn accessibility_save_attempt_reveals_validation_and_focuses_first_problem() {
+        let mut app = RemoteApp::new();
+        app.apply(Action::NewConnection, &mut doc());
+        assert!(app.perform_semantic_action(
+            "remote.form.save",
+            &ui::a11y::Action::Activate,
+            &mut doc(),
+            &automerge::ROOT,
+        ));
+        assert!(app.form_validation.submitted);
+        assert_eq!(app.focus, Some(Field::Name));
+        let tree = app.accessibility().expect("validated form semantics");
+        assert!(
+            find_live_region(&tree).is_some(),
+            "validation feedback is announced after the explicit Save attempt"
+        );
     }
 
     #[test]

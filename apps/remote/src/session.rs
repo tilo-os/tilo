@@ -18,7 +18,7 @@
 //! qOS device control uses the production shell broker and is available without
 //! that opt-in.
 
-use crate::model::ConnectionKind;
+use crate::model::{Connection, ConnectionKind};
 
 /// What Remote can honestly do with a saved connection *in this process*.
 ///
@@ -36,6 +36,9 @@ pub enum TransportReadiness {
     /// The persisted profile is retained for compatibility, but qOS has no
     /// implementation for this protocol.
     BackendUnavailable,
+    /// The saved profile does not describe a target/authentication pair this
+    /// app can safely hand to a transport.
+    InvalidProfile,
 }
 
 impl TransportReadiness {
@@ -49,6 +52,7 @@ impl TransportReadiness {
             Self::Ready => "Ready",
             Self::NeedsLiveSessionCapability => "Needs live access",
             Self::BackendUnavailable => "Not supported",
+            Self::InvalidProfile => "Fix profile",
         }
     }
 
@@ -58,6 +62,7 @@ impl TransportReadiness {
             Self::Ready => "ready",
             Self::NeedsLiveSessionCapability => "live_session_capability_required",
             Self::BackendUnavailable => "transport_backend_unavailable",
+            Self::InvalidProfile => "invalid_connection_profile",
         }
     }
 
@@ -76,6 +81,9 @@ impl TransportReadiness {
             },
             Self::BackendUnavailable => {
                 "RDP profiles are preserved, but this qOS build has no RDP client backend."
+            }
+            Self::InvalidProfile => {
+                "This saved connection has incompatible target or authentication settings."
             }
         }
     }
@@ -100,6 +108,25 @@ pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
         ConnectionKind::Ssh | ConnectionKind::Vnc => TransportReadiness::NeedsLiveSessionCapability,
         ConnectionKind::Rdp => TransportReadiness::BackendUnavailable,
     }
+}
+
+/// Resolve whether one saved profile may begin a connection attempt now.
+///
+/// Every invocation path uses this one decision: the visible connection row,
+/// the accessibility tree, Ctrl+K/agent resources, and the effect handler. A
+/// malformed profile therefore never reaches an I/O constructor merely because
+/// one surface forgot a preflight check. Cached `Presence::Offline` is not an
+/// availability gate: it is stale by design, so a deliberate reconnect remains
+/// the only honest way to discover that a machine recovered.
+pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
+    let transport = transport_readiness(connection.kind);
+    if !transport.can_connect() {
+        return transport;
+    }
+    if connection.profile_issue().is_some() {
+        return TransportReadiness::InvalidProfile;
+    }
+    TransportReadiness::Ready
 }
 
 /// Whether this connection kind may start its real transport now. qOS is a
@@ -137,6 +164,28 @@ impl SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Presence;
+    use uuid::Uuid;
+
+    fn connection(kind: ConnectionKind) -> Connection {
+        Connection {
+            id: Uuid::new_v4(),
+            name: "Saved machine".into(),
+            host: iroh::SecretKey::generate().public().to_string(),
+            port: kind.default_port(),
+            user: String::new(),
+            kind,
+            auth: if kind == ConnectionKind::Qos {
+                crate::model::AuthMethod::DeviceIdentity
+            } else {
+                crate::model::AuthMethod::Password
+            },
+            last_used: "Never".into(),
+            presence: Presence::Unknown,
+            group: String::new(),
+            favorite: false,
+        }
+    }
 
     #[test]
     fn qos_broker_transport_is_production_on() {
@@ -166,6 +215,20 @@ mod tests {
             transport_readiness(ConnectionKind::Ssh).can_connect(),
             live_sessions_enabled()
         );
+    }
+
+    #[test]
+    fn connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence() {
+        let mut qos = connection(ConnectionKind::Qos);
+        qos.host = "friendly-name".into();
+        assert_eq!(
+            connection_readiness(&qos),
+            TransportReadiness::InvalidProfile
+        );
+
+        let mut offline = connection(ConnectionKind::Qos);
+        offline.presence = crate::model::Presence::Offline;
+        assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
     }
 }
 
