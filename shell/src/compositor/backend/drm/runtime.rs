@@ -3086,10 +3086,10 @@ mod tests {
         // Backspace repeat must be gone.
         let (mut state, _rx) = dispatch_with_channel();
         state.session = Some(SessionState::new_active());
-        state.keyboard = KeyboardXkb::from_settings(&KeyboardSettings::default());
-        if state.keyboard.is_none() {
-            return;
-        }
+        state.keyboard = Some(
+            KeyboardXkb::from_settings(&KeyboardSettings::default())
+                .expect("the default test keymap must compile"),
+        );
 
         state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
         state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
