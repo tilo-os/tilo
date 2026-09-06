@@ -33,6 +33,7 @@ portal = ["ui/portal"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
+settings-store = { path = "../../crates/system/settings-store" }
 media = { path = "../../crates/media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
