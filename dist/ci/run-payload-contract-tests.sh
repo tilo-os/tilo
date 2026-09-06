@@ -81,6 +81,7 @@ sed -i \
     -e "s#QOS_SHELL=/usr/bin/qos-shell#QOS_SHELL=$nix/bin/qos-shell#" \
     -e 's#SYSTEMCTL=/usr/bin/systemctl#SYSTEMCTL=/nix/store/fixture-systemd/bin/systemctl#' \
     -e 's#SYSTEMD_CAT=/usr/bin/systemd-cat#SYSTEMD_CAT=/nix/store/fixture-systemd/bin/systemd-cat#' \
+    -e 's#DBUS_UPDATE=/usr/bin/dbus-update-activation-environment#DBUS_UPDATE=/nix/store/fixture-dbus/bin/dbus-update-activation-environment#' \
     "$nix/libexec/qos-session"
 sed -i \
     -e "s#Exec=/usr/libexec/qos-session#Exec=$nix/libexec/qos-session#" \
