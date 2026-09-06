@@ -69,13 +69,16 @@ impl QuickSettingsBluetoothPane {
                 cursor,
                 &device.name,
             );
-            // Retain the neutral ring until the icon library grows Bluetooth.
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
+            // Use the same recognisable leading glyph treatment as the root
+            // card and Wi-Fi list. A neutral ring made Bluetooth look like a
+            // placeholder rather than a real system destination.
+            ui::icons::draw_icon(
+                scene,
                 transform,
+                glyph,
+                ui::icons::Icon::Bluetooth,
                 colors.text_primary,
-                None,
-                &Circle::new(glyph.center(), 7.0),
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             let battery = Rect::new(
                 row.x1 - 64.0,
