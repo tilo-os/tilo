@@ -32,8 +32,10 @@ false.
 
 ## Remaining release gaps
 
-- Editing arbitrary hyperlink targets still lacks a dedicated UI. Imported links
-  render and round-trip, and bookmarks/cross-references exist.
+- Hyperlink targets can be added or changed from the selected-text resource
+  action (including `https:`, `mailto:`, and `#bookmark` targets); imported
+  links render and round-trip, and bookmarks/cross-references exist. A visual
+  toolbar affordance remains a later discoverability enhancement.
 - There is no legacy binary `.doc` importer, equation editor, character-style
   authoring, style inheritance/theme designer, format painter, multi-cursor edit,
   split view, minimap, grammar engine, or print-dialog integration.

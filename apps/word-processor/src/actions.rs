@@ -739,6 +739,25 @@ pub fn set_mark_action(
     }
 }
 
+/// Apply one external or internal hyperlink target to the selected text.
+///
+/// The URL remains a normal valued `link` mark, so it uses the same safe
+/// export/import/collaboration path as imported HTML/ODT/DOCX links. A target
+/// beginning with `#` is a document-local bookmark/cross-reference.
+pub fn set_hyperlink_action(
+    region: RegionKind,
+    spans: Vec<Span>,
+    target: &str,
+) -> WordProcessorAction {
+    set_mark_action(
+        region,
+        spans,
+        "link",
+        Some(MarkVal::Str(target.trim().to_string())),
+        Vec::new(),
+    )
+}
+
 /// Set one block attribute on `blocks`.
 pub fn set_block_attr_action(
     region: RegionKind,
@@ -884,6 +903,12 @@ pub struct WpResourceCtx {
     /// The blocks a block-level action targets — the selection, or the caret
     /// block when there is no selection.
     pub target_blocks: Vec<String>,
+    /// Exact non-empty character spans selected at palette invocation time.
+    /// This keeps a prompted hyperlink action resource-addressed and replayable
+    /// instead of consulting mutable presentation state after the user enters
+    /// a target.
+    pub format_spans: Vec<Span>,
+    pub region: RegionKind,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
@@ -1037,6 +1062,31 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "Insert table",
         &insert_table_action(&ctx.caret_block, 2, 2),
     ));
+    if !ctx.format_spans.is_empty() {
+        let spans = ctx.format_spans.clone();
+        let region = ctx.region;
+        root = root.with_action(ActionSpec::typed(
+            "set-hyperlink",
+            "Add or change hyperlink",
+            "Web URL (https://… or mailto:…) or #bookmark",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "target",
+                ParamType::Text,
+                "A safe external URL, mail address, or document-local #bookmark target",
+            )],
+            move |args: &ActionArgs| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if target.is_empty() {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"hyperlink target is required".to_vec(),
+                    };
+                }
+                encode(&set_hyperlink_action(region, spans.clone(), target))
+            },
+        ));
+    }
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
     root = root.with_action(
@@ -1604,6 +1654,8 @@ mod tests {
             caret_block: block.clone(),
             caret_offset: 0,
             target_blocks: vec![block.clone()],
+            format_spans: Vec::new(),
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         let doc_res = &resources[0];
@@ -1638,12 +1690,53 @@ mod tests {
     }
 
     #[test]
+    fn selected_text_exposes_a_typed_hyperlink_action_that_replays() {
+        let (mut state, ids) = seeded("Read this\n");
+        let block = ids[0].clone();
+        let ctx = WpResourceCtx {
+            format_spans: vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 4,
+            }],
+            region: RegionKind::Body,
+            caret_block: block.clone(),
+            caret_offset: 4,
+            target_blocks: vec![block],
+        };
+        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+        let link = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-hyperlink")
+            .expect("selected text exposes link authoring");
+        assert_eq!(link.params().len(), 1);
+        assert_eq!(link.params()[0].name, "target");
+        let encoded = link
+            .build_args([(
+                "target".to_string(),
+                qos_actions::ArgValue::Text("https://example.com/guide".into()),
+            )])
+            .unwrap();
+        let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+        dispatch(&mut state.doc, &action);
+        assert!(body_blocks(&state.doc)[0].marks.iter().any(|mark| {
+            mark.name == "link"
+                && mark.start == 0
+                && mark.end == 4
+                && mark.value.as_str() == Some("https://example.com/guide")
+        }));
+    }
+
+    #[test]
     fn file_operations_are_typed_background_jobs() {
         let (state, ids) = seeded("Intro\n");
         let ctx = WpResourceCtx {
             caret_block: ids[0].clone(),
             caret_offset: 0,
             target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         for id in ["open", "save", "save-as"] {
@@ -1672,6 +1765,8 @@ mod tests {
             caret_block: block,
             caret_offset: 0,
             target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            region: RegionKind::Body,
         };
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes);
@@ -1726,6 +1821,8 @@ mod tests {
             caret_block: para.clone(),
             caret_offset: 0,
             target_blocks: vec![para],
+            format_spans: Vec::new(),
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
@@ -1787,6 +1884,8 @@ mod tests {
             caret_block: block,
             caret_offset: 0,
             target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &a.doc);
         let review = resources[0]

@@ -34,7 +34,6 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
-use crate::document_status::{DocumentStatus, DocumentStatusView};
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -667,6 +666,10 @@ const TOOLBAR_SEP: f64 = 14.0;
 /// Right margin reserved when packing rows (room for the colour-swatch strip /
 /// breathing space at the toolbar's right edge).
 const TOOLBAR_RIGHT_PAD: f64 = 18.0;
+/// Below this width, the bottom chrome shows only document counts. The layout
+/// hint stays available through its two explicit chips, but would compete with
+/// the status otherwise.
+const COMPACT_LAYOUT_BAR_BREAKPOINT: f64 = 760.0;
 
 /// Pack toolbar items into rows that each fit within `avail_w` (the toolbar's
 /// usable width). Returns the index ranges `[start, end)` for each row. The
@@ -1638,8 +1641,6 @@ pub struct WordProcessorWidget {
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
     auto_fit_page: bool,
-    /// Floating document statistics, file status, and fade lifecycle.
-    document_status: DocumentStatus,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1774,7 +1775,6 @@ impl WordProcessorWidget {
             scrub: None,
             zoom: ZoomControl::new(),
             auto_fit_page: true,
-            document_status: DocumentStatus::default(),
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
@@ -1844,6 +1844,13 @@ impl WordProcessorWidget {
             } else {
                 target
             },
+            format_spans: to_spans(
+                self.selection_blocks_cached()
+                    .into_iter()
+                    .filter(|(_, start, end)| start < end)
+                    .collect(),
+            ),
+            region: self.inner.region_kind(),
         })
     }
 
@@ -3407,14 +3414,29 @@ impl WordProcessorWidget {
             }
             LayoutMode::None => t("layout-none-hint"),
         };
-        tr.draw_text(
-            scene,
-            &readout,
-            12.5,
-            cc.text_dim,
-            transform * Affine::translate((x + 12.0, cy - 8.0)),
-            None,
-        );
+        if bar.width() >= COMPACT_LAYOUT_BAR_BREAKPOINT {
+            tr.draw_text(
+                scene,
+                &readout,
+                12.5,
+                cc.text_dim,
+                transform * Affine::translate((x + 12.0, cy - 8.0)),
+                None,
+            );
+        }
+        // Document status is always docked in chrome. A floating surface can
+        // overlap the paper at any zoom, not merely in narrow tiles.
+        let status = self.status_count_label();
+        if let Some(status_rect) = Self::layout_bar_status_rect(bar, x + 12.0, &status) {
+            tr.draw_text(
+                scene,
+                &status,
+                12.5,
+                cc.text_dim,
+                transform * Affine::translate((status_rect.x0, cy - 8.0)),
+                None,
+            );
+        }
     }
 
     /// Whether the styles panel is drawn this frame.
@@ -7956,10 +7978,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming only while the floating status bubble is lingering /
-        // fading, so it hides itself without needing a stray pointer event. Idle
-        // otherwise.
-        self.document_status.needs_frame(std::time::Instant::now())
+        // Status is persistent bottom chrome, so it has no independent fade
+        // lifecycle to animate while the editor is otherwise idle.
+        false
     }
 
     #[allow(
@@ -8114,12 +8135,6 @@ impl Widget for WordProcessorWidget {
 
         let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
-
-        // Transient floating status readout (bottom-left, above the layout bar),
-        // in place of the old permanent bottom status strip. Drawn last so it
-        // composites over the page; contextual menus/toasts (in `draw_overlay`)
-        // still stack above it.
-        self.draw_document_status(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -9560,62 +9575,35 @@ impl WordProcessorWidget {
             .collect()
     }
 
-    fn draw_document_status(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        // The history strip owns the bottom workspace while open. Suppressing
-        // this floating pill avoids covering its Preview/Compare/Start controls;
-        // document status returns as soon as history closes.
-        if self.history.is_open() {
-            return;
-        }
+    /// The compact bottom-chrome variant only carries the immediate editing
+    /// facts; filename and save state remain available from the title surface.
+    fn status_count_label(&self) -> String {
         let words: usize = self
             .blocks
             .iter()
-            .map(|b| b.text.split_whitespace().count())
+            .map(|block| block.text.split_whitespace().count())
             .sum();
-        let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
-        let file_name = self
-            .path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|name| name.to_str());
-        let format = match self.format {
-            Some(WpFormat::Odt) => t("format-odt"),
-            Some(WpFormat::Docx) => t("format-docx"),
-            Some(WpFormat::Markdown) => t("format-markdown"),
-            Some(WpFormat::Pdf) => t("format-pdf"),
-            Some(WpFormat::Html) => t("format-html"),
-            Some(WpFormat::Rtf) => t("format-rtf"),
-            Some(WpFormat::Epub) => t("format-epub"),
-            None => String::new(),
-        };
-        self.document_status.draw(
-            scene,
-            transform,
-            tr,
-            theme,
-            self.rect,
-            LAYOUT_BAR_H,
-            self.pointer,
-            &DocumentStatusView {
-                words,
-                chars,
-                modified: self.modified,
-                file_name,
-                format: (!format.is_empty()).then_some(format.as_str()),
-            },
-        );
+        let chars: usize = self
+            .blocks
+            .iter()
+            .map(|block| block.text.chars().count())
+            .sum();
+        t_args(
+            "status-count",
+            &[
+                arg("words", num::i64_of_usize(words)),
+                arg("chars", num::i64_of_usize(chars)),
+            ],
+        )
     }
 
-    /// `--shots`: pin the status bubble fully visible so a single headless frame
-    /// captures the floating readout pill.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.document_status.pin_for_shot(std::time::Instant::now());
+    /// Allocate the docked document-status label wholly inside `bar`, after the
+    /// layout chips and hint. Returning `None` at extremely narrow widths is
+    /// preferable to either overlapping a control or painting over the page.
+    fn layout_bar_status_rect(bar: Rect, after_x: f64, label: &str) -> Option<Rect> {
+        let width = num::f64_of_usize(label.chars().count()) * 7.0;
+        let x0 = bar.x1 - 12.0 - width;
+        (x0 >= after_x).then_some(Rect::new(x0, bar.y0, x0 + width, bar.y1))
     }
 
     /// Draw the zoom component in the toolbar's last row.
@@ -12257,6 +12245,28 @@ mod tests {
             narrow >= 2.0 * TOOLBAR_H,
             "760px wraps to at least two rows"
         );
+    }
+
+    #[test]
+    fn document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths() {
+        let (mut state, mut wp) = populated();
+        for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
+            wp.auto_fit_page = false;
+            wp.zoom.set(zoom);
+            pipeline_draw(&mut wp, &mut state, width, 900);
+            let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
+            let label = wp.status_count_label();
+            let rect = WordProcessorWidget::layout_bar_status_rect(bar, 210.0, &label)
+                .expect("the count fits after the layout controls");
+            assert!(
+                rect.y0 >= bar.y0 && rect.y1 <= bar.y1 && rect.x1 <= bar.x1,
+                "{width}px status is entirely inside the bottom chrome: {rect:?}"
+            );
+            assert!(
+                rect.y0 >= wp.rect.y1 - LAYOUT_BAR_H,
+                "{width}px status cannot overlap the page even at {zoom:.0}% zoom"
+            );
+        }
     }
 
     #[test]
