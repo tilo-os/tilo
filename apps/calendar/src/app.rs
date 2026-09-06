@@ -38,7 +38,13 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, Checkbox, CheckboxFace, TextInput, Toggle, ToggleFace};
+use ui::{
+    LocalState,
+    widget::{
+        BlockEditor, Checkbox, CheckboxFace, DatePicker, Dropdown, ExternalDatePickerHit,
+        TextInput, Toggle, ToggleFace,
+    },
+};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
@@ -144,6 +150,10 @@ enum Action {
     CycleRecurrence,
     CycleReminder,
     ToggleSelectedTask,
+    OpenTaskPopover(TaskPopover),
+    DismissTaskPopover,
+    SetTaskDue(Option<NaiveDate>),
+    ShiftTaskDueMonth(i32),
     /// Select a task to view its detail (without toggling completion).
     OpenTask(Id),
     /// Show/hide the overlay sidebar flap (narrow layout).
@@ -185,6 +195,13 @@ enum Action {
 enum FormField {
     Title,
     Location,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TaskPopover {
+    Due,
+    Priority,
+    Project,
 }
 
 /// A calendar an event can be filed under: the on-device local calendar, or a
@@ -259,6 +276,19 @@ pub struct CalendarApp {
     /// Self-contained date/time/calendar picker controller: exclusive open
     /// state, embedded widgets, drawing, hit-testing and event routing.
     event_popovers: EventPopovers,
+    task_popover: Option<TaskPopover>,
+    /// Shared date-grid widget embedded in the task due-date popover.
+    task_due_picker: DatePicker,
+    /// Shared searchable/scrollable selector for all Calendar projects.
+    task_project_choice: LocalState<String>,
+    task_project_dropdown: Dropdown,
+    /// Stable dropdown value to project mapping; display labels are owned by
+    /// the shared widget and may legitimately be duplicated.
+    task_project_values: Vec<(String, Option<Id>)>,
+    task_project_last_choice: String,
+    task_priority_choice: LocalState<String>,
+    task_priority_dropdown: Dropdown,
+    task_priority_last_choice: String,
     /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
@@ -343,6 +373,13 @@ pub struct CalendarApp {
     syncing: bool,
     resource_sync_invocation: Option<qos_actions::InvocationId>,
     resource_sync_result: Option<qos_actions::InvocationUpdate>,
+    /// A resource import is parsed on explicit invocation, then dispatched on
+    /// the next mutable document sync. Resource-operation handlers receive an
+    /// immutable snapshot, so this bridge prevents a false successful import
+    /// against a throwaway clone.
+    pending_resource_import: Option<crate::actions::CalendarAction>,
+    resource_import_invocation: Option<qos_actions::InvocationId>,
+    resource_import_result: Option<qos_actions::InvocationUpdate>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
@@ -406,6 +443,8 @@ impl CalendarApp {
         };
         let detail_open = selection.is_some();
 
+        let task_project_choice = LocalState::new(String::new());
+        let task_priority_choice = LocalState::new(String::new());
         Self {
             model,
             today,
@@ -427,6 +466,18 @@ impl CalendarApp {
                 .with_id("event_location"),
             form_event: None,
             event_popovers: EventPopovers::new(today),
+            task_popover: None,
+            task_due_picker: DatePicker::new(today).with_accessible_name("Task due date"),
+            task_project_dropdown: Dropdown::from_state(Vec::new(), &task_project_choice)
+                .with_accessible_name("Task project")
+                .with_placeholder("No project"),
+            task_project_choice,
+            task_project_values: Vec::new(),
+            task_project_last_choice: String::new(),
+            task_priority_dropdown: Dropdown::from_state(Vec::new(), &task_priority_choice)
+                .with_accessible_name("Task priority"),
+            task_priority_choice,
+            task_priority_last_choice: String::new(),
             form: FormRects::default(),
             shots_pending_new_event: false,
             shots_pending_popover: None,
@@ -461,6 +512,9 @@ impl CalendarApp {
             syncing: false,
             resource_sync_invocation: None,
             resource_sync_result: None,
+            pending_resource_import: None,
+            resource_import_invocation: None,
+            resource_import_result: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
@@ -486,6 +540,37 @@ impl CalendarApp {
         self.detail_open = false;
         self.selection = None;
         self.narrow_screen = NarrowScreen::Calendar;
+        self.dirty = true;
+    }
+
+    /// Open a representative task detail for deterministic visual review of
+    /// the compact task editor controls.
+    pub fn shots_show_task_detail(&mut self) {
+        if let Some(id) = self.model.tasks.first().map(|task| task.id) {
+            self.select_task(id);
+        }
+        self.dirty = true;
+    }
+
+    pub fn shots_open_task_picker(&mut self, picker: &str) {
+        self.shots_show_task_detail();
+        let popover = match picker {
+            "priority" => Some(TaskPopover::Priority),
+            "project" => Some(TaskPopover::Project),
+            _ => Some(TaskPopover::Due),
+        };
+        self.task_popover = popover;
+        let due = self
+            .selected_task()
+            .and_then(|id| self.model.task(id))
+            .and_then(|task| task.due)
+            .unwrap_or(self.anchor);
+        self.task_due_picker.set_selected(due);
+        if popover == Some(TaskPopover::Project) {
+            self.open_task_project_dropdown();
+        } else if popover == Some(TaskPopover::Priority) {
+            self.open_task_priority_dropdown();
+        }
         self.dirty = true;
     }
 
@@ -545,6 +630,10 @@ impl CalendarApp {
     /// hermetic demo/test build stays fully synchronous (it synthesises each
     /// calendar's events through the real [`ics::parse`] path — no network, no
     /// thread — so `--shots` and tests are deterministic).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "sync orchestration keeps worker admission and failure contracts together"
+    )]
     fn start_sync(&mut self, doc: &mut AutoCommit) {
         if self.syncing {
             return;
@@ -619,10 +708,10 @@ impl CalendarApp {
                 let reporter = accounts::AccountSyncReporter::new(id.clone());
                 let upload_failed = push_jobs
                     .iter()
-                    .any(|job| &job.config == &input.0 && !pushed.contains(&job.event.id));
+                    .any(|job| job.config == input.0 && !pushed.contains(&job.event.id));
                 let delete_failed = delete_jobs
                     .iter()
-                    .any(|job| &job.config == &input.0 && !deleted.contains(&job.id));
+                    .any(|job| job.config == input.0 && !deleted.contains(&job.id));
                 let persisted = if matches!(&account_outcome, caldav::SyncOutcome::Synced { .. })
                     && (upload_failed || delete_failed)
                 {
@@ -797,6 +886,10 @@ impl CalendarApp {
     /// Atomically reconcile server resources by stable collection href. A
     /// title/date is presentation, never identity; edits update the same local
     /// UUID across pulls and server deletions remove it without resurrection.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "remote reconciliation is deliberately kept in one transactional merge routine"
+    )]
     fn apply_sync_result(
         &mut self,
         result: caldav::SyncResult,
@@ -1268,15 +1361,77 @@ impl CalendarApp {
                 color: Some(calendar.palette().index()),
             }
         }));
+        let task_project_targets = self
+            .model
+            .projects
+            .iter()
+            .map(|project| crate::actions::TaskProjectTarget {
+                id: project.id.to_string(),
+                label: project.name.clone(),
+            })
+            .collect();
         crate::actions::CalendarResourceCtx {
             new_event: crate::actions::EventData::from_event(&template),
             events,
             tasks,
             calendar_targets,
+            task_project_targets,
             can_sync: self.demo || !self.accounts.is_empty(),
             syncing: self.syncing,
             can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
         }
+    }
+
+    /// Convert parsed ICS records into one deterministic action. Ids are
+    /// minted here, at explicit import authoring time; replays carry the exact
+    /// ids and never consult the filesystem or clock.
+    fn import_action_from_payload(&self, payload: &str) -> Option<crate::actions::CalendarAction> {
+        let (events, tasks) = ics::parse(payload);
+        let events: Vec<_> = events
+            .into_iter()
+            .filter(|event| {
+                !self
+                    .model
+                    .events
+                    .iter()
+                    .any(|current| current.title == event.title && current.start == event.start)
+            })
+            .map(|mut event| {
+                event.id = Uuid::new_v4();
+                crate::actions::EventData::from_event(&event)
+            })
+            .collect();
+        let tasks: Vec<_> = tasks
+            .into_iter()
+            .filter(|task| {
+                !self
+                    .model
+                    .tasks
+                    .iter()
+                    .any(|current| current.title == task.title)
+            })
+            .map(|mut task| {
+                task.id = Uuid::new_v4();
+                crate::actions::TaskData::from_task(&task)
+            })
+            .collect();
+        (!events.is_empty() || !tasks.is_empty())
+            .then_some(crate::actions::CalendarAction::ImportIcs { events, tasks })
+    }
+
+    /// Read the transfer directory only for an explicitly invoked import.
+    fn latest_ics_import_action(&self) -> Result<crate::actions::CalendarAction, String> {
+        let dir = crate::store::transfer_dir();
+        let path = crate::store::newest_ics(&dir)
+            .ok_or_else(|| format!("No .ics files found in {}", dir.display()))?;
+        let payload =
+            std::fs::read_to_string(&path).map_err(|error| format!("Import failed: {error}"))?;
+        self.import_action_from_payload(&payload).ok_or_else(|| {
+            format!(
+                "{} contains no new supported calendar items",
+                path.display()
+            )
+        })
     }
 
     // --- mutations -------------------------------------------------------
@@ -1431,6 +1586,165 @@ impl CalendarApp {
         if exists {
             self.perform_action(doc, &crate::actions::toggle_task_action(id.to_string()));
             self.dirty = true;
+        }
+    }
+
+    fn set_selected_task_due(&mut self, due: Option<NaiveDate>, doc: &mut AutoCommit) {
+        let Some(Sel::Task(id)) = self.selection else {
+            return;
+        };
+        if let Some(task) = self.model.task_mut(id) {
+            task.due = due;
+            self.perform_action(
+                doc,
+                &crate::actions::patch_task_action(
+                    id,
+                    crate::actions::TaskPatch {
+                        due: Some(due.map(|date| date.to_string()).unwrap_or_default()),
+                        ..crate::actions::TaskPatch::default()
+                    },
+                ),
+            );
+        }
+        self.task_popover = None;
+    }
+
+    fn set_selected_task_priority(&mut self, priority: Priority, doc: &mut AutoCommit) {
+        let Some(Sel::Task(id)) = self.selection else {
+            return;
+        };
+        if let Some(task) = self.model.task_mut(id) {
+            task.priority = priority;
+            self.perform_action(
+                doc,
+                &crate::actions::patch_task_action(
+                    id,
+                    crate::actions::TaskPatch {
+                        priority: Some(priority.rank()),
+                        ..crate::actions::TaskPatch::default()
+                    },
+                ),
+            );
+        }
+        self.task_popover = None;
+    }
+
+    fn set_selected_task_project(&mut self, project: Option<Id>, doc: &mut AutoCommit) {
+        let Some(Sel::Task(id)) = self.selection else {
+            return;
+        };
+        if let Some(task) = self.model.task_mut(id) {
+            task.project = project;
+            self.perform_action(
+                doc,
+                &crate::actions::patch_task_action(
+                    id,
+                    crate::actions::TaskPatch {
+                        project: Some(project.map(|value| value.to_string()).unwrap_or_default()),
+                        ..crate::actions::TaskPatch::default()
+                    },
+                ),
+            );
+        }
+        self.task_popover = None;
+        self.task_project_dropdown.close();
+        self.task_priority_dropdown.close();
+    }
+
+    fn open_task_project_dropdown(&mut self) {
+        self.task_project_values = std::iter::once((String::new(), None))
+            .chain(
+                self.model
+                    .projects
+                    .iter()
+                    .map(|project| (project.id.to_string(), Some(project.id))),
+            )
+            .collect();
+        let selected = self
+            .selected_task()
+            .and_then(|id| self.model.task(id))
+            .and_then(|task| task.project);
+        let choice = self
+            .task_project_values
+            .iter()
+            .find(|(_, project)| *project == selected)
+            .map_or_else(String::new, |(value, _)| value.clone());
+        self.task_project_choice.set(choice.clone());
+        self.task_project_last_choice.clone_from(&choice);
+        self.task_project_dropdown.set_value_options(
+            std::iter::once((String::new(), "No project".to_string()))
+                .chain(
+                    self.model
+                        .projects
+                        .iter()
+                        .map(|project| (project.id.to_string(), project.name.clone())),
+                )
+                .collect(),
+        );
+        self.task_project_dropdown.set_selected(choice);
+        self.task_project_dropdown.open_menu();
+    }
+
+    fn commit_task_project_dropdown(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        self.task_project_dropdown.sync(doc, path);
+        let choice = self.task_project_choice.get();
+        if self.task_popover != Some(TaskPopover::Project)
+            || choice == self.task_project_last_choice
+        {
+            return;
+        }
+        self.task_project_last_choice.clone_from(&choice);
+        if let Some((_, project)) = self
+            .task_project_values
+            .iter()
+            .find(|(value, _)| *value == choice)
+        {
+            self.set_selected_task_project(*project, doc);
+        }
+    }
+
+    fn open_task_priority_dropdown(&mut self) {
+        let priority = self
+            .selected_task()
+            .and_then(|id| self.model.task(id))
+            .map_or(Priority::None, |task| task.priority);
+        let value = match priority {
+            Priority::High => "p1",
+            Priority::Medium => "p2",
+            Priority::Low => "p3",
+            Priority::None => "none",
+        }
+        .to_string();
+        self.task_priority_choice.set(value.clone());
+        self.task_priority_last_choice.clone_from(&value);
+        self.task_priority_dropdown.set_value_options(vec![
+            ("p1".into(), "P1 · High".into()),
+            ("p2".into(), "P2 · Medium".into()),
+            ("p3".into(), "P3 · Low".into()),
+            ("none".into(), "No priority".into()),
+        ]);
+        self.task_priority_dropdown.set_selected(value);
+        self.task_priority_dropdown.open_menu();
+    }
+
+    fn commit_task_priority_dropdown(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        self.task_priority_dropdown.sync(doc, path);
+        let value = self.task_priority_choice.get();
+        if self.task_popover != Some(TaskPopover::Priority)
+            || value == self.task_priority_last_choice
+        {
+            return;
+        }
+        self.task_priority_last_choice.clone_from(&value);
+        let priority = match value.as_str() {
+            "p1" => Some(Priority::High),
+            "p2" => Some(Priority::Medium),
+            "p3" => Some(Priority::Low),
+            "none" => Some(Priority::None),
+            _ => None,
+        };
+        if let Some(priority) = priority {
+            self.set_selected_task_priority(priority, doc);
         }
     }
 
@@ -1997,41 +2311,24 @@ impl CalendarApp {
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        let (events, tasks) = ics::parse(&payload);
-        let mut added_e = 0usize;
-        for mut e in events {
-            if self
-                .model
-                .events
-                .iter()
-                .any(|x| x.title == e.title && x.start == e.start)
-            {
-                continue;
+        let Some(action) = self.import_action_from_payload(&payload) else {
+            self.status = Some(format!("{source} already imported"));
+            self.dirty = true;
+            return;
+        };
+        let (added_e, added_t) = match &action {
+            crate::actions::CalendarAction::ImportIcs { events, tasks } => {
+                (events.len(), tasks.len())
             }
-            e.id = Uuid::new_v4();
-            CalDoc::update_event(doc, &e);
-            if let Some(list) = CalDoc::event_notes(doc, e.id) {
-                CalDoc::seed_notes_if_empty(doc, &list, &["Imported from .ics"]);
-            }
-            self.model.events.push(e);
-            added_e += 1;
-        }
-        let mut added_t = 0usize;
-        for mut t in tasks {
-            if self.model.tasks.iter().any(|x| x.title == t.title) {
-                continue;
-            }
-            t.id = Uuid::new_v4();
-            CalDoc::update_task(doc, &t);
-            self.model.tasks.push(t);
-            added_t += 1;
-        }
+            _ => (0, 0),
+        };
+        self.perform_action(doc, &action);
+        self.model = CalDoc::read_model(doc);
+        self.model_heads = doc.get_heads();
         self.model.events.sort_by_key(|e| e.start);
-        self.status = Some(if added_e == 0 && added_t == 0 {
-            format!("{source} already imported")
-        } else {
-            format!("Imported {added_e} events · {added_t} tasks from {source}")
-        });
+        self.status = Some(format!(
+            "Imported {added_e} events · {added_t} tasks from {source}"
+        ));
         self.dirty = true;
     }
 
@@ -2322,6 +2619,10 @@ impl CalendarApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete local action routing table remains intentionally centralized so every hit and semantic action shares one persistence boundary"
+    )]
     fn apply_action(&mut self, action: Action, doc: &mut AutoCommit) {
         match action {
             Action::View(v) => {
@@ -2417,6 +2718,33 @@ impl CalendarApp {
                     self.toggle_task(id, doc);
                 }
             }
+            Action::OpenTaskPopover(popover) => {
+                self.task_popover = Some(popover);
+                let due = self
+                    .selected_task()
+                    .and_then(|id| self.model.task(id))
+                    .and_then(|task| task.due)
+                    .unwrap_or(self.anchor);
+                self.task_due_picker.set_selected(due);
+                if popover == TaskPopover::Project {
+                    self.open_task_project_dropdown();
+                } else if popover == TaskPopover::Priority {
+                    self.open_task_priority_dropdown();
+                }
+            }
+            Action::DismissTaskPopover => {
+                self.task_popover = None;
+                self.task_project_dropdown.close();
+                self.task_priority_dropdown.close();
+            }
+            Action::SetTaskDue(due) => self.set_selected_task_due(due, doc),
+            Action::ShiftTaskDueMonth(delta) => {
+                if delta.is_negative() {
+                    self.task_due_picker.retreat_month();
+                } else {
+                    self.task_due_picker.advance_month();
+                }
+            }
             Action::ToggleAllDay => self.toggle_all_day(doc),
             Action::OpenPopover(which) => self.open_popover(which),
             Action::FocusField(field) => self.focus_field(field),
@@ -2435,6 +2763,10 @@ impl CalendarApp {
     /// hit map. Event cells keep their existing keyboard/search routes; this
     /// adapter covers the shared navigation and creation controls that every
     /// view paints itself.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive projection keeps painted hit actions and their accessible names, roles, and selection state in lockstep"
+    )]
     fn a11y_control(&self, action: &Action) -> Option<(String, String, Role, AccessState)> {
         let (target, name, role, state) = match action {
             Action::View(view) => (
@@ -2506,6 +2838,57 @@ impl CalendarApp {
                 "Import calendar".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
+            ),
+            Action::OpenTaskPopover(TaskPopover::Due) => (
+                "calendar.task.due".into(),
+                "Choose task due date".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenTaskPopover(TaskPopover::Priority) => (
+                "calendar.task.priority".into(),
+                "Choose task priority".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenTaskPopover(TaskPopover::Project) => (
+                "calendar.task.project".into(),
+                "Choose task project".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::DismissTaskPopover => (
+                "calendar.task.picker.dismiss".into(),
+                "Dismiss task picker".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::ShiftTaskDueMonth(delta) => (
+                format!("calendar.task.due.month:{delta}"),
+                if *delta < 0 {
+                    "Previous due-date month".into()
+                } else {
+                    "Next due-date month".into()
+                },
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::SetTaskDue(due) => (
+                format!(
+                    "calendar.task.due:{}",
+                    due.map_or_else(|| "none".into(), |day| day.to_string())
+                ),
+                due.map_or_else(
+                    || "Clear task due date".into(),
+                    |day| format!("Set task due date to {}", date::fmt_day_long(day)),
+                ),
+                Role::RadioButton,
+                AccessState::new().focusable(true).checked(
+                    self.selected_task()
+                        .and_then(|id| self.model.task(id))
+                        .and_then(|task| task.due)
+                        == *due,
+                ),
             ),
             _ => return None,
         };
@@ -3501,6 +3884,10 @@ impl CalendarApp {
                   and c is the theme's colour set — conventional short names for this \
                   draw step"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the task card keeps its direct editable fields, subtasks, and hit targets co-located for responsive layout correctness"
+    )]
     fn draw_detail_task(
         &self,
         scene: &mut Scene,
@@ -3539,36 +3926,60 @@ impl CalendarApp {
             Some(w as f32),
         );
         y += 40.0;
-        if let Some(due) = tk.due {
-            field_row(
-                scene,
-                tr,
-                theme,
-                t,
-                x,
-                y,
-                w,
-                "Due",
-                &date::fmt_day_long(due),
-            );
-            y += 34.0;
-        }
-        field_row(
+        let due = tk.due.map_or_else(
+            || format!("Due · none — set {}", date::fmt_day_long(self.anchor)),
+            |date| format!("Due · {}", date::fmt_day_long(date)),
+        );
+        let due_rect = Rect::new(x, y, x + w, y + 32.0);
+        draw_field_button(
             scene,
+            t,
             tr,
             theme,
-            t,
-            x,
-            y,
-            w,
-            "Priority",
-            tk.priority.label(),
+            due_rect,
+            &due,
+            due_rect.contains(self.last_mouse),
+            true,
         );
-        y += 34.0;
-        if let Some(p) = tk.project.and_then(|pid| self.model.project(pid)) {
-            field_row(scene, tr, theme, t, x, y, w, "Project", &p.name);
-            y += 34.0;
-        }
+        hits.push((due_rect, Action::OpenTaskPopover(TaskPopover::Due)));
+        y += 40.0;
+        let priority = format!("Priority · {}", tk.priority.label());
+        let priority_rect = Rect::new(x, y, x + w, y + 32.0);
+        draw_field_button(
+            scene,
+            t,
+            tr,
+            theme,
+            priority_rect,
+            &priority,
+            priority_rect.contains(self.last_mouse),
+            true,
+        );
+        hits.push((
+            priority_rect,
+            Action::OpenTaskPopover(TaskPopover::Priority),
+        ));
+        y += 40.0;
+        let project = tk
+            .project
+            .and_then(|pid| self.model.project(pid))
+            .map_or_else(
+                || "Project · none".to_string(),
+                |project| format!("Project · {}", project.name),
+            );
+        let project_rect = Rect::new(x, y, x + w, y + 32.0);
+        draw_field_button(
+            scene,
+            t,
+            tr,
+            theme,
+            project_rect,
+            &project,
+            project_rect.contains(self.last_mouse),
+            true,
+        );
+        hits.push((project_rect, Action::OpenTaskPopover(TaskPopover::Project)));
+        y += 40.0;
         let subs = self.model.subtasks_of(id);
         if !subs.is_empty() {
             tr.draw_text(
@@ -3963,6 +4374,106 @@ impl CalendarApp {
             current,
         );
         Vec::new()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the three direct task pickers share one overlay and hit-map boundary so their selection actions cannot diverge"
+    )]
+    fn draw_task_popover(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<(Rect, Action)> {
+        let Some(popover) = self.task_popover else {
+            return Vec::new();
+        };
+        // This backing target sits below every option row, so pointer and
+        // keyboard users can dismiss a picker without accidentally invoking a
+        // hidden detail-card action.
+        let mut hits = vec![(self.detail_rect, Action::DismissTaskPopover)];
+        let popover_height = match popover {
+            TaskPopover::Due => 256.0,
+            TaskPopover::Priority => self.task_priority_dropdown.open_overlay_height() + 26.0,
+            TaskPopover::Project => self.task_project_dropdown.open_overlay_height() + 26.0,
+        };
+        let r = Rect::new(
+            self.detail_rect.x0 + 24.0,
+            self.detail_rect.y0 + 176.0,
+            self.detail_rect.x1 - 24.0,
+            self.detail_rect.y0 + 176.0 + popover_height,
+        );
+        let c = &theme.tokens.colors;
+        fill_round(scene, t, c.surfaces.raised, r, 12.0);
+        stroke_round(scene, t, c.border_focus, r, 12.0, 1.5);
+        match popover {
+            TaskPopover::Due => {
+                let picker_rect = Rect::new(r.x0 + 12.0, r.y0 + 10.0, r.x1 - 12.0, r.y1 - 46.0);
+                self.task_due_picker.apply_layout_external(picker_rect);
+                Widget::draw(
+                    &mut self.task_due_picker,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+                for (hit, rect) in self.task_due_picker.hit_regions_external() {
+                    let action = match hit {
+                        ExternalDatePickerHit::PreviousMonth => Action::ShiftTaskDueMonth(-1),
+                        ExternalDatePickerHit::NextMonth => Action::ShiftTaskDueMonth(1),
+                        ExternalDatePickerHit::Date(day) => Action::SetTaskDue(Some(day)),
+                    };
+                    hits.push((rect, action));
+                }
+                let clear = Rect::new(r.x0 + 12.0, r.y1 - 38.0, r.x1 - 12.0, r.y1 - 10.0);
+                draw_field_button(scene, t, tr, theme, clear, "Clear due date", false, false);
+                hits.push((clear, Action::SetTaskDue(None)));
+            }
+            TaskPopover::Priority => {
+                let dropdown = Rect::new(r.x0 + 12.0, r.y0 + 14.0, r.x1 - 12.0, r.y0 + 54.0);
+                self.task_priority_dropdown.apply_layout_external(dropdown);
+                Widget::draw(
+                    &mut self.task_priority_dropdown,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+                Widget::draw_overlay(
+                    &mut self.task_priority_dropdown,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+            }
+            TaskPopover::Project => {
+                let dropdown = Rect::new(r.x0 + 12.0, r.y0 + 14.0, r.x1 - 12.0, r.y0 + 54.0);
+                self.task_project_dropdown.apply_layout_external(dropdown);
+                Widget::draw(
+                    &mut self.task_project_dropdown,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+                Widget::draw_overlay(
+                    &mut self.task_project_dropdown,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+            }
+        }
+        hits
     }
 
     fn draw_status(
@@ -4438,6 +4949,26 @@ impl CalendarApp {
         }
         false
     }
+
+    /// Apply a resource-authored import once we have the mutable document that
+    /// the widget operation hook intentionally does not receive. The completion
+    /// update is deferred until this write has crossed `ActionHost`, so callers
+    /// never observe a successful import that only touched an ephemeral clone.
+    fn flush_pending_resource_import(&mut self, state: &mut AutoCommit) {
+        let Some(action) = self.pending_resource_import.take() else {
+            return;
+        };
+        self.perform_action(state, &action);
+        self.force_persist = true;
+        self.status = Some("Imported calendar items from the latest ICS file".to_string());
+        self.dirty = true;
+        if let Some(invocation) = self.resource_import_invocation.take() {
+            self.resource_import_result = Some(qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            });
+        }
+    }
 }
 
 impl Default for CalendarApp {
@@ -4451,10 +4982,6 @@ impl Widget for CalendarApp {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
     }
 
-    /// Publish the open calendar + its events/tasks so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
@@ -4511,16 +5038,16 @@ impl Widget for CalendarApp {
                 self.select_task(id);
             }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
-                self.view = View::Month
+                self.view = View::Month;
             }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
-                self.view = View::Week
+                self.view = View::Week;
             }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
-                self.view = View::Day
+                self.view = View::Day;
             }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
-                self.view = View::Agenda
+                self.view = View::Agenda;
             }
             (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
                 if self.syncing {
@@ -4530,7 +5057,10 @@ impl Widget for CalendarApp {
                 self.start_sync(&mut doc);
             }
             (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
-                self.export_ics()
+                self.export_ics();
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
+                return Err("calendar import requires the lifecycle-capable operation host".into());
             }
             _ => return Err("operation kind does not match Calendar operation".into()),
         }
@@ -4551,9 +5081,21 @@ impl Widget for CalendarApp {
             .then(|| serde_json::from_slice::<crate::actions::CalendarOperation>(payload))
             .transpose()
             .map_err(|error| error.to_string())?;
-        if kind != qos_actions::OperationKind::Effect
-            || operation != Some(crate::actions::CalendarOperation::Sync)
-        {
+        if kind != qos_actions::OperationKind::Effect {
+            return self
+                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
+        }
+        if operation == Some(crate::actions::CalendarOperation::ImportIcs) {
+            if self.resource_import_invocation.is_some() || self.pending_resource_import.is_some() {
+                return Err("calendar import is already waiting to be applied".into());
+            }
+            self.pending_resource_import = Some(self.latest_ics_import_action()?);
+            self.resource_import_invocation = Some(invocation);
+            self.dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if operation != Some(crate::actions::CalendarOperation::Sync) {
             return self
                 .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
                 .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
@@ -4587,6 +5129,12 @@ impl Widget for CalendarApp {
             .is_some_and(|update| update.invocation() == invocation)
         {
             self.resource_sync_result.take()
+        } else if self
+            .resource_import_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_import_result.take()
         } else {
             None
         }
@@ -4626,6 +5174,7 @@ impl Widget for CalendarApp {
             self.model_heads = state.get_heads();
             self.seeded = true;
         }
+        self.flush_pending_resource_import(state);
         // Drain a finished background CalDAV pull, if one landed since the last
         // frame, before binding the editor so a freshly-synced selection reads
         // back its notes.
@@ -4652,6 +5201,8 @@ impl Widget for CalendarApp {
         // Seed the form's title/location/time widgets from the current event
         // whenever the selection changes.
         self.ensure_form_bound();
+        self.commit_task_project_dropdown(state, path);
+        self.commit_task_priority_dropdown(state, path);
         if let Some(which) = self.shots_pending_popover.take() {
             self.open_popover(which);
         }
@@ -4893,6 +5444,9 @@ impl Widget for CalendarApp {
             if editing_event {
                 hits.extend(self.draw_form_popovers(scene, t, text_renderer, theme, presence));
             }
+            if matches!(self.selection, Some(Sel::Task(_))) {
+                hits.extend(self.draw_task_popover(scene, t, text_renderer, theme));
+            }
         }
 
         // Sidebar last so the overlay flap (and its scrim) paint over the
@@ -4907,6 +5461,10 @@ impl Widget for CalendarApp {
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
     // node's own identity/layout).
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the widget-system dispatcher deliberately keeps input precedence visible: modal popovers, shared task controls, timeline, keyboard, hit map, fields, then notes"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -4949,6 +5507,46 @@ impl Widget for CalendarApp {
                 taffy,
             );
             return;
+        }
+
+        if self.task_popover == Some(TaskPopover::Project) {
+            Widget::handle_event(
+                &mut self.task_project_dropdown,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            self.commit_task_project_dropdown(state, path);
+            if *handled {
+                self.dirty = true;
+                return;
+            }
+        }
+
+        if self.task_popover == Some(TaskPopover::Priority) {
+            Widget::handle_event(
+                &mut self.task_priority_dropdown,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            self.commit_task_priority_dropdown(state, path);
+            if *handled {
+                self.dirty = true;
+                return;
+            }
         }
 
         // --- Week/day timeline + agenda: scroll and drag ------------------
@@ -5427,36 +6025,6 @@ fn draw_count_badge(
     reason = "t is the paint transform, x/y/w are the field's position/width, and c is \
               the theme's colour set — conventional short names for this draw step"
 )]
-fn field_row(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    t: Affine,
-    x: f64,
-    y: f64,
-    w: f64,
-    label: &str,
-    value: &str,
-) {
-    let c = &theme.tokens.colors;
-    tr.draw_text(
-        scene,
-        label,
-        11.0,
-        c.text_dim,
-        t * Affine::translate((x, y)),
-        None,
-    );
-    tr.draw_text(
-        scene,
-        value,
-        14.0,
-        c.neutral[9],
-        t * Affine::translate((x + 84.0, y - 2.0)),
-        Some((w - 84.0) as f32),
-    );
-}
-
 pub(crate) fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Down-arrow into a tray.
     stroke_line(
@@ -5897,6 +6465,95 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
+        let dir =
+            std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temporary transfer directory");
+        // SAFETY: `serial` prevents this process-global test seam from racing.
+        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        let today = chrono::Local::now().date_naive();
+        std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
+            .expect("write fixture");
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let resource_import = |app: &CalendarApp, state: &AutoCommit| {
+            Widget::resources(app, state)[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "import-latest-ics")
+                .expect("import remains discoverable")
+                .build_args(std::iter::empty::<(String, qos_actions::ArgValue)>())
+                .expect("nullary import operation")
+        };
+        let first = resource_import(&app, &state);
+        let second = resource_import(&app, &state);
+        assert_eq!(
+            first.payload, second.payload,
+            "resource enumeration is stable"
+        );
+        assert_eq!(
+            app.model
+                .events
+                .iter()
+                .filter(|event| event.title == "Quarterly all-hands")
+                .count(),
+            0,
+            "resource enumeration did not read or apply the transfer file"
+        );
+
+        let invocation = qos_actions::InvocationId::new();
+        let start = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            &first.type_id,
+            &first.payload,
+            &state,
+            &automerge::ROOT,
+        )
+        .expect("resource import accepted");
+        assert!(matches!(
+            start,
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert!(
+            !app.model
+                .events
+                .iter()
+                .any(|event| event.title == "Quarterly all-hands"),
+            "success is deferred until a mutable document pass exists"
+        );
+        app.sync(&mut state, &automerge::ROOT);
+        assert!(
+            app.model
+                .events
+                .iter()
+                .any(|event| event.title == "Quarterly all-hands"),
+            "the queued batch crossed ActionHost and updated the model"
+        );
+        assert!(
+            matches!(
+                Widget::poll_resource_operation(
+                    &mut app,
+                    invocation,
+                    false,
+                    &state,
+                    &automerge::ROOT
+                ),
+                Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "completion arrives only after the document action commits"
+        );
+
+        // SAFETY: see the setup above.
+        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn sync_seeds_crdt_and_binds_editor() {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -5975,7 +6632,10 @@ mod tests {
 
         assert!(app.model.event(id).is_some(), "edited draft remains");
         assert!(CalDoc::read_model(&state).event(id).is_some());
-        assert!(app.fresh_draft.is_none(), "it is now an ordinary autosaved event");
+        assert!(
+            app.fresh_draft.is_none(),
+            "it is now an ordinary autosaved event"
+        );
     }
 
     #[test]
@@ -6320,6 +6980,133 @@ mod tests {
         let before = app.model.task(id).unwrap().done;
         app.apply_action(Action::ToggleTask(id), &mut state);
         assert_ne!(app.model.task(id).unwrap().done, before);
+    }
+
+    #[test]
+    fn direct_task_detail_choices_match_their_resource_action_envelopes() {
+        use qos_actions::ActionInput;
+        use ui::widget::Widget;
+
+        fn prompted(spec: &qos_actions::ActionSpec, value: &str) -> qos_actions::EncodedAction {
+            match &spec.input {
+                ActionInput::Prompted { build, .. } => build(value),
+                ActionInput::Immediate(_) => panic!("{} must prompt for a choice", spec.id),
+            }
+        }
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.model.tasks[0].id;
+        app.select_task(id);
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        app.relayout();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Due)))
+        );
+        assert!(
+            app.hits.iter().any(|(_, action)| matches!(
+                action,
+                Action::OpenTaskPopover(TaskPopover::Priority)
+            ))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
+        );
+
+        let resources = Widget::resources(&app, &state);
+        let task = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == crate::actions::task_resource_id(id))
+            .expect("selected task resource");
+        let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
+        let due_spec = task
+            .actions
+            .iter()
+            .find(|action| action.id == "set-due")
+            .unwrap();
+        app.apply_action(Action::SetTaskDue(Some(due)), &mut state);
+        assert_eq!(
+            app.last_dispatched().unwrap().payload,
+            prompted(due_spec, "2026-09-09").payload
+        );
+
+        let priority_spec = task
+            .actions
+            .iter()
+            .find(|action| action.id == "set-priority")
+            .unwrap();
+        app.set_selected_task_priority(Priority::Medium, &mut state);
+        assert_eq!(
+            app.last_dispatched().unwrap().payload,
+            prompted(priority_spec, "p2").payload
+        );
+
+        let project = app.model.projects[0].id;
+        let project_spec = task
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-project")
+            .unwrap();
+        app.set_selected_task_project(Some(project), &mut state);
+        assert_eq!(
+            app.last_dispatched().unwrap().payload,
+            prompted(project_spec, &project.to_string()).payload
+        );
+    }
+
+    #[test]
+    fn project_selector_reaches_projects_beyond_the_old_four_row_cutoff() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.model.tasks[0].id;
+        let later = crate::model::Project {
+            id: Id::new_v4(),
+            name: "Duplicate project".into(),
+            color: Palette::Blue,
+            order: 99,
+        };
+        app.model
+            .projects
+            .extend((0..5).map(|index| crate::model::Project {
+                id: Id::new_v4(),
+                name: format!("Project {index}"),
+                color: Palette::Indigo,
+                order: index,
+            }));
+        app.model.projects.push(later.clone());
+        let same_named_earlier = crate::model::Project {
+            id: Id::new_v4(),
+            name: "Duplicate project".into(),
+            color: Palette::Blue,
+            order: 98,
+        };
+        app.model.projects.push(same_named_earlier);
+        CalDoc::seed(&mut state, &app.model);
+        app.select_task(id);
+        app.apply_action(Action::OpenTaskPopover(TaskPopover::Project), &mut state);
+        assert!(
+            app.task_project_values.len() > 5,
+            "the shared dropdown is populated from the complete project list"
+        );
+        app.task_project_choice.set(later.id.to_string());
+        app.commit_task_project_dropdown(&mut state, &automerge::ROOT);
+        assert_eq!(app.model.task(id).unwrap().project, Some(later.id));
     }
 
     #[test]

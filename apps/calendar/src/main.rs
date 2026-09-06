@@ -106,6 +106,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.iter().any(|a| a == "--new-event") || screen.as_deref() == Some("new-event");
         let date_popover = args.iter().any(|a| a == "--date-popover");
         let calendar_popover = args.iter().any(|a| a == "--calendar-popover");
+        let task_detail =
+            args.iter().any(|a| a == "--task-detail") || screen.as_deref() == Some("task");
+        // `--task-picker` opens one direct task-detail chooser for visual
+        // review: `due`, `priority`, or `project`.
+        let task_picker = parse_flag_value(&args, "--task-picker")
+            .and_then(|value| value.to_str().map(ToOwned::to_owned));
         // `--scroll-hour N` pins the week/day timeline scroll to hour N (0 = top
         // of the day, 24 = bottom) so a shot can prove the full 24h scrolls.
         let scroll_hour = parse_flag_value(&args, "--scroll-hour")
@@ -136,6 +142,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if screen.as_deref() == Some("calendar") {
                 app.shots_show_calendar();
+            }
+            if task_detail {
+                app.shots_show_task_detail();
+            }
+            if let Some(picker) = &task_picker {
+                app.shots_open_task_picker(picker);
             }
             if flap {
                 app.shots_open_flap();
