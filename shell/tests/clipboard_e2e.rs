@@ -2076,6 +2076,77 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
     );
 }
 
+/// Print Screen is compositor-owned, including its release. This drives the
+/// developer socket through the real input ledger rather than only asking the
+/// overlay host to open Capture Studio: a client must lose focus while capture
+/// is active, never see a stray Print release, and regain a clean keyboard
+/// stream after Capture Studio closes.
+#[test]
+fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.print-screen");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
+
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for Print Screen: {response:?}"
+        );
+    }
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "Capture Studio did not take keyboard focus from the mapped client",
+    );
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "the focused client received a Print Screen edge despite capture owning the shortcut: {:?}",
+        client.state.keyboard_events
+    );
+
+    // A second Print while capture is active is consumed, rather than opening
+    // a second capture surface or leaking into the now-unfocused client.
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused the second {operation}: {response:?}"
+        );
+    }
+    client.roundtrip();
+    assert!(
+        !client.state.keyboard_focused && client.state.keyboard_events.is_empty(),
+        "the second Print must leave the existing capture focus and client ledger untouched"
+    );
+
+    let response = compositor.control(&serde_json::json!({ "op": "key", "key": "Escape" }));
+    assert!(
+        response.get("ok").is_some(),
+        "test control refused Escape to close Capture Studio: {response:?}"
+    );
+    client.wait_until(
+        |state| state.keyboard_focused,
+        "the exact prior client did not regain keyboard focus after Capture Studio closed",
+    );
+    client.clear_keyboard_trace();
+    for (operation, key) in [("key_down", "Tab"), ("key_up", "Tab")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for post-capture Tab: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(2);
+    assert_eq!(
+        client.state.keyboard_events,
+        vec![(15, true), (15, false)],
+        "the first post-capture key must have one matched press/release and no delayed Print release"
+    );
+}
+
 /// A real toolkit must find every global it treats as mandatory — GTK
 /// refuses the display outright (stopping every GTK program) if
 /// `wl_data_device_manager` is missing. qOS's own toolkit never asks for

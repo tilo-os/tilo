@@ -355,6 +355,7 @@ pub enum NamedKeyTag {
     End,
     PageUp,
     PageDown,
+    PrintScreen,
     Space,
     /// Bare modifier keys, reachable only through `key_down`/`key_up` (a `key` press+release pair would release the modifier before the next key arrives) — the only way to hold a real modifier across a keystroke, matching hardware/xkb.
     Shift,
@@ -379,6 +380,7 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
         "End" => Some(KeyTag::Named(NamedKeyTag::End)),
         "PageUp" => Some(KeyTag::Named(NamedKeyTag::PageUp)),
         "PageDown" => Some(KeyTag::Named(NamedKeyTag::PageDown)),
+        "PrintScreen" => Some(KeyTag::Named(NamedKeyTag::PrintScreen)),
         "Space" => Some(KeyTag::Named(NamedKeyTag::Space)),
         "Shift" => Some(KeyTag::Named(NamedKeyTag::Shift)),
         "Control" => Some(KeyTag::Named(NamedKeyTag::Control)),
@@ -1467,6 +1469,7 @@ mod tests {
             ("End", NamedKeyTag::End),
             ("PageUp", NamedKeyTag::PageUp),
             ("PageDown", NamedKeyTag::PageDown),
+            ("PrintScreen", NamedKeyTag::PrintScreen),
             ("Space", NamedKeyTag::Space),
         ];
         for (name, expected) in cases {
