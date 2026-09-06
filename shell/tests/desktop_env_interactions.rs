@@ -535,25 +535,27 @@ fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
     chrome.borrow_mut().bump();
     let _ = host.take_structure_dirty();
 
-    let tree = chrome.borrow();
-    let strip = &tree.tree().workspaces[0].strips[0];
-    assert_eq!(
-        strip
-            .window_groups
-            .iter()
-            .map(|group| group.id)
-            .collect::<Vec<_>>(),
-        vec![200, 300, 100],
-        "pointer reorder remains after the open/close lifecycle"
-    );
-    assert!(
-        strip.window_groups[2]
-            .tabs
-            .iter()
-            .all(|tab| tab.id != opened),
-        "the opened tab is absent from durable state before reconstruction"
-    );
-    drop(tree);
+    {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![200, 300, 100],
+            "pointer reorder remains after the open/close lifecycle"
+        );
+        assert!(
+            strip.window_groups[2]
+                .tabs
+                .iter()
+                .all(|tab| tab.id != opened),
+            "the opened tab is absent from durable state before reconstruction"
+        );
+    }
 
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("the combined interaction writes a reconstructable layout");
