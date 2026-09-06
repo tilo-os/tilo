@@ -840,6 +840,7 @@ fn run_job_paths_bound(
     clippy::too_many_lines,
     reason = "the descriptor stays borrowed through one linear write, verify, and profile transaction; splitting ownership across helpers would obscure the destructive-I/O lifecycle"
 )]
+#[cfg(any(test, all(target_os = "linux", feature = "flatpak-media-writer")))]
 fn run_job_file_bound(
     req: &WriteRequest,
     device: &mut std::fs::File,

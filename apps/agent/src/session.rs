@@ -1110,6 +1110,8 @@ impl Session {
             focus_block: focus.clone(),
             focus_offset: 0,
             target_blocks: focus.into_iter().collect(),
+            format_spans: Vec::new(),
+            region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: self.cfg.directory.clone(),
         }
