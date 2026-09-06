@@ -22,13 +22,16 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
+use crate::preferences::PlaybackPreferences;
 
 /// Inset (logical px) of the floating top overlay (media title + Open) from the
 /// video edges.
@@ -37,6 +40,34 @@ const OVERLAY_MARGIN: f64 = 14.0;
 const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill.
 const OPEN_BTN_W: f64 = 84.0;
+
+fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
+    let mut player = VideoPlayer::new()
+        .with_engine(media::MediaEngine::new())
+        .with_test_id("video_surface");
+    player.enable_mpris("qos_video_player", "Video Player");
+    configure_player_settings(&mut player, autoplay, loop_enabled);
+    player
+}
+
+fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enabled: bool) {
+    // These two settings are implemented by this app (unlike decoder-provided
+    // track/rate controls), so the shared settings popover is never decorative.
+    player.set_setting(PlayerSetting::toggle(
+        "autoplay",
+        Icon::Play,
+        "Autoplay",
+        0,
+        autoplay,
+    ));
+    player.set_setting(PlayerSetting::toggle(
+        "loop",
+        Icon::Refresh,
+        "Repeat current video",
+        0,
+        loop_enabled,
+    ));
+}
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -98,17 +129,31 @@ pub struct PlayerApp {
     collab: Option<CollabPlayback>,
     /// The collab socket. `None` unless a collab session is attached.
     manager: Option<CollaborationManager>,
+    /// App-owned options whose state is surfaced through the settings resource.
+    preferences: PlaybackPreferences,
     dirty: bool,
 }
 
 impl PlayerApp {
     /// A player with a fresh engine and no media loaded.
     pub fn new() -> Self {
-        let mut player = VideoPlayer::new()
-            .with_engine(media::MediaEngine::new())
-            .with_test_id("video_surface");
-        player.enable_mpris("qos_video_player", "Video Player");
-        let action_surface = crate::actions::resources("No media", false, true, &AutoCommit::new());
+        Self::new_with_preferences(PlaybackPreferences::load())
+    }
+
+    fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
+        let player = configured_player(preferences.autoplay, preferences.loop_enabled);
+        let action_ctx = crate::actions::PlayerResourceCtx {
+            title: "No media",
+            media: crate::actions::MediaAvailability {
+                has_media: false,
+                can_control_transport: true,
+            },
+            settings: crate::actions::PlaybackSettingsState {
+                autoplay: preferences.autoplay,
+                loop_enabled: preferences.loop_enabled,
+            },
+        };
+        let action_surface = crate::actions::resources(&action_ctx, &AutoCommit::new());
         let open_action = action_surface
             .first()
             .and_then(|resource| qos_actions::ActionBinding::unit_for(resource, "open").ok())
@@ -126,6 +171,7 @@ impl PlayerApp {
             open_focused: false,
             collab: None,
             manager: None,
+            preferences,
             dirty: true,
         }
     }
@@ -145,10 +191,9 @@ impl PlayerApp {
     ///
     /// `scenario` selects an optional demo overlay for the capture:
     ///   * `"empty"` — the first-run state before a source is chosen.
-    ///   * `"settings"` — register app player-settings (priority icons + a
-    ///     couple under the gear) and open the settings-gear menu.
-    ///   * `"fullscreen"` — register the same settings and toggle fullscreen so
-    ///     the control bar shows the immersive (exit-fullscreen) state.
+    ///   * `"settings"` — open the real autoplay/repeat settings menu.
+    ///   * `"fullscreen"` — toggle fullscreen so the control bar shows its
+    ///     immersive (exit-fullscreen) state.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
@@ -175,9 +220,6 @@ impl PlayerApp {
                 app.player.pause();
             }
         }
-        if matches!(scenario, Some("settings" | "fullscreen")) {
-            app.register_demo_settings();
-        }
         match scenario {
             Some("settings") => app.player.open_settings_menu(None),
             Some("fullscreen") => app.player.toggle_fullscreen(),
@@ -189,47 +231,6 @@ impl PlayerApp {
         app
     }
 
-    /// Register a representative set of app player-settings so a capture (or a
-    /// demo) shows the control-bar priority icons and the gear menu together:
-    /// three high-priority controls (resolution, captions, speed) as their own
-    /// icons and two low-priority ones (autoplay, loop) tucked under the gear.
-    pub fn register_demo_settings(&mut self) {
-        use ui::icons::Icon;
-        use ui::widget::video_player::PlayerSetting;
-        self.player.set_setting(PlayerSetting::choice(
-            "resolution",
-            Icon::Monitor,
-            "Resolution",
-            3,
-            vec!["1080p".into(), "720p".into(), "480p".into(), "Auto".into()],
-            0,
-        ));
-        self.player.set_setting(PlayerSetting::toggle(
-            "captions",
-            Icon::FileText,
-            "Captions",
-            2,
-            true,
-        ));
-        self.player.set_setting(PlayerSetting::choice(
-            "speed",
-            Icon::List,
-            "Speed",
-            1,
-            vec!["0.5×".into(), "1×".into(), "1.5×".into(), "2×".into()],
-            1,
-        ));
-        self.player.set_setting(PlayerSetting::toggle(
-            "autoplay",
-            Icon::Play,
-            "Autoplay",
-            0,
-            true,
-        ));
-        self.player
-            .set_setting(PlayerSetting::button("loop", Icon::Refresh, "Loop", 0));
-    }
-
     /// Attach collaborative playback: a live collab socket plus the host/
     /// follower role from the environment. Only the live run path calls this —
     /// `--shots` and tests stay local so no thread/socket is created.
@@ -237,6 +238,11 @@ impl PlayerApp {
     pub fn with_collab(mut self) -> Self {
         let role = Role::from_env();
         self.player.set_transport_enabled(role == Role::Host);
+        if role == Role::Follower {
+            // Repeat changes shared transport and therefore belongs to the
+            // host. The resource tree retains an unavailable explanation.
+            self.player.remove_setting("loop");
+        }
         self.collab = Some(CollabPlayback::new(role));
         self.manager = Some(CollaborationManager::new());
         self
@@ -262,7 +268,11 @@ impl PlayerApp {
             |n| n.to_string_lossy().into_owned(),
         );
         self.player.open(source);
-        self.player.play();
+        if self.preferences.autoplay {
+            self.player.play();
+        } else {
+            self.player.pause();
+        }
         self.player.reveal_controls();
         self.player
             .set_now_playing(ui::widget::video_player::NowPlaying {
@@ -275,15 +285,20 @@ impl PlayerApp {
     }
 
     fn close_media(&mut self) {
-        let mut player = VideoPlayer::new()
-            .with_engine(media::MediaEngine::new())
-            .with_test_id("video_surface");
+        let mut player =
+            configured_player(self.preferences.autoplay, self.preferences.loop_enabled);
         player.set_transport_enabled(
             self.collab
                 .as_ref()
                 .is_none_or(|collab| collab.role() == Role::Host),
         );
-        player.enable_mpris("qos_video_player", "Video Player");
+        if self
+            .collab
+            .as_ref()
+            .is_some_and(|collab| collab.role() == Role::Follower)
+        {
+            player.remove_setting("loop");
+        }
         self.player = player;
         self.title = "No media".into();
         self.dirty = true;
@@ -314,7 +329,41 @@ impl PlayerApp {
             PlayerOperation::SeekSeconds(seconds) => {
                 self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
             }
+            PlayerOperation::SeekBySeconds(seconds) => {
+                let current = self.player.position_ms() as f64;
+                let duration = self.player.duration_ms() as f64;
+                let target =
+                    (current + seconds.clamp(-3600.0, 3600.0) * 1000.0).clamp(0.0, duration) as u64;
+                self.player.seek_to_ms(target);
+            }
+            PlayerOperation::Restart => self.player.seek_to_ms(0),
+            PlayerOperation::SeekToEnd => self.player.seek_to_ms(self.player.duration_ms()),
             PlayerOperation::SetVolume(volume) => self.player.set_volume(volume as f32),
+            PlayerOperation::SetAutoplay(enabled) => {
+                if self.preferences.autoplay != enabled {
+                    self.preferences.autoplay = enabled;
+                    configure_player_settings(
+                        &mut self.player,
+                        self.preferences.autoplay,
+                        self.preferences.loop_enabled,
+                    );
+                    self.persist_preferences();
+                }
+            }
+            PlayerOperation::SetLoop(enabled) => {
+                if self.preferences.loop_enabled != enabled {
+                    self.preferences.loop_enabled = enabled;
+                    configure_player_settings(
+                        &mut self.player,
+                        self.preferences.autoplay,
+                        self.preferences.loop_enabled,
+                    );
+                    self.persist_preferences();
+                }
+            }
+            PlayerOperation::ShowTracksUnavailable
+            | PlayerOperation::ShowChaptersUnavailable
+            | PlayerOperation::SetPlaybackRateUnavailable(_) => {}
             PlayerOperation::ToggleFullscreen => self.player.toggle_fullscreen(),
         }
         self.dirty = true;
@@ -417,6 +466,60 @@ impl PlayerApp {
                     collab.follow_step(engine, now);
                 }
             }
+        }
+    }
+
+    fn drain_player_settings(&mut self) {
+        let before = self.preferences;
+        for event in self.player.take_setting_events() {
+            match event {
+                PlayerSettingEvent::Toggled { id, on } if id == "autoplay" => {
+                    self.preferences.autoplay = on;
+                    self.dirty = true;
+                }
+                PlayerSettingEvent::Toggled { id, on } if id == "loop" => {
+                    if self
+                        .collab
+                        .as_ref()
+                        .is_none_or(|collab| collab.role() == Role::Host)
+                    {
+                        self.preferences.loop_enabled = on;
+                        self.dirty = true;
+                    }
+                }
+                PlayerSettingEvent::Toggled { .. }
+                | PlayerSettingEvent::Chose { .. }
+                | PlayerSettingEvent::Activated { .. } => {}
+            }
+        }
+        if self.preferences != before {
+            self.persist_preferences();
+        }
+    }
+
+    fn persist_preferences(&self) {
+        if let Err(error) = self.preferences.save() {
+            // A device-local preference must never prevent playback. The next
+            // successful setting change can retry the atomic merged write.
+            tracing::warn!(%error, "video player: could not persist playback preferences");
+        }
+    }
+
+    fn maybe_loop_current_media(&mut self) {
+        if !self.preferences.loop_enabled
+            || !self.player.has_media()
+            || self
+                .collab
+                .as_ref()
+                .is_some_and(|collab| collab.role() == Role::Follower)
+        {
+            return;
+        }
+        let duration = self.player.duration_ms();
+        if duration > 0 && self.player.position_ms() >= duration {
+            self.player.seek_to_ms(0);
+            self.player.play();
+            self.dirty = true;
         }
     }
 
@@ -564,11 +667,20 @@ impl Widget for PlayerApp {
 
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         crate::actions::resources(
-            &self.title,
-            self.player.has_media(),
-            self.collab
-                .as_ref()
-                .is_none_or(|collab| collab.role() == Role::Host),
+            &crate::actions::PlayerResourceCtx {
+                title: &self.title,
+                media: crate::actions::MediaAvailability {
+                    has_media: self.player.has_media(),
+                    can_control_transport: self
+                        .collab
+                        .as_ref()
+                        .is_none_or(|collab| collab.role() == Role::Host),
+                },
+                settings: crate::actions::PlaybackSettingsState {
+                    autoplay: self.preferences.autoplay,
+                    loop_enabled: self.preferences.loop_enabled,
+                },
+            },
             doc,
         )
     }
@@ -587,6 +699,9 @@ impl Widget for PlayerApp {
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
             return Ok(false);
         };
+        if operation.requires_media() && !self.player.has_media() {
+            return Err("open a video before using this playback control".into());
+        }
         if self
             .collab
             .as_ref()
@@ -595,9 +710,21 @@ impl Widget for PlayerApp {
                 &operation,
                 crate::actions::PlayerOperation::TogglePlayback
                     | crate::actions::PlayerOperation::SeekSeconds(_)
+                    | crate::actions::PlayerOperation::SeekBySeconds(_)
+                    | crate::actions::PlayerOperation::Restart
+                    | crate::actions::PlayerOperation::SeekToEnd
+                    | crate::actions::PlayerOperation::SetLoop(_)
             )
         {
             return Err("this player is following the collaborative host".into());
+        }
+        if matches!(
+            &operation,
+            crate::actions::PlayerOperation::ShowTracksUnavailable
+                | crate::actions::PlayerOperation::ShowChaptersUnavailable
+                | crate::actions::PlayerOperation::SetPlaybackRateUnavailable(_)
+        ) {
+            return Err("this capability is not available in the shared media decoder".into());
         }
         if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
             if !Path::new(path).is_file() {
@@ -668,6 +795,8 @@ impl Widget for PlayerApp {
         self.drain_portal();
         self.tick_collab();
         self.player.sync(state, path);
+        self.drain_player_settings();
+        self.maybe_loop_current_media();
     }
 
     fn build_layout(
@@ -908,9 +1037,10 @@ impl Widget for PlayerApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep pumping while media plays, a portal open is pending, or a collab
-        // session is live (so followers track the host / the host broadcasts).
-        self.player.needs_animation_frame() || self.portal_rx.is_some() || self.collab.is_some()
+        // Collaboration is polled through `needs_idle_sync`; treating an idle,
+        // paused collab session as animation would otherwise force a 60 Hz
+        // redraw forever. Playback and the portal are the only frame-rate work.
+        self.player.needs_animation_frame() || self.portal_rx.is_some()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -950,7 +1080,7 @@ mod tests {
 
     #[test]
     fn opening_a_path_sets_title_and_loads_the_engine() {
-        let mut app = PlayerApp::new();
+        let mut app = PlayerApp::new_with_preferences(PlaybackPreferences::default());
         app.open_path(&PathBuf::from("/tmp/Holiday.mp4"));
         assert_eq!(app.title, "Holiday.mp4");
         assert!(app.player.is_playing(), "autoplay on open");
@@ -985,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn resources_nest_media_transport_audio_and_presentation() {
+    fn resources_cover_transport_navigation_audio_metadata_and_settings() {
         let mut app = synth_app();
         app.open_path(Path::new("/tmp/Clip.mp4"));
         let resources = Widget::resources(&app, &AutoCommit::new());
@@ -993,9 +1123,23 @@ mod tests {
         assert_eq!(app_resource.kind, "video-player.application");
         let media = &app_resource.children[0];
         assert_eq!(media.kind, "media.video");
-        assert_eq!(media.children[0].kind, "media.transport");
-        assert_eq!(media.children[1].kind, "media.audio");
-        assert_eq!(media.children[2].kind, "media.presentation");
+        let kinds: Vec<&str> = media
+            .children
+            .iter()
+            .map(|child| child.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "media.transport",
+                "media.navigation",
+                "media.audio",
+                "media.tracks",
+                "media.chapters",
+                "media.player-settings",
+                "media.presentation",
+            ]
+        );
     }
 
     #[test]
@@ -1018,6 +1162,36 @@ mod tests {
             &automerge::ROOT,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn unavailable_transport_is_rejected_even_if_a_caller_bypasses_discovery() {
+        let mut app = PlayerApp::new();
+        let encoded = qos_actions::EncodedAction::encode_operation(
+            crate::actions::OPERATION_TYPE,
+            &crate::actions::PlayerOperation::TogglePlayback,
+        )
+        .unwrap();
+        let result = Widget::invoke_resource_operation(
+            &mut app,
+            qos_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn idle_collaboration_does_not_turn_a_paused_player_into_an_animation() {
+        let mut app = PlayerApp::new();
+        app.collab = Some(CollabPlayback::new(Role::Host));
+        assert!(Widget::needs_idle_sync(&app));
+        assert!(
+            !Widget::needs_animation_frame(&app),
+            "collab receives idle sync without requesting a 60 Hz redraw"
+        );
     }
 
     fn root() -> ObjId {
@@ -1044,7 +1218,7 @@ mod tests {
     /// features (real `GStreamer` decode is proven separately by the
     /// `--features decode` integration test with a real generated file).
     fn synth_app() -> PlayerApp {
-        let mut app = PlayerApp::new();
+        let mut app = PlayerApp::new_with_preferences(PlaybackPreferences::default());
         app.player.set_engine(media::MediaEngine::new_synthesized());
         app
     }
@@ -1064,6 +1238,37 @@ mod tests {
             "duration mirrored from the engine"
         );
         assert!(app.player.is_playing(), "autoplay after open");
+    }
+
+    #[test]
+    fn autoplay_and_repeat_are_real_settings_not_demo_affordances() {
+        let mut app = synth_app();
+        app.preferences.autoplay = false;
+        configure_player_settings(
+            &mut app.player,
+            app.preferences.autoplay,
+            app.preferences.loop_enabled,
+        );
+        app.open_path(Path::new("/tmp/Clip.mp4"));
+        assert!(
+            !app.player.is_playing(),
+            "disabled autoplay is honoured on open"
+        );
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &root());
+        app.preferences.loop_enabled = true;
+        configure_player_settings(
+            &mut app.player,
+            app.preferences.autoplay,
+            app.preferences.loop_enabled,
+        );
+        let end = app.player.duration_ms();
+        app.player.seek_to_ms(end);
+        app.player.pause();
+        app.maybe_loop_current_media();
+        assert_eq!(app.player.position_ms(), 0, "repeat restarts at the end");
+        assert!(app.player.is_playing(), "repeat resumes playback");
     }
 
     #[test]
