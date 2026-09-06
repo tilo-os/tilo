@@ -65,14 +65,22 @@ pub fn open_task_address(id: Id) -> ActionAddress {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalendarOperation {
-    OpenEvent { id: String },
-    OpenTask { id: String },
+    OpenEvent {
+        id: String,
+    },
+    OpenTask {
+        id: String,
+    },
     ShowMonth,
     ShowWeek,
     ShowDay,
     ShowAgenda,
     Sync,
     ExportIcs,
+    /// Import the newest `.ics` file from the transfer directory. The effect
+    /// captures parsed records into one [`CalendarAction`] before it reports
+    /// success; its retry contract is therefore at-most-once.
+    ImportIcs,
 }
 
 fn calendar_operation(
@@ -100,7 +108,9 @@ fn calendar_operation(
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
             .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
-        CalendarOperation::ExportIcs => spec.destructive(),
+        CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
+            spec.retry_policy(RetryPolicy::AtMostOnce)
+        }
     }
 }
 
@@ -157,7 +167,14 @@ impl EventData {
             location: e.location.clone(),
             color: e.color.index(),
             rrule: e.recurrence.to_rrule(),
-            reminder: e.reminder_min.unwrap_or(-1),
+            // External imports may carry an alarm interval Calendar does not
+            // offer in its closed editing domain. Normalize at the action
+            // authoring boundary so replay never persists an unsupported
+            // scalar while preserving the event itself.
+            reminder: e
+                .reminder_min
+                .filter(|minutes| matches!(*minutes, 10 | 30 | 60))
+                .unwrap_or(-1),
             project: e.project.map(|p| p.to_string()).unwrap_or_default(),
             calendar_id: e.calendar_id.clone().unwrap_or_default(),
         }
@@ -170,6 +187,14 @@ impl EventData {
         let id = self.id.parse::<Id>().ok()?;
         let start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
         let end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
+        if start > end
+            || self.color >= Palette::ALL.len()
+            || !matches!(self.reminder, -1 | 10 | 30 | 60)
+            || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
+            || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
+        {
+            return None;
+        }
         Some(Event {
             id,
             title: self.title.clone(),
@@ -179,11 +204,7 @@ impl EventData {
             location: self.location.clone(),
             color: Palette::from_index(self.color),
             recurrence: Recurrence::from_rrule(&self.rrule),
-            reminder_min: if self.reminder < 0 {
-                None
-            } else {
-                Some(self.reminder)
-            },
+            reminder_min: (self.reminder != -1).then_some(self.reminder),
             project: parse_opt_id(&self.project),
             calendar_id: if self.calendar_id.is_empty() {
                 None
@@ -223,10 +244,26 @@ pub struct EventPatch {
     pub color: Option<usize>,
     pub rrule: Option<String>,
     pub reminder: Option<i64>,
+    /// Project id, or an empty string to remove the project association.
+    pub project: Option<String>,
     pub calendar_id: Option<String>,
     /// Only calendar moves affect the remote outbox. `Some(true)` queues a
     /// remote upload; `Some(false)` removes a now-local event from it.
     pub enqueue_remote: Option<bool>,
+}
+
+/// A sparse, field-level change to one task. Keeping task edits as patches is
+/// as important as event edits: a collaborator changing a due date must not
+/// accidentally overwrite an independently changed title or priority.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskPatch {
+    pub title: Option<String>,
+    /// Due date in `YYYY-MM-DD` form, or an empty string to clear it.
+    pub due: Option<String>,
+    /// Stored [`Priority::rank`] value.
+    pub priority: Option<u8>,
+    /// Project id, or an empty string to remove the project association.
+    pub project: Option<String>,
 }
 
 impl EventPatch {
@@ -250,6 +287,12 @@ impl EventPatch {
             rrule: (before.recurrence != after.recurrence).then(|| after.recurrence.to_rrule()),
             reminder: (before.reminder_min != after.reminder_min)
                 .then_some(after.reminder_min.unwrap_or(-1)),
+            project: (before.project != after.project).then(|| {
+                after
+                    .project
+                    .map(|project| project.to_string())
+                    .unwrap_or_default()
+            }),
             calendar_id: (before.calendar_id != after.calendar_id)
                 .then(|| after.calendar_id.clone().unwrap_or_default()),
             enqueue_remote: None,
@@ -275,15 +318,20 @@ impl TaskData {
 
     fn to_task(&self) -> Option<Task> {
         let id = self.id.parse::<Id>().ok()?;
+        if self.priority > Priority::None.rank()
+            || (!self.due.is_empty() && NaiveDate::parse_from_str(&self.due, DATE_FMT).is_err())
+            || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
+            || (!self.parent.is_empty() && self.parent.parse::<Id>().is_err())
+        {
+            return None;
+        }
         Some(Task {
             id,
             title: self.title.clone(),
             done: self.done,
-            due: if self.due.is_empty() {
-                None
-            } else {
-                NaiveDate::parse_from_str(&self.due, DATE_FMT).ok()
-            },
+            due: (!self.due.is_empty())
+                .then(|| NaiveDate::parse_from_str(&self.due, DATE_FMT).ok())
+                .flatten(),
             priority: Priority::from_rank(self.priority),
             project: parse_opt_id(&self.project),
             parent: parse_opt_id(&self.parent),
@@ -320,6 +368,9 @@ pub enum CalendarAction {
     },
     /// Create or replace a task's scalar fields.
     UpsertTask(TaskData),
+    /// Update only named task registers. This avoids a stale task snapshot
+    /// clobbering fields changed on another device.
+    PatchTask { id: String, patch: TaskPatch },
     /// Flip a task's `done` flag. Deterministic against the replay base: the
     /// current value is read from the document and negated, so two replicas at
     /// the same heads land on the same result.
@@ -327,6 +378,13 @@ pub enum CalendarAction {
     /// Delete a task and each of its listed subtasks (resolved at authoring
     /// time from the model, carried here so `apply` needs no lookup).
     DeleteTask { id: String, subtasks: Vec<String> },
+    /// A single deterministic import batch. The external file is parsed before
+    /// this action is authored; replay only writes the exact payload captured
+    /// here, and has one history/undo boundary.
+    ImportIcs {
+        events: Vec<EventData>,
+        tasks: Vec<TaskData>,
+    },
 }
 
 /// Durable, browseable history metadata for a calendar mutation.
@@ -334,81 +392,290 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
     let mut context =
         qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
-        CalendarAction::UpsertEvent(event) => {
-            ("Update event", &event.id, "calendar.event", &event.title)
-        }
+        CalendarAction::UpsertEvent(event) => (
+            "Update event",
+            event.id.clone(),
+            "calendar.event",
+            event.title.clone(),
+        ),
         CalendarAction::PatchEvent { id, patch } => {
             let label = if patch.calendar_id.is_some() {
                 "Move event"
             } else {
                 "Update event"
             };
-            (label, id, "calendar.event", id)
+            (label, id.clone(), "calendar.event", id.clone())
         }
-        CalendarAction::DeleteEvent { id, .. } => ("Delete event", id, "calendar.event", id),
-        CalendarAction::UpsertTask(task) => ("Update task", &task.id, "calendar.task", &task.title),
-        CalendarAction::ToggleTask { id } => ("Toggle task", id, "calendar.task", id),
-        CalendarAction::DeleteTask { id, .. } => ("Delete task", id, "calendar.task", id),
+        CalendarAction::DeleteEvent { id, .. } => {
+            ("Delete event", id.clone(), "calendar.event", id.clone())
+        }
+        CalendarAction::UpsertTask(task) => (
+            "Update task",
+            task.id.clone(),
+            "calendar.task",
+            task.title.clone(),
+        ),
+        CalendarAction::PatchTask { id, .. } => {
+            ("Update task", id.clone(), "calendar.task", id.clone())
+        }
+        CalendarAction::ToggleTask { id } => {
+            ("Toggle task", id.clone(), "calendar.task", id.clone())
+        }
+        CalendarAction::DeleteTask { id, .. } => {
+            ("Delete task", id.clone(), "calendar.task", id.clone())
+        }
+        CalendarAction::ImportIcs { .. } => (
+            "Import calendar",
+            "calendar".into(),
+            "calendar.calendar",
+            "Calendar".into(),
+        ),
     };
     context.action_label = label.to_string();
     context.resource = Some(qos_actions::ActionResource {
-        id: format!("{kind}:{id}"),
+        id: if kind == "calendar.calendar" {
+            kind.to_string()
+        } else {
+            format!("{kind}:{id}")
+        },
         kind: kind.to_string(),
-        label: title.clone(),
+        label: title,
     });
     context
+}
+
+fn refused(message: &str) -> ActionError {
+    ActionError::Refused(message.to_string())
+}
+
+fn validate_event_patch(doc: &Doc, id: Id, patch: &EventPatch) -> Result<(), ActionError> {
+    let model = CalDoc::read_model(doc);
+    let Some(event) = model.event(id) else {
+        return Err(refused("event no longer exists"));
+    };
+    let start = patch
+        .start
+        .as_deref()
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("event start is invalid"))?
+        .unwrap_or(event.start);
+    let end = patch
+        .end
+        .as_deref()
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("event end is invalid"))?
+        .unwrap_or(event.end);
+    if start > end {
+        return Err(refused("event end must not precede start"));
+    }
+    if patch.color.is_some_and(|color| color >= Palette::ALL.len()) {
+        return Err(refused("event color is invalid"));
+    }
+    if patch
+        .reminder
+        .is_some_and(|minutes| !matches!(minutes, -1 | 10 | 30 | 60))
+    {
+        return Err(refused("event reminder is unsupported"));
+    }
+    if patch
+        .rrule
+        .as_ref()
+        .is_some_and(|rule| Recurrence::from_rrule(rule).to_rrule() != *rule)
+    {
+        return Err(refused("event recurrence is unsupported"));
+    }
+    if let Some(project) = &patch.project {
+        let project = (!project.is_empty())
+            .then(|| project.parse::<Id>().ok())
+            .flatten();
+        if (!patch.project.as_deref().unwrap_or_default().is_empty() && project.is_none())
+            || !CalDoc::project_exists(doc, project)
+        {
+            return Err(refused("event project is unavailable"));
+        }
+    }
+    if patch.enqueue_remote == Some(true)
+        && patch
+            .calendar_id
+            .as_deref()
+            .unwrap_or_else(|| event.calendar_id.as_deref().unwrap_or_default())
+            .is_empty()
+    {
+        return Err(refused("a local event cannot be queued for remote sync"));
+    }
+    Ok(())
+}
+
+fn validate_task_patch(doc: &Doc, id: Id, patch: &TaskPatch) -> Result<(), ActionError> {
+    if CalDoc::read_model(doc).task(id).is_none() {
+        return Err(refused("task no longer exists"));
+    }
+    if patch
+        .due
+        .as_ref()
+        .is_some_and(|due| !due.is_empty() && NaiveDate::parse_from_str(due, DATE_FMT).is_err())
+    {
+        return Err(refused("task due date is invalid"));
+    }
+    if patch
+        .priority
+        .is_some_and(|priority| priority > Priority::None.rank())
+    {
+        return Err(refused("task priority is invalid"));
+    }
+    if let Some(project) = &patch.project {
+        let project = (!project.is_empty())
+            .then(|| project.parse::<Id>().ok())
+            .flatten();
+        if (!patch.project.as_deref().unwrap_or_default().is_empty() && project.is_none())
+            || !CalDoc::project_exists(doc, project)
+        {
+            return Err(refused("task project is unavailable"));
+        }
+    }
+    Ok(())
+}
+
+fn apply_upsert_event(doc: &mut Doc, data: &EventData) {
+    if let Some(event) = data.to_event()
+        && CalDoc::project_exists(doc, event.project)
+    {
+        CalDoc::update_event(doc, &event);
+    }
+}
+
+fn apply_patch_event(doc: &mut Doc, id: &str, patch: &EventPatch) -> Result<(), ActionError> {
+    let id = id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    validate_event_patch(doc, id, patch)?;
+    CalDoc::patch_event(doc, id, patch);
+    if let Some(enqueue) = patch.enqueue_remote {
+        if enqueue {
+            CalDoc::enqueue_push(doc, id);
+        } else {
+            CalDoc::dequeue_push(doc, id);
+        }
+    }
+    Ok(())
+}
+
+fn apply_delete_event(
+    doc: &mut Doc,
+    id: &str,
+    remote_delete: Option<&String>,
+) -> Result<(), ActionError> {
+    let id = id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let model = CalDoc::read_model(doc);
+    let event = model
+        .event(id)
+        .ok_or_else(|| refused("event no longer exists"))?;
+    if remote_delete.map(String::as_str) != event.calendar_id.as_deref() {
+        return Err(refused(
+            "remote delete does not match the event source calendar",
+        ));
+    }
+    CalDoc::delete_event(doc, id);
+    CalDoc::dequeue_push(doc, id);
+    if let Some(calendar) = remote_delete {
+        CalDoc::enqueue_delete(doc, calendar, id);
+    }
+    Ok(())
+}
+
+fn apply_upsert_task(doc: &mut Doc, data: &TaskData) {
+    if let Some(task) = data.to_task()
+        && CalDoc::project_exists(doc, task.project)
+    {
+        CalDoc::update_task(doc, &task);
+    }
+}
+
+fn apply_patch_task(doc: &mut Doc, id: &str, patch: &TaskPatch) -> Result<(), ActionError> {
+    let id = id
+        .parse::<Id>()
+        .map_err(|_| refused("task id is invalid"))?;
+    validate_task_patch(doc, id, patch)?;
+    CalDoc::patch_task(doc, id, patch);
+    Ok(())
+}
+
+fn apply_toggle_task(doc: &mut Doc, id: &str) -> Result<(), ActionError> {
+    let id = id
+        .parse::<Id>()
+        .map_err(|_| refused("task id is invalid"))?;
+    if CalDoc::read_model(doc).task(id).is_none() {
+        return Err(refused("task no longer exists"));
+    }
+    CalDoc::toggle_task_done(doc, id);
+    Ok(())
+}
+
+fn apply_delete_task(doc: &mut Doc, id: &str, subtasks: &[String]) -> Result<(), ActionError> {
+    let id = id
+        .parse::<Id>()
+        .map_err(|_| refused("task id is invalid"))?;
+    let model = CalDoc::read_model(doc);
+    if model.task(id).is_none() {
+        return Err(refused("task no longer exists"));
+    }
+    let children = model.subtasks_of(id);
+    let child_ids = subtasks
+        .iter()
+        .map(|subtask| {
+            subtask
+                .parse::<Id>()
+                .map_err(|_| refused("subtask id is invalid"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if child_ids
+        .iter()
+        .any(|child| !children.iter().any(|task| task.id == *child))
+    {
+        return Err(refused(
+            "delete payload names a task outside the target subtree",
+        ));
+    }
+    CalDoc::delete_task(doc, id);
+    for child in child_ids {
+        CalDoc::delete_task(doc, child);
+    }
+    Ok(())
+}
+
+fn apply_import_ics(doc: &mut Doc, events: &[EventData], tasks: &[TaskData]) {
+    for data in events {
+        if let Some(event) = data.to_event()
+            && CalDoc::project_exists(doc, event.project)
+        {
+            CalDoc::update_event(doc, &event);
+            if let Some(notes) = CalDoc::event_notes(doc, event.id) {
+                CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
+            }
+        }
+    }
+    for data in tasks {
+        apply_upsert_task(doc, data);
+    }
 }
 
 impl Action for CalendarAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            CalendarAction::UpsertEvent(data) => {
-                if let Some(e) = data.to_event() {
-                    CalDoc::update_event(doc, &e);
-                }
-            }
-            CalendarAction::PatchEvent { id, patch } => {
-                if let Ok(uuid) = id.parse::<Id>() {
-                    CalDoc::patch_event(doc, uuid, patch);
-                    if let Some(enqueue) = patch.enqueue_remote {
-                        if enqueue {
-                            CalDoc::enqueue_push(doc, uuid);
-                        } else {
-                            CalDoc::dequeue_push(doc, uuid);
-                        }
-                    }
-                }
-            }
+            CalendarAction::UpsertEvent(data) => apply_upsert_event(doc, data),
+            CalendarAction::PatchEvent { id, patch } => apply_patch_event(doc, id, patch)?,
             CalendarAction::DeleteEvent { id, remote_delete } => {
-                if let Ok(uuid) = id.parse::<Id>() {
-                    CalDoc::delete_event(doc, uuid);
-                    // A queued upload for a now-deleted event is moot.
-                    CalDoc::dequeue_push(doc, uuid);
-                    if let Some(cal) = remote_delete {
-                        CalDoc::enqueue_delete(doc, cal, uuid);
-                    }
-                }
+                apply_delete_event(doc, id, remote_delete.as_ref())?;
             }
-            CalendarAction::UpsertTask(data) => {
-                if let Some(t) = data.to_task() {
-                    CalDoc::update_task(doc, &t);
-                }
-            }
-            CalendarAction::ToggleTask { id } => {
-                if let Ok(uuid) = id.parse::<Id>() {
-                    CalDoc::toggle_task_done(doc, uuid);
-                }
-            }
-            CalendarAction::DeleteTask { id, subtasks } => {
-                if let Ok(uuid) = id.parse::<Id>() {
-                    CalDoc::delete_task(doc, uuid);
-                }
-                for s in subtasks {
-                    if let Ok(uuid) = s.parse::<Id>() {
-                        CalDoc::delete_task(doc, uuid);
-                    }
-                }
-            }
+            CalendarAction::UpsertTask(data) => apply_upsert_task(doc, data),
+            CalendarAction::PatchTask { id, patch } => apply_patch_task(doc, id, patch)?,
+            CalendarAction::ToggleTask { id } => apply_toggle_task(doc, id)?,
+            CalendarAction::DeleteTask { id, subtasks } => apply_delete_task(doc, id, subtasks)?,
+            CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks),
         }
         Ok(())
     }
@@ -484,6 +751,14 @@ pub fn upsert_task_action(t: &Task) -> CalendarAction {
     CalendarAction::UpsertTask(TaskData::from_task(t))
 }
 
+/// Apply a sparse task mutation without rewriting unrelated task registers.
+pub fn patch_task_action(id: Id, patch: TaskPatch) -> CalendarAction {
+    CalendarAction::PatchTask {
+        id: id.to_string(),
+        patch,
+    }
+}
+
 /// Toggle a task's completion.
 pub fn toggle_task_action(id: impl Into<String>) -> CalendarAction {
     CalendarAction::ToggleTask { id: id.into() }
@@ -533,6 +808,14 @@ pub struct CalendarTargetResource {
     pub color: Option<usize>,
 }
 
+/// A real local project that a task may be filed under. Projects live in the
+/// shared calendar document, so their ids are safe collaboration targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskProjectTarget {
+    pub id: String,
+    pub label: String,
+}
+
 /// The presentation context the calendar hands [`provide_resources`]: a template
 /// for a palette-created event (built from the current view) plus the events and
 /// tasks currently in the model. Everything here is derived from app
@@ -545,6 +828,7 @@ pub struct CalendarResourceCtx {
     pub events: Vec<EventResource>,
     pub tasks: Vec<TaskResource>,
     pub calendar_targets: Vec<CalendarTargetResource>,
+    pub task_project_targets: Vec<TaskProjectTarget>,
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
@@ -579,11 +863,36 @@ where
         placeholder,
         ExecutionLocus::ClientLocal,
         params,
-        move |args| {
-            match update(&data, args) {
-                Ok(action) => encode(&action),
-                Err(reason) => invalid_arguments(reason),
-            }
+        move |args| match update(&data, args) {
+            Ok(action) => encode(&action),
+            Err(reason) => invalid_arguments(reason),
+        },
+    )
+}
+
+/// The task counterpart to [`event_update_spec`]. Both routes build a sparse
+/// action envelope from the live resource snapshot, which keeps Ctrl+K, agents
+/// and collaborative replay on the same validation path.
+fn task_update_spec<F>(
+    id: &str,
+    label: &str,
+    placeholder: &str,
+    params: Vec<ActionParam>,
+    data: TaskData,
+    update: F,
+) -> ActionSpec
+where
+    F: Fn(&TaskData, &ActionArgs) -> Result<CalendarAction, String> + Send + Sync + 'static,
+{
+    ActionSpec::typed(
+        id,
+        label,
+        placeholder,
+        ExecutionLocus::ClientLocal,
+        params,
+        move |args| match update(&data, args) {
+            Ok(action) => encode(&action),
+            Err(reason) => invalid_arguments(reason),
         },
     )
 }
@@ -653,6 +962,10 @@ fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec 
 /// (with a "New event" action), each event (open + rename + delete), and each
 /// task (open + toggle + delete). Every document-mutating operation is exported as the
 /// same action the on-screen affordance dispatches.
+#[allow(
+    clippy::too_many_lines,
+    reason = "resource publication intentionally keeps every event and task action beside its typed validator"
+)]
 pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calendar.calendar", "calendar.calendar", "Calendar");
 
@@ -704,6 +1017,15 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         export = export.unavailable("calendar_empty", "There are no events or tasks to export");
     }
     root = root.with_action(export);
+    // Discovery stays pure: the transfer directory is read only if this
+    // explicit effect is invoked, never while the resource tree is searched or
+    // refreshed. The handler turns the file into one replayable import action.
+    root = root.with_action(calendar_operation(
+        "import-latest-ics",
+        "Import latest ICS",
+        OperationKind::Effect,
+        &CalendarOperation::ImportIcs,
+    ));
 
     // Calendar-level: create an event from the current view. The uuid is minted
     // once when the title argument is committed, then baked into the envelope, so
@@ -807,7 +1129,9 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                     EventPatch {
-                        location: Some(args.text("location").unwrap_or_default().trim().to_string()),
+                        location: Some(
+                            args.text("location").unwrap_or_default().trim().to_string(),
+                        ),
                         ..EventPatch::default()
                     },
                 ))
@@ -837,7 +1161,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 }
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
-                    EventPatch { start: Some(start.to_string()), ..EventPatch::default() },
+                    EventPatch {
+                        start: Some(start.to_string()),
+                        ..EventPatch::default()
+                    },
                 ))
             },
         ));
@@ -865,7 +1192,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 }
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
-                    EventPatch { end: Some(end.to_string()), ..EventPatch::default() },
+                    EventPatch {
+                        end: Some(end.to_string()),
+                        ..EventPatch::default()
+                    },
                 ))
             },
         ));
@@ -903,7 +1233,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     .ok_or_else(|| "repeat is not supported".to_string())?;
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
-                    EventPatch { rrule: Some(repeat.to_rrule()), ..EventPatch::default() },
+                    EventPatch {
+                        rrule: Some(repeat.to_rrule()),
+                        ..EventPatch::default()
+                    },
                 ))
             },
         ));
@@ -930,7 +1263,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 };
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
-                    EventPatch { reminder: Some(reminder), ..EventPatch::default() },
+                    EventPatch {
+                        reminder: Some(reminder),
+                        ..EventPatch::default()
+                    },
                 ))
             },
         ));
@@ -949,7 +1285,10 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     .ok_or_else(|| "color is not supported".to_string())?;
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
-                    EventPatch { color: Some(color.index()), ..EventPatch::default() },
+                    EventPatch {
+                        color: Some(color.index()),
+                        ..EventPatch::default()
+                    },
                 ))
             },
         ));
@@ -1013,7 +1352,8 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         } else {
             "Mark done"
         };
-        let child = Resource::new(
+        let projects = ctx.task_project_targets.clone();
+        let mut child = Resource::new(
             task_resource_id(parsed_id),
             "calendar.task",
             task_label(&tk.data),
@@ -1028,8 +1368,114 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "toggle",
             toggle_label,
             &toggle_task_action(id.clone()),
-        ))
-        .with_action(immediate_spec(
+        ));
+        child = child.with_action(task_update_spec(
+            "edit",
+            "Rename task",
+            "task title…",
+            vec![
+                ActionParam::required("title", ParamType::Text, "Task title")
+                    .with_schema(serde_json::json!({"maxLength": 240})),
+            ],
+            tk.data.clone(),
+            |data, args| {
+                let title = args.text("title").unwrap_or_default().trim();
+                if title.is_empty() {
+                    return Err("title must contain non-whitespace text".into());
+                }
+                Ok(patch_task_action(
+                    data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
+                    TaskPatch {
+                        title: Some(title.to_string()),
+                        ..TaskPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(task_update_spec(
+            "set-due",
+            "Set due date",
+            "YYYY-MM-DD or none",
+            vec![
+                ActionParam::required("due", ParamType::Text, "Due date, or none to clear it")
+                    .with_schema(serde_json::json!({"pattern": "^(none|\\d{4}-\\d{2}-\\d{2})$"})),
+            ],
+            tk.data.clone(),
+            |data, args| {
+                let value = args.text("due").unwrap_or_default();
+                let due = if value == "none" {
+                    String::new()
+                } else {
+                    NaiveDate::parse_from_str(value, DATE_FMT)
+                        .map_err(|_| "due must use YYYY-MM-DD or none")?;
+                    value.to_string()
+                };
+                Ok(patch_task_action(
+                    data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
+                    TaskPatch {
+                        due: Some(due),
+                        ..TaskPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(task_update_spec(
+            "set-priority",
+            "Set priority",
+            "none / p1 / p2 / p3",
+            vec![
+                ActionParam::required("priority", ParamType::Text, "Task priority")
+                    .with_choices(["none", "p1", "p2", "p3"]),
+            ],
+            tk.data.clone(),
+            |data, args| {
+                let priority = match args.text("priority").unwrap_or_default() {
+                    "p1" => Priority::High,
+                    "p2" => Priority::Medium,
+                    "p3" => Priority::Low,
+                    "none" => Priority::None,
+                    _ => return Err("priority is not supported".into()),
+                };
+                Ok(patch_task_action(
+                    data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
+                    TaskPatch {
+                        priority: Some(priority.rank()),
+                        ..TaskPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(task_update_spec(
+            "move-to-project",
+            "Move to project",
+            "project destination",
+            vec![
+                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
+                    .with_choices(
+                        std::iter::once("none".to_string())
+                            .chain(projects.iter().map(|project| project.id.clone())),
+                    ),
+            ],
+            tk.data.clone(),
+            move |data, args| {
+                let selected = args.text("project").unwrap_or_default();
+                let project = if selected == "none" {
+                    String::new()
+                } else if projects.iter().any(|project| project.id == selected) {
+                    selected.to_string()
+                } else {
+                    return Err("project is no longer available".into());
+                };
+                Ok(patch_task_action(
+                    data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
+                    TaskPatch {
+                        project: Some(project),
+                        ..TaskPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(immediate_spec(
             "delete",
             "Delete task",
             &delete_task_action(id.clone(), tk.subtasks.clone()),
@@ -1113,6 +1559,10 @@ mod tests {
             .expect("a task resource");
         let tk_actions: Vec<&str> = task.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(tk_actions.contains(&"open"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"edit"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"set-due"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"set-priority"), "{tk_actions:?}");
+        assert!(tk_actions.contains(&"move-to-project"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"toggle"), "{tk_actions:?}");
         assert!(tk_actions.contains(&"delete"), "{tk_actions:?}");
 
@@ -1419,6 +1869,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn import_history_points_at_the_actual_calendar_root() {
+        let context = history_context(&CalendarAction::ImportIcs {
+            events: Vec::new(),
+            tasks: Vec::new(),
+        });
+        assert_eq!(
+            context.resource.expect("root resource").id,
+            "calendar.calendar"
+        );
+    }
+
+    #[test]
+    fn upserts_reject_unknown_project_relationships() {
+        let (_app, mut doc) = seeded();
+        let mut event = EventData::from_event(&CalDoc::read_model(&doc).events[0]);
+        event.id = Id::new_v4().to_string();
+        event.project = Id::new_v4().to_string();
+        let authored_id = event.id.clone();
+        CalendarAction::UpsertEvent(event).apply(&mut doc).unwrap();
+        assert!(
+            CalDoc::read_model(&doc)
+                .events
+                .iter()
+                .all(|candidate| candidate.id.to_string() != authored_id),
+            "a valid UUID is not enough: a project relationship must resolve in the document"
+        );
+    }
+
+    #[test]
+    fn hostile_patch_is_refused_atomically_before_remote_queueing() {
+        let (_app, mut doc) = seeded();
+        let event = CalDoc::read_model(&doc).events[0].clone();
+        let result = CalendarAction::PatchEvent {
+            id: event.id.to_string(),
+            patch: EventPatch {
+                end: Some(
+                    (event.start - chrono::Duration::minutes(1))
+                        .format(DT_FMT)
+                        .to_string(),
+                ),
+                enqueue_remote: Some(true),
+                ..EventPatch::default()
+            },
+        }
+        .apply(&mut doc);
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        let after = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
+        assert_eq!(after.start, event.start);
+        assert_eq!(after.end, event.end);
+        assert!(!CalDoc::outbox(&doc).contains(&event.id));
+    }
+
+    #[test]
+    fn hostile_task_delete_cannot_name_an_unrelated_task() {
+        let (_app, mut doc) = seeded();
+        let model = CalDoc::read_model(&doc);
+        let parent = model.tasks[0].id;
+        let unrelated = model
+            .tasks
+            .iter()
+            .find(|task| task.parent != Some(parent) && task.id != parent)
+            .expect("demo has an unrelated task")
+            .id;
+        let result = CalendarAction::DeleteTask {
+            id: parent.to_string(),
+            subtasks: vec![unrelated.to_string()],
+        }
+        .apply(&mut doc);
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert!(CalDoc::read_model(&doc).task(unrelated).is_some());
+    }
+
     /// Dispatching the "New event" prompted action creates an event in the
     /// document with the committed title.
     #[test]
@@ -1510,8 +2033,7 @@ mod tests {
         let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
         assert_eq!(updated.recurrence, Recurrence::Weekly);
         assert_eq!(
-            updated.location,
-            "Studio 3 · https://meet.example",
+            updated.location, "Studio 3 · https://meet.example",
             "a recurrence patch did not rewrite an independently-authored location"
         );
     }
@@ -1544,6 +2066,104 @@ mod tests {
             blank.type_id,
             qos_actions::resource::INVALID_ARGUMENTS_TYPE,
             "new task refuses a whitespace-only title"
+        );
+    }
+
+    #[test]
+    fn task_field_actions_are_sparse_and_reject_hostile_priority_values() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let task = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "calendar.task")
+            .expect("seeded task resource");
+        let id = task
+            .id
+            .as_str()
+            .trim_start_matches("calendar.task:")
+            .parse::<Id>()
+            .expect("task resource id");
+        let original_title = CalDoc::read_model(&doc)
+            .task(id)
+            .expect("task")
+            .title
+            .clone();
+        let priority = task
+            .actions
+            .iter()
+            .find(|action| action.id == "set-priority")
+            .expect("priority action");
+        let encoded = priority
+            .build_args([(
+                "priority".to_string(),
+                qos_actions::ArgValue::Text("p1".to_string()),
+            )])
+            .expect("declared priority is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("priority action dispatches");
+        let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
+        assert_eq!(changed.priority, Priority::High);
+        assert_eq!(changed.title, original_title, "priority patch kept title");
+
+        // A peer is allowed to send a serialized action directly, so validate
+        // again at the document boundary instead of trusting the UI choices.
+        CalendarAction::PatchTask {
+            id: id.to_string(),
+            patch: TaskPatch {
+                priority: Some(200),
+                ..TaskPatch::default()
+            },
+        }
+        .apply(&mut doc)
+        .expect_err("malformed priority is refused before it can report success");
+        assert_eq!(
+            CalDoc::read_model(&doc).task(id).expect("task").priority,
+            Priority::High,
+            "out-of-range priority was not persisted"
+        );
+    }
+
+    #[test]
+    fn import_batch_replays_as_one_deterministic_action() {
+        let (_app, seeded_doc) = seeded();
+        let mut a = seeded_doc;
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("same base");
+        let event = EventData {
+            id: Uuid::new_v4().to_string(),
+            title: "Imported planning".into(),
+            start: "2026-09-06T09:00".into(),
+            end: "2026-09-06T10:00".into(),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Indigo.index(),
+            rrule: String::new(),
+            reminder: -1,
+            project: String::new(),
+            calendar_id: String::new(),
+        };
+        let action = CalendarAction::ImportIcs {
+            events: vec![event.clone()],
+            tasks: Vec::new(),
+        };
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply import");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "one import payload converges exactly"
+        );
+        assert!(
+            CalDoc::read_model(&a)
+                .events
+                .iter()
+                .any(|candidate| candidate.id.to_string() == event.id),
+            "the captured item landed"
         );
     }
 }

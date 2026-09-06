@@ -1503,7 +1503,7 @@ pub use progress_bar::ProgressBar;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod date_picker;
-pub use date_picker::DatePicker;
+pub use date_picker::{DatePicker, ExternalDatePickerHit};
 pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
