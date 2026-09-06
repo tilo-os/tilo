@@ -1,7 +1,7 @@
 #!/bin/sh
 # qOS session entry point, as installed on a host that is not the qOS image.
 #
-# The display manager execs this; it execs the compositor. There is nothing
+# The display manager execs this; it supervises the compositor. There is nothing
 # configurable here on purpose: the path below is the one the package owns,
 # and no environment variable, config file or argument can redirect it. The
 # developer counterpart that *can* be redirected is `qos-session-dev`, in the
@@ -11,10 +11,14 @@
 set -eu
 
 QOS_SHELL=/usr/bin/qos-shell
+SYSTEMCTL=/usr/bin/systemctl
+SESSION_TARGET=qos-graphical-session.target
+target_started=0
+shell_pid=
 
-# `DesktopNames=nirios` in the .desktop entry is what xdg-desktop-portal
-# matches on to pick the qOS portal backend; the display manager exports it as
-# XDG_CURRENT_DESKTOP, but not every one does, so make it certain.
+# `DesktopNames=nirios` in the .desktop entry selects nirios-portals.conf;
+# display managers export it as XDG_CURRENT_DESKTOP, but not every one does,
+# so make it certain.
 XDG_CURRENT_DESKTOP=nirios
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
@@ -23,6 +27,49 @@ if [ ! -x "$QOS_SHELL" ]; then
     echo "qos-session: $QOS_SHELL is missing or not executable" >&2
     exit 1
 fi
+
+if [ ! -x "$SYSTEMCTL" ]; then
+    echo "qos-session: $SYSTEMCTL is missing or not executable" >&2
+    exit 1
+fi
+
+stop_target() {
+    if [ "$target_started" = 1 ]; then
+        "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --user unset-environment \
+            XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1 || true
+        target_started=0
+    fi
+}
+
+forward_signal() {
+    signal=$1
+    status=$2
+    trap - HUP INT TERM
+    if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
+        kill "-$signal" "$shell_pid" 2>/dev/null || true
+        wait "$shell_pid" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+
+trap stop_target EXIT
+trap 'forward_signal HUP 129' HUP
+trap 'forward_signal INT 130' INT
+trap 'forward_signal TERM 143' TERM
+
+# A systemd user manager survives desktop switches. Remove display values from
+# the session that just ended, import qOS's identity, then own the standard
+# graphical-session targets for exactly as long as this compositor lives.
+# xdg-desktop-portal refuses activation unless graphical-session.target is
+# active and otherwise may retain the previous desktop's backend selection.
+"$SYSTEMCTL" --user unset-environment \
+    DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+    XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
+"$SYSTEMCTL" --user import-environment \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+"$SYSTEMCTL" --user start "$SESSION_TARGET"
+target_started=1
 
 # --host-desktop-session is the package-owned, distro-neutral declaration that
 # this is a session added to an existing Linux installation. It keeps device
@@ -39,4 +86,13 @@ fi
 # performs that idempotent preparation and then falls through to the
 # compositor. Identity creation itself stays interactive in trusted compositor
 # chrome; it is never minted silently by this wrapper.
-exec "$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@"
+# Keep the wrapper alive so normal logout stops the session target and a
+# display-manager termination signal reaches the compositor before cleanup.
+set +e
+"$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
+shell_pid=$!
+wait "$shell_pid"
+status=$?
+set -e
+shell_pid=
+exit "$status"

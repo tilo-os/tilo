@@ -100,7 +100,7 @@ pub use encode::{
     AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
     VideoCodec,
 };
-pub use engine::{EngineConfig, MediaEngine, SeekMode};
+pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 pub use hw::{DecoderKind, HwPolicy, HwReport};

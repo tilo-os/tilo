@@ -7,6 +7,72 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A durable entry in Photos' shared library. Pixel bytes remain in the
+/// content store; this is intentionally only addressable metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LibraryPhoto {
+    pub id: String,
+    pub image: OpenImage,
+    #[serde(default)]
+    pub favorite: bool,
+}
+
+impl LibraryPhoto {
+    #[must_use]
+    pub fn from_image(image: OpenImage) -> Self {
+        let id = match &image.content {
+            Some(hash) => format!("photos.photo:{hash}"),
+            None => format!("photos.photo:path:{}", image.path),
+        };
+        Self {
+            id,
+            image,
+            favorite: false,
+        }
+    }
+}
+
+/// A named collection of stable photo ids. Membership is ordered for a calm,
+/// predictable browse order and uses ids rather than path strings so peers
+/// refer to the same content wherever it was staged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Album {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub photo_ids: Vec<String>,
+}
+
+/// The complete small metadata namespace Photos replicates.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhotoLibrary {
+    #[serde(default)]
+    pub photos: Vec<LibraryPhoto>,
+    #[serde(default)]
+    pub albums: Vec<Album>,
+}
+
+impl PhotoLibrary {
+    pub fn photo(&self, id: &str) -> Option<&LibraryPhoto> {
+        self.photos.iter().find(|photo| photo.id == id)
+    }
+
+    pub fn album(&self, id: &str) -> Option<&Album> {
+        self.albums.iter().find(|album| album.id == id)
+    }
+
+    /// Insert exactly once, preserving the existing metadata if a collaborator
+    /// has already imported the same content.
+    pub fn add_photo(&mut self, photo: LibraryPhoto) -> bool {
+        if self.photo(&photo.id).is_some() {
+            false
+        } else {
+            self.photos.push(photo);
+            true
+        }
+    }
+}
+
 /// A rectangle in normalized `0..1` coordinates of the image it applies to.
 ///
 /// Normalized rather than pixels so a crop survives the source being replaced
@@ -42,6 +108,26 @@ impl Rect01 {
             && self.y.abs() < 1e-6
             && (self.w - 1.0).abs() < 1e-6
             && (self.h - 1.0).abs() < 1e-6
+    }
+
+    /// Whether this is a real crop contained in the original image.
+    ///
+    /// Unlike [`Self::clamped`], this validates an external command instead
+    /// of silently changing its meaning. A durable action must either replay
+    /// exactly what its author requested or be refused everywhere.
+    pub fn is_valid_selection(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.w.is_finite()
+            && self.h.is_finite()
+            && self.x >= 0.0
+            && self.y >= 0.0
+            && self.w > 0.0
+            && self.h > 0.0
+            && self.x <= 1.0
+            && self.y <= 1.0
+            && self.x + self.w <= 1.0
+            && self.y + self.h <= 1.0
     }
 
     /// Clamp into the unit square, keeping a non-negative extent. A rect

@@ -35,6 +35,7 @@ libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true
 unicode-width = "0.2.2"
+unicode-segmentation = "1.12"
 crossbeam-channel = "0.5.15"
 vello.workspace = true
 winit.workspace = true

@@ -1424,8 +1424,7 @@ impl Namespace {
     ///
     /// # Errors
     ///
-    /// Returns an error if the limit is invalid, the live-record count exceeds
-    /// it, or a live record has no stable record identity.
+    /// Returns an error when the bound is invalid or a live record lacks identity.
     pub fn live_record_blob_roots(
         &self,
         max_live_records: usize,

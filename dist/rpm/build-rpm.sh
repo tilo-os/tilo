@@ -34,7 +34,10 @@ if (( run_cargo )); then
     say "cargo build --release (launcher, unlock helper)"
     ( cd "$repo_root" && cargo build --release --locked -p launcher -p qos-unlock-helper )
     say "cargo build --release (compositor, no default features)"
-    ( cd "$repo_root" && cargo build --release --locked -p shell --no-default-features )
+    # `shell` also owns developer tools such as `shots` and `qos-control`.
+    # Building the package without an explicit target compiles and LTO-links
+    # those large binaries even though stage-payload never ships them.
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
 fi
 
 rel=${QOS_BIN_DIR:-$repo_root/target/release}
@@ -47,7 +50,12 @@ done
 # ---------------------------------------------------------------------------
 say "staging $name-$version"
 stage=$out/stage/$name-$version
-rm -rf "$out/stage" "$out/SOURCES"
+# Each invocation produces one self-contained artifact set. Leaving an older
+# version under RPMS makes the documented qos-session-*.rpm globs select both
+# versions, which package managers reject (and the transient unpacker would
+# misleadingly overlay in lexical order).
+rm -rf "$out/stage" "$out/SOURCES" "$out/BUILD" "$out/BUILDROOT" \
+       "$out/RPMS" "$out/SRPMS"
 mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 "$repo_root/dist/stage-payload.sh" "$rel" "$stage"
 

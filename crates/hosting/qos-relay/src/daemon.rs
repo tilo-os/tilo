@@ -194,7 +194,7 @@ impl Relay {
     /// the listen address is invalid or the endpoint fails to bind.
     #[allow(
         clippy::too_many_lines,
-        reason = "relay startup constructs one shared endpoint and its interdependent protocol handlers"
+        reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
     )]
     pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
         import_home_peer_bindings(&mut cfg)?;
@@ -711,12 +711,6 @@ struct AuthorityRefreshState {
     governed_rooms: std::collections::HashSet<u64>,
 }
 
-type AuthorityProjection = (
-    Vec<String>,
-    HashMap<u64, std::collections::HashSet<[u8; 32]>>,
-    std::collections::HashSet<u64>,
-);
-
 fn authority_high_water_path(cache_dir: &std::path::Path) -> PathBuf {
     cache_dir.join(AUTHORITY_HIGH_WATER_FILE)
 }
@@ -856,6 +850,12 @@ async fn apply_home_peer_projection(
     let _ = own_user; // Documents that the always-admitted local user is in `users`.
 }
 
+type HomePeerAuthorityProjection = (
+    Vec<String>,
+    HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+    std::collections::HashSet<u64>,
+);
+
 /// Re-evaluate the materialized authority at `now`, even when no file bytes
 /// changed.  Capability expiry is wall-clock state, not source-file state.
 /// A rejected/missing current authority clears every previously governed room
@@ -868,7 +868,7 @@ async fn refresh_home_peer_authority_once(
     state: &mut AuthorityRefreshState,
     now: u64,
 ) -> bool {
-    let mut refresh = || -> Result<AuthorityProjection, String> {
+    let mut refresh = || -> Result<HomePeerAuthorityProjection, String> {
         let bytes = std::fs::read(bundle_path)
             .map_err(|error| format!("could not read {}: {error}", bundle_path.display()))?;
         let text = std::str::from_utf8(&bytes)
@@ -1131,7 +1131,7 @@ impl std::fmt::Debug for ManagementProtocol {
 impl ProtocolHandler for ManagementProtocol {
     #[allow(
         clippy::too_many_lines,
-        reason = "the management handshake and authorized lifecycle response form one protocol transaction"
+        reason = "one authenticated management exchange must keep handshake, capability checks, durable mutation, response, and shutdown sequencing together"
     )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         if self.state_root.join("decommissioned").exists() {
@@ -1276,7 +1276,7 @@ impl std::fmt::Debug for DiscoveryProtocol {
 impl ProtocolHandler for DiscoveryProtocol {
     #[allow(
         clippy::too_many_lines,
-        reason = "the discovery handshake, authorization, and advertisement form one protocol transaction"
+        reason = "one authenticated discovery exchange keeps authorization, workspace lookup, content proof, and response framing in one security-reviewed sequence"
     )]
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         if self
@@ -1462,14 +1462,14 @@ async fn handle_conn(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let authentication = {
+    let accepted_peer = {
         let trust_policy = ctx
             .trust_policy
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth::accept_hello(&hello, &ctx.own_user_pk, &trust_policy, &revs, now_ns)
     };
-    let client_peer = match authentication {
+    let client_peer = match accepted_peer {
         Ok(p) => p,
         Err(e) => {
             ctx.metrics.inc_auth_rejected();
@@ -2231,6 +2231,10 @@ mod tests {
         task.abort();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the expiry regression deliberately shows unchanged authority bytes before and after the wall-clock transition"
+    )]
     #[tokio::test]
     async fn authority_refresh_rechecks_expiry_without_a_source_change() {
         use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
@@ -2341,6 +2345,10 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the restart/rollback regression retains setup and both persisted-state assertions together to document the recovery invariant"
+    )]
     #[tokio::test]
     async fn authority_high_water_rejects_rollback_and_missing_cache_after_restart() {
         use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
@@ -2544,6 +2552,10 @@ mod tests {
         relay.shutdown().await;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the end-to-end discovery regression keeps host, client, and filesystem assertions in one readable protocol scenario"
+    )]
     #[tokio::test]
     async fn authenticated_discovery_returns_filesystem_not_relay_endpoint() {
         let temp = tempfile::tempdir().unwrap();

@@ -318,7 +318,7 @@ pub struct AccessibilityAudit {
 }
 
 /// Current machine-readable qOS-native contract report format.
-pub const NATIVE_APP_AUDIT_VERSION: u32 = 1;
+pub const NATIVE_APP_AUDIT_VERSION: u32 = 2;
 
 /// One reason an app cannot yet be certified as fully action-native.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -1377,6 +1377,7 @@ impl FrameHarness {
             .map(|binding| binding.control_id.clone())
             .collect::<HashSet<_>>();
         let inspection = self.inspection();
+        let has_semantics = inspection_has_semantics(&inspection.root);
         let semantic_effect_controls = effect_control_ids(&inspection.root);
         let mut issues = bindings
             .into_iter()
@@ -1409,6 +1410,13 @@ impl FrameHarness {
                 }),
             })
             .collect::<Vec<_>>();
+        if !has_semantics && inventoried_controls.is_empty() {
+            issues.push(NativeAppIssue {
+                control: "application-root".into(),
+                code: "empty-native-contract".into(),
+                message: "application exposes neither accessibility semantics nor a control/action inventory".into(),
+            });
+        }
         for control in semantic_effect_controls.difference(&inventoried_controls) {
             issues.push(NativeAppIssue {
                 control: control.clone(),
@@ -1594,6 +1602,15 @@ impl FrameHarness {
                 &self.state.doc,
                 &mut resources,
             );
+            if qos_actions::door::resolve(&resources, &intent.address).is_none()
+                && let Some(resource) = crate::widget::resolve_widget_resource(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    &intent.address.resource,
+                )
+            {
+                resources.push(resource);
+            }
             let Some(spec) = qos_actions::door::resolve(&resources, &intent.address) else {
                 tracing::warn!(
                     resource = %intent.address.resource,
@@ -2044,6 +2061,7 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::Heading { .. } => "heading",
         Role::Paragraph => "paragraph",
         Role::Document => "document",
+        Role::Terminal => "terminal",
         Role::Canvas => "canvas",
         Role::Unknown => "unknown",
     }
@@ -2185,6 +2203,10 @@ fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
         controls.extend(effect_control_ids(child));
     }
     controls
+}
+
+fn inspection_has_semantics(node: &InspectionNode) -> bool {
+    node.semantics.is_some() || node.children.iter().any(inspection_has_semantics)
 }
 
 fn collect_effect_access_nodes(
@@ -2780,6 +2802,16 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "missing-action-binding"),
             "an interactive custom/control implementation cannot certify itself by omitting inventory"
+        );
+
+        let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
+        assert!(
+            empty
+                .native_app_audit()
+                .issues
+                .iter()
+                .any(|issue| issue.code == "empty-native-contract"),
+            "a custom-painted app cannot certify itself by reporting neither semantics nor controls"
         );
     }
 

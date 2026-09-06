@@ -1,156 +1,207 @@
 //! Feeds as a qOS global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the reader declares its
-//! searchable types by implementing [`SearchProvider`] over a snapshot of the
-//! store, so both an **article** (by title / author / summary) and a
-//! **subscription** (by title / URL) are findable from the unified Ctrl+K
-//! palette. Activating a row hands back an opaque `action_id` the app resolves
-//! to the article or feed and navigates to.
-//!
-//! The provider is deliberately **library-scoped and synchronous**: it matches
-//! the already-fetched articles the store holds in memory, never triggering a
-//! network fetch — a Ctrl+K query stays instant while live refreshes run on
-//! their own worker.
+//! The reader indexes every durable subscription and cached article in qOS'
+//! shared [`SearchCatalog`]. It is intentionally a catalogue rather than a
+//! viewport or legacy capped snapshot: a newly synced article stays discoverable
+//! even when a library has hundreds of thousands of entries. Queries are paged
+//! and candidate-budgeted, so Ctrl+K never has to inspect or materialise the
+//! whole reader library in one frame. Rows only name the canonical `open` View
+//! actions exported by [`crate::actions`]; the current resource tree remains the
+//! authority at activation time and refuses stale rows after deletion.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
-use crate::model::{Article, Feed, Id, Store};
+use crate::model::{Article, Feed, Store};
 
 /// The group header for article results.
 pub const ARTICLE_KIND: &str = "Articles";
 /// The group header for feed (subscription) results.
 pub const FEED_KIND: &str = "Feeds";
 
-const ARTICLE_PREFIX: &str = "feeds.article:";
-const FEED_PREFIX: &str = "feeds.feed:";
-
-/// What an activated row points at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Activation {
-    /// Open an article by id.
-    Article(Id),
-    /// Focus a feed (subscription) by id.
-    Feed(Id),
-}
-
-impl Activation {
-    /// Resolve an `action_id` this provider emitted back into a target.
-    pub fn parse(action_id: &str) -> Option<Self> {
-        if let Some(rest) = action_id.strip_prefix(ARTICLE_PREFIX) {
-            rest.parse::<Id>().ok().map(Activation::Article)
-        } else if let Some(rest) = action_id.strip_prefix(FEED_PREFIX) {
-            rest.parse::<Id>().ok().map(Activation::Feed)
-        } else {
-            None
-        }
-    }
-}
-
-/// A [`SearchProvider`] over a snapshot of the store's feeds and articles.
+/// A complete, bounded-query search catalogue over the reader's durable store.
+///
+/// Cloning this provider for Ctrl+K is cheap; `SearchCatalog` itself is an
+/// `Arc` handle. Building a provider deliberately indexes the complete store,
+/// never a visual list or `DEFAULT_SEARCH_INDEX_LIMIT` prefix.
+#[derive(Clone)]
 pub struct FeedsSearchProvider {
-    feeds: Vec<Feed>,
-    articles: Vec<Article>,
+    catalog: SearchCatalog,
 }
 
 impl FeedsSearchProvider {
-    /// Snapshot the current store into a provider.
+    /// Build a complete catalogue from the current document-backed store.
     pub fn new(store: &Store) -> Self {
-        Self {
-            feeds: store.feeds.clone(),
-            articles: store.articles.clone(),
+        let provider = Self {
+            catalog: SearchCatalog::new("Feeds"),
+        };
+        for feed in &store.feeds {
+            provider.index_feed(feed);
         }
+        for article in &store.articles {
+            // An orphaned cache row is not a live reader resource: it cannot
+            // be opened through the current resource tree, so never give it a
+            // canonical search address in the first place.
+            if let Some(feed) = store.feed(article.feed_id) {
+                provider.index_article(article, feed);
+            }
+        }
+        provider
     }
 
-    /// The `action_id` for an article row.
-    pub fn article_action_id(id: Id) -> String {
-        format!("{ARTICLE_PREFIX}{id}")
+    fn index_feed(&self, feed: &Feed) {
+        let mut result = SearchResult::for_action(
+            FEED_KIND,
+            feed_label(feed),
+            crate::actions::open_feed_address(feed.id),
+        )
+        .with_icon(Icon::List);
+        let site = if feed.site_url.trim().is_empty() {
+            &feed.url
+        } else {
+            &feed.site_url
+        };
+        if !site.trim().is_empty() {
+            result = result.with_subtitle(site.clone());
+        }
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        // `for_action` above uses this exact stable resource id. The shared
+        // catalogue defensively validates that invariant at this boundary.
+        let _ = self.catalog.upsert(
+            address.resource,
+            format!("{}\0{}\0{}", feed.title, feed.url, feed.site_url),
+            result,
+        );
     }
 
-    /// The `action_id` for a feed row.
-    pub fn feed_action_id(id: Id) -> String {
-        format!("{FEED_PREFIX}{id}")
+    fn index_article(&self, article: &Article, feed: &Feed) {
+        let mut result = SearchResult::for_action(
+            ARTICLE_KIND,
+            article_label(article),
+            crate::actions::open_article_address(article.id),
+        )
+        .with_icon(if article.starred {
+            Icon::Star
+        } else {
+            Icon::FileText
+        });
+        let subtitle = article_subtitle(article, feed);
+        if !subtitle.is_empty() {
+            result = result.with_subtitle(subtitle);
+        }
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        // Index only material the reader can render locally; this search path
+        // never fetches a remote URL or parses feed content on demand.
+        let _ = self.catalog.upsert(
+            address.resource,
+            format!(
+                "{}\0{}\0{}\0{}",
+                article.title, article.author, article.summary, feed.title
+            ),
+            result,
+        );
     }
 
-    /// The title of the feed an article belongs to, for its subtitle.
-    fn feed_title(&self, feed_id: Id) -> Option<&str> {
-        self.feeds
-            .iter()
-            .find(|f| f.id == feed_id)
-            .map(|f| f.title.as_str())
+    #[cfg(test)]
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
+    }
+}
+
+fn feed_label(feed: &Feed) -> String {
+    let title = feed.title.trim();
+    if title.is_empty() {
+        "Untitled feed".to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn article_label(article: &Article) -> String {
+    let title = article.title.trim();
+    if title.is_empty() {
+        "Untitled article".to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn article_subtitle(article: &Article, feed: &Feed) -> String {
+    match (!feed.title.trim().is_empty(), article.author.trim()) {
+        (true, author) if !author.is_empty() => format!("{} · {author}", feed.title.trim()),
+        (true, _) => feed.title.trim().to_string(),
+        (false, author) => author.to_string(),
     }
 }
 
 impl SearchProvider for FeedsSearchProvider {
     fn name(&self) -> &'static str {
-        // Rows carry their own per-type kind ("Articles" / "Feeds"); this is
-        // the default/diagnostic label.
         "Feeds"
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let q = query.to_lowercase();
-        let mut out = Vec::new();
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
 
-        for a in &self.articles {
-            let matches = q.is_empty()
-                || a.title.to_lowercase().contains(&q)
-                || a.author.to_lowercase().contains(&q)
-                || a.summary.to_lowercase().contains(&q);
-            if !matches {
-                continue;
-            }
-            let subtitle = match (self.feed_title(a.feed_id), a.author.is_empty()) {
-                (Some(feed), false) => format!("{feed} · {}", a.author),
-                (Some(feed), true) => feed.to_string(),
-                (None, false) => a.author.clone(),
-                (None, true) => String::new(),
-            };
-            let mut r =
-                SearchResult::new(ARTICLE_KIND, a.title.clone(), Self::article_action_id(a.id))
-                    .with_icon(if a.starred {
-                        Icon::Star
-                    } else {
-                        Icon::FileText
-                    });
-            if !subtitle.is_empty() {
-                r = r.with_subtitle(subtitle);
-            }
-            out.push(r);
-        }
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog.search_limited(query, limit)
+    }
 
-        for f in &self.feeds {
-            let matches = q.is_empty()
-                || f.title.to_lowercase().contains(&q)
-                || f.url.to_lowercase().contains(&q)
-                || f.site_url.to_lowercase().contains(&q);
-            if !matches {
-                continue;
-            }
-            let mut r = SearchResult::new(FEED_KIND, f.title.clone(), Self::feed_action_id(f.id))
-                .with_icon(Icon::List);
-            let site = if f.site_url.is_empty() {
-                &f.url
-            } else {
-                &f.site_url
-            };
-            if !site.is_empty() {
-                r = r.with_subtitle(site.clone());
-            }
-            out.push(r);
-        }
-
-        out
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::SearchRegistry;
+    use automerge::{AutoCommit, ROOT};
+    use ui::widget::Widget;
+    use uuid::Uuid;
 
     fn seeded() -> Store {
         crate::sample::store()
+    }
+
+    fn test_feed(id: u128) -> Feed {
+        Feed {
+            id: Uuid::from_u128(id),
+            title: "Search test feed".into(),
+            url: "https://example.test/feed.xml".into(),
+            site_url: "https://example.test".into(),
+            folder: None,
+            order: 0,
+            kind: crate::model::FeedKind::Rss,
+        }
+    }
+
+    fn test_article(id: u128, feed_id: Uuid, title: String) -> Article {
+        Article {
+            id: Uuid::from_u128(id),
+            feed_id,
+            title,
+            author: String::new(),
+            url: String::new(),
+            published: 0,
+            summary: String::new(),
+            blocks: Vec::new(),
+            read: false,
+            starred: false,
+        }
     }
 
     #[test]
@@ -158,7 +209,7 @@ mod tests {
         let store = seeded();
         let provider = FeedsSearchProvider::new(&store);
 
-        let some_article = store.articles.first().expect("sample has articles").clone();
+        let some_article = store.articles.first().expect("sample has articles");
         let word = some_article.title.split_whitespace().next().unwrap();
         let hits = provider.search(word);
         assert!(
@@ -166,7 +217,7 @@ mod tests {
             "a real article-title word surfaces an article row"
         );
 
-        let some_feed = store.feeds.first().expect("sample has feeds").clone();
+        let some_feed = store.feeds.first().expect("sample has feeds");
         let fword = some_feed.title.split_whitespace().next().unwrap();
         let fhits = provider.search(fword);
         assert!(
@@ -176,81 +227,208 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_browses_every_article_and_feed() {
+    fn empty_query_browses_every_article_and_feed_within_the_requested_limit() {
         let store = seeded();
         let provider = FeedsSearchProvider::new(&store);
-        let hits = provider.search("");
-        assert_eq!(hits.len(), store.articles.len() + store.feeds.len());
+        let total = store.articles.len() + store.feeds.len();
+        assert_eq!(provider.search_limited("", total).len(), total);
     }
 
     #[test]
-    fn action_ids_round_trip_to_the_right_targets() {
-        let store = seeded();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(FeedsSearchProvider::new(&store)));
+    fn catalog_preserves_unicode_casefolded_substrings() {
+        let feed = test_feed(1);
+        let store = Store {
+            feeds: vec![feed.clone()],
+            articles: vec![test_article(2, feed.id, "Über den Fluss".into())],
+            ..Store::default()
+        };
+        let page = FeedsSearchProvider::new(&store).search_page("DEN FL", None, 8, 8);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Über den Fluss");
+        assert!(page.inspected <= 8);
+    }
 
-        let a = store.articles.first().unwrap().clone();
-        let hit = registry
-            .query("")
+    #[test]
+    fn unique_late_hit_remains_findable_beyond_one_hundred_thousand_articles() {
+        let feed = test_feed(1);
+        let mut articles = (0..100_001u128)
+            .map(|index| test_article(index + 2, feed.id, format!("Article {index}")))
+            .collect::<Vec<_>>();
+        articles.last_mut().expect("large corpus is nonempty").title =
+            "Late catalogue needle".into();
+        let provider = FeedsSearchProvider::new(&Store {
+            feeds: vec![feed],
+            articles,
+            ..Store::default()
+        });
+
+        let page = provider.search_page("catalogue needle", None, 4, 4);
+        assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Late catalogue needle");
+        assert_eq!(provider.stats().records, 100_002);
+    }
+
+    #[test]
+    fn paged_search_bounds_work_and_materialisation_without_losing_broad_hits() {
+        let feed = test_feed(1);
+        let articles = (0..257u128)
+            .map(|index| test_article(index + 2, feed.id, "Common article".into()))
+            .collect();
+        let provider = FeedsSearchProvider::new(&Store {
+            feeds: vec![feed],
+            articles,
+            ..Store::default()
+        });
+        let mut cursor = None;
+        let mut seen = 0;
+        loop {
+            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.inspected <= 17, "query work must be bounded");
+            assert!(page.results.len() <= 5, "result materialisation is paged");
+            seen += page.results.len();
+            let Some(next) = page.next else {
+                break;
+            };
+            cursor = Some(next);
+        }
+        assert_eq!(seen, 257);
+    }
+
+    #[test]
+    fn every_hit_addresses_an_exported_view_action() {
+        let mut app = crate::app::FeedsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let resources = app.resources(&doc);
+        let total = app.store_article_ids().len() + app.store_feed_ids().len();
+        let hits = app.search_providers()[0].search_limited("", total);
+        assert!(hits.iter().all(|hit| {
+            hit.action_address().is_some_and(|address| {
+                qos_actions::door::resolve(&resources, &address)
+                    .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+            })
+        }));
+    }
+
+    #[test]
+    fn stale_search_resource_is_refused_by_the_current_canonical_tree() {
+        let mut app = crate::app::FeedsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let resources = app.resources(&doc);
+        let feed_resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "feeds.subscription" && !resource.children.is_empty())
+            .expect("sample has a feed with an article");
+        let feed = feed_resource
+            .id
+            .as_str()
+            .strip_prefix("feeds.subscription:")
+            .expect("feed resource id")
+            .parse()
+            .expect("feed id is a UUID");
+        let article = feed_resource.children[0]
+            .id
+            .as_str()
+            .strip_prefix("feeds.article:")
+            .expect("article resource id")
+            .parse()
+            .expect("article id is a UUID");
+        let provider = app
+            .search_providers()
+            .pop()
+            .expect("Feeds exposes its article provider");
+        let hit = provider
+            .search("")
             .into_iter()
-            .find(|r| r.action_id == FeedsSearchProvider::article_action_id(a.id))
-            .expect("the article is browsable through the registry");
-        assert_eq!(
-            Activation::parse(&hit.action_id),
-            Some(Activation::Article(a.id))
-        );
+            .find(|hit| hit.action_address() == Some(crate::actions::open_article_address(article)))
+            .expect("article is searchable before removal");
+
+        crate::doc::FeedsDoc::remove_feed(&mut doc, feed);
+        app.sync(&mut doc, &ROOT);
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&app.resources(&doc));
+        palette.set_providers(vec![provider]);
+        palette.open();
+        palette.set_query(&hit.title);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &hit.title)
+            .expect("stale row may be displayed but cannot gain authority");
+        palette.set_cursor(row);
+        palette.activate_selected();
         assert!(
-            store.article(a.id).is_some(),
-            "the id resolves to a real stored article"
-        );
-
-        let f = store.feeds.first().unwrap().clone();
-        assert_eq!(
-            Activation::parse(&FeedsSearchProvider::feed_action_id(f.id)),
-            Some(Activation::Feed(f.id))
+            palette.take_operation().is_none(),
+            "a deleted resource must be refused rather than navigating via a stale search row"
         );
     }
 
     #[test]
-    fn parse_rejects_foreign_ids() {
-        assert!(Activation::parse("file:/etc/passwd").is_none());
-        assert!(Activation::parse("feeds.article:not-a-uuid").is_none());
-        assert!(Activation::parse("feeds.feed:not-a-uuid").is_none());
-    }
-
-    #[test]
-    fn widget_hooks_find_then_open_the_article() {
-        use automerge::{AutoCommit, ROOT};
-        use ui::widget::Widget;
-
+    fn brokered_search_opens_article_without_legacy_navigation_or_doc_write() {
         let mut app = crate::app::FeedsApp::new_demo();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
 
-        // Browse the app's OWN provider (its real ids) and take an article hit.
-        let (action_id, id) = {
-            let providers = app.search_providers();
-            assert!(!providers.is_empty(), "feeds publishes a search provider");
-            let hit = providers[0]
-                .search("")
-                .into_iter()
-                .find(|r| r.kind == ARTICLE_KIND)
-                .expect("an article is browsable through the real hook");
-            let Some(Activation::Article(id)) = Activation::parse(&hit.action_id) else {
-                panic!("article row carries an article action_id");
-            };
-            (hit.action_id, id)
-        };
-
-        app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(
-            app.selected_article(),
-            Some(id),
-            "activation opened the chosen article"
+        let target = app.store_article_ids()[0];
+        let providers = app.search_providers();
+        let target_title = providers[0]
+            .search("")
+            .into_iter()
+            .find(|hit| hit.action_address() == Some(crate::actions::open_article_address(target)))
+            .expect("the target article is searchable")
+            .title;
+        let resources = app.resources(&doc);
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.set_providers(providers);
+        palette.open();
+        palette.set_query(&target_title);
+        let hit_index = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &target_title)
+            .expect("the article is browsable through the real hook");
+        palette.set_cursor(hit_index);
+        let before = doc.get_heads();
+        palette.activate_selected();
+        let operation = palette
+            .take_operation()
+            .expect("canonical result queued a broker operation");
+        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert!(palette.take_navigation().is_none());
+        assert!(
+            app.invoke_resource_operation(
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("Feeds handles its exported view operation")
         );
+        assert_eq!(app.selected_article(), Some(target));
         assert!(
             matches!(app.active_filter(), crate::model::Filter::Feed(_)),
             "activation focused the article's feed so the row is visible"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "the immutable View callback queues rather than smuggling a write"
+        );
+        app.sync(&mut doc, &ROOT);
+        assert_ne!(
+            doc.get_heads(),
+            before,
+            "the next frame records opening an unread article through MarkRead"
+        );
+        assert!(
+            crate::doc::FeedsDoc::load(&doc)
+                .article(target)
+                .is_some_and(|article| article.read)
         );
     }
 }

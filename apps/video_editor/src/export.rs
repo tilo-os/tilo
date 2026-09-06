@@ -1,11 +1,11 @@
 //! Export settings + the (gated) render pipeline.
 //!
-//! Real encode/decode runs through `GStreamer`, which is only linked when
-//! the crate is built with `--features gst`. The default build — the one
-//! the fleet's `qos-build` invokes — keeps the pipeline a stub so the app
-//! compiles and screenshots without the gstreamer-1.0 dev headers being
-//! present. The UI (the export dialog) is fully live either way; only the
-//! actual muxing is gated.
+//! Real encode/decode runs through `GStreamer`, linked by the default `gst`
+//! feature and by the shipped image build. A deliberately minimal
+//! `--no-default-features` developer build keeps the export UI testable without
+//! GStreamer and reports that encoding is unavailable; it is not the product
+//! configuration. Headless screenshots remain hermetic because they never
+//! start an encoder, not because the shipped app replaces export with a stub.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -360,11 +360,13 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
 /// pipeline from a slow one is whether anything is *happening*, so this
 /// watches for the output growing and gives up only on silence.
 #[derive(Debug)]
+#[cfg(feature = "gst")]
 struct FlushWatch {
     last_len: u64,
     last_progress: std::time::Instant,
 }
 
+#[cfg(feature = "gst")]
 impl FlushWatch {
     fn new(len: u64, now: std::time::Instant) -> Self {
         Self {

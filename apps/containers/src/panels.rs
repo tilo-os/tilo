@@ -255,7 +255,9 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let foot_y = rail.y1 - 76.0;
-        let dot_color = if self.engine.live {
+        let dot_color = if !self.live {
+            c.accent[5]
+        } else if self.engine.live {
             c.semantic.success
         } else {
             c.semantic.warning
@@ -273,7 +275,9 @@ impl ContainersApp {
             draw::text(
                 scene,
                 tr,
-                if self.engine.live {
+                if !self.live {
+                    "Demo snapshot"
+                } else if self.engine.live {
                     "Connected"
                 } else {
                     "Offline"
@@ -519,14 +523,10 @@ impl ContainersApp {
         let body_y = if single_pane_detail {
             content.y0
         } else {
-            self.draw_header(
-                scene,
-                tr,
-                theme,
-                content,
-                "Containers",
-                Some(("New container", Hit::NewContainer)),
-            )
+            let primary = self
+                .engine_controls_available()
+                .then_some(("New container", Hit::NewContainer));
+            self.draw_header(scene, tr, theme, content, "Containers", primary)
         };
         let list_w = if detail_open && !single_pane_detail {
             (content.width() - crate::app::DETAIL_WIDTH).max(240.0)
@@ -1818,14 +1818,10 @@ impl ContainersApp {
         content: Rect,
         view: &ViewState,
     ) {
-        let body_y = self.draw_header(
-            scene,
-            tr,
-            theme,
-            content,
-            "Images",
-            Some(("Pull image", Hit::PullTyped)),
-        );
+        let primary = self
+            .engine_controls_available()
+            .then_some(("Pull image", Hit::PullTyped));
+        let body_y = self.draw_header(scene, tr, theme, content, "Images", primary);
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
         let banner = self.draw_images_banner(scene, tr, theme, list);
 
@@ -2115,14 +2111,10 @@ impl ContainersApp {
         content: Rect,
         view: &ViewState,
     ) {
-        let body_y = self.draw_header(
-            scene,
-            tr,
-            theme,
-            content,
-            "Volumes",
-            Some(("New volume", Hit::CreateVolume)),
-        );
+        let primary = self
+            .engine_controls_available()
+            .then_some(("New volume", Hit::CreateVolume));
+        let body_y = self.draw_header(scene, tr, theme, content, "Volumes", primary);
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
         let banner = self.draw_volumes_banner(scene, tr, theme, list);
 
@@ -2343,14 +2335,10 @@ impl ContainersApp {
         content: Rect,
         view: &ViewState,
     ) {
-        let body_y = self.draw_header(
-            scene,
-            tr,
-            theme,
-            content,
-            "Distrobox",
-            Some(("Create box", Hit::DistroCreate)),
-        );
+        let primary = self
+            .engine_controls_available()
+            .then_some(("Create box", Hit::DistroCreate));
+        let body_y = self.draw_header(scene, tr, theme, content, "Distrobox", primary);
         let c = &theme.tokens.colors;
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
 
@@ -3134,7 +3122,7 @@ impl ContainersApp {
     }
 
     /// Apply the resolved click hit against the engine/document.
-    fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
+    pub(crate) fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
         match hit {
             Hit::Section(s) => {
                 ViewDoc::set_section(doc, s);
@@ -3336,13 +3324,16 @@ impl ContainersApp {
     /// Launch a REAL terminal entering the distrobox: spawn the qOS terminal
     /// app running `distrobox enter <box>` (see [`crate::terminal`]).
     fn enter_distrobox(&mut self, name: &str) {
-        if self.live {
-            match crate::terminal::spawn_distrobox_enter(name) {
-                Ok(()) => self.show_toast(format!("Entering {name}"), false),
-                Err(e) => self.show_toast(format!("Terminal failed: {e}"), true),
-            }
-        } else {
+        if self.engine.live {
+            self.pending_control_invocation = Some(ui::qos_actions::ControlInvocation {
+                address: ui::qos_actions::ActionAddress::new(format!("distrobox:{name}"), "enter"),
+                arguments: serde_json::Map::new(),
+            });
+            self.show_toast(format!("Enter {name} requested"), false);
+        } else if !self.live {
             self.show_toast(format!("terminal → distrobox enter {name}"), false);
+        } else {
+            self.show_toast("Container engine is offline", true);
         }
     }
 

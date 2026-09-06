@@ -4,9 +4,10 @@
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
 //! coloured rows, a detail pane, a filter bar — are bespoke, exactly
 //! the case the toolkit calls out for "draw into the Vello Scene
-//! yourself"). All *view state* (selection, filters, search,
-//! live-tail) lives in the Automerge document via [`LogsDoc`]; the
-//! journal entries themselves are an external render cache.
+//! yourself"). Shared view state (selection, filters, and search) lives in
+//! the Automerge document via [`LogsDoc`]. Live tail is a local effect that
+//! controls this process's journal poller; journal entries themselves are an
+//! external render cache.
 //!
 //! Layout (top → bottom):
 //! ```text
@@ -46,15 +47,14 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Role};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
-    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
-};
+use ui::qos_actions::{OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
+use crate::actions::{self, LogsAction};
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::responsive::{Pane, PushNav};
@@ -63,6 +63,11 @@ use crate::theme_ext::{ThemeColors, tint};
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
 const FILTER_H: f64 = 64.0;
+/// Below this width the filters wrap even though the journal can still keep
+/// its list and detail panes docked. The single desktop row needs 1,072px of
+/// controls plus outer padding, so waiting for the 760px push breakpoint
+/// would clip the severity choices on medium-width windows.
+const FILTER_WRAP_BREAKPOINT: f64 = 1_100.0;
 const ROW_H: f64 = 30.0;
 const LIST_HEADER_H: f64 = 26.0;
 const CONTROL_H: f64 = 34.0;
@@ -129,6 +134,8 @@ struct DetailLayout {
               them and would touch every read/write site across this file"
 )]
 pub struct LogsApp {
+    /// Canonical history bridge for every durable collaborative view action.
+    actions: ui::ActionHost,
     /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
     /// Distinct units present, in first-seen order (for the dropdown).
@@ -142,6 +149,9 @@ pub struct LogsApp {
     filtered: Vec<usize>,
     /// Stored selection (absolute index into `entries`, or -1 = auto).
     sel_raw: i64,
+    /// Stable selected-entry resource id. This survives reordering and lets a
+    /// peer resolve the same journal record from its own cache.
+    selected_entry: Option<String>,
     live_tail: bool,
 
     // ---- ephemeral UI state ----
@@ -173,12 +183,14 @@ impl LogsApp {
     /// render.
     pub fn new(entries: Vec<LogEntry>, allow_live: bool) -> Self {
         let mut app = Self {
+            actions: ui::ActionHost::new(),
             entries,
             units: Vec::new(),
             boots: Vec::new(),
             filter: Filter::default(),
             filtered: Vec::new(),
             sel_raw: -1,
+            selected_entry: None,
             live_tail: false,
             rect: Rect::ZERO,
             node: None,
@@ -190,7 +202,7 @@ impl LogsApp {
             search_input: TextInput::new(Vec::new())
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("logs.search")
-                .with_on_change_path(crate::doc::K_SEARCH)
+                .on_action(actions::search_binding())
                 .with_placeholder("Search messages, units…")
                 .with_plain_chrome(),
             dirty: true,
@@ -269,6 +281,13 @@ impl LogsApp {
     /// auto-selects the first error-or-worse (falling back to the first
     /// visible entry).
     fn effective_selected(&self) -> Option<usize> {
+        // A stable resource selection is explicit even when this replica has
+        // not received that record yet; never substitute an unrelated auto
+        // selection for a collaborator's chosen entry.
+        if self.selected_entry.is_some() {
+            let selected = usize::try_from(self.sel_raw).ok()?;
+            return self.filtered.contains(&selected).then_some(selected);
+        }
         if self.sel_raw >= 0 {
             let s = self.sel_raw as usize;
             if self.filtered.contains(&s) {
@@ -322,8 +341,47 @@ impl LogsApp {
         self.clamp_scroll();
     }
 
+    /// Apply a durable view decision through the registered action protocol so
+    /// toolbar, pointer, keyboard, accessibility, agents, and undo share one
+    /// replayable boundary.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "ActionHost encodes an owned immutable user decision into its history boundary."
+    )]
+    fn dispatch_view(&mut self, doc: &mut AutoCommit, action: LogsAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            actions::LOGS_ACTION_TYPE,
+            &action,
+            ui::qos_actions::ActionContext::for_action("org.qos.Logs", "Logs", &action),
+        );
+    }
+
+    /// Local journal operations. They intentionally do not enter the shared
+    /// document: polling a machine's journal is a device-local capability and
+    /// one peer's live-tail preference must not start work on every peer.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Decoded operations are consumed exactly once at the app boundary."
+    )]
+    fn perform_effect(&mut self, operation: actions::LogsOperation) {
+        match operation {
+            actions::LogsOperation::Refresh => {
+                if self.allow_live {
+                    self.entries = crate::journal::load_live(2000);
+                    self.rebuild_facets();
+                }
+            }
+            actions::LogsOperation::SetLiveTail { enabled } => {
+                self.live_tail = enabled;
+                self.last_poll = force_immediate_poll_at();
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Move the selection by `delta` filtered positions and persist it.
-    fn move_selection(&mut self, delta: isize, doc: &mut AutoCommit, root: &ObjId) {
+    fn move_selection(&mut self, delta: isize, doc: &mut AutoCommit, _root: &ObjId) {
         if self.filtered.is_empty() {
             return;
         }
@@ -333,15 +391,25 @@ impl LogsApp {
             .unwrap_or(0) as isize;
         let new_pos = (cur_pos + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
         let abs = self.filtered.get(new_pos).copied().unwrap_or(0);
+        let Some(entry) = self.entries.get(abs) else {
+            return;
+        };
+        let id = actions::entry_resource_id(entry);
         self.sel_raw = abs as i64;
-        LogsDoc::set_selected(doc, root, abs as i64);
+        self.selected_entry = Some(id.clone());
+        self.dispatch_view(doc, LogsAction::SelectEntry { entry_id: id });
         self.scroll_into_view(new_pos);
         self.dirty = true;
     }
 
-    fn select_abs(&mut self, abs: usize, doc: &mut AutoCommit, root: &ObjId) {
+    fn select_abs(&mut self, abs: usize, doc: &mut AutoCommit, _root: &ObjId) {
+        let Some(entry) = self.entries.get(abs) else {
+            return;
+        };
+        let id = actions::entry_resource_id(entry);
         self.sel_raw = abs as i64;
-        LogsDoc::set_selected(doc, root, abs as i64);
+        self.selected_entry = Some(id.clone());
+        self.dispatch_view(doc, LogsAction::SelectEntry { entry_id: id });
         if let Some(pos) = self.filtered_pos(abs) {
             self.scroll_into_view(pos);
         }
@@ -356,8 +424,21 @@ impl LogsApp {
         let r = self.rect;
         let (x0, y0, w, h) = (r.x0, r.y0, r.width(), r.height());
 
-        let header = Rect::new(x0, y0, x0 + w, y0 + HEADER_H);
-        let filter = Rect::new(x0, header.y1, x0 + w, header.y1 + FILTER_H);
+        // Headless/offline Logs has no live operation to expose; don't waste a
+        // blank mobile header above the filters. A live journal keeps its
+        // compact status and live-tail control there.
+        let header_h = if PushNav::is_narrow(w) && !self.allow_live {
+            0.0
+        } else {
+            HEADER_H
+        };
+        let header = Rect::new(x0, y0, x0 + w, y0 + header_h);
+        let filter_h = if Self::filters_wrap(w) {
+            128.0
+        } else {
+            FILTER_H
+        };
+        let filter = Rect::new(x0, header.y1, x0 + w, header.y1 + filter_h);
         let content_top = filter.y1;
         // The list/detail content spans all the way to the window bottom —
         // there is no standing legend strip to reserve room for.
@@ -398,6 +479,29 @@ impl LogsApp {
     /// `regions()`'s filter-bar controls: search box, unit/boot dropdown
     /// triggers, and the right-aligned severity chips.
     fn filter_bar_regions(x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
+        if Self::filters_wrap(w) {
+            let search_y = filter.y0 + 8.0;
+            let search = Rect::new(x0 + PAD, search_y, x0 + w - PAD, search_y + CONTROL_H);
+            let facet_y = search.y1 + 6.0;
+            let facet_w = ((w - PAD * 2.0 - 10.0) / 2.0).max(72.0);
+            let unit_trigger =
+                Rect::new(x0 + PAD, facet_y, x0 + PAD + facet_w, facet_y + CONTROL_H);
+            let boot_trigger = Rect::new(
+                unit_trigger.x1 + 10.0,
+                facet_y,
+                x0 + w - PAD,
+                facet_y + CONTROL_H,
+            );
+            let chip_y = facet_y + CONTROL_H + 6.0;
+            let chip_w = ((w - PAD * 2.0 - 7.0 * 4.0) / 8.0).max(20.0);
+            let chips = (0..8)
+                .map(|i| {
+                    let x = x0 + PAD + f64::from(i) * (chip_w + 4.0);
+                    Rect::new(x, chip_y, x + chip_w, chip_y + CONTROL_H)
+                })
+                .collect();
+            return (search, unit_trigger, boot_trigger, chips);
+        }
         let fy = filter.y0 + (FILTER_H - CONTROL_H) / 2.0;
         let mut fx = x0 + PAD;
         let search = Rect::new(fx, fy, fx + 320.0, fy + CONTROL_H);
@@ -418,6 +522,14 @@ impl LogsApp {
             })
             .collect();
         (search, unit_trigger, boot_trigger, chips)
+    }
+
+    /// The filters need more width than the docked journal split. Keep this
+    /// decision separate from [`PushNav`]'s content-navigation breakpoint so
+    /// a medium window preserves both panes without allowing controls to
+    /// overlap or clip.
+    fn filters_wrap(width: f64) -> bool {
+        width < FILTER_WRAP_BREAKPOINT
     }
 
     /// `regions()`'s header: live pill + clear filters, right-aligned. The
@@ -1690,6 +1802,153 @@ impl LogsApp {
             false,
         );
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The hand-painted journal has one matching retained semantic tree."
+    )]
+    fn accessibility_tree(&self) -> AccessNode {
+        let reg = self.regions();
+        let mut filter_children = vec![
+            self.search_input.accessibility().map_or_else(
+                || AccessNode::new(Role::TextInput).with_name("Search journal"),
+                |node| node.with_action_target("logs.search"),
+            ),
+            AccessNode::new(Role::ComboBox)
+                .with_name(if self.filter.unit.is_empty() {
+                    "All units"
+                } else {
+                    &self.filter.unit
+                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(self.popup == Some(Popup::Unit)),
+                )
+                .with_bounds(reg.unit_trigger)
+                .with_action_target("logs.unit"),
+            AccessNode::new(Role::ComboBox)
+                .with_name(if self.filter.boot.is_empty() {
+                    "All boots"
+                } else {
+                    "Selected boot"
+                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(self.popup == Some(Popup::Boot)),
+                )
+                .with_bounds(reg.boot_trigger)
+                .with_action_target("logs.boot"),
+        ];
+        for (index, chip) in reg.chips.iter().enumerate() {
+            if let Some(priority) = Priority::ALL.get(index) {
+                filter_children.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(format!("Show {} and more severe", priority.long()))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(self.filter.min_priority == priority.level()),
+                        )
+                        .with_bounds(*chip)
+                        .with_action_target(format!("logs.priority:{}", priority.level())),
+                );
+            }
+        }
+        if let Some(popup) = self.popup {
+            for (rect, value, label) in &reg.dropdown {
+                let target = match popup {
+                    Popup::Unit => format!("logs.unit-choice:{value}"),
+                    Popup::Boot => format!("logs.boot-choice:{value}"),
+                };
+                filter_children.push(
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(label)
+                        .with_bounds(*rect)
+                        .with_action_target(target),
+                );
+            }
+        }
+        let mut children = vec![
+            AccessNode::new(Role::Switch)
+                .with_name("Live tail")
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.allow_live)
+                        .checked(self.live_tail)
+                        .disabled(!self.allow_live),
+                )
+                .with_bounds(reg.live_pill)
+                .with_action_target("logs.live-tail"),
+            AccessNode::new(Role::Group)
+                .with_name("Journal filters")
+                .with_bounds(reg.filter)
+                .with_hashed_key("logs.filters")
+                .with_children(filter_children),
+        ];
+        if !self.filter.is_clear() {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Clear filters")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(reg.clear_btn)
+                    .with_action_target("logs.clear-filters"),
+            );
+        }
+        let mut rows = Vec::new();
+        let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
+        let count = (reg.list_body.height() / ROW_H).ceil().max(1.0) as usize + 1;
+        for (offset, abs) in self.filtered.iter().skip(first).take(count).enumerate() {
+            let Some(entry) = self.entries.get(*abs) else {
+                continue;
+            };
+            let rect = Rect::new(
+                reg.list_body.x0,
+                reg.list_body.y0 + offset as f64 * ROW_H,
+                reg.list_body.x1,
+                reg.list_body.y0 + (offset + 1) as f64 * ROW_H,
+            );
+            let id = actions::entry_resource_id(entry);
+            rows.push(
+                AccessNode::new(Role::ListItem)
+                    .with_name(format!(
+                        "{} {} {}",
+                        entry.priority.long(),
+                        entry.unit,
+                        entry.message
+                    ))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.effective_selected() == Some(*abs)),
+                    )
+                    .with_bounds(rect)
+                    .with_action_target(format!("logs.entry:{id}")),
+            );
+        }
+        children.push(
+            AccessNode::new(Role::List)
+                .with_name("Journal entries")
+                .with_bounds(reg.list_body)
+                .with_hashed_key("logs.entries")
+                .with_children(rows),
+        );
+        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == Pane::Detail {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Back to entries")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(reg.back_btn)
+                    .with_action_target("logs.back"),
+            );
+        }
+        AccessNode::new(Role::Window)
+            .with_name("System logs")
+            .with_state(AccessState::new().focusable(true).focused(self.focused))
+            .with_bounds(self.rect)
+            .with_children(children)
+    }
 }
 
 // Column geometry inside a list row / header.
@@ -1755,55 +2014,39 @@ fn contrast_on(bg: Color) -> Color {
 
 impl Widget for LogsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["logs.refresh"]
+        &[actions::LOGS_OPERATION_TYPE]
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+        self.search_input.take_control_invocation()
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("journal", "logs.journal", "System journal");
-        if let Ok(spec) = ActionSpec::operation(
-            "refresh",
-            "Refresh journal",
-            OperationKind::Effect,
-            "logs.refresh",
-            &"",
-        ) {
-            root.actions.push(spec.with_contract(ActionContract {
-                availability: if self.allow_live {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "journal_access_disabled".into(),
-                        reason: "Live journal access is disabled".into(),
-                    }
-                },
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Immediate,
-                discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::None,
-                ..ActionContract::default()
-            }));
-        }
-        vec![root]
+        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
     fn invoke_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
-        _payload: &[u8],
+        payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "logs.refresh" {
+        if kind != OperationKind::Effect {
             return Ok(false);
         }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
         if !self.allow_live {
             return Err("live journal access is disabled".into());
         }
-        self.entries = crate::journal::load_live(2000);
-        self.rebuild_facets();
-        self.dirty = true;
+        self.perform_effect(operation);
         Ok(true)
     }
 
@@ -1812,10 +2055,7 @@ impl Widget for LogsApp {
         self.search_input.sync(doc, root);
 
         // Optional live tail: throttled re-poll, never under --shots.
-        if self.allow_live
-            && LogsDoc::live_tail(doc, root)
-            && self.last_poll.elapsed() >= POLL_INTERVAL
-        {
+        if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.last_poll = Instant::now();
             let fresh = crate::journal::load_live(2000);
             if !fresh.is_empty() {
@@ -1826,17 +2066,27 @@ impl Widget for LogsApp {
         }
 
         let new_filter = LogsDoc::filter(doc, root);
-        let new_sel = LogsDoc::selected(doc, root);
-        let new_live = LogsDoc::live_tail(doc, root);
+        let new_selected_entry = LogsDoc::selected_entry(doc, root);
+        let new_sel = new_selected_entry
+            .as_deref()
+            .and_then(|id| {
+                self.entries
+                    .iter()
+                    .position(|entry| actions::entry_resource_id(entry) == id)
+            })
+            .map_or_else(|| LogsDoc::selected(doc, root), |index| index as i64);
         let changed = new_filter.min_priority != self.filter.min_priority
             || new_filter.unit != self.filter.unit
             || new_filter.boot != self.filter.boot
             || new_filter.search != self.filter.search
             || new_sel != self.sel_raw
-            || new_live != self.live_tail;
+            || new_selected_entry != self.selected_entry;
         self.filter = new_filter;
         self.sel_raw = new_sel;
-        self.live_tail = new_live;
+        self.selected_entry = new_selected_entry;
+        if self.search_input.value() != self.filter.search {
+            self.search_input.set_text(&self.filter.search);
+        }
         self.recompute_filtered();
         if changed {
             self.dirty = true;
@@ -1915,7 +2165,9 @@ impl Widget for LogsApp {
         // App background.
         fill_rect(scene, transform, self.rect, c.surfaces.base);
 
-        self.draw_header(scene, transform, tr, theme, &reg);
+        if reg.header.height() > 0.0 {
+            self.draw_header(scene, transform, tr, theme, &reg);
+        }
         self.draw_filter_bar(scene, transform, tr, theme, &reg);
         if reg.narrow {
             // Single-pane push: clip both slabs to the content area so the
@@ -2039,21 +2291,8 @@ impl Widget for LogsApp {
     fn test_id(&self) -> Option<&str> {
         Some("logs_app")
     }
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let search = self
-            .search_input
-            .accessibility()
-            .map(|node| node.with_action_target("logs.search"));
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Window)
-                .with_name("System logs")
-                .with_state(ui::a11y::AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                })
-                .with_children(search.into_iter().collect()),
-        )
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(self.accessibility_tree())
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -2085,11 +2324,92 @@ impl Widget for LogsApp {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
+        action: &AccessAction,
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        target == "logs.search" && self.search_input.perform_action(action, state, path)
+        if target == "logs.search" {
+            return self.search_input.perform_action(action, state, path);
+        }
+        let activate = matches!(action, AccessAction::Activate | AccessAction::ToggleCheck);
+        if target == "logs.live-tail" && activate && self.allow_live {
+            self.perform_effect(actions::LogsOperation::SetLiveTail {
+                enabled: !self.live_tail,
+            });
+            return true;
+        }
+        if target == "logs.clear-filters" && activate {
+            self.dispatch_view(state, LogsAction::ClearFilters);
+            self.scroll = 0.0;
+            self.dirty = true;
+            return true;
+        }
+        if target == "logs.unit" && activate {
+            self.popup = Some(Popup::Unit);
+            self.dirty = true;
+            return true;
+        }
+        if target == "logs.boot" && activate {
+            self.popup = Some(Popup::Boot);
+            self.dirty = true;
+            return true;
+        }
+        if target == "logs.back" && activate {
+            self.push.show_list();
+            self.dirty = true;
+            return true;
+        }
+        if let Some(value) = target.strip_prefix("logs.priority:")
+            && activate
+            && let Ok(value) = value.parse::<i64>()
+        {
+            self.dispatch_view(state, LogsAction::SetPriority { value });
+            self.scroll = 0.0;
+            self.dirty = true;
+            return true;
+        }
+        if let Some(value) = target.strip_prefix("logs.unit-choice:")
+            && activate
+        {
+            self.dispatch_view(
+                state,
+                LogsAction::SetUnit {
+                    value: value.to_owned(),
+                },
+            );
+            self.popup = None;
+            self.scroll = 0.0;
+            self.dirty = true;
+            return true;
+        }
+        if let Some(value) = target.strip_prefix("logs.boot-choice:")
+            && activate
+        {
+            self.dispatch_view(
+                state,
+                LogsAction::SetBoot {
+                    value: value.to_owned(),
+                },
+            );
+            self.popup = None;
+            self.scroll = 0.0;
+            self.dirty = true;
+            return true;
+        }
+        if let Some(id) = target.strip_prefix("logs.entry:")
+            && activate
+            && let Some(abs) = self
+                .entries
+                .iter()
+                .position(|entry| actions::entry_resource_id(entry) == id)
+        {
+            self.select_abs(abs, state, path);
+            if PushNav::is_narrow(self.rect.width()) {
+                self.push.show_detail();
+            }
+            return true;
+        }
+        false
     }
     fn needs_commit(&self) -> bool {
         self.search_input.needs_commit()
@@ -2191,7 +2511,12 @@ impl LogsApp {
                         && matches!(key.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            LogsDoc::search_set(doc, root, "");
+            self.dispatch_view(
+                doc,
+                LogsAction::SetSearch {
+                    value: String::new(),
+                },
+            );
             self.search_input.set_text("");
             self.scroll = 0.0;
             self.dirty = true;
@@ -2354,8 +2679,12 @@ impl LogsApp {
             for (irect, val, _label) in &reg.dropdown {
                 if irect.contains(pt) {
                     match self.popup {
-                        Some(Popup::Unit) => LogsDoc::set_unit(doc, root, val),
-                        Some(Popup::Boot) => LogsDoc::set_boot(doc, root, val),
+                        Some(Popup::Unit) => {
+                            self.dispatch_view(doc, LogsAction::SetUnit { value: val.clone() });
+                        }
+                        Some(Popup::Boot) => {
+                            self.dispatch_view(doc, LogsAction::SetBoot { value: val.clone() });
+                        }
                         None => {}
                     }
                     self.popup = None;
@@ -2390,9 +2719,7 @@ impl LogsApp {
         // 2. Header: live-tail pill.
         if reg.live_pill.contains(pt) {
             let v = !self.live_tail;
-            LogsDoc::set_live_tail(doc, root, v);
-            self.last_poll = force_immediate_poll_at();
-            self.dirty = true;
+            self.perform_effect(actions::LogsOperation::SetLiveTail { enabled: v });
             *handled = true;
             return;
         }
@@ -2433,7 +2760,12 @@ impl LogsApp {
                 let Some(priority) = Priority::ALL.get(i) else {
                     continue;
                 };
-                LogsDoc::set_min_priority(doc, root, priority.level());
+                self.dispatch_view(
+                    doc,
+                    LogsAction::SetPriority {
+                        value: priority.level(),
+                    },
+                );
                 self.scroll = 0.0;
                 self.dirty = true;
                 *handled = true;
@@ -2443,7 +2775,7 @@ impl LogsApp {
 
         // 6. Clear-filters button.
         if !self.filter.is_clear() && reg.clear_btn.contains(pt) {
-            LogsDoc::reset_filters(doc, root);
+            self.dispatch_view(doc, LogsAction::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             *handled = true;
@@ -2504,7 +2836,12 @@ impl LogsApp {
                     // Back out of the pushed detail pane to the list.
                     self.push.show_list();
                 } else if !self.filter.search.is_empty() {
-                    LogsDoc::search_set(doc, root, "");
+                    self.dispatch_view(
+                        doc,
+                        LogsAction::SetSearch {
+                            value: String::new(),
+                        },
+                    );
                     self.scroll = 0.0;
                 }
                 self.dirty = true;
@@ -2515,12 +2852,11 @@ impl LogsApp {
                     match s.as_str() {
                         "l" | "L" => {
                             let v = !self.live_tail;
-                            LogsDoc::set_live_tail(doc, root, v);
-                            self.last_poll = force_immediate_poll_at();
+                            self.perform_effect(actions::LogsOperation::SetLiveTail { enabled: v });
                             *handled = true;
                         }
                         "r" | "R" => {
-                            LogsDoc::reset_filters(doc, root);
+                            self.dispatch_view(doc, LogsAction::ClearFilters);
                             self.scroll = 0.0;
                             *handled = true;
                         }
@@ -2618,7 +2954,17 @@ mod tests {
         app.move_selection(1, &mut doc, &ROOT);
         let after = app.effective_selected().unwrap();
         assert_ne!(before, after);
-        assert_eq!(LogsDoc::selected(&doc, &ROOT), after as i64);
+        assert_eq!(
+            LogsDoc::selected_entry(&doc, &ROOT).as_deref(),
+            app.entries
+                .get(after)
+                .map(actions::entry_resource_id)
+                .as_deref()
+        );
+        assert!(
+            app.take_committed_action().is_some(),
+            "keyboard selection must create one canonical undo boundary"
+        );
     }
 
     #[test]
@@ -2644,6 +2990,27 @@ mod tests {
             app.rect.y1
         );
         assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
+    }
+
+    #[test]
+    fn medium_width_filter_controls_wrap_without_clipping() {
+        let (mut app, _doc) = synced_app();
+        app.rect = Rect::new(0.0, 0.0, 1024.0, 720.0);
+        let reg = app.regions();
+
+        assert!(
+            (reg.filter.height() - 128.0).abs() < f64::EPSILON,
+            "medium-width filters should use the compact three-row height"
+        );
+        assert_eq!(reg.chips.len(), 8);
+        assert!(
+            reg.chips.iter().all(|chip| chip.x1 <= app.rect.x1 - PAD),
+            "every severity choice must stay inside the viewport"
+        );
+        assert!(
+            reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
+            "severity choices belong on their own compact row"
+        );
     }
 
     #[test]
@@ -2681,6 +3048,50 @@ mod tests {
         assert!(
             app.filter.is_clear(),
             "clicking Clear filters must reset the filter"
+        );
+    }
+
+    #[test]
+    fn accessibility_exposes_hand_painted_controls_and_rejects_unknown_targets() {
+        let (mut app, mut doc) = synced_app();
+        let tree = app.accessibility_tree();
+        assert!(tree.children.iter().any(|node| node.role == Role::Switch));
+        let filters = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Journal filters"))
+            .expect("filter group is exposed");
+        assert!(
+            filters
+                .children
+                .iter()
+                .any(|node| node.role == Role::ToggleButton)
+        );
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("entry list is exposed");
+        assert!(list.children.iter().all(|node| node.state.focusable));
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut app,
+                "logs.unknown",
+                &AccessAction::Focus,
+                &mut doc,
+                &ROOT,
+            ),
+            "unknown targets must not claim an accessibility action"
+        );
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut app,
+                "logs.live-tail",
+                &AccessAction::Activate,
+                &mut doc,
+                &ROOT,
+            ),
+            "unavailable local journal access must reject live-tail activation"
         );
     }
 }

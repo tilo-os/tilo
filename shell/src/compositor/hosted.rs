@@ -472,7 +472,7 @@ fn install_presence_pump(
         }
         // A received frame can also change the collaborator roster. The
         // interpolator separately reports position/fade changes; quiet ticks
-        // now leave the 4K surface entirely untouched.
+        // now leave the 4K surface untouched.
         let cursor_changed = cursors.apply_to(presence_ctx, now);
         received || cursor_changed
     });

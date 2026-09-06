@@ -6,8 +6,8 @@
 //! keyed by page uuid — see [`crate::doc`]), an action replicates and replays for
 //! free, and feeds straight back into the sidebar's page list. The exact same
 //! [`EncodedAction`] is what the on-screen affordances (the sidebar's "+" button,
-//! an inline rename, a row's Delete) dispatch and what the Ctrl+K palette
-//! dispatches — one source of truth, one replay path.
+//! an inline rename, a row's Delete, and semantic editor deltas) dispatch and
+//! what the Ctrl+K palette dispatches — one source of truth, one replay path.
 //!
 //! The resource tree mirrors the data model: a notebook owns its pages, and a
 //! page owns its child pages (the tree nests arbitrarily deep). Each resource
@@ -26,32 +26,73 @@
 //! document at the replay's base state, so two replicas at the same heads land on
 //! the byte-identical result. Page *body* text is edited by splicing directly
 //! into the per-block Automerge `Text` (the toolkit's CRDT-native text path); it
-//! is not an action.
+//! is represented by UUID-addressed block operations in an action. The shared
+//! widget only computes those operations; it never writes the document itself.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta};
 use crate::num;
+use ui::widget::BlockEditOp;
 
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
 pub const NOTES_OPERATION_TYPE: &str = "notes.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NotesOperation {
-    OpenPage { page: PageId },
+pub fn page_resource_id(page: PageId) -> String {
+    format!("notes.page:{page}")
 }
 
+pub fn block_resource_id(page: PageId, block_id: &str) -> String {
+    format!("notes.block:{page}:{block_id}")
+}
+
+/// Parse an opaque stable block resource id without accepting a nearby page
+/// or block after a collaborative deletion/reorder.
+pub fn parse_block_resource_id(id: &str) -> Option<(PageId, &str)> {
+    let (page, block) = id.strip_prefix("notes.block:")?.split_once(':')?;
+    if block.is_empty() {
+        return None;
+    }
+    Some((page.parse().ok()?, block))
+}
+
+pub fn open_page_address(page: PageId) -> ActionAddress {
+    ActionAddress::new(page_resource_id(page), "open")
+}
+
+pub fn open_block_address(page: PageId, block_id: &str) -> ActionAddress {
+    ActionAddress::new(block_resource_id(page, block_id), "open")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotesOperation {
+    OpenPage {
+        page: PageId,
+        /// Stable Automerge Text object id for a block. Collaborative list
+        /// insert/delete and reorder preserve it, so invocation resolves the
+        /// block's current index rather than trusting a stale position.
+        #[serde(default)]
+        block_id: Option<String>,
+    },
+}
+
+/// Decode an operation payload owned by Notes.
+///
+/// # Errors
+///
+/// Returns an error when `payload` is not valid JSON for [`NotesOperation`].
+/// Unknown operation types return `Ok(None)`.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<NotesOperation>, String> {
     if type_id != NOTES_OPERATION_TYPE {
         return Ok(None);
@@ -107,8 +148,8 @@ impl PageData {
 ///
 /// The set is deliberately small: a create, a rename, a re-parent/reorder, and
 /// a single field edit are all one whole-page write ([`Self::UpsertPage`]); a
-/// delete removes a page and its whole subtree. Page *body* text is not here —
-/// it splices directly into the per-block CRDT `Text`.
+/// delete removes a page and its whole subtree; body edits are a batch of
+/// UUID-addressed [`BlockEditOp`]s.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotesAction {
     /// Create or replace a page's metadata (title / parent / order). One variant
@@ -120,6 +161,10 @@ pub enum NotesAction {
     /// descendant set and the renumbering are recomputed from the document at
     /// the replay's base state, so replicas converge.
     DeletePage { id: String },
+    /// Apply UUID-addressed rich-text changes to one page. This is the only
+    /// Notes path allowed to mutate collaborative block data: widgets emit a
+    /// semantic delta, and the action validates and applies it atomically.
+    ApplyBlockOps { page: String, ops: Vec<BlockEditOp> },
 }
 
 /// Durable, browseable history metadata for a Notes mutation.
@@ -128,6 +173,7 @@ pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
     let (label, id, title) = match action {
         NotesAction::UpsertPage(page) => ("Update page", page.id.as_str(), page.title.as_str()),
         NotesAction::DeletePage { id } => ("Delete page", id.as_str(), "Page"),
+        NotesAction::ApplyBlockOps { page, .. } => ("Edit note", page.as_str(), "Note"),
     };
     context.action_label = label.to_string();
     context.resource = Some(qos_actions::ActionResource {
@@ -204,6 +250,12 @@ impl Action for NotesAction {
                     }
                 }
             }
+            NotesAction::ApplyBlockOps { page, ops } => {
+                let page = page
+                    .parse::<PageId>()
+                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                NotesDoc::apply_block_ops(doc, page, ops).map_err(ActionError::Refused)?;
+            }
         }
         Ok(())
     }
@@ -269,6 +321,16 @@ pub fn delete_page_action(id: PageId) -> NotesAction {
     NotesAction::DeletePage { id: id.to_string() }
 }
 
+/// Apply one semantic editor delta to a page. Block ids are carried in the
+/// payload instead of list indexes, so a stale action refuses rather than
+/// silently modifying a neighbour after concurrent insertion or reordering.
+pub fn apply_block_ops_action(page: PageId, ops: Vec<BlockEditOp>) -> NotesAction {
+    NotesAction::ApplyBlockOps {
+        page: page.to_string(),
+        ops,
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -280,6 +342,13 @@ pub fn delete_page_action(id: PageId) -> NotesAction {
 #[derive(Debug, Clone)]
 pub struct NotesResourceCtx {
     pub pages: Vec<PageMeta>,
+    pub blocks: std::collections::HashMap<PageId, Vec<NoteBlockResource>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteBlockResource {
+    pub id: String,
+    pub text: String,
 }
 
 /// A one-line label for a page in the palette.
@@ -307,31 +376,90 @@ fn immediate_spec(id: &str, label: &str, action: &NotesAction) -> ActionSpec {
     }
 }
 
-/// The next `order` among `parent`'s children (append position).
-fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
-    pages
-        .iter()
-        .filter(|p| p.parent == parent)
-        .map(|p| p.order)
-        .max()
-        .map_or(0, |o| o + 1)
+/// Build a view-operation spec from Notes' serializable operation enum.
+///
+/// Resource publication is best-effort: should a future operation become
+/// unserializable, omit that action rather than publishing a malformed command
+/// or crashing while rebuilding the resource tree.
+fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        NOTES_OPERATION_TYPE,
+        operation,
+    )
+    .ok()
+    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
 }
 
-/// Build one page resource and, recursively, its child pages.
-fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
-    let mut res = Resource::new(format!("notes.page:{}", m.id), "notes.page", page_label(m));
+/// Resource snapshots are intentionally bounded: agents and the action palette
+/// receive useful nearby context, then resolve a stable page id lazily through
+/// [`ResourceProvider::resource`] when they need a deeper or later sibling.
+const RESOURCE_PAGE_SNAPSHOT_LIMIT: usize = 128;
+const RESOURCE_PAGE_SNAPSHOT_DEPTH: usize = 6;
 
-    res = res.with_action(
-        ActionSpec::operation(
-            "open",
-            "Open page",
-            OperationKind::View,
-            NOTES_OPERATION_TYPE,
-            &NotesOperation::OpenPage { page: m.id },
-        )
-        .expect("NotesOperation is always serializable")
-        .retry_policy(RetryPolicy::Idempotent),
-    );
+/// Index a durable page list once before building its contextual resource
+/// snapshot. This avoids the old recursive `pages.iter().filter(...)` scan at
+/// every node (quadratic for a wide notebook).
+struct PageResourceIndex<'a> {
+    children: HashMap<Option<PageId>, Vec<&'a PageMeta>>,
+    next_orders: HashMap<Option<PageId>, u32>,
+}
+
+impl<'a> PageResourceIndex<'a> {
+    fn new(pages: &'a [PageMeta]) -> Self {
+        let mut children: HashMap<Option<PageId>, Vec<&PageMeta>> = HashMap::new();
+        let mut next_orders = HashMap::new();
+        for page in pages {
+            children.entry(page.parent).or_default().push(page);
+            let next = next_orders.entry(page.parent).or_insert(0);
+            *next = (*next).max(page.order.saturating_add(1));
+        }
+        for siblings in children.values_mut() {
+            siblings.sort_by_key(|page| page.order);
+        }
+        Self {
+            children,
+            next_orders,
+        }
+    }
+
+    fn children_of(&self, parent: Option<PageId>) -> &[&'a PageMeta] {
+        self.children.get(&parent).map_or(&[], Vec::as_slice)
+    }
+
+    fn next_order(&self, parent: Option<PageId>) -> u32 {
+        self.next_orders.get(&parent).copied().unwrap_or(0)
+    }
+}
+
+/// Build one page resource and a bounded contextual slice of its descendants.
+pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
+    let index = PageResourceIndex::new(pages);
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    page_resource_from_index(m, &index, 0, &mut remaining)
+}
+
+fn page_resource_from_index(
+    m: &PageMeta,
+    index: &PageResourceIndex<'_>,
+    depth: usize,
+    remaining: &mut usize,
+) -> Resource {
+    *remaining = remaining.saturating_sub(1);
+    let mut res = Resource::new(page_resource_id(m.id), "notes.page", page_label(m));
+
+    if let Some(open) = view_operation_spec(
+        "open",
+        "Open page",
+        &NotesOperation::OpenPage {
+            page: m.id,
+            block_id: None,
+        },
+    ) {
+        res = res.with_action(open);
+    }
 
     // Rename — a prompted action carrying the rest of the page's metadata
     // unchanged so only the title diff-splices.
@@ -355,7 +483,7 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     // New child — prompted; the child id is minted once at commit time and the
     // append position is resolved from the current tree.
     let parent = m.id;
-    let order = next_order(pages, Some(m.id));
+    let order = index.next_order(Some(m.id));
     res = res.with_action(ActionSpec::prompted(
         "new-child",
         "New child page",
@@ -369,13 +497,64 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
         },
     ));
 
-    // Child pages, in tree order.
-    let mut children: Vec<&PageMeta> = pages.iter().filter(|p| p.parent == Some(m.id)).collect();
-    children.sort_by_key(|p| p.order);
-    for child in children {
-        res = res.with_child(page_resource(child, pages));
+    // Child pages are sorted in the index. Omitted siblings/deeper descendants
+    // remain available by their durable id through `resource()`; we never
+    // publish an unbounded eager tree.
+    if depth < RESOURCE_PAGE_SNAPSHOT_DEPTH {
+        for child in index.children_of(Some(m.id)) {
+            if *remaining == 0 {
+                break;
+            }
+            res = res.with_child(page_resource_from_index(
+                child,
+                index,
+                depth.saturating_add(1),
+                remaining,
+            ));
+        }
     }
     res
+}
+
+pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<Resource> {
+    let label = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.is_empty() {
+        return None;
+    }
+    let operation = NotesOperation::OpenPage {
+        page,
+        block_id: Some(block.id.clone()),
+    };
+    let open = view_operation_spec("open", "Reveal block", &operation)?;
+    let resource_id = block_resource_id(page, &block.id);
+    let original = block.text.clone();
+    let block_id = block.id.clone();
+    Some(
+        Resource::new(resource_id, "notes.block", label)
+            .with_action(open)
+            // Agents and the action palette get a truthful, replayable edit
+            // affordance too. The expected old text is encoded as a bounded
+            // splice; if a collaborator changed it first, apply refuses and
+            // the caller reconciles rather than clobbering remote work.
+            .with_action(ActionSpec::prompted(
+                "replace-text",
+                "Replace block text",
+                "Text",
+                "block text…",
+                ExecutionLocus::ClientLocal,
+                move |text: &str| {
+                    encode(&apply_block_ops_action(
+                        page,
+                        vec![BlockEditOp::TextSplice {
+                            block_id: block_id.clone(),
+                            start: 0,
+                            end: original.len(),
+                            text: text.to_string(),
+                        }],
+                    ))
+                },
+            )),
+    )
 }
 
 /// Build the resource tree Notes currently has open: the notebook (always
@@ -388,7 +567,8 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     // Notebook-level: create a new root page. The uuid is minted once when the
     // title argument is committed, then baked into the envelope, so replay stays
     // deterministic.
-    let order = next_order(&ctx.pages, None);
+    let index = PageResourceIndex::new(&ctx.pages);
+    let order = index.next_order(None);
     notebook = notebook.with_action(ActionSpec::prompted(
         "new-page",
         "New page",
@@ -402,10 +582,12 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         },
     ));
 
-    let mut roots: Vec<&PageMeta> = ctx.pages.iter().filter(|p| p.parent.is_none()).collect();
-    roots.sort_by_key(|p| p.order);
-    for root in roots {
-        notebook = notebook.with_child(page_resource(root, &ctx.pages));
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    for root in index.children_of(None) {
+        if remaining == 0 {
+            break;
+        }
+        notebook = notebook.with_child(page_resource_from_index(root, &index, 0, &mut remaining));
     }
 
     vec![notebook]
@@ -414,6 +596,31 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 impl ResourceProvider for crate::app::NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.notes_resource_ctx(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let ctx = self.notes_resource_ctx();
+        if id == "notes.notebook" {
+            return provide_resources(&ctx, doc).into_iter().next();
+        }
+        if let Some(page_id) = id.strip_prefix("notes.page:")
+            && let Ok(page_id) = page_id.parse::<PageId>()
+            && let Some(page) = ctx.pages.iter().find(|page| page.id == page_id)
+        {
+            return Some(page_resource(page, &ctx.pages));
+        }
+        let (page, block_id) = parse_block_resource_id(id)?;
+        ctx.pages
+            .iter()
+            .any(|candidate| candidate.id == page)
+            .then_some(())?;
+        // Blocks are intentionally resolved from the durable document only on
+        // demand. The open resource snapshot therefore stays bounded even for
+        // notebooks with millions of blocks, and a stale id refuses cleanly.
+        NotesDoc::page_block_snapshots(doc, page)
+            .into_iter()
+            .find(|(candidate, _)| candidate == block_id)
+            .and_then(|(id, text)| block_resource(page, &NoteBlockResource { id, text }))
     }
 }
 
@@ -494,6 +701,7 @@ mod tests {
     fn ctx_from(doc: &AutoCommit) -> NotesResourceCtx {
         NotesResourceCtx {
             pages: NotesDoc::list_pages(doc),
+            blocks: std::collections::HashMap::new(),
         }
     }
 
@@ -547,6 +755,132 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete page")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn block_resource_exports_the_same_stable_reveal_address_as_search() {
+        let (doc, projects, _a, _b, _inbox) = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.blocks.insert(
+            projects,
+            vec![
+                NoteBlockResource {
+                    id: "obj-a".into(),
+                    text: "Project overview".into(),
+                },
+                NoteBlockResource {
+                    id: "obj-b".into(),
+                    text: "Budget decisions".into(),
+                },
+            ],
+        );
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            qos_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
+                .is_none()
+        );
+        let block = block_resource(projects, &ctx.blocks[&projects][1])
+            .expect("second block resource resolves lazily");
+        let open = block
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("block reveal action");
+        assert_eq!(open.kind, OperationKind::View);
+        assert_eq!(
+            open_block_address(projects, "obj-b"),
+            ActionAddress::new(&block.id.0, &open.id)
+        );
+        let encoded = immediate_encode(open);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(NotesOperation::OpenPage {
+                page: projects,
+                block_id: Some("obj-b".into())
+            })
+        );
+    }
+
+    #[test]
+    fn ten_thousand_blocks_stay_out_of_the_open_snapshot() {
+        let (doc, projects, _a, _b, _inbox) = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.blocks.insert(
+            projects,
+            (0..10_000)
+                .map(|id| NoteBlockResource {
+                    id: format!("block-{id}"),
+                    text: format!("Block {id}"),
+                })
+                .collect(),
+        );
+        let resources = provide_resources(&ctx, &doc);
+        assert!(
+            qos_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
+                .is_none()
+        );
+        assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
+    }
+
+    #[test]
+    fn wide_and_deep_page_resources_are_bounded_but_lazily_resolvable() {
+        let mut pages = Vec::new();
+        let root = Uuid::new_v4();
+        pages.push(PageMeta {
+            id: root,
+            title: "root".into(),
+            parent: None,
+            order: 0,
+        });
+        let mut parent = root;
+        for depth in 0..(RESOURCE_PAGE_SNAPSHOT_DEPTH + 4) {
+            let id = Uuid::new_v4();
+            pages.push(PageMeta {
+                id,
+                title: format!("deep-{depth}"),
+                parent: Some(parent),
+                order: 0,
+            });
+            parent = id;
+        }
+        for order in 0..(RESOURCE_PAGE_SNAPSHOT_LIMIT + 40) {
+            pages.push(PageMeta {
+                id: Uuid::new_v4(),
+                title: format!("wide-{order}"),
+                parent: None,
+                order: (order + 1) as u32,
+            });
+        }
+        let ctx = NotesResourceCtx {
+            pages: pages.clone(),
+            blocks: HashMap::new(),
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        fn count(resource: &Resource) -> usize {
+            1 + resource.children.iter().map(count).sum::<usize>()
+        }
+        assert!(
+            count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+            "notebook context must remain bounded"
+        );
+        let late = pages.last().expect("late page");
+        let lazy = page_resource(late, &pages);
+        assert_eq!(lazy.id.as_str(), page_resource_id(late.id));
+        assert!(
+            lazy.actions.iter().any(|action| action.id == "open"),
+            "an omitted page remains addressable by its stable id"
+        );
+    }
+
+    #[test]
+    fn stable_block_resource_ids_refuse_malformed_or_empty_targets() {
+        let page = Uuid::new_v4();
+        assert_eq!(
+            parse_block_resource_id(&block_resource_id(page, "block-1")),
+            Some((page, "block-1"))
+        );
+        assert!(parse_block_resource_id("notes.block:not-a-uuid:block").is_none());
+        assert!(parse_block_resource_id(&format!("notes.block:{page}:")).is_none());
     }
 
     /// Deleting a page through its action removes the page *and* its whole
@@ -744,6 +1078,9 @@ mod tests {
             NotesAction::DeletePage { id } => {
                 panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
             }
+            NotesAction::ApplyBlockOps { .. } => {
+                panic!("new-child built the wrong action: ApplyBlockOps")
+            }
         }
     }
 
@@ -873,5 +1210,103 @@ mod tests {
         let resource = context.resource.expect("page resource");
         assert_eq!(resource.id, "notes.page:page-7");
         assert_eq!(resource.label, "Launch brief");
+    }
+
+    #[test]
+    fn block_actions_replay_unicode_splices_and_refuse_stale_targets() {
+        let (seeded_doc, projects, _a, _b, _inbox) = seeded();
+        let mut first = seeded_doc;
+        first.commit();
+        let mut second = AutoCommit::load(&first.save()).unwrap();
+        let block = Uuid::new_v4().to_string();
+        let insert = apply_block_ops_action(
+            projects,
+            vec![BlockEditOp::Insert {
+                block_id: block.clone(),
+                after: None,
+                kind: "paragraph".into(),
+                text: "hé".into(),
+            }],
+        );
+        let envelope = qos_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
+        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+
+        let splice = apply_block_ops_action(
+            projects,
+            vec![BlockEditOp::TextSplice {
+                block_id: block.clone(),
+                // Byte positions from the editor are converted to Automerge's
+                // scalar indexes by NotesDoc, so this replaces one `é`.
+                start: 1,
+                end: 3,
+                text: "x".into(),
+            }],
+        );
+        let envelope = qos_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
+        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        assert_eq!(
+            first.get_heads(),
+            second.get_heads(),
+            "rich text replay converges"
+        );
+        assert_eq!(NotesDoc::page_block_snapshots(&second, projects)[0].1, "hx");
+
+        let before = second.save();
+        let stale = apply_block_ops_action(
+            projects,
+            vec![BlockEditOp::TextSplice {
+                block_id: block,
+                start: 99,
+                end: 99,
+                text: "!".into(),
+            }],
+        );
+        let error = qos_actions::apply_local(&mut second, &stale, encode(&stale))
+            .expect_err("a stale byte range must refuse, never clamp");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert_eq!(second.save(), before, "refusal leaves no partial mutation");
+    }
+
+    #[test]
+    fn block_resource_exposes_the_canonical_edit_action() {
+        let (mut doc, projects, _a, _b, _inbox) = seeded();
+        let block = Uuid::new_v4().to_string();
+        let action = apply_block_ops_action(
+            projects,
+            vec![BlockEditOp::Insert {
+                block_id: block.clone(),
+                after: None,
+                kind: "paragraph".into(),
+                text: "Original".into(),
+            }],
+        );
+        qos_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        let resource = block_resource(
+            projects,
+            &NoteBlockResource {
+                id: block.clone(),
+                text: "Original".into(),
+            },
+        )
+        .expect("non-empty block is a resource");
+        let edit = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "replace-text")
+            .expect("agent-editable block action");
+        let encoded = prompted_encode(edit, "Rewritten");
+        let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            decoded,
+            apply_block_ops_action(
+                projects,
+                vec![BlockEditOp::TextSplice {
+                    block_id: block,
+                    start: 0,
+                    end: "Original".len(),
+                    text: "Rewritten".into(),
+                }],
+            ),
+        );
     }
 }

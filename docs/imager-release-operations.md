@@ -5,11 +5,11 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `runner` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm |
-| `runner-arm64` | Linux ARM64 | same Linux toolchain and release utilities, running natively |
-| `windows` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
-| `macos-x64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
-| `macos-arm64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
+| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, and UDisks2 service, running natively |
+| `imager-windows-x86_64` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
+| `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
+| `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
@@ -25,6 +25,26 @@ not returned to a warm pool. The practical autoscaling sequence is:
    to exit, revoke the registration if the job never arrived, and destroy the
    VM and attached disk in all cases.
 
+Golden Linux and macOS images should install
+`tools/run-imager-ephemeral-runner.sh` as a root-owned, non-writable executable
+outside the checkout. Invoke that installed copy as
+`/usr/local/sbin/run-imager-ephemeral-runner LABEL UUID_FILE TOKEN_FILE`.
+Windows images should likewise install `tools/Run-ImagerEphemeralRunner.ps1`
+outside the checkout with an ACL writable only by Administrators, then invoke
+it as `powershell.exe -NoLogo -NoProfile -NonInteractive -File
+C:\ProgramData\qOS\Run-ImagerEphemeralRunner.ps1 -Label imager-windows-x86_64 -UuidFile
+C:\run\qos-runner\uuid -TokenFile C:\run\qos-runner\token`. Both launchers
+validate the native OS/architecture-to-label binding, require
+Forgejo Runner 12.5 or newer, accept only private runner-owned metadata files
+inside a private runner-owned directory, pin the Forgejo origin, run exactly
+`one-job` with a `:host` label, bound the wait to six hours, and erase both
+registration values on every exit after their paths pass safety validation. Set
+`QOS_RUNNER_MAX_WAIT_SECONDS` to a smaller orchestration deadline when useful;
+the accepted range is 1 second through 24 hours. The final success message is a
+destruction instruction, not permission to return the VM to a pool. Run the
+PowerShell launcher directly on Windows; do not use a Unix compatibility layer
+as the release host.
+
 The repository runner page is `/qos/qos/settings/actions/runners`. Forgejo's
 [runner-registration guide](https://forgejo.org/docs/latest/admin/actions/registration/)
 documents both the UI/API registration response and offline administrator CLI;
@@ -33,24 +53,33 @@ documents why repository scope, ephemeral registration, and `one-job` belong
 together. Set an orchestration timeout because an ephemeral registration which
 never receives a job does not expire on its own.
 
-The native jobs also validate ordinary `main`/pull-request builds, but those
-runs receive neither release secrets nor a signing lease. The broker must reject
-every non-protected, non-tag OIDC identity. If stronger physical separation is
-required, dedicate a second no-broker validation fleet; do not put a persistent
-private key or cloud credential on either fleet.
+Ordinary `main` and pull-request changes are validated by the affected-package
+tests and imager release invariants in `check.yml`; they never allocate these
+native release hosts. Manual rehearsals receive no signing lease. The broker
+must reject every non-protected, non-tag OIDC identity. Do not put a persistent
+private key or cloud credential on the native fleet.
 
 The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
 type-2 runtime binaries from the Forgejo cache separately for each Linux
 architecture. They do not need to be baked into the runner, and AppImage
 creation is forbidden from downloading an implicit “latest” runtime.
+The same golden images preinstall `org.freedesktop.Sdk//25.08` and run UDisks2
+with at least the VM's system disk visible. The Flatpak build forbids downloads
+during bundle assembly, smoke-loads the exported app inside the pinned runtime,
+and reconciles its sandbox inventory with that host UDisks2 view before it can
+become an artifact.
+End-user Linux hosts need UDisks2 (standard on major desktop
+distributions); its polkit prompt mediates the one exclusive removable-drive
+descriptor used by the sandboxed writer.
 
 ## Short-lived credentials
 
 The six credentialed jobs set Forgejo's native `enable-openid-connect: true`.
-`permissions: id-token: write` is retained for compatibility, but by itself
-does not cause Forgejo to inject `ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The exact Forgejo behavior and token fields
-are documented in its
+Do not add GitHub's `permissions: id-token: write`: Forgejo ignores that field
+and emits a workflow warning. Repository capabilities come from Authorized
+Integrations; the native key is what causes Forgejo to inject
+`ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The exact
+Forgejo behavior and token fields are documented in its
 [OIDC guide](https://forgejo.org/docs/latest/user/actions/security-openid-connect/).
 
 Configure the external secret broker with all of these claim checks:
@@ -181,9 +210,10 @@ Before creating a release tag, verify all of the following:
 
 - the protected tag rule matches `imager-v*`, forbids deletion/force-push, and
   restricts creation to release maintainers;
-- five native labels are online at least once: `runner`, `runner-arm64`,
-  `windows`, `macos-x64`, and `macos-arm64`; each reports its expected native
-  architecture and `:host` execution;
+- five native labels are online at least once: `imager-linux-x86_64`,
+  `imager-linux-aarch64`, `imager-windows-x86_64`,
+  `imager-macos-x86_64`, and `imager-macos-aarch64`; each reports its expected
+  native architecture and `:host` execution;
 - each golden image can build this repository from a clean checkout and has the
   tooling in the table above; Linux hosts can use rootful Podman for live-media
   assembly, and Windows/macOS hosts have access to their native GUI session for
@@ -204,7 +234,7 @@ Before creating a release tag, verify all of the following:
   permitting the release bot, the GitHub fork exists, the bot has signed the
   Microsoft CLA, and no PR already exists for the package version.
 
-Dispatch `Build qOS Imager host downloads` manually on `main` first. That run
+Dispatch `Release / imager` manually on `main` with `full_native` enabled first. That run
 does not sign or publish, but proves every native label and packaged UI. Only
 after it is green should a maintainer create a protected semantic tag such as
 `imager-v1.2.3`. A successful tag must finish the native matrix, release trust

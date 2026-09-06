@@ -857,6 +857,27 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
 /// document (e.g. a book's annotations).
 pub trait ResourceProvider {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource>;
+
+    /// Resolve one stable resource id without requiring it to be present in
+    /// the eagerly published open-resource snapshot.
+    ///
+    /// Providers with large child collections should keep [`resources`]
+    /// contextual and override this hook with an indexed lookup. The default
+    /// preserves the original behaviour for small providers.
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(self.resources(doc), id)
+    }
 }
 
 /// Field separator inside a flattened composite key — a unit-separator

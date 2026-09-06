@@ -9,3 +9,9 @@
 [ratchets.private_palette_argument]
 
 [ratchets.private_palette_outcome]
+
+# Temporary migration ledger. Each entry is one legacy app-owned search
+# callback; removing one without lowering this table fails as stale, and new
+# callbacks fail at the zero default. Search results should instead carry a
+# canonical resource/action address.
+[ratchets.opaque_search_activation]

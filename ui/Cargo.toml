@@ -94,7 +94,9 @@ tracing.workspace = true
 # Standard app startup installs the workspace's logging subscriber once.
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
+rustls.workspace = true
+chacha20poly1305.workspace = true
+cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.40.0"
@@ -178,6 +180,7 @@ open.workspace = true
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { path = "../crates/collab/collab-types" }
+channel-crypto = { path = "../crates/collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `qdoc::history` (`versions` / `materialize_at`) and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
@@ -212,9 +215,9 @@ base32.workspace = true
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `qos-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
-# Phase 8 pairing-channel encryption (placeholder; in-memory shim for
-# the v1 widget tests). HMAC is used as a one-time pairing MAC over
-# the round-1 broadcast keyed by the 6-digit code's full nonce.
+# Pairing-channel authentication. HMAC binds the round-1 broadcast to
+# the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
+# and authenticates the exchanged DKG payloads.
 hmac.workspace = true
 # Identity-flow encode helpers — canonical-bytes for the invite
 # envelope's owner signature view, hex for the pairing-channel JSON
@@ -225,12 +228,6 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
 serde_bytes.workspace = true
 thiserror.workspace = true
-# `widget::identity_flow::recovery_share` generates a deterministic
-# placeholder mnemonic on first-run (single-device mode has no real
-# recovery share — see the module-level note). Already a transitive
-# via `qos-threshold-identity`; the direct pin keeps Cargo collapsing
-# to a single copy.
-bip39.workspace = true
 # The identity-flow screens need a `CryptoRng + RngCore` compatible with
 # `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
 # directly (rather than reaching through `rand`) keeps the requirement

@@ -46,8 +46,10 @@
 
 use std::collections::BTreeMap;
 
+use frost_ed25519::keys::KeyPackage;
 use frost_ed25519::keys::PublicKeyPackage;
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroizing;
 
 use collab_types::{Ed25519PublicKey, Signature, canonical_bytes};
 
@@ -135,6 +137,135 @@ impl std::fmt::Debug for ThresholdIdentity {
 }
 
 impl ThresholdIdentity {
+    /// Explicit, secret-bearing persistence export for a trusted device broker.
+    ///
+    /// This is deliberately not `Serialize`: callers have to opt into handling
+    /// a zeroizing opaque blob and should immediately place it in Secret
+    /// Service (or another hardware-backed provider). The blob is bounded and
+    /// versioned so corrupted provider contents cannot manufacture an identity
+    /// with metadata that disagrees with its FROST key package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in single-device mode, or if FROST cannot serialize a
+    /// bounded key/public package.
+    pub fn export_device_secret(&self) -> Result<Zeroizing<Vec<u8>>, ThresholdError> {
+        let InnerKey::Threshold {
+            secret_share,
+            public_key_package,
+        } = &self.inner
+        else {
+            return Err(ThresholdError::DkgStateMisuse(
+                "device-share export requires threshold mode",
+            ));
+        };
+        let key_package = secret_share.key_package().serialize()?;
+        let public_package = public_key_package.serialize()?;
+        if key_package.len() > 64 * 1024 || public_package.len() > 64 * 1024 {
+            return Err(ThresholdError::FrostInternal(
+                "serialized device-share component exceeds 64 KiB".to_string(),
+            ));
+        }
+        let key_len = u32::try_from(key_package.len()).map_err(|_| {
+            ThresholdError::FrostInternal("serialized device share is too large".to_string())
+        })?;
+        let public_len = u32::try_from(public_package.len()).map_err(|_| {
+            ThresholdError::FrostInternal("serialized public package is too large".to_string())
+        })?;
+        let capacity = 16usize
+            .saturating_add(key_package.len())
+            .saturating_add(public_package.len());
+        let mut out = Zeroizing::new(Vec::with_capacity(capacity));
+        out.extend_from_slice(b"QOSFRS2\0");
+        out.extend_from_slice(&key_len.to_be_bytes());
+        out.extend_from_slice(&public_len.to_be_bytes());
+        out.extend_from_slice(&key_package);
+        out.extend_from_slice(&public_package);
+        Ok(out)
+    }
+
+    /// Restore a threshold identity from an opaque blob previously returned by
+    /// [`Self::export_device_secret`]. All public facts are derived from and
+    /// cross-checked between the FROST packages; editable metadata is never
+    /// trusted. At-rest authenticity is supplied by the host secret provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the envelope is malformed, oversized, internally
+    /// inconsistent, or does not describe a valid threshold participant.
+    pub fn from_device_secret(blob: &[u8], total_shares: u16) -> Result<Self, ThresholdError> {
+        if blob.len() < 16 || blob.get(..8) != Some(b"QOSFRS2\0") {
+            return Err(ThresholdError::FrostInternal(
+                "invalid device-share envelope".to_string(),
+            ));
+        }
+        let key_len_bytes: [u8; 4] = blob
+            .get(8..12)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| ThresholdError::FrostInternal("truncated device share".to_string()))?;
+        let public_len_bytes: [u8; 4] = blob
+            .get(12..16)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| ThresholdError::FrostInternal("truncated device share".to_string()))?;
+        let key_len = usize::try_from(u32::from_be_bytes(key_len_bytes)).unwrap_or(usize::MAX);
+        let public_len =
+            usize::try_from(u32::from_be_bytes(public_len_bytes)).unwrap_or(usize::MAX);
+        if key_len > 64 * 1024
+            || public_len > 64 * 1024
+            || blob.len() != 16usize.saturating_add(key_len).saturating_add(public_len)
+        {
+            return Err(ThresholdError::FrostInternal(
+                "device-share envelope length mismatch".to_string(),
+            ));
+        }
+        let key_end = 16usize.saturating_add(key_len);
+        let key_package =
+            KeyPackage::deserialize(blob.get(16..key_end).ok_or_else(|| {
+                ThresholdError::FrostInternal("truncated device share".to_string())
+            })?)?;
+        let public_key_package =
+            PublicKeyPackage::deserialize(blob.get(key_end..).ok_or_else(|| {
+                ThresholdError::FrostInternal("truncated public package".to_string())
+            })?)?;
+        let threshold = *key_package.min_signers();
+        if threshold < 2 || total_shares < threshold {
+            return Err(ThresholdError::FrostInternal(
+                "invalid threshold device-share metadata".to_string(),
+            ));
+        }
+        if public_key_package.min_signers() != Some(threshold)
+            || public_key_package.max_signers() != total_shares
+            || public_key_package.verifying_key() != key_package.verifying_key()
+            || public_key_package
+                .verifying_shares()
+                .get(key_package.identifier())
+                != Some(key_package.verifying_share())
+        {
+            return Err(ThresholdError::FrostInternal(
+                "device share and public package disagree".to_string(),
+            ));
+        }
+        let group_bytes: [u8; 32] = key_package
+            .verifying_key()
+            .serialize()?
+            .as_slice()
+            .try_into()
+            .map_err(|_| ThresholdError::FrostInternal("invalid group public key".to_string()))?;
+        let share_index = crate::shares::identifier_to_u16(key_package.identifier());
+        if share_index == 0 || share_index > total_shares {
+            return Err(ThresholdError::InvalidShareIndex(share_index));
+        }
+        Ok(Self {
+            group_public_key: Ed25519PublicKey::from_bytes(group_bytes),
+            threshold,
+            total_shares,
+            this_share_index: share_index,
+            inner: InnerKey::Threshold {
+                secret_share: SecretShare::from_key_package(key_package),
+                public_key_package,
+            },
+        })
+    }
     /// Borrow the group public key.
     pub fn group_public_key(&self) -> &Ed25519PublicKey {
         &self.group_public_key

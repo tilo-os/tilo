@@ -422,7 +422,12 @@ impl ThumbnailCache {
                 }
             }
         }
-        self.pool.queue.lock().unwrap().jobs.retain(|j| j.id != id);
+        self.pool
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .jobs
+            .retain(|j| j.id != id);
     }
 
     /// Whether `id` has been written off as undecodable — the renderer can say
@@ -521,7 +526,11 @@ impl ThumbnailCache {
         // exists to avoid. Other queued work keeps the app syncing, so the
         // renderer's next `ensure_strip` asks again.
         {
-            let mut q = self.pool.queue.lock().unwrap();
+            let mut q = self
+                .pool
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if q.jobs.len() >= MAX_QUEUED {
                 return;
             }
@@ -533,6 +542,9 @@ impl ThumbnailCache {
             });
             if q.live_workers < MAX_WORKERS {
                 q.live_workers += 1;
+                // The worker immediately takes this mutex to fetch its first
+                // job; do not make its startup contend with this request.
+                drop(q);
                 let pool = self.pool.clone();
                 let tx = self.tx.clone();
                 std::thread::spawn(move || run_worker(pool, tx));
@@ -724,7 +736,11 @@ const SWATCH_BUCKET: u32 = u32::MAX;
 
 impl Drop for ThumbnailCache {
     fn drop(&mut self) {
-        let mut q = self.pool.queue.lock().unwrap();
+        let mut q = self
+            .pool
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         q.shutdown = true;
         q.jobs.clear();
         drop(q);
@@ -751,7 +767,10 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
     let mut session: Option<Session> = None;
     loop {
         let job = {
-            let mut guard = pool.queue.lock().unwrap();
+            let mut guard = pool
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if guard.shutdown {
                 guard.live_workers = guard.live_workers.saturating_sub(1);
                 return;
@@ -759,24 +778,30 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
             let want = session.as_ref().map(|s| s.path.clone());
             let mut picked = take_job(&mut guard, want.as_deref());
             if picked.is_none() {
-                let (mut g, res) = pool.wake.wait_timeout(guard, WORKER_IDLE).unwrap();
-                if g.shutdown {
-                    g.live_workers = g.live_workers.saturating_sub(1);
+                let (next_guard, res) = pool
+                    .wake
+                    .wait_timeout(guard, WORKER_IDLE)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard = next_guard;
+                if guard.shutdown {
+                    guard.live_workers = guard.live_workers.saturating_sub(1);
                     return;
                 }
-                picked = take_job(&mut g, want.as_deref());
+                picked = take_job(&mut guard, want.as_deref());
                 if picked.is_none() {
                     if res.timed_out() {
-                        g.live_workers = g.live_workers.saturating_sub(1);
+                        guard.live_workers = guard.live_workers.saturating_sub(1);
                         return;
                     }
                     continue; // spurious wake
                 }
             }
-            match picked {
+            let job = match picked {
                 Some(j) => j,
                 None => continue,
-            }
+            };
+            drop(guard);
+            job
         };
 
         // Reuse the open pipeline when the source has not changed.
@@ -1322,7 +1347,7 @@ mod tests {
         assert!(dw <= THUMB_W && dh <= THUMB_H, "{dw}x{dh} fits the box");
         assert_eq!(out.len(), (dw * dh * 4) as usize);
         assert!(
-            (dw as f64 / dh as f64 - 16.0 / 9.0).abs() < 0.05,
+            (f64::from(dw) / f64::from(dh) - 16.0 / 9.0).abs() < 0.05,
             "aspect kept"
         );
         // A flat source averages to the same flat value — no smearing.

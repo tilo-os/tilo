@@ -82,8 +82,9 @@ const REFRESH_STRIP_H: f64 = 52.0;
 
 /// At or above this width the three panes fit side by side (docked sidebar +
 /// article list + reader). Sized so the sidebar (256) + a usable article list
-/// (400) + a readable reader column (~344) all fit at once.
-const WIDE_BREAKPOINT: f64 = 1000.0;
+/// (400) + a reader column (~464) that keeps its byline and external-link
+/// affordance separate all fit at once.
+const WIDE_BREAKPOINT: f64 = 1120.0;
 /// At or above this width (but below [`WIDE_BREAKPOINT`]) the sidebar stays
 /// docked (fixed) but only one content pane — the article list OR the reader —
 /// shares the remaining width, with a top-left Back returning reader→list.
@@ -411,6 +412,11 @@ pub struct FeedsApp {
     /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
     /// next pass that holds the document.
     pending_doc_writes: Vec<DocWrite>,
+    /// Canonical mutations implied by a brokered View operation. Resource
+    /// handlers receive an immutable document, so opening an unread article
+    /// queues the same `MarkRead` action used by a direct list selection for the
+    /// next widget sync instead of writing around the action host.
+    pending_resource_actions: Vec<actions::FeedsAction>,
 
     // Responsive chrome. `sidebar` is the eased open/closed state of the
     // subscriptions flap (docked beside the content on a wide window; an
@@ -509,6 +515,7 @@ impl FeedsApp {
             resource_refresh_invocation: None,
             resource_refresh_result: None,
             pending_doc_writes: Vec::new(),
+            pending_resource_actions: Vec::new(),
             sidebar: FlapState::open_when_docked(),
             detail_pushed: false,
             settled_once: false,
@@ -868,6 +875,7 @@ impl FeedsApp {
             .map(|f| actions::FolderRef {
                 id: f.id,
                 name: f.name.clone(),
+                collapsed: f.collapsed,
             })
             .collect();
         let mut feeds: Vec<actions::FeedRef> = self
@@ -878,6 +886,18 @@ impl FeedsApp {
                 id: f.id,
                 title: f.title.clone(),
                 unread: self.store.unread_ids_for(Filter::Feed(f.id)),
+                articles: self
+                    .store
+                    .articles
+                    .iter()
+                    .filter(|article| article.feed_id == f.id)
+                    .map(|article| actions::ArticleRef {
+                        id: article.id,
+                        title: article.title.clone(),
+                        read: article.read,
+                        starred: article.starred,
+                    })
+                    .collect(),
             })
             .collect();
         feeds.sort_by_key(|f| f.title.to_lowercase());
@@ -891,7 +911,10 @@ impl FeedsApp {
         FeedsResourceCtx {
             folders,
             feeds,
+            unread: self.store.unread_ids_for(Filter::All),
+            next_feed_order: self.store.next_feed_order(None),
             next_folder_order,
+            settings: self.settings,
         }
     }
 
@@ -899,7 +922,7 @@ impl FeedsApp {
         if let Some(f) = self.store.folders.iter_mut().find(|f| f.id == id) {
             f.collapsed = !f.collapsed;
             let collapsed = f.collapsed;
-            FeedsDoc::set_folder_collapsed(doc, id, collapsed);
+            self.perform_action(doc, &actions::set_folder_collapsed_action(id, collapsed));
         }
     }
 
@@ -913,7 +936,7 @@ impl FeedsApp {
         f(&mut s);
         s = s.clamped();
         self.settings = s;
-        FeedsDoc::write_settings(doc, &s);
+        self.perform_action(doc, &actions::set_read_settings_action(s));
     }
 
     fn apply_settings_action(&mut self, action: SettingsAction, doc: &mut AutoCommit) {
@@ -2819,7 +2842,10 @@ fn draw_list(
         &count_label,
         13.0,
         c.text_dim,
-        t * Affine::translate((title_x + title_w0 + 10.0, rect.y0 + 19.0)),
+        // `measure_w` can be a little tighter than the painted glyph bounds
+        // at high text contrast / fallback-font settings. Keep a generous,
+        // stable gap so “All Articles” and its count never read as one word.
+        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
         None,
     );
     let header_bottom = rect.y0 + HEADER_H;
@@ -3714,6 +3740,9 @@ impl Widget for FeedsApp {
         self.flush_doc_writes(state);
         self.drain_fetches_live();
         self.flush_doc_writes(state);
+        for action in std::mem::take(&mut self.pending_resource_actions) {
+            self.perform_action(state, &action);
+        }
         // Drain an in-flight OPML import portal request (holds the doc so the
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
@@ -3753,19 +3782,46 @@ impl Widget for FeedsApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
-            return Ok(false);
-        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match operation {
-            crate::actions::FeedsOperation::RefreshAll => {
+        match (kind, operation) {
+            (qos_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
                 }
                 self.refresh_all();
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealFeed { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
+                if self.store.feed(id).is_none() {
+                    return Err("feed no longer exists".into());
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealArticle { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
+                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+                    return Err("article no longer exists".into());
+                };
+                self.set_filter(Filter::Feed(feed_id));
+                self.selected = Some(id);
+                self.reader_scroll = 0.0;
+                if self.store.mark_read(id, true) {
+                    self.pending_resource_actions
+                        .push(actions::mark_read_action(id, true));
+                }
+                if self.single_pane() {
+                    self.detail_pushed = true;
+                }
+            }
+            _ => return Ok(false),
         }
         Ok(true)
     }
@@ -3829,24 +3885,6 @@ impl Widget for FeedsApp {
         vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
             &self.store,
         ))]
-    }
-
-    /// Navigate to the article or feed a chosen palette row identifies. For an
-    /// article, focus its feed (so the row is in the visible list) then open it,
-    /// marking it read; for a feed, focus that subscription.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        match crate::search_provider::Activation::parse(action_id) {
-            Some(crate::search_provider::Activation::Article(id)) => {
-                if let Some(feed_id) = self.store.article(id).map(|a| a.feed_id) {
-                    self.set_filter(Filter::Feed(feed_id));
-                    self.select_article(id, doc);
-                }
-            }
-            Some(crate::search_provider::Activation::Feed(id)) if self.store.feed(id).is_some() => {
-                self.set_filter(Filter::Feed(id));
-            }
-            Some(crate::search_provider::Activation::Feed(_)) | None => {}
-        }
     }
 
     #[allow(
@@ -4135,7 +4173,10 @@ impl Widget for FeedsApp {
             "feeds.sidebar" => self.sidebar.toggle(self.nav_layout()),
             "feeds.back" => self.show_master(),
             _ if target.starts_with("feeds.article:") => {
-                let Ok(id) = target["feeds.article:".len()..].parse() else {
+                let Some(raw_id) = target.strip_prefix("feeds.article:") else {
+                    return false;
+                };
+                let Ok(id) = raw_id.parse() else {
                     return false;
                 };
                 if self.store.article(id).is_none() {
@@ -4144,7 +4185,10 @@ impl Widget for FeedsApp {
                 self.select_article(id, state);
             }
             _ if target.starts_with("feeds.star:") => {
-                let Ok(id) = target["feeds.star:".len()..].parse() else {
+                let Some(raw_id) = target.strip_prefix("feeds.star:") else {
+                    return false;
+                };
+                let Ok(id) = raw_id.parse() else {
                     return false;
                 };
                 if self.store.article(id).is_none() {
@@ -5195,11 +5239,16 @@ mod tests {
     fn tier_resolves_from_width() {
         assert_eq!(Tier::from_width(1280.0), Tier::Wide);
         assert_eq!(
-            Tier::from_width(1000.0),
+            Tier::from_width(WIDE_BREAKPOINT),
             Tier::Wide,
             "wide boundary is inclusive"
         );
-        assert_eq!(Tier::from_width(999.0), Tier::Middle);
+        assert_eq!(
+            Tier::from_width(1024.0),
+            Tier::Middle,
+            "a high-contrast 1024px reader must not squeeze three panes"
+        );
+        assert_eq!(Tier::from_width(WIDE_BREAKPOINT - 1.0), Tier::Middle);
         assert_eq!(
             Tier::from_width(640.0),
             Tier::Middle,

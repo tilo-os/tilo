@@ -1,0 +1,38 @@
+#!/usr/bin/bash
+# Generate one early unlock service for each explicitly requested LUKS root.
+set -eu
+
+out="${1:-/run/systemd/generator}"
+cmdline_file="${QOS_ROLLBACK_CMDLINE_FILE:-/proc/cmdline}"
+[ -r "$cmdline_file" ] || exit 0
+
+for word in $(cat "$cmdline_file"); do
+  case "$word" in rd.luks.uuid=*) uuid="${word#rd.luks.uuid=}" ;; *) continue ;; esac
+  uuid="${uuid#luks-}"
+  [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || continue
+
+  volume="luks-$uuid"
+  escaped="$(systemd-escape "$volume")"
+  device_unit="$(systemd-escape --path --suffix=device "/dev/disk/by-uuid/$uuid")"
+  service="qos-rollback-unlock@$escaped.service"
+  crypt_service="systemd-cryptsetup@$escaped.service"
+  install -d -m 0755 "$out" "$out/$crypt_service.d"
+  cat >"$out/$service" <<EOF
+[Unit]
+Description=Unlock qOS generation-bound disk key for $volume
+DefaultDependencies=no
+After=$device_unit
+Requires=$device_unit
+Before=$crypt_service cryptsetup.target initrd-root-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-rollback-initrd-unlock $uuid
+EOF
+  cat >"$out/$crypt_service.d/10-qos-rollback.conf" <<EOF
+[Unit]
+Wants=$service
+After=$service
+EOF
+done

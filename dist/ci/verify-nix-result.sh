@@ -12,6 +12,8 @@ for file in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper libexec/qos
 done
 for file in etc/pam.d/qos-unlock share/wayland-sessions/qos.desktop \
             share/xdg-desktop-portal/portals/qos.portal \
+            share/xdg-desktop-portal/nirios-portals.conf \
+            share/systemd/user/qos-graphical-session.target \
             share/licenses/qos-session/LICENSE; do
     [[ -f $result/$file ]] || { echo "missing file: $file" >&2; exit 1; }
 done
@@ -23,8 +25,11 @@ grep -Fqx "Exec=$result/libexec/qos-session" "$entry"
 grep -Fqx "TryExec=$result/bin/qos-shell" "$entry"
 grep -q '^DesktopNames=nirios$' "$entry"
 grep -q '^UseIn=nirios$' "$portal"
+grep -q '^default=qos$' "$result/share/xdg-desktop-portal/nirios-portals.conf"
 grep -Fqx "QOS_SHELL=$result/bin/qos-shell" "$wrapper"
 grep -q -- '--firstboot' "$wrapper"
+grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
+    "$result/share/systemd/user/qos-graphical-session.target"
 
 ldd_command=(ldd)
 if ! command -v ldd >/dev/null 2>&1; then

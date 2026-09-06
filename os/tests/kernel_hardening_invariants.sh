@@ -53,4 +53,22 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'required boot-time hardening arguments are pinned'
 
+grep -Fq 'failures=$((failures + 1))' "$audit" \
+  || bad 'boot audit warnings do not contribute to a failing health result'
+grep -Fq 'exit 1' "$audit" \
+  || bad 'boot audit cannot return failure when a required invariant is inactive'
+if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/qos-security-audit.service"; then
+  bad 'systemd still converts the security audit failure into success'
+else
+  ok 'security audit failure remains visible to system health and agents'
+fi
+
+for policy_fragment in \
+  '"code.podesta.ai/qos/qos"' \
+  '"type": "sigstoreSigned"' \
+  '"keyPath": "/usr/share/qos/cosign.pub"'; do
+  grep -Fq "$policy_fragment" "$audit" \
+    || bad "boot audit does not bind image trust to $policy_fragment"
+done
+
 exit "$fail"

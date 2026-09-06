@@ -221,7 +221,11 @@ if [ -z "$required" ]; then
   ok "no app declares a required sandbox service"
 else
   for svc in $required; do
-    unit_rel="os/usr/lib/systemd/user/qos-$svc.service"
+    # The public service is `models`; its implementation is deliberately named
+    # model-manager to distinguish it from the root-owned inference runtime.
+    unit_name=$svc
+    [ "$svc" != models ] || unit_name=model-manager
+    unit_rel="os/usr/lib/systemd/user/qos-$unit_name.service"
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
                | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
@@ -250,13 +254,13 @@ else
       shipped unable to launch."
       continue
     fi
-    grep -q "systemctl --global enable qos-$svc.service" "$CONTAINERFILE" \
-      && ok "qos-$svc.service is globally enabled, so '$svc' is served for every session" \
+    grep -q "systemctl --global enable qos-$unit_name.service" "$CONTAINERFILE" \
+      && ok "qos-$unit_name.service is globally enabled, so '$svc' is served for every session" \
       || bad "$unit_rel exists but os/Containerfile never runs
-      'systemctl --global enable qos-$svc.service' — the unit would ship disabled
+      'systemctl --global enable qos-$unit_name.service' — the unit would ship disabled
       and apps [$users] still could not launch."
     grep -q "ExecStart=.*%t/qos/services/$svc\.sock" "$unit" \
-      && ok "qos-$svc.service serves the socket path the launcher resolves" \
+      && ok "qos-$unit_name.service serves the socket path the launcher resolves" \
       || bad "$unit_rel does not serve %t/qos/services/$svc.sock, which is where
       launcher::services::socket_for('$svc') looks."
     svc_bin="$(sed -n 's|^ExecStart=\([^ ]*\).*|\1|p' "$unit" | head -1)"
@@ -266,7 +270,7 @@ else
       ok "the image installs $svc_bin for '$svc'"
     else
       bad "os/Containerfile never copies $svc_bin into the image, so
-      qos-$svc.service would fail at every start and apps [$users] could not launch."
+      qos-$unit_name.service would fail at every start and apps [$users] could not launch."
     fi
   done
 fi

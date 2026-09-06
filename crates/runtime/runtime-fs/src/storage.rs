@@ -75,6 +75,12 @@ impl From<&SyncedFileState> for EvictionSelection {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvictionReport {
+    /// Requests durably accepted by the filesystem but whose physical GC has
+    /// not yet produced the exact all-absent observation required to call
+    /// them freed.  This makes an asynchronous, crash-safe eviction truthful
+    /// to Settings rather than reporting optimistic reclaimed bytes.
+    #[serde(default)]
+    pub queued_files: u64,
     pub evicted_files: u64,
     pub freed_bytes: u64,
     pub skipped: Vec<String>,

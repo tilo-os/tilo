@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::manifest::{ServiceReq, ServiceReqParseError};
 
@@ -70,6 +70,9 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// it the connected descriptor, so a same-UID process cannot manufacture a
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
+pub const APP_HOST_SERVICE: &str = "app-host";
+const STORE_APP_ID: &str = "dev.qos.store";
+pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
 /// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
@@ -138,6 +141,8 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
+    #[error("service `app-host` is restricted to the signed qOS Store package")]
+    AppHostUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -335,10 +340,115 @@ pub fn resolve_service_binds_for_launch(
     resolve_service_binds_inner(services, no_services, Some(context))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "service validation, authenticated handoff, and child-fd allocation are one ordered transaction"
-)]
+enum HandoffOutcome {
+    Ready,
+    SkipOptional,
+}
+
+fn handoff_failure(
+    required: bool,
+    error: ServiceError,
+    message: &str,
+) -> Result<HandoffOutcome, ServiceError> {
+    if required {
+        Err(error)
+    } else {
+        tracing::warn!(%error, "{message}");
+        Ok(HandoffOutcome::SkipOptional)
+    }
+}
+
+fn authenticate_service(
+    name: &str,
+    requirement: ServiceReq,
+    path: &Path,
+    stream: &mut UnixStream,
+    context: Option<ServiceLaunchContext<'_>>,
+) -> Result<HandoffOutcome, ServiceError> {
+    let required = requirement.is_required();
+    if name == COLLAB_SERVICE || name == COMPAT_SERVICE {
+        let Some((launch, workspace_id)) =
+            context.and_then(|launch| launch.workspace_id.map(|workspace| (launch, workspace)))
+        else {
+            let error = if name == COLLAB_SERVICE {
+                ServiceError::CollabContextMissing
+            } else {
+                ServiceError::CompatContextMissing
+            };
+            return handoff_failure(required, error, "optional workspace service skipped");
+        };
+        let result = if name == COLLAB_SERVICE {
+            write_collab_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
+                ServiceError::CollabHandoffFailed {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })
+        } else {
+            write_compat_handoff(stream, launch.app_id, workspace_id).map_err(|source| {
+                ServiceError::CompatHandoffFailed {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })
+        };
+        return match result {
+            Ok(()) => Ok(HandoffOutcome::Ready),
+            Err(error) => handoff_failure(required, error, "optional workspace handoff rejected"),
+        };
+    }
+
+    if name == MODEL_GATEWAY_SERVICE {
+        let Some(launch) = context else {
+            let error = ServiceError::OpenFailed {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("model gateway requires launcher context"),
+            };
+            return handoff_failure(required, error, "optional model gateway skipped");
+        };
+        return match write_model_gateway_handoff(stream, launch.app_id) {
+            Ok(()) => Ok(HandoffOutcome::Ready),
+            Err(source) => handoff_failure(
+                required,
+                ServiceError::OpenFailed {
+                    path: path.to_path_buf(),
+                    source,
+                },
+                "optional model gateway rejected launch handoff",
+            ),
+        };
+    }
+
+    if name == APP_HOST_SERVICE {
+        let launch = context.ok_or(ServiceError::AppHostUnauthorized)?;
+        write_app_host_handoff(stream, launch.app_id).map_err(|source| {
+            ServiceError::OpenFailed {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    }
+    Ok(HandoffOutcome::Ready)
+}
+
+fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "protocol": 1,
+        "app_id": app_id,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "app-host handoff too large",
+        )
+    })?;
+    stream.write_all(&APP_HOST_LAUNCH_MAGIC)?;
+    stream.write_all(&len.to_be_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
 fn resolve_service_binds_inner(
     services: &BTreeMap<String, String>,
     no_services: bool,
@@ -353,6 +463,10 @@ fn resolve_service_binds_inner(
         let req = ServiceReq::parse(raw_req)
             .map_err(|e| ServiceError::BadRequirement(raw_req.clone(), e))?;
         let path = socket_for(name);
+
+        if name == APP_HOST_SERVICE && context.is_none_or(|launch| launch.app_id != STORE_APP_ID) {
+            return Err(ServiceError::AppHostUnauthorized);
+        }
 
         if no_services {
             tracing::warn!(
@@ -397,62 +511,11 @@ fn resolve_service_binds_inner(
                 continue;
             }
         };
-        if name == COLLAB_SERVICE {
-            let Some((context, workspace_id)) = context
-                .and_then(|context| context.workspace_id.map(|workspace| (context, workspace)))
-            else {
-                if req.is_required() {
-                    return Err(ServiceError::CollabContextMissing);
-                }
-                tracing::warn!(
-                    "optional collaboration service skipped without authenticated workspace context"
-                );
-                continue;
-            };
-            if let Err(source) = write_collab_handoff(&mut stream, context.app_id, workspace_id) {
-                if req.is_required() {
-                    return Err(ServiceError::CollabHandoffFailed { path, source });
-                }
-                tracing::warn!(%source, "optional collaboration service rejected launch handoff");
-                continue;
-            }
-        }
-        if name == COMPAT_SERVICE {
-            let Some((context, workspace_id)) = context
-                .and_then(|context| context.workspace_id.map(|workspace| (context, workspace)))
-            else {
-                if req.is_required() {
-                    return Err(ServiceError::CompatContextMissing);
-                }
-                tracing::warn!("optional compatibility service skipped without workspace context");
-                continue;
-            };
-            if let Err(source) = write_compat_handoff(&mut stream, context.app_id, workspace_id) {
-                if req.is_required() {
-                    return Err(ServiceError::CompatHandoffFailed { path, source });
-                }
-                tracing::warn!(%source, "optional compatibility service rejected launch handoff");
-                continue;
-            }
-        }
-        if name == MODEL_GATEWAY_SERVICE {
-            let Some(context) = context else {
-                if req.is_required() {
-                    return Err(ServiceError::OpenFailed {
-                        path,
-                        source: std::io::Error::other("model gateway requires launcher context"),
-                    });
-                }
-                tracing::warn!("optional model gateway skipped without launcher context");
-                continue;
-            };
-            if let Err(source) = write_model_gateway_handoff(&mut stream, context.app_id) {
-                if req.is_required() {
-                    return Err(ServiceError::OpenFailed { path, source });
-                }
-                tracing::warn!(%source, "optional model gateway rejected launch handoff");
-                continue;
-            }
+        if matches!(
+            authenticate_service(name, req, &path, &mut stream, context)?,
+            HandoffOutcome::SkipOptional
+        ) {
+            continue;
         }
         // Owned from here, and deliberately left `FD_CLOEXEC`. The fork+dup2
         // never sets CLOEXEC on the descriptor it creates, so the app's copy
@@ -647,6 +710,22 @@ mod tests {
                 None => std::env::remove_var("XDG_RUNTIME_DIR"),
             }
         }
+    }
+
+    #[test]
+    fn app_host_capability_is_not_self_grantable_by_third_party_packages() {
+        let mut services = BTreeMap::new();
+        services.insert(APP_HOST_SERVICE.to_string(), "required@1".to_string());
+        let error = resolve_service_binds_for_launch(
+            &services,
+            false,
+            ServiceLaunchContext {
+                app_id: "org.example.untrusted",
+                workspace_id: None,
+            },
+        )
+        .expect_err("third-party manifest must not grant package-manager authority");
+        assert!(matches!(error, ServiceError::AppHostUnauthorized));
     }
 
     #[test]

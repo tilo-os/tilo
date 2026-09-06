@@ -259,8 +259,8 @@ pub(crate) fn decode_for_rendering(
             } else {
                 let mut rgba = Vec::with_capacity(pixels.checked_mul(4)?);
                 for rgb in bytes.chunks_exact(3) {
-                    let [red, green, blue] = rgb else {
-                        continue;
+                    let Ok([red, green, blue]) = <&[u8; 3]>::try_from(rgb) else {
+                        return None;
                     };
                     rgba.extend_from_slice(&[*red, *green, *blue, 255]);
                 }

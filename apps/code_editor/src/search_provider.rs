@@ -1,219 +1,293 @@
-//! Code editor files as a qOS global-search source.
+//! Code's global-search projection over canonical resource view actions.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the editor declares its
-//! searchable type by implementing [`SearchProvider`] over a snapshot of the
-//! session, so an **open buffer** (a current tab) and a **project file** (a
-//! node the tree has revealed) are both findable from the unified Ctrl+K
-//! palette by name or path. Activating a row hands back the file's node id,
-//! which the app opens / focuses.
-//!
-//! The provider is deliberately **synchronous and in-memory**: it walks only
-//! the open buffers and the already-loaded project nodes (the tree is lazy, so
-//! this is bounded to what has been expanded). The editor's disk-walking
-//! project-wide *content* grep stays in its own find surface, which is async by
-//! nature — a Ctrl+K query must never block.
-
-use std::collections::HashSet;
+//! The palette is allowed to be fast, but it must not quietly become a view of
+//! the first N files in a project. This provider snapshots every resource Code
+//! exports, builds a compact Unicode-scalar 1/2/3-gram index once, and uses the
+//! index to bound full-string verification for one query.
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
+    SearchTextIndex, normalize_search_text,
+};
 
-use crate::model::{NodeId, Session};
+use crate::actions::{SearchResultRef, SymbolRef};
+use crate::model::NodeId;
 
-/// The group header for open-tab results.
 pub const OPEN_KIND: &str = "Open files";
-/// The group header for revealed project-file results.
 pub const PROJECT_KIND: &str = "Project files";
+pub const SYMBOL_KIND: &str = "Symbols";
+pub const RESULT_KIND: &str = "Search results";
 
-const ACTION_PREFIX: &str = "code.node:";
+/// The index is complete, while verification is deliberately bounded. A common
+/// query must never inspect unbounded source previews on the UI thread.
+const MAX_QUERY_CANDIDATES: usize = DEFAULT_SEARCH_CANDIDATE_LIMIT;
 
-/// One searchable file entry snapshotted from the session.
-struct FileEntry {
-    node: NodeId,
-    name: String,
-    path: String,
-    open: bool,
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    pub node: NodeId,
+    pub resource_id: String,
+    pub name: String,
+    pub path: String,
+    pub open: bool,
 }
 
-/// A [`SearchProvider`] over a snapshot of the open buffers + revealed project
-/// files.
+struct SearchEntry {
+    result: SearchResult,
+    title: String,
+}
+
+/// A complete snapshot of every Code resource which participates in global
+/// search. `entries` is intentionally never capped: an omitted resource cannot
+/// be found.
 pub struct FileSearchProvider {
-    files: Vec<FileEntry>,
+    entries: Vec<SearchEntry>,
+    /// qOS's shared Unicode-aware complete-corpus text index. Keeping this in
+    /// the toolkit makes search semantics, memory behavior and candidate
+    /// bounds consistent for every app.
+    index: SearchTextIndex,
 }
 
 impl FileSearchProvider {
-    /// Snapshot the current session into a provider.
-    pub fn new(session: &Session) -> Self {
-        let open_nodes: HashSet<NodeId> = session.open.iter().map(|b| b.node).collect();
-        let mut files = Vec::new();
-
-        // Open tabs first, so a currently-edited file leads and carries its own
-        // buffer name (a scratch buffer may have no project node).
-        for b in &session.open {
-            let path = b
-                .path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    session
-                        .project
-                        .get(b.node)
-                        .map(|_| session.project.path_of(b.node))
-                })
-                .unwrap_or_else(|| b.name.clone());
-            files.push(FileEntry {
-                node: b.node,
-                name: b.name.clone(),
-                path,
-                open: true,
-            });
-        }
-
-        // Then every revealed file node that is not already an open tab.
-        for (id, tn) in &session.project.nodes {
-            if tn.is_folder() || open_nodes.contains(id) {
-                continue;
+    pub fn new(
+        files: Vec<FileEntry>,
+        symbols: Vec<SymbolRef>,
+        results: Vec<SearchResultRef>,
+    ) -> Self {
+        let capacity = files.len() + symbols.len() + results.len();
+        let mut entries = Vec::with_capacity(capacity);
+        let mut texts = Vec::with_capacity(capacity);
+        for file in files {
+            let kind = if file.open { OPEN_KIND } else { PROJECT_KIND };
+            let mut result = SearchResult::for_action(
+                kind,
+                file.name.clone(),
+                crate::actions::open_file_address(&file.resource_id),
+            )
+            .with_icon(Icon::FileCode);
+            if file.path != file.name && !file.path.is_empty() {
+                result = result.with_subtitle(file.path.clone());
             }
-            files.push(FileEntry {
-                node: *id,
-                name: tn.name.clone(),
-                path: session.project.path_of(*id),
-                open: false,
+            if file.open {
+                result = result.with_score(1);
+            }
+            entries.push(SearchEntry {
+                title: normalize_search_text(&file.name),
+                result,
+            });
+            texts.push(format!("{}\n{}", file.name, file.path));
+        }
+        for symbol in symbols {
+            let address = crate::actions::open_symbol_address(&symbol);
+            let subtitle = format!("{}:{}", symbol.path, symbol.line + 1);
+            texts.push(format!("{}\n{}", symbol.name, symbol.path));
+            entries.push(SearchEntry {
+                title: normalize_search_text(&symbol.name),
+                result: SearchResult::for_action(SYMBOL_KIND, symbol.name, address)
+                    .with_subtitle(subtitle)
+                    .with_icon(Icon::Code),
             });
         }
-
-        Self { files }
-    }
-
-    /// The `action_id` for a file node — what a chosen row hands back.
-    pub fn action_id(node: NodeId) -> String {
-        format!("{ACTION_PREFIX}{node}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back into a node id.
-    pub fn parse_action_id(action_id: &str) -> Option<NodeId> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .and_then(|rest| rest.parse::<NodeId>().ok())
+        for result_ref in results {
+            let address = crate::actions::reveal_result_address(&result_ref);
+            let subtitle = format!("{}:{}", result_ref.path, result_ref.line + 1);
+            texts.push(format!("{}\n{}", result_ref.preview, result_ref.path));
+            entries.push(SearchEntry {
+                title: normalize_search_text(&result_ref.preview),
+                result: SearchResult::for_action(RESULT_KIND, result_ref.preview, address)
+                    .with_subtitle(subtitle)
+                    .with_icon(Icon::Search),
+            });
+        }
+        let index = SearchTextIndex::new(texts);
+        Self { entries, index }
     }
 }
 
 impl SearchProvider for FileSearchProvider {
     fn name(&self) -> &'static str {
-        // Rows carry their own kind ("Open files" / "Project files"); this is
-        // the default/diagnostic label.
-        "Files"
+        "Code"
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let q = query.to_lowercase();
-        self.files
-            .iter()
-            .filter(|f| {
-                q.is_empty()
-                    || f.name.to_lowercase().contains(&q)
-                    || f.path.to_lowercase().contains(&q)
-            })
-            .map(|f| {
-                let kind = if f.open { OPEN_KIND } else { PROJECT_KIND };
-                let mut r = SearchResult::new(kind, f.name.clone(), Self::action_id(f.node))
-                    .with_icon(Icon::FileCode);
-                // The breadcrumb path disambiguates same-named files; skip it
-                // when it is just the bare name.
-                if f.path != f.name && !f.path.is_empty() {
-                    r = r.with_subtitle(f.path.clone());
-                }
-                // Float open tabs a notch above equally-matching project files.
-                if f.open {
-                    r = r.with_score(1);
-                }
-                r
-            })
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let query = normalize_search_text(query.trim());
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        if limit == 0 {
+            return Vec::new();
+        }
+        if query.is_empty() {
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|entry| entry.result.clone())
+                .collect();
+        }
+        let mut matches = self
+            .index
+            .matching_ids(&query, MAX_QUERY_CANDIDATES)
+            .into_iter()
+            .filter_map(|index| self.entries.get(index))
+            .collect::<Vec<_>>();
+        // The shared index deliberately keeps partial matches. Within its hard
+        // candidate bound, a title-prefix match is the most direct file/symbol
+        // intent and should beat a path-only partial.
+        matches.sort_by_key(|entry| {
+            (
+                !entry.title.starts_with(&query),
+                !entry.title.contains(&query),
+            )
+        });
+        matches
+            .into_iter()
+            .take(limit)
+            .map(|entry| entry.result.clone())
             .collect()
     }
+}
+
+/// Extract common declaration forms without requiring an optional LSP. The
+/// coordinates are character-based, like the editor and Automerge text model.
+pub fn symbols_in(file_id: &str, path: &str, text: &str) -> Vec<SymbolRef> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(line, source)| {
+            let trimmed = source.trim_start();
+            let prefixes = [
+                "pub fn ",
+                "fn ",
+                "pub struct ",
+                "struct ",
+                "pub enum ",
+                "enum ",
+                "pub trait ",
+                "trait ",
+                "class ",
+                "def ",
+                "function ",
+                "interface ",
+                "type ",
+                "const ",
+            ];
+            let rest = prefixes
+                .iter()
+                .find_map(|prefix| trimmed.strip_prefix(prefix))?;
+            let name = rest
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .next()
+                .unwrap_or("");
+            if name.is_empty() {
+                return None;
+            }
+            let col = source.chars().take_while(|ch| ch.is_whitespace()).count()
+                + trimmed.find(name).unwrap_or(0);
+            Some(SymbolRef {
+                file_id: file_id.to_string(),
+                name: name.to_string(),
+                path: path.to_string(),
+                line,
+                col,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::SearchRegistry;
 
-    fn sample_session() -> Session {
-        crate::app::CodeApp::with_sample()
-            .session_for_test()
-            .clone()
+    fn file(node: usize, name: &str, path: &str) -> FileEntry {
+        FileEntry {
+            node,
+            resource_id: format!("test-file-{node}"),
+            name: name.into(),
+            path: path.into(),
+            open: false,
+        }
     }
 
     #[test]
-    fn provider_finds_a_project_file_by_name() {
-        let session = sample_session();
-        let provider = FileSearchProvider::new(&session);
-        // Every non-folder node should be findable by browsing.
-        let browse = provider.search("");
-        assert!(!browse.is_empty(), "the sample project has revealed files");
-        assert!(
-            browse
-                .iter()
-                .all(|r| r.kind == OPEN_KIND || r.kind == PROJECT_KIND)
+    fn symbol_extraction_keeps_exact_character_location() {
+        let symbols = symbols_in(
+            "test-file",
+            "src/main.rs",
+            "  pub fn crab() {}\nlet x = 1;\n",
         );
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "crab");
+        assert_eq!((symbols[0].line, symbols[0].col), (0, 9));
     }
 
     #[test]
-    fn action_id_round_trips_to_a_real_node() {
-        let session = sample_session();
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(FileSearchProvider::new(&session)));
-        let hit = registry
-            .query("")
-            .into_iter()
-            .next()
-            .expect("something is browsable");
-        let node = FileSearchProvider::parse_action_id(&hit.action_id)
-            .expect("action_id parses to a node");
-        assert!(
-            session.project.get(node).is_some(),
-            "the id resolves to a real project node"
+    fn complete_projection_keeps_a_late_file_findable() {
+        let mut files = (0..20_000)
+            .map(|node| {
+                file(
+                    node,
+                    &format!("file-{node}.rs"),
+                    &format!("src/file-{node}.rs"),
+                )
+            })
+            .collect::<Vec<_>>();
+        files.push(file(20_000, "needle.rs", "deep/needle.rs"));
+        let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
+        let found = provider.search_limited("deep/needle", 10);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "needle.rs");
+    }
+
+    #[test]
+    fn partial_matches_are_not_hidden_by_exact_file_names() {
+        let provider = FileSearchProvider::new(
+            vec![
+                file(1, "needle.rs", "src/needle.rs"),
+                file(2, "main.rs", "src/contains-needle-here.rs"),
+            ],
+            Vec::new(),
+            Vec::new(),
         );
+        let found = provider.search_limited("needle", 10);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].title, "needle.rs");
+        assert_eq!(found[1].title, "main.rs");
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(FileSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(FileSearchProvider::parse_action_id("code.node:not-a-number").is_none());
+    fn unicode_and_embedded_nul_grams_are_unambiguous() {
+        let provider = FileSearchProvider::new(
+            vec![
+                file(1, "éclair.rs", "src/éclair.rs"),
+                file(2, "nul.rs", "src/a\0b.rs"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(provider.search_limited("ÉCL", 10).len(), 1);
+        assert_eq!(provider.search_limited("a\0b", 10).len(), 1);
     }
 
     #[test]
-    fn widget_hooks_find_then_open_the_file() {
-        use automerge::{AutoCommit, ROOT};
-        use ui::widget::Widget;
-
-        let mut app = crate::app::CodeApp::with_sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-
-        // Browse the app's OWN provider for a Project-files row (a file not
-        // already the active tab), then activate it.
-        let (action_id, node) = {
-            let providers = app.search_providers();
-            assert!(
-                !providers.is_empty(),
-                "code_editor publishes a search provider"
-            );
-            let hit = providers[0]
-                .search("")
-                .into_iter()
-                .find(|r| r.kind == PROJECT_KIND)
-                .expect("a project file is browsable through the real hook");
-            let node = FileSearchProvider::parse_action_id(&hit.action_id).unwrap();
-            (hit.action_id, node)
-        };
-
-        app.activate_search_result(&action_id, &mut doc, &ROOT);
+    fn queries_are_bounded_and_zero_limit_never_materialises_rows() {
+        let files = (0..(MAX_QUERY_CANDIDATES * 4))
+            .map(|node| {
+                file(
+                    node,
+                    &format!("aaaa-{node}.rs"),
+                    &format!("src/aaaa-{node}.rs"),
+                )
+            })
+            .collect();
+        let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
+        assert!(provider.search_limited("a", 0).is_empty());
         assert_eq!(
-            app.active_file_node(),
-            Some(node),
-            "activation opened/focused the chosen file"
+            provider
+                .search_limited("a", DEFAULT_SEARCH_RESULT_LIMIT)
+                .len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
         );
     }
 }

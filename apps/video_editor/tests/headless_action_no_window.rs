@@ -1,3 +1,11 @@
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "headless integration fixture asserts setup failures directly"
+)]
+
 //! Driving the video editor through its actions with **no window at all** —
 //! no compositor, no surface, no GPU, no widget tree on the driving side.
 //!

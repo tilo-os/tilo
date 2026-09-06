@@ -8,6 +8,7 @@
 , makeWrapper
 , bubblewrap
 , xdg-dbus-proxy
+, xwayland-satellite
 , pam
 , libxkbcommon
 , wayland
@@ -41,6 +42,9 @@ rustPlatform.buildRustPackage rec {
     "-p" "launcher"
     "-p" "qos-unlock-helper"
     "-p" "shell"
+    "--bin" "qos-launcher"
+    "--bin" "qos-unlock-helper"
+    "--bin" "shell"
     "--no-default-features"
   ];
   cargoTestFlags = cargoBuildFlags;
@@ -74,11 +78,14 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/pam/qos-unlock" "$out/etc/pam.d/qos-unlock"
     install -Dm644 "$p/wayland-sessions/qos.desktop" "$out/share/wayland-sessions/qos.desktop"
     install -Dm644 "$p/portal/qos.portal" "$out/share/xdg-desktop-portal/portals/qos.portal"
+    install -Dm644 "$p/portal/nirios-portals.conf" "$out/share/xdg-desktop-portal/nirios-portals.conf"
+    install -Dm644 "$p/systemd-user/qos-graphical-session.target" "$out/share/systemd/user/qos-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/qos-session/LICENSE"
 
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/qos-session" \
-      --replace-fail 'QOS_SHELL=/usr/bin/qos-shell' "QOS_SHELL=$out/bin/qos-shell"
+      --replace-fail 'QOS_SHELL=/usr/bin/qos-shell' "QOS_SHELL=$out/bin/qos-shell" \
+      --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl"
     substituteInPlace "$out/share/wayland-sessions/qos.desktop" \
       --replace-fail 'Exec=/usr/libexec/qos-session' "Exec=$out/libexec/qos-session" \
       --replace-fail 'TryExec=/usr/bin/qos-shell' "TryExec=$out/bin/qos-shell"
@@ -91,12 +98,13 @@ rustPlatform.buildRustPackage rec {
     # tools and PAM library into wrappers so both direct package installs and
     # the NixOS module produce a usable session.
     wrapProgram "$out/bin/qos-shell" \
-      --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy ]}
+      --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy xwayland-satellite ]}
     wrapProgram "$out/bin/qos-launcher" \
       --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy ]}
     wrapProgram "$out/libexec/qos-unlock-helper" \
       --set QOS_PAM_LIB ${lib.getLib pam}/lib/libpam.so.0
     grep -F '${bubblewrap}/bin' "$out/bin/qos-shell"
+    grep -F '${xwayland-satellite}/bin' "$out/bin/qos-shell"
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/qos-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/qos-unlock-helper"
   '';

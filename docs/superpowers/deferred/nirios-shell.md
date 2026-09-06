@@ -41,6 +41,10 @@ Live data-table co-editing; shared-canvas drawing; follow-mode / remote-viewport
 A `quick-ui`-based browser replacing the Servo/iced `quick-browser`. Out of scope.
 **Design constraint kept in v1:** browser stub uses same `TileContent::Stub` mechanism that any future app can use.
 
+**Later status:** completed by `apps/browser`; the shell now hydrates the real
+`BrowserWidget` contract and production launches its packaged WPE process. The
+paragraph above remains as the v1 historical constraint, not current behavior.
+
 ### 7. Accessibility & RTL
 AT-SPI integration on Linux, full keyboard nav audit, high-contrast theme, RTL layouts.
 **Design constraint kept in v1:** no hard-coded left/right directional assumptions in layout widgets where they can be avoided; focus model is already directional-neutral.

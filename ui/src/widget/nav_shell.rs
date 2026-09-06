@@ -106,6 +106,10 @@ pub struct NavShell {
 
     breakpoint: f64,
     sidebar_width: f64,
+    /// Optional wider width for the narrow overlay drawer. This lets a
+    /// destination list remain comfortably usable on a phone without making
+    /// its persistent desktop sidebar unnecessarily wide.
+    narrow_sidebar_width: Option<f64>,
     overview_width: f64,
 
     /// Reveal easing for the sidebar (collapse when docked, slide when
@@ -158,6 +162,7 @@ impl NavShell {
             detail: Some(detail),
             breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
             sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
+            narrow_sidebar_width: None,
             overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
             sidebar_flap: FlapState::open_when_docked(),
             pane: NavPane::Overview,
@@ -212,6 +217,14 @@ impl NavShell {
     #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
+        self
+    }
+
+    /// Override the sidebar width only while it is an overlay drawer below
+    /// the shell breakpoint. The normal docked width remains unchanged.
+    #[must_use]
+    pub fn with_narrow_sidebar_width(mut self, px: f64) -> Self {
+        self.narrow_sidebar_width = Some(px);
         self
     }
 
@@ -440,7 +453,12 @@ impl NavShell {
         let r = self.rect;
         let w = r.width();
         let has_sidebar = self.has_sidebar();
-        let sw = self.sidebar_width.min(w);
+        let configured_sidebar_width = if self.mode() == ShellMode::Narrow {
+            self.narrow_sidebar_width.unwrap_or(self.sidebar_width)
+        } else {
+            self.sidebar_width
+        };
+        let sw = configured_sidebar_width.min(w);
 
         // Sidebar-plus-content: the one content pane fills the region at
         // every width; narrow turns the sidebar into a drawer *over* it
@@ -671,6 +689,21 @@ impl NavShell {
     /// calls), so the slides actually play and settle to no frames at rest
     /// (HIG §5).
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        if theme.reduce_motion {
+            let sidebar_before = self.sidebar_flap.reveal();
+            let push_before = self.push.reveal();
+            self.sidebar_flap.settle(self.sidebar_split_layout());
+            self.push.settle(SplitLayout::Docked);
+            self.animating = false;
+            self.last_tick = Some(Instant::now());
+            if self.sidebar_flap.reveal().to_bits() != sidebar_before.to_bits()
+                || self.push.reveal().to_bits() != push_before.to_bits()
+            {
+                self.recompute_rects();
+                self.place_children(theme, text_renderer);
+            }
+            return;
+        }
         let now = Instant::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
@@ -1402,6 +1435,38 @@ mod tests {
     }
 
     #[test]
+    fn narrow_drawer_width_can_exceed_the_docked_sidebar_without_shrinking_content() {
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(Text::new("places")),
+            Box::new(Text::new("files")),
+        )
+        .with_sidebar_width(200.0)
+        .with_narrow_sidebar_width(320.0);
+        lay_out(&mut ns, 390.0, 640.0);
+        ns.snap();
+        assert_eq!(
+            ns.overview_rect().width(),
+            390.0,
+            "closed content stays full width"
+        );
+        ns.open_sidebar();
+        ns.snap();
+        assert_eq!(ns.sidebar_rect().width(), 320.0);
+        assert_eq!(
+            ns.overview_rect().width(),
+            390.0,
+            "the overlay drawer never displaces the live content pane"
+        );
+        lay_out(&mut ns, 1200.0, 640.0);
+        ns.snap();
+        assert_eq!(
+            ns.sidebar_rect().width(),
+            200.0,
+            "desktop docking stays compact"
+        );
+    }
+
+    #[test]
     fn wide_sidebar_over_content_docks_beside_a_full_height_content_pane() {
         let ns = sidebar_content_shell(1200.0);
         assert_eq!(ns.mode(), ShellMode::Wide);
@@ -1752,6 +1817,32 @@ mod tests {
             !ns.needs_animation_frame(),
             "a settled shell requests no frames"
         );
+    }
+
+    #[test]
+    fn reduced_motion_snaps_push_and_drawer_to_their_targets() {
+        let mut ns = shell(420.0, true);
+        ns.snap_pane(NavPane::Overview);
+        ns.show_detail();
+        ns.open_sidebar();
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let permissions = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &permissions,
+        );
+
+        assert_eq!(ns.push.reveal(), 1.0);
+        assert_eq!(ns.sidebar_flap.reveal(), 1.0);
+        assert!(!ns.needs_animation_frame());
     }
 
     #[test]

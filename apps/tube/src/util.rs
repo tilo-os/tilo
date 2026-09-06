@@ -85,22 +85,7 @@ pub fn seed_gradient(seed: &str) -> (Color, Color) {
 /// Format a view/subscriber count the way every video site does:
 /// `1.2M`, `874K`, `12K`, `342`.
 pub fn human_count(n: u64) -> String {
-    // Display-only approximation to one decimal place; a view/subscriber
-    // count will never realistically approach 2^53, where u64->f64 would
-    // start losing precision.
-    #[allow(clippy::cast_precision_loss)]
-    let n_f64 = n as f64;
-    if n >= 1_000_000_000 {
-        format!("{:.1}B", n_f64 / 1_000_000_000.0)
-    } else if n >= 1_000_000 {
-        format!("{:.1}M", n_f64 / 1_000_000.0)
-    } else if n >= 10_000 {
-        format!("{}K", n / 1_000)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n_f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
+    ui::format::compact_count(n)
 }
 
 /// `views` with the trailing noun, e.g. `1.2M views`.
@@ -110,14 +95,7 @@ pub fn human_views(n: u64) -> String {
 
 /// Seconds → `h:mm:ss` or `m:ss` (no leading hour when under an hour).
 pub fn duration_hms(secs: u32) -> String {
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
-    }
+    ui::format::timecode(u64::from(secs))
 }
 
 /// Seconds → `mm:ss` always two-field, used by the scrubber time labels.
@@ -125,10 +103,8 @@ pub fn clock(secs: f64) -> String {
     // Clamped non-negative immediately above; truncating the fractional
     // second is intended for a `mm:ss` display label.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let secs = secs.max(0.0) as u32;
-    let m = secs / 60;
-    let s = secs % 60;
-    format!("{m}:{s:02}")
+    let secs = secs.max(0.0) as u64;
+    ui::format::timecode(secs)
 }
 
 #[cfg(test)]
@@ -140,6 +116,7 @@ mod tests {
         assert_eq!(human_count(342), "342");
         assert_eq!(human_count(1_500), "1.5K");
         assert_eq!(human_count(12_000), "12K");
+        assert_eq!(human_count(999_999), "1M");
         assert_eq!(human_count(1_200_000), "1.2M");
         assert_eq!(human_count(2_400_000_000), "2.4B");
     }
@@ -149,6 +126,7 @@ mod tests {
         assert_eq!(duration_hms(75), "1:15");
         assert_eq!(duration_hms(3_661), "1:01:01");
         assert_eq!(duration_hms(9), "0:09");
+        assert_eq!(clock(3_661.9), "1:01:01");
     }
 
     #[test]

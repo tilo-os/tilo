@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
-%{!?qos_version:%global qos_version 0.1.3}
+%{!?qos_version:%global qos_version 0.1.5}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -33,8 +33,8 @@ License:        AGPL-3.0-only
 URL:            https://code.podesta.ai/qos/qos
 Source0:        %{name}-%{version}.tar.gz
 
-# The payload contains native ELF binaries. CI builds it natively on both
-# release architectures; rpmbuild rejects every other architecture.
+# The payload contains native ELF binaries. CI builds it on each enabled
+# native release architecture; rpmbuild rejects every other architecture.
 ExclusiveArch:  x86_64 aarch64
 
 # Everything below is dlopen()ed at runtime, so the automatic ELF dependency
@@ -45,6 +45,23 @@ ExclusiveArch:  x86_64 aarch64
 #
 # The unlock helper resolves libpam itself (see its `pam` module).
 Requires:       pam
+# Every qOS-packaged application is launched inside a bubblewrap namespace.
+# This is a hard runtime dependency even though it is invoked by name and
+# therefore invisible to RPM's ELF dependency generator. Existing host apps
+# deliberately keep their original confinement (or lack of it).
+Requires:       bubblewrap
+# Sandboxed qOS applications reach file choosers and other desktop APIs only
+# through the portal frontend and a filtered proxy. Without either helper the
+# compositor starts, but ordinary app workflows are incomplete.
+Requires:       xdg-desktop-portal
+Requires:       xdg-dbus-proxy
+# The wrapper owns graphical-session.target while qOS is logged in. This makes
+# standard session services available and stops them before another desktop
+# starts.
+Requires:       systemd
+# Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
+# preserving applications the user installed before adding qOS.
+Requires:       xwayland-satellite
 # wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
 Requires:       vulkan-loader
 # libEGL.so.1, for the DRM backend's buffer path. Require the ABI capability,
@@ -56,9 +73,6 @@ Requires:       libEGL.so.1()(64bit)
 # its ICD from the proprietary or nvidia-open driver package instead, and
 # depending on Mesa there would be wrong.
 Recommends:     mesa-vulkan-drivers
-# The frontend our backend registers against. Recommends, not Requires: the
-# session runs without it, sandboxed apps just lose their file chooser.
-Recommends:     xdg-desktop-portal
 # qOS network controls use NetworkManager's nmcli API. The session remains
 # usable without it and reports unavailable controls, so keep this soft for
 # hosts that deliberately use another network stack.
@@ -74,10 +88,10 @@ into the paths a Wayland login manager and the compositor itself expect, so
 qOS can be selected as a session on a host that runs some other desktop the
 rest of the time.
 
-This is not the qOS operating system image. It installs a session, not a
-boot chain: no FUSE workspace mount, no greeter, no app registry seeded by
-the image. The compositor degrades to an empty app list rather than failing
-when those are absent.
+This is not the qOS operating system image. It installs a session, not a boot
+chain: no FUSE workspace mount, no greeter, and no app registry seeded by the
+image. Existing XDG and Flatpak applications remain available as clearly
+labeled, unconfined host apps; rootless Xwayland keeps legacy X11 apps usable.
 
 %package devel
 Summary:        %{qos_summary} — developer session entry
@@ -115,11 +129,15 @@ install -Dpm 0644 pam/qos-unlock            %{buildroot}%{_sysconfdir}/pam.d/qos
 install -Dpm 0644 wayland-sessions/qos.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/qos.desktop
 
-# Portal backend. `UseIn=nirios` in qos.portal is what makes
-# xdg-desktop-portal route a sandboxed app's file chooser here, and only
-# inside a qOS session — under any other desktop these files sit inert.
+# Portal backend. The desktop-specific preference file makes
+# xdg-desktop-portal route requests here only inside a qOS session; the
+# descriptor declares the bus name and interfaces that implementation owns.
 install -Dpm 0644 portal/qos.portal \
                   %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
+install -Dpm 0644 portal/nirios-portals.conf \
+                  %{buildroot}%{_datadir}/xdg-desktop-portal/nirios-portals.conf
+install -Dpm 0644 systemd-user/qos-graphical-session.target \
+                  %{buildroot}%{_userunitdir}/qos-graphical-session.target
 install -Dpm 0644 license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
@@ -156,7 +174,10 @@ for wrapper in qos-session qos-session-dev; do
 done
 # The portal backend is only reachable if something claims the session's name.
 grep -q '^UseIn=nirios$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
+grep -q '^default=qos$' %{buildroot}%{_datadir}/xdg-desktop-portal/nirios-portals.conf
 grep -q '^DesktopNames=nirios$' %{buildroot}%{_datadir}/wayland-sessions/qos.desktop
+grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
+    %{buildroot}%{_userunitdir}/qos-graphical-session.target
 # The compositor owns the portal bus name in-process. A separate activation
 # service would race it with a backend attached to an empty workspace.
 test ! -e %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
@@ -170,6 +191,8 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %config(noreplace) %{_sysconfdir}/pam.d/qos-unlock
 %{_datadir}/wayland-sessions/qos.desktop
 %{_datadir}/xdg-desktop-portal/portals/qos.portal
+%{_datadir}/xdg-desktop-portal/nirios-portals.conf
+%{_userunitdir}/qos-graphical-session.target
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %files devel
@@ -177,6 +200,17 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Sat Sep 05 2026 qOS <qos@code.podesta.ai> - 0.1.5-1
+- Keep ARM64 packaging available behind a native-runner capability switch.
+
+* Fri Sep 04 2026 qOS <qos@code.podesta.ai> - 0.1.4-1
+- Require Bubblewrap for sandboxed application launches.
+- Require the portal frontend and filtered D-Bus proxy for sandboxed apps.
+- Build only the compositor binary from the shell package.
+- Own the standard graphical-session lifecycle while qOS is logged in.
+- Keep X11-only host applications usable through rootless Xwayland.
+- Select the qOS portal backend with a desktop-specific preference file.
+
 * Thu Sep 03 2026 qOS <qos@code.podesta.ai> - 0.1.3-1
 - Publish release assets with a dedicated repository-scoped credential
 

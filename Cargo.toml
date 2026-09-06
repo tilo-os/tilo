@@ -297,7 +297,8 @@ futures-util = "0.3"
 # member picks rustls explicitly.
 reqwest = { version = "0.12", default-features = false }
 zstd = "0.13"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
 url = "2"
 
 # ---------------------------------------------------------------------------

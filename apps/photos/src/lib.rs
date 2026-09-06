@@ -66,6 +66,7 @@ pub mod doc;
 pub mod model;
 pub mod pixels;
 pub mod reference;
+pub mod search;
 pub mod strings;
 
 pub use app::PhotosApp;
@@ -81,7 +82,16 @@ pub fn app_root() -> Box<dyn Widget> {
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
 /// them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &["empty", "opened", "cropping", "edited"];
+pub const SHOT_SCENARIOS: &[&str] = &[
+    "empty",
+    "loading",
+    "error",
+    "opened",
+    "library",
+    "album-manage",
+    "cropping",
+    "edited",
+];
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
@@ -162,6 +172,26 @@ pub fn seed_scenario(
         return;
     }
 
+    // These two poses exercise the honest states a collaborator can see
+    // before their content arrives, and after bytes turn out not to be an
+    // image.  They intentionally write only tiny document metadata: neither
+    // state fabricates picture bytes merely to make a screenshot attractive.
+    if scenario == "loading" {
+        let open = OpenImage::from_path("/photos-shots/not-here-yet.png", 1200, 800)
+            .with_content("0".repeat(64));
+        PhotosDoc::set_image(doc, Some(&open));
+        return;
+    }
+    if scenario == "error" {
+        let path = dir.join("unreadable-image.png");
+        std::fs::create_dir_all(dir).ok();
+        if std::fs::write(&path, b"this is not an image").is_ok() {
+            let open = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
+            PhotosDoc::set_image(doc, Some(&open));
+        }
+        return;
+    }
+
     let path = dir.join("harbour.png");
     let pattern = shots_pattern(1200, 800);
     if let Some(png) = pixels::encode_png(&pattern) {
@@ -173,11 +203,52 @@ pub fn seed_scenario(
     app.open_path(doc, &path.to_string_lossy());
 
     match scenario {
-        // Turned a quarter. The zoom that frames the crop is applied by the
-        // caller between layout passes — the viewer does not exist until the
-        // first `sync`, so there is nothing here yet to zoom.
+        // A library has useful context only when it contains more than the
+        // active image.  These rows intentionally share the generated image
+        // bytes: the gallery exercises the card layout and bounded
+        // materialisation without smuggling sample assets into the live app.
+        "library" | "album-manage" => {
+            let mut library = PhotosDoc::library(doc);
+            let mut travel = Vec::new();
+            for name in [
+                "Harbour dusk",
+                "Summer trail",
+                "Museum light",
+                "Rainy market",
+            ] {
+                let sample_path = dir.join(format!("{name}.png"));
+                if let Some(bytes) = pixels::encode_png(&pattern) {
+                    let _ = std::fs::write(&sample_path, bytes);
+                }
+                let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
+                let mut photo = crate::model::LibraryPhoto::from_image(image);
+                photo.favorite = name == "Summer trail";
+                travel.push(photo.id.clone());
+                library.add_photo(photo);
+            }
+            library.albums.push(crate::model::Album {
+                id: "photos.album:travel".into(),
+                name: "Travel".into(),
+                photo_ids: travel,
+            });
+            PhotosDoc::set_library(doc, &library);
+            if scenario == "album-manage" {
+                app.show_album_editor_for_shot(doc);
+            } else {
+                app.show_library();
+            }
+        }
+        // A completed crop, rendered fit-to-canvas. A screenshot must show a
+        // truthful edit, not a deliberately zoomed inspection state that can
+        // be mistaken for a broken initial fit on a narrow viewport.
         "cropping" => {
-            PhotosDoc::set_edits(doc, &PhotosDoc::edits(doc).rotated_right());
+            let e = PhotosDoc::edits(doc).cropped_from_view(Rect01 {
+                x: 0.12,
+                y: 0.08,
+                w: 0.76,
+                h: 0.84,
+            });
+            PhotosDoc::set_edits(doc, &e);
         }
         // A crop and a turn together, which is the pair worth showing: the
         // crop is stored against the *original*, so it keeps naming the same
@@ -197,10 +268,3 @@ pub fn seed_scenario(
         _ => {}
     }
 }
-
-/// Zoom the `cropping` scenario applies once the viewer has been laid out.
-///
-/// Framing a crop is what the viewport is *for*, so the scenario named for it
-/// has to actually be zoomed in — otherwise it shows the whole photograph and
-/// is indistinguishable from a plain rotate.
-pub const CROPPING_SCENARIO_ZOOM: f32 = 2.2;

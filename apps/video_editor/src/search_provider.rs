@@ -1,175 +1,251 @@
-//! The open project as a qOS global-search source.
+//! The open project as a complete, bounded qOS global-search source.
 //!
-//! CLAUDE.md names search a system service: an app registers a provider and a
-//! renderer per resource type, so a hit opens the app *at that position*. The
-//! editor had neither, which meant the one thing a person most often wants to
-//! find — "where was that shot of the coastline?", "where did I put the
-//! marker about the cut?" — was reachable only by scrolling the timeline.
-//!
-//! Three kinds are indexed, chosen because each is something a person names
-//! and then has to find again:
-//!
-//!   * **Markers** — project and per-clip. These exist precisely to be
-//!     navigated back to, so they are the most valuable of the three, and
-//!     their notes are searched as well as their names.
-//!   * **Titles** — their text is the one part of a timeline that is
-//!     literally words, so it is what someone will type.
-//!   * **Media** — by the name it carries in the bin.
-//!
-//! Clips are *not* indexed separately from their media: a clip's searchable
-//! text is its source's name, so indexing both would return the same words
-//! twice under two headings. A hit on media carries the timeline position of
-//! its first clip, which is what makes it a place rather than a list entry.
-//!
-//! The query path touches no decoder and no disk — it reads the in-memory
-//! `Project`, which `sync` already keeps current.
+//! Timeline data is a durable namespace, not a viewport. Do not use
+//! `DEFAULT_SEARCH_INDEX_LIMIT` here: a marker near the end of a large
+//! collaborative project must be as discoverable as the first one. The shared
+//! [`SearchCatalog`] retains the complete in-memory projection and bounds each
+//! query page by work and result count instead.
+
+use std::collections::HashMap;
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult, fuzzy_score};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
-use crate::model::Project;
+use crate::model::{Clip, Marker, MediaItem, Project, Track};
 use crate::timecode;
 
-/// Result-group headers. Separate kinds so a mixed query reads as sections
-/// rather than one flat list of unrelated things.
+/// Result-group headers. Separate kinds make a mixed query readable rather
+/// than a flat list of unrelated timeline things.
 pub const MARKER_KIND: &str = "Timeline markers";
-pub const TITLE_KIND: &str = "Titles";
+pub const CLIP_KIND: &str = "Timeline clips";
+pub const TRACK_KIND: &str = "Tracks";
 pub const MEDIA_KIND: &str = "Media";
 
-/// `action_id` prefix for a row that seeks to an instant.
+/// A complete, cheap-to-clone catalogue over the current document snapshot.
 ///
-/// The payload is the timeline position in milliseconds rather than an id,
-/// because that is what every one of these rows resolves to — a place to put
-/// the playhead. An id would need a second lookup that could fail after the
-/// thing was deleted, and the answer to "seek to a marker that is gone" is
-/// not "do nothing", it is "do not offer the row".
-const SEEK_PREFIX: &str = "video-editor.seek:";
-
-/// Turn a chosen row's `action_id` back into the instant to seek to.
-///
-/// `None` for anything that is not one of ours, so a host that hands us
-/// somebody else's row is refused rather than seeking to zero.
-pub fn parse_action_id(action_id: &str) -> Option<f64> {
-    let ms: u64 = action_id.strip_prefix(SEEK_PREFIX)?.parse().ok()?;
-    // Milliseconds, so a whole-number seek is exact rather than accumulating
-    // the error a float-seconds round trip would.
-    Some(ms as f64 / 1000.0)
-}
-
-fn seek_id(at: f64) -> String {
-    format!("{SEEK_PREFIX}{}", (at.max(0.0) * 1000.0).round() as u64)
-}
-
-/// A [`SearchProvider`] over a snapshot of the open project.
+/// The project is already resident for rendering, so building this projection
+/// never opens a decoder or reads a file. Search text is deliberately not
+/// display-truncated: a word late in a caption or marker note remains
+/// findable. `SearchCatalog` only materialises matching result rows.
+#[derive(Clone)]
 pub struct ProjectSearchProvider {
-    project: Project,
+    catalog: SearchCatalog,
 }
 
 impl ProjectSearchProvider {
-    /// Snapshot the current project into a provider.
+    /// Index every live navigable resource in the supplied project snapshot.
     pub fn new(project: &Project) -> Self {
-        Self {
-            project: project.clone(),
+        let provider = Self {
+            catalog: SearchCatalog::new("Video editor"),
+        };
+
+        let media: HashMap<_, _> = project.media.iter().map(|item| (item.id, item)).collect();
+        let tracks: HashMap<_, _> = project
+            .tracks
+            .iter()
+            .map(|track| (track.id, track))
+            .collect();
+        let mut media_uses = HashMap::new();
+        for clip in &project.clips {
+            *media_uses.entry(clip.media).or_insert(0usize) += 1;
         }
+
+        for marker in &project.markers {
+            provider.index_project_marker(marker);
+        }
+        for track in &project.tracks {
+            provider.index_track(track);
+        }
+        for clip in &project.clips {
+            // A dangling placement cannot be revealed coherently, so never
+            // publish a canonical action for it. The action tree makes the
+            // same refusal after a concurrent delete.
+            let (Some(item), Some(track)) = (media.get(&clip.media), tracks.get(&clip.track))
+            else {
+                continue;
+            };
+            provider.index_clip(clip, item, track);
+            for marker in &clip.markers {
+                provider.index_clip_marker(clip, marker, item);
+            }
+        }
+        for item in &project.media {
+            provider.index_media(item, media_uses.get(&item.id).copied().unwrap_or(0));
+        }
+        provider
     }
 
-    /// Where a media item first appears on the timeline, if it does.
-    fn first_use(&self, media: crate::model::MediaId) -> Option<f64> {
-        self.project
-            .clips
-            .iter()
-            .filter(|c| c.media == media)
-            .map(|c| c.start)
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    fn put(&self, searchable: String, result: SearchResult) {
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        // `for_action` is constructed from this exact stable id below. If a
+        // future edit breaks that invariant, omit the row instead of creating
+        // an opaque navigation path outside the action/resource authority.
+        let _ = self.catalog.upsert(address.resource, searchable, result);
+    }
+
+    fn index_project_marker(&self, marker: &Marker) {
+        let title = marker_label(marker);
+        let subtitle = marker_subtitle(marker.t, marker);
+        self.put(
+            format!("{}\0{}", title, marker.note),
+            SearchResult::for_action(
+                MARKER_KIND,
+                title,
+                crate::actions::reveal_marker_address(marker.id),
+            )
+            .with_subtitle(subtitle)
+            .with_icon(Icon::Star),
+        );
+    }
+
+    fn index_clip_marker(&self, clip: &Clip, marker: &Marker, media: &MediaItem) {
+        let title = marker_label(marker);
+        let at = clip.start + marker.t;
+        self.put(
+            format!("{}\0{}\0{}", title, marker.note, media.name),
+            SearchResult::for_action(
+                MARKER_KIND,
+                title,
+                crate::actions::reveal_marker_address(marker.id),
+            )
+            .with_subtitle(format!("{} · {}", timecode::clock(at), media.name))
+            .with_icon(Icon::Star),
+        );
+    }
+
+    fn index_track(&self, track: &Track) {
+        self.put(
+            format!("{}\0{}", track.name, track.kind.as_str()),
+            SearchResult::for_action(
+                TRACK_KIND,
+                track.name.clone(),
+                crate::actions::reveal_track_address(track.id),
+            )
+            .with_subtitle(format!("{} track", track.kind.as_str()))
+            .with_icon(Icon::Layers),
+        );
+    }
+
+    fn index_clip(&self, clip: &Clip, media: &MediaItem, track: &Track) {
+        self.put(
+            format!("{}\0{}\0{}", media.name, track.name, media_text(media)),
+            SearchResult::for_action(
+                CLIP_KIND,
+                media.name.clone(),
+                crate::actions::reveal_clip_address(clip.id),
+            )
+            .with_subtitle(format!("{} · {}", track.name, timecode::clock(clip.start)))
+            .with_icon(Icon::Film),
+        );
+    }
+
+    fn index_media(&self, item: &MediaItem, uses: usize) {
+        let subtitle = if uses == 0 {
+            format!("{} · in the bin", item.kind.as_str())
+        } else {
+            format!(
+                "{} · used {uses} time{}",
+                item.kind.as_str(),
+                if uses == 1 { "" } else { "s" }
+            )
+        };
+        self.put(
+            format!(
+                "{}\0{}\0{}",
+                item.name,
+                item.kind.as_str(),
+                media_text(item)
+            ),
+            SearchResult::for_action(
+                MEDIA_KIND,
+                item.name.clone(),
+                crate::actions::reveal_media_address(item.id),
+            )
+            .with_subtitle(subtitle)
+            .with_icon(if item.text.is_some() {
+                Icon::FileText
+            } else {
+                Icon::Film
+            }),
+        );
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
     }
 }
 
+fn marker_label(marker: &Marker) -> String {
+    if marker.name.trim().is_empty() {
+        "Marker".to_string()
+    } else {
+        marker.name.clone()
+    }
+}
+
+fn marker_subtitle(at: f64, marker: &Marker) -> String {
+    if marker.note.trim().is_empty() {
+        timecode::clock(at)
+    } else {
+        // The subtitle is merely presentation; retaining the complete note in
+        // the index above avoids a hidden discovery cap while keeping palette
+        // rows compact and responsive.
+        let note: String = marker.note.chars().take(160).collect();
+        format!("{} · {}", timecode::clock(at), note)
+    }
+}
+
+fn media_text(item: &MediaItem) -> &str {
+    item.text.as_ref().map_or("", |text| text.content.as_str())
+}
+
 impl SearchProvider for ProjectSearchProvider {
-    fn name(&self) -> &str {
-        MARKER_KIND
+    fn name(&self) -> &'static str {
+        "Video editor"
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        let mut out = Vec::new();
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
 
-        for (at, marker, _owner) in self.project.all_markers() {
-            // The note is searched as well as the name: a marker often says
-            // "hold on the wide before the cut" and that is what the person
-            // will remember, not whatever short name they typed.
-            let name_score = fuzzy_score(query, &marker.name);
-            let note_score = (!marker.note.trim().is_empty())
-                .then(|| fuzzy_score(query, &marker.note))
-                .flatten()
-                // A note match is a weaker signal than a name match: the name
-                // is what the row reads as.
-                .map(|s| s - 20);
-            let Some(score) = name_score.into_iter().chain(note_score).max() else {
-                continue;
-            };
-            out.push(SearchResult {
-                title: marker.name.clone(),
-                subtitle: Some(if marker.note.trim().is_empty() {
-                    timecode::clock(at)
-                } else {
-                    format!("{} · {}", timecode::clock(at), marker.note)
-                }),
-                kind: MARKER_KIND.to_string(),
-                action_id: seek_id(at),
-                icon: Some(Icon::Star),
-                score,
-            });
-        }
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog.search_limited(query, limit)
+    }
 
-        for m in &self.project.media {
-            if let Some(text) = m.text.as_ref() {
-                // A title: its words are what someone will type.
-                if let Some(score) = fuzzy_score(query, &text.content) {
-                    let at = self.first_use(m.id);
-                    out.push(SearchResult {
-                        title: text.content.lines().next().unwrap_or("").to_string(),
-                        subtitle: Some(match at {
-                            Some(at) => format!("Title · {}", timecode::clock(at)),
-                            None => "Title · not on the timeline".to_string(),
-                        }),
-                        kind: TITLE_KIND.to_string(),
-                        action_id: at.map_or_else(String::new, seek_id),
-                        icon: Some(Icon::FileText),
-                        score,
-                    });
-                }
-                continue;
-            }
-            let Some(score) = fuzzy_score(query, &m.name) else {
-                continue;
-            };
-            let at = self.first_use(m.id);
-            out.push(SearchResult {
-                title: m.name.clone(),
-                subtitle: Some(match at {
-                    Some(at) => format!("{} · {}", m.kind.as_str(), timecode::clock(at)),
-                    // Honest: it is in the bin but nowhere on the timeline, so
-                    // there is no position to seek to.
-                    None => format!("{} · in the bin, not on the timeline", m.kind.as_str()),
-                }),
-                kind: MEDIA_KIND.to_string(),
-                action_id: at.map_or_else(String::new, seek_id),
-                icon: Some(Icon::Film),
-                score,
-            });
-        }
-
-        out.retain(|r| !r.action_id.is_empty());
-        // A row that resolves to nowhere is not offered: activating it could
-        // only do nothing, and a search result that does nothing when chosen
-        // is worse than one that is absent.
-        out
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MediaItem, MediaKind, Project, TextSource, Track, TrackKind};
+    use crate::model::{MediaKind, Project, TextSource, Track, TrackKind};
+
+    fn add_track(project: &mut Project, kind: TrackKind, name: impl Into<String>) -> uuid::Uuid {
+        let id = uuid::Uuid::new_v4();
+        project.tracks.push(Track {
+            id,
+            name: name.into(),
+            kind,
+            index: project.tracks.len() as u32 + 1,
+            ..Default::default()
+        });
+        id
+    }
 
     fn project_with_things() -> Project {
         let mut p = Project::new("search");
@@ -181,133 +257,162 @@ mod tests {
             duration: 30.0,
             ..Default::default()
         });
-        let track = uuid::Uuid::new_v4();
-        p.tracks.push(Track {
-            id: track,
-            name: "V1".into(),
-            kind: TrackKind::Video,
-            index: 1,
-            ..Default::default()
-        });
+        let track = add_track(&mut p, TrackKind::Video, "V1");
         let clip = p.add_clip(track, media, 12.0).expect("place the clip");
         p.clip_mut(clip).expect("clip").out_point = 30.0;
         p
     }
 
-    /// Searching finds a shot by name and lands the playhead where it is.
     #[test]
-    fn a_shot_is_findable_by_name_and_seeks_to_where_it_sits() {
+    fn a_shot_is_findable_as_media_and_as_an_exact_clip() {
         let p = project_with_things();
-        let provider = ProjectSearchProvider::new(&p);
-
-        let hits = provider.search("coastline");
-        let hit = hits
-            .iter()
-            .find(|r| r.kind == MEDIA_KIND)
-            .expect("the shot is findable by a word from its name");
-        assert_eq!(hit.title, "Drone_Coastline.mov");
-
-        let at = parse_action_id(&hit.action_id).expect("the row names an instant");
-        assert!(
-            (at - 12.0).abs() < 0.01,
-            "the row seeks to where the clip is, not to zero: {at}",
-        );
+        let hits = ProjectSearchProvider::new(&p).search("coastline");
+        assert!(hits.iter().any(|hit| {
+            hit.kind == MEDIA_KIND
+                && hit.action_address() == Some(crate::actions::reveal_media_address(p.media[0].id))
+        }));
+        assert!(hits.iter().any(|hit| {
+            hit.kind == CLIP_KIND
+                && hit.action_address() == Some(crate::actions::reveal_clip_address(p.clips[0].id))
+                && hit
+                    .subtitle
+                    .as_deref()
+                    .is_some_and(|text| text.contains(&timecode::clock(12.0)))
+        }));
     }
 
-    /// A marker is findable by its **note**, not only its name — which is
-    /// what a person actually remembers about it.
     #[test]
-    fn a_marker_is_findable_by_the_note_written_on_it() {
-        let mut p = project_with_things();
-        p.markers.push(crate::model::Marker {
+    fn caption_and_marker_note_search_preserve_unicode_and_late_text() {
+        let mut project = project_with_things();
+        project.markers.push(crate::model::Marker {
             id: uuid::Uuid::new_v4(),
             t: 21.5,
             name: "m2".into(),
             palette: 0,
-            note: "hold on the wide before the cut".into(),
+            note: format!("{} Über den Fluss", "ordinary ".repeat(10_000)),
         });
-        let provider = ProjectSearchProvider::new(&p);
-
-        let hits = provider.search("wide before");
-        let hit = hits
-            .iter()
-            .find(|r| r.kind == MARKER_KIND)
-            .expect("a marker is findable by its note");
-        assert_eq!(hit.title, "m2", "the row still reads as the marker's name");
-        let at = parse_action_id(&hit.action_id).expect("the row names an instant");
-        assert!((at - 21.5).abs() < 0.01, "seeks to the marker: {at}");
-    }
-
-    /// Media sitting in the bin but not on the timeline is not offered,
-    /// because choosing it could only do nothing.
-    #[test]
-    fn something_with_nowhere_to_seek_to_is_not_offered() {
-        let mut p = project_with_things();
-        p.media.push(MediaItem {
-            id: uuid::Uuid::new_v4(),
-            name: "Unused_Coastline.mov".into(),
-            kind: MediaKind::Video,
-            duration: 5.0,
-            ..Default::default()
-        });
-        let provider = ProjectSearchProvider::new(&p);
-
-        let names: Vec<String> = provider
-            .search("coastline")
-            .iter()
-            .map(|r| r.title.clone())
-            .collect();
-        assert!(
-            names.iter().any(|n| n == "Drone_Coastline.mov"),
-            "the placed shot is offered: {names:?}",
-        );
-        assert!(
-            !names.iter().any(|n| n == "Unused_Coastline.mov"),
-            "media with no position on the timeline has nowhere to seek to, \
-             so offering it would give a row that does nothing: {names:?}",
-        );
-    }
-
-    /// A title is findable by the words it displays.
-    #[test]
-    fn a_title_is_findable_by_its_words() {
-        let mut p = project_with_things();
-        let tid = uuid::Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: tid,
+        let title_id = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: title_id,
             name: "Title 1".into(),
             kind: MediaKind::Text,
             duration: 4.0,
             text: Some(TextSource {
-                content: "Chapter One\nThe coast road".into(),
+                content: format!("{} 東京の夜", "caption ".repeat(10_000)),
                 ..Default::default()
             }),
             ..Default::default()
         });
-        let track = p.tracks[0].id;
-        let clip = p.add_clip(track, tid, 40.0).expect("place the title");
-        p.clip_mut(clip).expect("clip").out_point = 4.0;
-
-        let provider = ProjectSearchProvider::new(&p);
-        let hits = provider.search("chapter");
-        let hit = hits
-            .iter()
-            .find(|r| r.kind == TITLE_KIND)
-            .expect("a title is findable by its own words");
-        assert_eq!(
-            hit.title, "Chapter One",
-            "the row reads as the title's first line",
+        let provider = ProjectSearchProvider::new(&project);
+        assert!(
+            provider
+                .search_page("DEN FL", None, 8, 8)
+                .results
+                .iter()
+                .any(|hit| {
+                    hit.action_address()
+                        == Some(crate::actions::reveal_marker_address(project.markers[0].id))
+                })
         );
-        let at = parse_action_id(&hit.action_id).expect("the row names an instant");
-        assert!((at - 40.0).abs() < 0.01, "seeks to the title: {at}");
+        assert!(
+            provider
+                .search_page("東京の夜", None, 8, 8)
+                .results
+                .iter()
+                .any(|hit| {
+                    hit.action_address() == Some(crate::actions::reveal_media_address(title_id))
+                })
+        );
     }
 
-    /// Someone else's row is refused rather than read as a seek to zero.
     #[test]
-    fn an_action_id_from_another_provider_is_refused() {
-        assert_eq!(parse_action_id("chat.channel:abc"), None);
-        assert_eq!(parse_action_id(""), None);
-        assert_eq!(parse_action_id("video-editor.seek:notanumber"), None);
-        assert_eq!(parse_action_id("video-editor.seek:1500"), Some(1.5));
+    fn late_track_remains_findable_beyond_one_hundred_thousand_rows() {
+        let mut project = Project::new("large");
+        for number in 0..100_001 {
+            add_track(&mut project, TrackKind::Video, format!("Track {number}"));
+        }
+        project.tracks.last_mut().expect("last track").name = "Late catalogue needle".into();
+        let provider = ProjectSearchProvider::new(&project);
+        let page = provider.search_page("catalogue needle", None, 4, 4);
+        assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Late catalogue needle");
+        assert_eq!(provider.stats().records, 100_001);
+    }
+
+    #[test]
+    fn pages_bound_work_and_materialisation_without_losing_broad_hits() {
+        let mut project = Project::new("large");
+        for number in 0..257 {
+            add_track(
+                &mut project,
+                TrackKind::Video,
+                format!("Common track {number}"),
+            );
+        }
+        let provider = ProjectSearchProvider::new(&project);
+        let mut cursor = None;
+        let mut seen = 0;
+        loop {
+            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.inspected <= 17);
+            assert!(page.results.len() <= 5);
+            seen += page.results.len();
+            let Some(next) = page.next else { break };
+            cursor = Some(next);
+        }
+        assert_eq!(seen, 257);
+    }
+
+    #[test]
+    fn every_hit_is_a_current_canonical_view_action_and_stale_hit_is_refused() {
+        let mut project = project_with_things();
+        let clip = project.clips[0].id;
+        let provider = ProjectSearchProvider::new(&project);
+        let hit = provider
+            .search("")
+            .into_iter()
+            .find(|hit| hit.action_address() == Some(crate::actions::reveal_clip_address(clip)))
+            .expect("clip is searchable before deletion");
+        let resources = crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
+            project: project.clone(),
+            ..Default::default()
+        });
+        for hit in provider.search("") {
+            let address = hit.action_address().expect("search is canonical");
+            assert!(
+                qos_actions::door::resolve(&resources, &address)
+                    .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View),
+                "{} resolves through the current resource tree",
+                hit.title
+            );
+        }
+
+        // The provider may outlive the edit while a palette is open. The fresh
+        // canonical resource tree is the authority and must reject its stale
+        // address rather than letting the old row navigate by callback.
+        project.clips.clear();
+        project.media.clear();
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&crate::actions::provide_resources(
+            &crate::actions::VideoResourceCtx {
+                project,
+                ..Default::default()
+            },
+        ));
+        palette.set_providers(vec![Box::new(provider)]);
+        palette.open();
+        palette.set_query(&hit.title);
+        let row = palette
+            .result_labels()
+            .iter()
+            .position(|label| label == &hit.title)
+            .expect("stale row remains displayable");
+        palette.set_cursor(row);
+        palette.activate_selected();
+        assert!(
+            palette.take_operation().is_none(),
+            "deleted target is refused"
+        );
     }
 }

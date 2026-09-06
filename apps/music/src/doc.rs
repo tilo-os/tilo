@@ -68,6 +68,13 @@ fn get_list(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
+fn library_entry_exists(doc: &AutoCommit, collection: &str, id: &str) -> bool {
+    !id.is_empty()
+        && get_map(doc, &ROOT, "library")
+            .and_then(|library| get_map(doc, &library, collection))
+            .is_some_and(|entries| doc.get(&entries, id).ok().flatten().is_some())
+}
+
 fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
@@ -344,6 +351,26 @@ fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
     None
 }
 
+/// Whether a stable track id still names a library track in this document.
+pub fn has_track(doc: &AutoCommit, id: &str) -> bool {
+    library_entry_exists(doc, "tracks", id)
+}
+
+/// Whether a stable album id still names a library album in this document.
+pub fn has_album(doc: &AutoCommit, id: &str) -> bool {
+    library_entry_exists(doc, "albums", id)
+}
+
+/// Whether a stable artist id still names a library artist in this document.
+pub fn has_artist(doc: &AutoCommit, id: &str) -> bool {
+    library_entry_exists(doc, "artists", id)
+}
+
+/// Whether a stable playlist id still names a playlist in this document.
+pub fn has_playlist(doc: &AutoCommit, id: &str) -> bool {
+    find_playlist_obj(doc, id).is_some()
+}
+
 /// Append a track id to a playlist (by playlist id). No-op if the track is
 /// already present or the playlist is unknown.
 pub fn add_track_to_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str) {
@@ -369,6 +396,22 @@ pub fn remove_track_from_playlist(doc: &mut AutoCommit, playlist_id: &str, track
             let _ = doc.delete(&list, pos);
         }
     }
+}
+
+/// Whether a playlist currently contains this track. Action replay checks this
+/// before removing an addressable membership so a stale resource is refused
+/// rather than recorded as a successful no-op.
+pub fn playlist_contains_track(doc: &AutoCommit, playlist_id: &str, track_id: &str) -> bool {
+    find_playlist_obj(doc, playlist_id)
+        .and_then(|playlist| get_list(doc, &playlist, "tracks"))
+        .is_some_and(|list| list_strings(doc, &list).iter().any(|id| id == track_id))
+}
+
+/// Read the exact membership identity at an ordered playlist position.
+pub fn playlist_track_at(doc: &AutoCommit, playlist_id: &str, index: usize) -> Option<String> {
+    let playlist = find_playlist_obj(doc, playlist_id)?;
+    let list = get_list(doc, &playlist, "tracks")?;
+    list_strings(doc, &list).get(index).cloned()
 }
 
 /// Move a track within a playlist from `from` to `to` (clamped). Implemented
@@ -525,8 +568,8 @@ pub fn create_playlist_with_id(doc: &mut AutoCommit, id: &str, name: &str) {
     );
 }
 
-/// Set (or clear) a playlist's cover image URL (`file://…` from the picker, or
-/// any http(s) URL). No-op if the playlist is unknown.
+/// Set (or clear) a playlist's portable cover value (an HTTPS URL or bounded
+/// embedded PNG data URL). No-op if the playlist is unknown.
 pub fn set_playlist_cover(doc: &mut AutoCommit, playlist_id: &str, cover: &str) {
     if let Some(pm) = find_playlist_obj(doc, playlist_id) {
         let _ = doc.put(&pm, "cover", cover);

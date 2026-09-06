@@ -41,7 +41,10 @@ use crate::widgets::{caption, vgap};
 
 /// CRDT key the top strip's search field writes its query into. Read by
 /// [`crate::SettingsApp::sync`] to filter the category list.
-pub const SEARCH_KEY: &str = "settings.search";
+/// Sidebar search is process-local presentation state.  Keeping the editable
+/// text under `.edit` prevents a search query from becoming a replicated
+/// preference or a history entry.
+pub const SEARCH_KEY: &str = "settings.search.edit";
 
 /// Gap (logical px) injected above the first section header so it has clear
 /// breathing room at the top of the sidebar surface.
@@ -166,7 +169,7 @@ impl SidebarRow {
         Self {
             category,
             active,
-            select_key: format!("settings.select.{}", category.slug()),
+            select_key: format!("settings.select.{}.edit", category.slug()),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -604,7 +607,7 @@ mod tests {
             );
         }
 
-        let got = doc.get(&root, "settings.select.about");
+        let got = doc.get(&root, "settings.select.about.edit");
         assert!(
             matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
             "releasing a click on the row writes its select key true"

@@ -75,6 +75,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
 chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
@@ -128,6 +130,7 @@ app-state = { path = "../crates/system/app-state" }
 cli = { path = "../crates/runtime/cli" }
 terminal = { path = "../apps/terminal" }
 file-explorer = { path = "../apps/file-explorer" }
+browser = { path = "../apps/browser" }
 word-processor = { path = "../apps/word-processor" }
 # The document-format registry. The shell asks it whether a path is an
 # editable document; which installed app opens it comes from the app
@@ -143,6 +146,7 @@ os-actions = { path = "../crates/system/os-actions" }
 # persists intent; the compositor is the single long-lived actuator.
 media = { path = "../crates/media" }
 hex.workspace = true
+sha2.workspace = true
 xattr = "1.6.1"
 # Power management: suspend-on-idle, lid / power-key policy, suspend
 # inhibitors, and battery thresholds over systemd-logind + UPower. The pure
@@ -161,7 +165,7 @@ winit.workspace = true
 # copy in the lock.
 pollster.workspace = true
 sysinfo.workspace = true
-# Direct deps needed by in-shell widgets (browser_stub, etc.) that implement
+# Direct deps needed by in-shell widgets that implement
 # `ui::widget::Widget`. Versions are pinned to match ui's Cargo.toml.
 automerge.workspace = true
 taffy.workspace = true
@@ -239,6 +243,7 @@ image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
+channel-crypto = { path = "../crates/collab/channel-crypto" }
 # The reusable video-streaming stack (H.264 encode/decode, per-share frame
 # transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
 # re-export from here so the compositor's surface streaming and the chat call
@@ -320,7 +325,6 @@ postcard = { workspace = true, features = ["alloc"] }
 # (`tests/everything_composes.rs`) exercises Phases 3 + 6 + 7 + 8 in a
 # single end-to-end flow — threshold-signed, MLS-encrypted op crossing
 # the broker, validated, decrypted, then compacted.
-channel-crypto = { path = "../crates/collab/channel-crypto" }
 # Signed `RoleAttestation` / `SignedOp` fixtures shared by every wire-format
 # integration test here. Was six drifting copies of the same signing ceremony
 # pasted across tests/; now one crate that only test targets can see.

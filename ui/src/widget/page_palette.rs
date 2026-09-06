@@ -25,6 +25,7 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::PageEntry;
@@ -349,6 +350,7 @@ impl PageJumpPalette {
         input_rect: Rect,
     ) {
         let tokens = &theme.tokens;
+        let selected_ink = tokens.colors.on_accent(ON_FILL_MIN_CONTRAST);
         let list_top = input_rect.y1 + PADDING;
         let row_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
@@ -397,7 +399,11 @@ impl PageJumpPalette {
                 scene,
                 &row.title,
                 row_size,
-                tokens.colors.text_primary,
+                if visible_index == self.cursor {
+                    selected_ink
+                } else {
+                    tokens.colors.text_primary
+                },
                 translated(transform, row_rect.x0 + 12.0, ty),
                 None,
             );
@@ -544,6 +550,21 @@ mod tests {
             },
         ]);
         p
+    }
+
+    #[test]
+    fn selected_result_ink_meets_text_contrast_floor() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let ratio = crate::a11y::contrast_ratio(
+                colors.on_accent(ON_FILL_MIN_CONTRAST),
+                colors.accent[5],
+            );
+            assert!(
+                ratio >= ON_FILL_MIN_CONTRAST,
+                "selected result contrast {ratio:.2}:1 is below {ON_FILL_MIN_CONTRAST}:1"
+            );
+        }
     }
 
     #[test]

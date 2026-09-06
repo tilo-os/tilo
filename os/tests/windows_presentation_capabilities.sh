@@ -20,9 +20,10 @@ ok() { printf 'ok    %s\n' "$*"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for package in freerdp xwayland-satellite virt-viewer virtio-win; do
+for package in freerdp xwayland-satellite virt-viewer; do
     has "$CONTAINERFILE" "    $package " "image snapshot includes $package"
 done
+has "$CONTAINERFILE" 'COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso' 'image contains authenticated virtio-win media'
 
 has "$REMOTE_APP" '/app:program:||{}' 'RemoteApp uses the required alias marker'
 has "$REMOTE_APP" '+auto-reconnect' 'RAIL reconnects a transient local interruption'

@@ -396,7 +396,9 @@ impl WaveformCache {
             path: source.abs_path.clone(),
         };
         let (lock, cv) = &*self.work;
-        let mut w = lock.lock().unwrap();
+        let mut w = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         w.queue.push_back(task);
         if !w.running {
             w.running = true;
@@ -454,7 +456,9 @@ impl WaveformCache {
 impl Drop for WaveformCache {
     fn drop(&mut self) {
         let (lock, cv) = &*self.work;
-        let mut w = lock.lock().unwrap();
+        let mut w = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         w.shutdown = true;
         w.queue.clear();
         drop(w);
@@ -468,36 +472,45 @@ fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec
     let (lock, cv) = &*work;
     loop {
         let task = {
-            let mut w = lock.lock().unwrap();
+            let mut w = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if w.shutdown {
                 w.running = false;
                 return;
             }
-            match w.queue.pop_front() {
-                Some(t) => t,
-                None => {
-                    let (mut w, res) = cv.wait_timeout(w, WORKER_IDLE).unwrap();
-                    if w.shutdown {
-                        w.running = false;
-                        return;
-                    }
-                    match w.queue.pop_front() {
-                        Some(t) => t,
-                        None => {
-                            if res.timed_out() {
-                                w.running = false;
-                                return;
-                            }
-                            continue; // spurious wake
+            let task = if let Some(task) = w.queue.pop_front() {
+                task
+            } else {
+                let (next_work, res) = cv
+                    .wait_timeout(w, WORKER_IDLE)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                w = next_work;
+                if w.shutdown {
+                    w.running = false;
+                    return;
+                }
+                match w.queue.pop_front() {
+                    Some(task) => task,
+                    None => {
+                        if res.timed_out() {
+                            w.running = false;
+                            return;
                         }
+                        continue; // spurious wake
                     }
                 }
-            }
+            };
+            drop(w);
+            task
         };
         let peaks = peaks_from_file(&task.path, WAVE_BUCKETS);
         if tx.send((task.id, peaks)).is_err() {
-            let mut w = lock.lock().unwrap();
+            let mut w = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             w.running = false;
+            drop(w);
             return; // the cache is gone
         }
     }
@@ -658,7 +671,7 @@ mod tests {
         assert_eq!(cache.state(id), WaveformState::Ready);
         let peaks = cache.peaks(id).expect("real peaks");
         assert_eq!(peaks.len(), WAVE_BUCKETS);
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9);
+        assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.9);
         std::fs::remove_file(&f).ok();
     }
 

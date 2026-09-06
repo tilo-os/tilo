@@ -29,6 +29,18 @@ use ui::widget::Widget;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+struct AcceptAccount;
+
+impl settings::account_probe::AccountTester for AcceptAccount {
+    fn test(
+        &self,
+        _account: &accounts::Account,
+        _secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        Ok("signed in".into())
+    }
+}
+
 /// Create a fresh, empty config root for a test and point the process at it.
 /// Returns the directory (kept alive for the test's duration).
 fn temp_home(name: &str) -> PathBuf {
@@ -189,7 +201,8 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // Fresh install → empty stores.
     assert!(AccountDirectory::load().is_empty());
 
-    let mut pane = settings::panes::accounts::build();
+    let mut pane = settings::panes::accounts::AccountsPane::new()
+        .with_account_tester(std::sync::Arc::new(AcceptAccount));
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
     pane.sync(&mut doc, &root);
@@ -197,24 +210,16 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // Open the Add-email form, fill it, and Save.
     let _ = doc.put(&root, settings::panes::accounts::ADD_MAIL_KEY, true);
     pane.sync(&mut doc, &root);
-    let _ = doc.put(&root, settings::panes::accounts::FORM_NAME_KEY, "Test User");
-    let _ = doc.put(
-        &root,
-        settings::panes::accounts::FORM_EMAIL_KEY,
-        "test@gmail.com",
-    );
-    let _ = doc.put(
-        &root,
-        settings::panes::accounts::FORM_USER_KEY,
-        "test@gmail.com",
-    );
-    let _ = doc.put(
-        &root,
-        settings::panes::accounts::FORM_PASSWORD_KEY,
-        "s3cret-pw",
-    );
-    let _ = doc.put(&root, settings::panes::accounts::FORM_SAVE_KEY, true);
-    pane.sync(&mut doc, &root);
+    pane.set_form_fields_for_test("Test User", "test@gmail.com", "test@gmail.com", "");
+    pane.set_form_password_for_test("s3cret-pw");
+    pane.submit_form_for_test();
+    for _ in 0..100 {
+        pane.sync(&mut doc, &root);
+        if !pane.form_open() {
+            break;
+        }
+        std::thread::yield_now();
+    }
 
     // The account is now in the shared on-disk store Mail loads, auto-configured.
     let dir = AccountDirectory::load();
@@ -250,6 +255,9 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
         !store_json.contains("s3cret-pw"),
         "the password must not appear in the plaintext store JSON"
     );
+    accounts::AccountSyncReporter::new(account_id.clone())
+        .succeeded()
+        .expect("seed sync health");
 
     // Now request removal via the trash button's key. Destructive account
     // removal is deliberately a two-stage action, so exercise the same
@@ -278,5 +286,11 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     assert!(
         accounts::SecretVault::open().get(&account_id).is_none(),
         "Remove also purged the account's vault secret"
+    );
+    assert!(
+        accounts::AccountSyncStatusStore::load()
+            .get(&account_id)
+            .is_none(),
+        "Remove also purged the account's local sync-health record"
     );
 }

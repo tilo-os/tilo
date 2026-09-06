@@ -104,6 +104,22 @@ pub struct HistoryEntry {
     pub context: Option<ActionContext>,
 }
 
+impl HistoryEntry {
+    /// Whether this row represents a reversible document mutation. Durable
+    /// effect receipts share the activity timeline but describe external work;
+    /// reverting their metadata would not undo that work and is never offered.
+    pub fn is_revertible(&self) -> bool {
+        self.redaction.is_none()
+            && op_class_is_revertible(self.op_class)
+            && !self.context.as_ref().is_some_and(|context| {
+                context
+                    .facets
+                    .iter()
+                    .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+            })
+    }
+}
+
 /// Empty fields are "match everything" so a freshly-constructed filter
 /// behaves like no filter at all. The chrome owns the filter (not the
 /// widget) so the host can persist it across remounts, e.g. a workspace

@@ -12,22 +12,20 @@
 //!
 //! ## What the live app does (network path)
 //!
-//! Sync is **pull-only** today. The live binary (no `--shots`) drives, on a
+//! The live binary (no `--shots`) drives, on a
 //! background worker thread (mirroring the notes `Saver` pattern — the `ui`
 //! event loop is synchronous and must not block), a `CalDAV` read against each
 //! configured collection, built on the `reqwest` stack:
 //!
-//! * **Pull** — a `calendar-query` REPORT (falling back to a plain `GET` for
-//!   servers that expose the collection as a single `.ics`) fetches the
-//!   `calendar-data` for a time window around today; each returned `VCALENDAR`
-//!   blob is fed into [`crate::ics::parse`] to produce [`Event`] / [`Task`]
-//!   values, tagged with their source [`RemoteCalendar`]'s colour and id.
+//! * **Pull** — bounded RFC 6578 `sync-collection` REPORTs use the durable token
+//!   for each collection. Unsupported/invalid tokens fall back to one bounded,
+//!   authoritative `calendar-query`, followed by `sync-token` discovery.
+//!   Href + `ETag` are retained as server identity/revision; XML is parsed rather
+//!   than scraped, and tokens commit only after reconciliation.
 //!
-//! Two-way sync uploads queued local changes with `PUT`, removes queued remote
-//! deletions with `DELETE`, then pulls the collection again. Incremental
-//! `sync-token` pulls are not implemented: each pass queries the configured
-//! window. The Sync affordance reports partial failures and keeps unconfirmed
-//! changes queued rather than claiming success.
+//! * **Push/delete** — crash-safe outboxes drain with conditional `If-Match` or
+//!   create-only `If-None-Match: *`. A 412 preserves the local version, leaves
+//!   it queued, and surfaces an understandable conflict instead of overwriting.
 //!
 //! That HTTP + TLS stack is deliberately kept out of the headless build so it
 //! stays small and green; the seam is this module, and the data types
@@ -38,7 +36,42 @@ use chrono::NaiveDate;
 
 use crate::account::{CalDavConfig, RemoteCalendar};
 use crate::ics;
-use crate::model::{Event, Model, Palette, Task};
+use crate::model::{Event, Id, Model, Palette, Task};
+
+const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESOURCES: usize = 10_000;
+const MAX_HREF_BYTES: usize = 4096;
+const MAX_ICAL_BYTES: usize = 2 * 1024 * 1024;
+
+/// Stable server-side identity and revision for a pulled calendar object.
+#[derive(Clone, Debug)]
+pub struct RemoteResource {
+    pub calendar_id: String,
+    pub href: String,
+    pub etag: Option<String>,
+    pub events: Vec<Event>,
+    pub tasks: Vec<Task>,
+}
+
+/// One server-confirmed removal, addressed by collection + href rather than
+/// an iCalendar title or a newly generated local UUID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteDeletion {
+    pub calendar_id: String,
+    pub href: String,
+}
+
+/// A token is a commit marker: callers persist it only after every resource in
+/// the same response has been reconciled successfully.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionCheckpoint {
+    pub calendar_id: String,
+    pub token: String,
+    /// Full queries list the authoritative collection contents. Incremental
+    /// reports list only changed/deleted members.
+    pub full: bool,
+    pub seen_hrefs: Vec<String>,
+}
 
 /// What a sync pass produced: the events and tasks parsed out of a calendar's
 /// `calendar-data`, tagged with the colour and id of their source calendar.
@@ -46,11 +79,14 @@ use crate::model::{Event, Model, Palette, Task};
 pub struct SyncResult {
     pub events: Vec<Event>,
     pub tasks: Vec<Task>,
+    pub resources: Vec<RemoteResource>,
+    pub deletions: Vec<RemoteDeletion>,
+    pub checkpoints: Vec<CollectionCheckpoint>,
 }
 
 impl SyncResult {
     pub fn is_empty(&self) -> bool {
-        self.events.is_empty() && self.tasks.is_empty()
+        self.events.is_empty() && self.tasks.is_empty() && self.resources.is_empty()
     }
 }
 
@@ -78,6 +114,8 @@ pub struct PutRequest {
     pub url: String,
     /// `text/calendar` payload — a one-event `VCALENDAR`.
     pub body: String,
+    pub if_match: Option<String>,
+    pub if_none_match: bool,
 }
 
 /// Build the `CalDAV` `PUT` that uploads `event` to `calendar` under `config`.
@@ -99,7 +137,43 @@ pub fn build_put_request(
     PutRequest {
         url,
         body: ics::export(&model),
+        if_match: None,
+        if_none_match: true,
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadJob {
+    pub config: CalDavConfig,
+    pub calendar: RemoteCalendar,
+    pub event: Event,
+    pub href: Option<String>,
+    pub etag: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoveJob {
+    pub config: CalDavConfig,
+    pub calendar: RemoteCalendar,
+    pub id: Id,
+    pub href: Option<String>,
+    pub etag: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MutationResult {
+    pub confirmed: Vec<Id>,
+    pub revisions: Vec<RemoteRevision>,
+    pub conflicts: Vec<(Id, String)>,
+    pub failures: Vec<(Id, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteRevision {
+    pub id: Id,
+    pub calendar_id: String,
+    pub href: String,
+    pub etag: Option<String>,
 }
 
 /// The concrete `CalDAV` `DELETE` a queued deletion turns into: the URL of the
@@ -109,6 +183,7 @@ pub fn build_put_request(
 pub struct DeleteRequest {
     /// Absolute URL of the event resource (`<collection>/<uid>.ics`).
     pub url: String,
+    pub if_match: Option<String>,
 }
 
 /// Build the `CalDAV` `DELETE` that removes `uid` from `calendar` under
@@ -121,7 +196,34 @@ pub fn build_delete_request(
 ) -> DeleteRequest {
     let collection = collection_url_for(config, calendar);
     let url = format!("{}/{}.ics", collection.trim_end_matches('/'), uid);
-    DeleteRequest { url }
+    DeleteRequest {
+        url,
+        if_match: None,
+    }
+}
+
+pub fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
+    #[cfg(feature = "live")]
+    {
+        live::push_jobs_live(jobs)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = jobs;
+        MutationResult::default()
+    }
+}
+
+pub fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
+    #[cfg(feature = "live")]
+    {
+        live::remove_jobs_live(jobs)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = jobs;
+        MutationResult::default()
+    }
 }
 
 /// Remove every queued event from its target `CalDAV` collection, returning the
@@ -159,6 +261,29 @@ fn collection_url_for(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
     }
 }
 
+/// Compare DAV href spellings after discarding an optional scheme/authority.
+/// This keeps bindings stable across servers that alternate between `/dav/x`
+/// and `https://host/dav/x` in otherwise equivalent responses.
+pub fn hrefs_equal(left: &str, right: &str) -> bool {
+    fn absolute_path(value: &str) -> Option<&str> {
+        value
+            .split_once("://")
+            .and_then(|(_, rest)| rest.find('/').and_then(|index| rest.get(index..)))
+    }
+    if left == right {
+        return true;
+    }
+    match (absolute_path(left), absolute_path(right)) {
+        // Servers commonly alternate between an origin-relative href and its
+        // absolute spelling. Two *absolute* hrefs from different origins are
+        // never equated merely because their paths match: that would let an
+        // unexpected redirect/cross-origin response alias an existing event.
+        (Some(left_path), None) => left_path == right,
+        (None, Some(right_path)) => left == right_path,
+        _ => false,
+    }
+}
+
 /// Sample pull for one remote calendar (demo / tests only).
 ///
 /// Synthesises a representative `VCALENDAR` for the calendar and parses it
@@ -180,7 +305,11 @@ pub fn pull_calendar(
         e.color = palette;
         e.calendar_id = Some(calendar.id.clone());
     }
-    SyncResult { events, tasks }
+    SyncResult {
+        events,
+        tasks,
+        ..SyncResult::default()
+    }
 }
 
 /// Synchronise every visible calendar for the **live** app.
@@ -202,6 +331,25 @@ pub fn sync_all(
     #[cfg(not(feature = "live"))]
     {
         let _ = (accounts, today);
+        (SyncResult::default(), SyncOutcome::Offline)
+    }
+}
+
+/// Synchronise with durable per-collection checkpoints supplied by the caller.
+/// Keeping the checkpoint in the Automerge document (rather than a transport
+/// cache) makes restart and collaborative hand-off deterministic.
+pub fn sync_all_with_checkpoints(
+    accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+    today: NaiveDate,
+    checkpoints: &[(String, String)],
+) -> (SyncResult, SyncOutcome) {
+    #[cfg(feature = "live")]
+    {
+        live::sync_all_live_with_checkpoints(accounts, today, checkpoints)
+    }
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = (accounts, today, checkpoints);
         (SyncResult::default(), SyncOutcome::Offline)
     }
 }
@@ -341,12 +489,121 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
     ics::export(&model)
 }
 
+#[derive(Debug)]
+struct ParsedMultistatus {
+    token: Option<String>,
+    changed: Vec<(String, Option<String>, String)>,
+    deleted: Vec<String>,
+}
+
+/// Parse a DAV multistatus without accepting an unbounded server document.
+/// Namespace prefixes are deliberately ignored; DAV/CalDAV servers choose
+/// their own prefixes, while the namespace-expanded local names are stable.
+fn parse_multistatus(xml: &str) -> Result<ParsedMultistatus, String> {
+    if xml.len() > MAX_XML_BYTES {
+        return Err("calendar response exceeds the 8 MiB safety limit".into());
+    }
+    let doc =
+        roxmltree::Document::parse(xml).map_err(|_| "calendar server returned malformed XML")?;
+    let token = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "sync-token")
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let mut changed = Vec::new();
+    let mut deleted = Vec::new();
+    for response in doc
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "response")
+    {
+        if changed.len() + deleted.len() >= MAX_RESOURCES {
+            return Err("calendar response contains more than 10,000 resources".into());
+        }
+        let href = response
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "href")
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= MAX_HREF_BYTES)
+            .ok_or_else(|| "calendar response contains an invalid resource href".to_string())?;
+        let response_status = response
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == "status")
+            .and_then(|node| node.text())
+            .unwrap_or_default();
+        if response_status.contains(" 404 ") || response_status.ends_with(" 404") {
+            deleted.push(href.to_owned());
+            continue;
+        }
+        let successful_prop = response.children().find(|node| {
+            node.is_element()
+                && node.tag_name().name() == "propstat"
+                && node.descendants().any(|child| {
+                    child.is_element()
+                        && child.tag_name().name() == "status"
+                        && child.text().is_some_and(|status| status.contains(" 200 "))
+                })
+        });
+        let Some(propstat) = successful_prop else {
+            continue;
+        };
+        let etag = propstat
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "getetag")
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 1024)
+            .map(ToOwned::to_owned);
+        let Some(data) = propstat
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "calendar-data")
+            .and_then(|node| node.text())
+        else {
+            continue;
+        };
+        if data.len() > MAX_ICAL_BYTES {
+            return Err(format!(
+                "calendar resource {href} exceeds the 2 MiB safety limit"
+            ));
+        }
+        changed.push((href.to_owned(), etag, data.to_owned()));
+    }
+    Ok(ParsedMultistatus {
+        token,
+        changed,
+        deleted,
+    })
+}
+
+fn sync_collection_body(token: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+<D:sync-collection xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+<D:sync-token>{}</D:sync-token><D:sync-level>1</D:sync-level>\
+<D:prop><D:getetag/><C:calendar-data/></D:prop></D:sync-collection>",
+        xml_escape(token)
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Real `CalDAV` transport, compiled only with the `live` feature. Kept behind a
 /// module so its `reqwest` dependency never touches the default (headless)
 /// build. This talks HTTP to a configured server; there is no synthesised data
 /// here.
 #[cfg(feature = "live")]
 mod live {
+    use std::collections::HashMap;
+    use std::io::Read;
     use std::time::Duration;
 
     use chrono::{Datelike, NaiveDate};
@@ -360,6 +617,14 @@ mod live {
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
     ) -> (SyncResult, SyncOutcome) {
+        sync_all_live_with_checkpoints(accounts, today, &[])
+    }
+
+    pub fn sync_all_live_with_checkpoints(
+        accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+        today: NaiveDate,
+        checkpoints: &[(String, String)],
+    ) -> (SyncResult, SyncOutcome) {
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent("qOS-Calendar/0.1")
@@ -369,11 +634,21 @@ mod live {
             Err(e) => return (SyncResult::default(), SyncOutcome::Failed(e.to_string())),
         };
 
+        let checkpoint_map: HashMap<&str, &str> = checkpoints
+            .iter()
+            .map(|(calendar, token)| (calendar.as_str(), token.as_str()))
+            .collect();
         let mut merged = SyncResult::default();
         let mut count = 0usize;
         for (config, calendars) in accounts {
             for cal in calendars.iter().filter(|c| c.visible) {
-                match pull_calendar_live(&client, config, cal, today) {
+                match pull_calendar_live(
+                    &client,
+                    config,
+                    cal,
+                    today,
+                    checkpoint_map.get(cal.id.as_str()).copied(),
+                ) {
                     Ok(mut res) => {
                         let palette = cal.palette();
                         for e in &mut res.events {
@@ -382,6 +657,9 @@ mod live {
                         }
                         merged.events.append(&mut res.events);
                         merged.tasks.append(&mut res.tasks);
+                        merged.resources.append(&mut res.resources);
+                        merged.deletions.append(&mut res.deletions);
+                        merged.checkpoints.append(&mut res.checkpoints);
                         count += 1;
                     }
                     Err(e) => return (merged, SyncOutcome::Failed(e)),
@@ -411,13 +689,14 @@ mod live {
         config: &CalDavConfig,
         cal: &RemoteCalendar,
         today: NaiveDate,
+        checkpoint: Option<&str>,
     ) -> Result<SyncResult, String> {
         let url = collection_url(config, cal);
         let report = reqwest::Method::from_bytes(b"REPORT").map_err(|e| e.to_string())?;
-        let body = calendar_query_body(today);
-
-        let resp = client
-            .request(report, &url)
+        let mut full = checkpoint.is_none();
+        let body = super::sync_collection_body(checkpoint.unwrap_or_default());
+        let mut response = client
+            .request(report.clone(), &url)
             .basic_auth(&config.username, Some(&config.password))
             .header("Depth", "1")
             .header(
@@ -425,31 +704,149 @@ mod live {
                 "application/xml; charset=utf-8",
             )
             .body(body)
-            .send();
+            .send()
+            .map_err(|error| error.to_string())?;
 
-        let text = match resp {
-            Ok(r) if r.status().is_success() => r.text().map_err(|e| e.to_string())?,
-            Ok(_) => {
-                // Server refused the REPORT — try a straight GET of the URL.
-                let g = client
-                    .get(&url)
-                    .basic_auth(&config.username, Some(&config.password))
-                    .send()
-                    .map_err(|e| e.to_string())?;
-                if !g.status().is_success() {
-                    return Err(format!("server returned {}", g.status()));
-                }
-                g.text().map_err(|e| e.to_string())?
+        // RFC 6578 uses 403 with a valid-sync-token precondition (some servers
+        // use 409). Reconcile from a bounded full listing before accepting a
+        // replacement token; never silently discard local mapping state.
+        let report_unsupported = matches!(response.status().as_u16(), 400 | 403 | 405 | 409 | 501);
+        if report_unsupported {
+            full = true;
+            response = client
+                .request(report, &url)
+                .basic_auth(&config.username, Some(&config.password))
+                .header("Depth", "1")
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/xml; charset=utf-8",
+                )
+                .body(calendar_query_body(today))
+                .send()
+                .map_err(|error| error.to_string())?;
+        }
+        if !response.status().is_success() {
+            return Err(format!("calendar server returned {}", response.status()));
+        }
+        let text = read_bounded_xml(response)?;
+        let parsed = super::parse_multistatus(&text)?;
+        let mut result = SyncResult::default();
+        let mut seen_hrefs = Vec::with_capacity(parsed.changed.len());
+        for (href, etag, payload) in parsed.changed {
+            let href = canonical_resource_url(&url, &href)?;
+            let (mut events, tasks) = ics::parse(&payload);
+            if events.is_empty() && tasks.is_empty() {
+                return Err(format!(
+                    "calendar resource {href} contains no supported item"
+                ));
             }
-            Err(e) => return Err(e.to_string()),
+            for event in &mut events {
+                event.color = cal.palette();
+                event.calendar_id = Some(cal.id.clone());
+            }
+            seen_hrefs.push(href.clone());
+            result.resources.push(super::RemoteResource {
+                calendar_id: cal.id.clone(),
+                href,
+                etag,
+                events,
+                tasks,
+            });
+        }
+        result.deletions = parsed
+            .deleted
+            .into_iter()
+            .map(|href| {
+                Ok(super::RemoteDeletion {
+                    calendar_id: cal.id.clone(),
+                    href: canonical_resource_url(&url, &href)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let next_token = if parsed.token.is_some() {
+            parsed.token
+        } else if full {
+            discover_sync_token(client, config, &url)?
+        } else {
+            None
         };
+        if let Some(token) = next_token {
+            result.checkpoints.push(super::CollectionCheckpoint {
+                calendar_id: cal.id.clone(),
+                token,
+                full,
+                seen_hrefs,
+            });
+        } else if checkpoint.is_some() {
+            return Err("calendar server omitted the incremental sync token".into());
+        }
+        Ok(result)
+    }
 
-        let (events, tasks) = ics::parse(&xml_text_unescape(&text));
-        Ok(SyncResult { events, tasks })
+    fn discover_sync_token(
+        client: &reqwest::blocking::Client,
+        config: &CalDavConfig,
+        url: &str,
+    ) -> Result<Option<String>, String> {
+        let propfind =
+            reqwest::Method::from_bytes(b"PROPFIND").map_err(|error| error.to_string())?;
+        let response = client
+            .request(propfind, url)
+            .basic_auth(&config.username, Some(&config.password))
+            .header("Depth", "0")
+            .header(reqwest::header::CONTENT_TYPE, "application/xml; charset=utf-8")
+            .body("<?xml version=\"1.0\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:sync-token/></D:prop></D:propfind>")
+            .send()
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let text = read_bounded_xml(response)?;
+        let doc = roxmltree::Document::parse(&text)
+            .map_err(|_| "calendar server returned malformed XML")?;
+        Ok(doc
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "sync-token")
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .filter(|token| !token.is_empty() && token.len() <= 4096)
+            .map(ToOwned::to_owned))
     }
 
     fn collection_url(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
         super::collection_url_for(config, cal)
+    }
+
+    /// Read a DAV XML response without ever allocating past the protocol cap.
+    /// `Response::text` is intentionally avoided because a hostile server can
+    /// omit `Content-Length` and otherwise make the post-read size check moot.
+    fn read_bounded_xml(response: reqwest::blocking::Response) -> Result<String, String> {
+        if response
+            .content_length()
+            .is_some_and(|length| length > super::MAX_XML_BYTES as u64)
+        {
+            return Err("calendar response exceeds the 8 MiB safety limit".into());
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(super::MAX_XML_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > super::MAX_XML_BYTES {
+            return Err("calendar response exceeds the 8 MiB safety limit".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "calendar server returned non-UTF-8 XML".into())
+    }
+
+    /// Normalize every REPORT href to the same absolute identity used by PUT
+    /// and DELETE responses. Servers freely alternate between absolute and
+    /// path hrefs, so retaining the wire spelling would duplicate resources.
+    fn canonical_resource_url(collection_url: &str, href: &str) -> Result<String, String> {
+        let base = reqwest::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
+            .map_err(|_| "calendar collection has an invalid URL".to_string())?;
+        base.join(href)
+            .map(|url| url.to_string())
+            .map_err(|_| "calendar response contains an invalid resource href".to_string())
     }
 
     /// PUT every queued event to its target collection, returning the ids that
@@ -484,6 +881,66 @@ mod live {
         pushed
     }
 
+    pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("qOS-Calendar/0.1")
+            .build()
+        else {
+            return super::MutationResult::default();
+        };
+        let mut result = super::MutationResult::default();
+        for job in jobs {
+            let mut request = super::build_put_request(&job.config, &job.calendar, &job.event);
+            if let Some(href) = &job.href {
+                request.url = absolute_resource_url(&job.config, href);
+                // An existing binding is never overwritten unconditionally.
+                // Exact ETags detect edits; `*` is the safe fallback for old
+                // servers/documents where the binding predates ETag storage.
+                request.if_match = Some(job.etag.clone().unwrap_or_else(|| "*".into()));
+                request.if_none_match = false;
+            }
+            let mut builder = client
+                .put(&request.url)
+                .basic_auth(&job.config.username, Some(&job.config.password))
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "text/calendar; charset=utf-8",
+                )
+                .body(request.body);
+            if let Some(etag) = &request.if_match {
+                builder = builder.header(reqwest::header::IF_MATCH, etag);
+            } else if request.if_none_match {
+                builder = builder.header(reqwest::header::IF_NONE_MATCH, "*");
+            }
+            match builder.send() {
+                Ok(response) if response.status().is_success() => {
+                    let etag = response
+                        .headers()
+                        .get(reqwest::header::ETAG)
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToOwned::to_owned);
+                    result.confirmed.push(job.event.id);
+                    result.revisions.push(super::RemoteRevision {
+                        id: job.event.id,
+                        calendar_id: job.calendar.id.clone(),
+                        href: request.url,
+                        etag,
+                    });
+                }
+                Ok(response) if response.status().as_u16() == 412 => {
+                    result.conflicts.push((job.event.id, request.url));
+                }
+                Ok(response) => result.failures.push((
+                    job.event.id,
+                    format!("server returned {}", response.status()),
+                )),
+                Err(error) => result.failures.push((job.event.id, error.to_string())),
+            }
+        }
+        result
+    }
+
     /// DELETE every queued event resource, returning the uids the server
     /// confirmed removed. Best-effort and per-resource: a failed delete leaves
     /// that uid in the outbox for the next attempt and does not abort the rest.
@@ -514,33 +971,277 @@ mod live {
         deleted
     }
 
+    pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("qOS-Calendar/0.1")
+            .build()
+        else {
+            return super::MutationResult::default();
+        };
+        let mut result = super::MutationResult::default();
+        for job in jobs {
+            let url = job.href.as_ref().map_or_else(
+                || super::build_delete_request(&job.config, &job.calendar, job.id).url,
+                |href| absolute_resource_url(&job.config, href),
+            );
+            let mut builder = client
+                .delete(&url)
+                .basic_auth(&job.config.username, Some(&job.config.password));
+            // Even when an older server omitted the revision, keep deletion
+            // conditional on the resource still existing. Known revisions use
+            // their exact ETag and therefore detect concurrent modification.
+            builder = builder.header(
+                reqwest::header::IF_MATCH,
+                job.etag.as_deref().unwrap_or("*"),
+            );
+            match builder.send() {
+                Ok(response)
+                    if response.status().is_success() || response.status().as_u16() == 404 =>
+                {
+                    result.confirmed.push(job.id);
+                }
+                Ok(response) if response.status().as_u16() == 412 => {
+                    result.conflicts.push((job.id, url));
+                }
+                Ok(response) => result
+                    .failures
+                    .push((job.id, format!("server returned {}", response.status()))),
+                Err(error) => result.failures.push((job.id, error.to_string())),
+            }
+        }
+        result
+    }
+
+    fn absolute_resource_url(config: &CalDavConfig, href: &str) -> String {
+        if href.starts_with("http://") || href.starts_with("https://") {
+            href.to_owned()
+        } else {
+            format!(
+                "{}/{}",
+                config.server_url.trim_end_matches('/'),
+                href.trim_start_matches('/')
+            )
+        }
+    }
+
     fn calendar_query_body(today: NaiveDate) -> String {
-        // A ±60-day window keeps the payload small while covering the views.
-        let from = (today - chrono::Duration::days(60))
-            .format("%Y%m%dT000000Z")
-            .to_string();
-        let to = (today + chrono::Duration::days(60))
-            .format("%Y%m%dT000000Z")
-            .to_string();
+        // Full fallback must be authoritative: a time window cannot distinguish
+        // an old resource from a deletion. Response byte/resource caps bound it.
         let _ = today.year();
-        format!(
+        String::from(
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
 <C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
 <D:prop><D:getetag/><C:calendar-data/></D:prop>\
-<C:filter><C:comp-filter name=\"VCALENDAR\">\
-<C:time-range start=\"{from}\" end=\"{to}\"/>\
-</C:comp-filter></C:filter></C:calendar-query>"
+<C:filter><C:comp-filter name=\"VCALENDAR\"/></C:filter></C:calendar-query>",
         )
     }
 
-    /// Undo the handful of XML entities a server may apply to the embedded
-    /// `calendar-data` text so the iCalendar lines parse cleanly.
-    fn xml_text_unescape(s: &str) -> String {
-        s.replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#13;", "")
-            .replace("&amp;", "&")
+    #[cfg(test)]
+    mod tests {
+        type Response = (u16, Vec<(&'static str, &'static str)>, String);
+
+        use std::fmt::Write as _;
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        use super::*;
+
+        fn serve(responses: Vec<Response>) -> (String, mpsc::Receiver<String>) {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake CalDAV server");
+            let address = listener.local_addr().expect("fake server address");
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                for (status, headers, body) in responses {
+                    let (mut stream, _) = listener.accept().expect("accept CalDAV request");
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let header_end = loop {
+                        let read = stream.read(&mut buffer).expect("read request");
+                        assert!(read != 0, "request ended before headers");
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(position) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break position + 4;
+                        }
+                    };
+                    let headers_text = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers_text
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end + content_length {
+                        let read = stream.read(&mut buffer).expect("read request body");
+                        assert!(read != 0, "request body ended early");
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    tx.send(String::from_utf8_lossy(&request).into_owned())
+                        .expect("capture request");
+                    let reason = if status == 207 {
+                        "Multi-Status"
+                    } else {
+                        "Response"
+                    };
+                    let mut response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        body.len()
+                    );
+                    for (name, value) in headers {
+                        let _ = write!(response, "{name}: {value}\r\n");
+                    }
+                    response.push_str("\r\n");
+                    response.push_str(&body);
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write response");
+                }
+            });
+            (format!("http://{address}"), rx)
+        }
+
+        fn config(server_url: String) -> CalDavConfig {
+            CalDavConfig {
+                display_name: "Test".into(),
+                server_url,
+                username: "user".into(),
+                password: "secret".into(),
+            }
+        }
+
+        fn calendar() -> RemoteCalendar {
+            RemoteCalendar {
+                id: "cal/".into(),
+                name: "Test".into(),
+                color: 0,
+                visible: true,
+            }
+        }
+
+        fn multistatus(token: &str) -> String {
+            format!(
+                r#"<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<D:sync-token>{token}</D:sync-token><D:response><D:href>/cal/a.ics</D:href>
+<D:propstat><D:prop><D:getetag>&quot;v2&quot;</D:getetag><C:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:a
+SUMMARY:Review
+DTSTART:20260615T090000
+DTEND:20260615T100000
+END:VEVENT
+END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+</D:response></D:multistatus>"#
+            )
+        }
+
+        #[test]
+        fn fake_server_receives_incremental_report_and_href_is_canonical() {
+            let (server, requests) = serve(vec![(207, vec![], multistatus("token-2"))]);
+            let config = config(server.clone());
+            let result = pull_calendar_live(
+                &reqwest::blocking::Client::new(),
+                &config,
+                &calendar(),
+                NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+                Some("token-1"),
+            )
+            .expect("incremental sync");
+            let request = requests.recv().expect("captured REPORT");
+            assert!(request.starts_with("REPORT /cal/ HTTP/1.1"), "{request}");
+            assert!(request.contains("<D:sync-token>token-1</D:sync-token>"));
+            assert_eq!(result.resources[0].href, format!("{server}/cal/a.ics"));
+            assert_eq!(result.checkpoints[0].token, "token-2");
+            assert!(!result.checkpoints[0].full);
+        }
+
+        #[test]
+        fn fake_server_invalid_token_falls_back_to_authoritative_report() {
+            let (server, requests) = serve(vec![
+                (403, vec![], String::new()),
+                (207, vec![], multistatus("replacement")),
+            ]);
+            let result = pull_calendar_live(
+                &reqwest::blocking::Client::new(),
+                &config(server),
+                &calendar(),
+                NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+                Some("expired"),
+            )
+            .expect("full fallback");
+            let incremental = requests.recv().expect("incremental request");
+            let fallback = requests.recv().expect("fallback request");
+            assert!(incremental.contains("<D:sync-collection"));
+            assert!(fallback.contains("<C:calendar-query"));
+            assert!(result.checkpoints[0].full);
+            assert_eq!(result.checkpoints[0].token, "replacement");
+        }
+
+        #[test]
+        fn fake_server_observes_conditional_put_and_delete() {
+            let (server, requests) = serve(vec![
+                (200, vec![("ETag", "\"v2\"")], String::new()),
+                (200, vec![], String::new()),
+                (204, vec![], String::new()),
+            ]);
+            let config = config(server.clone());
+            let calendar = calendar();
+            let mut event = super::super::pull_calendar(
+                &config,
+                &calendar,
+                NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            )
+            .events
+            .remove(0);
+            event.calendar_id = Some(calendar.id.clone());
+            let href = format!("{server}/cal/a.ics");
+            let mut legacy_event = event.clone();
+            legacy_event.id = crate::model::Id::new_v4();
+            let upload = push_jobs_live(&[
+                super::super::UploadJob {
+                    config: config.clone(),
+                    calendar: calendar.clone(),
+                    event: event.clone(),
+                    href: Some(href.clone()),
+                    etag: Some("\"v1\"".into()),
+                },
+                super::super::UploadJob {
+                    config: config.clone(),
+                    calendar: calendar.clone(),
+                    event: legacy_event.clone(),
+                    href: Some(format!("{server}/cal/legacy.ics")),
+                    etag: None,
+                },
+            ]);
+            assert_eq!(upload.confirmed, vec![event.id, legacy_event.id]);
+            assert_eq!(upload.revisions[0].etag.as_deref(), Some("\"v2\""));
+            let removed = remove_jobs_live(&[super::super::RemoveJob {
+                config,
+                calendar,
+                id: event.id,
+                href: Some(href),
+                etag: Some("\"v2\"".into()),
+            }]);
+            assert_eq!(removed.confirmed, vec![event.id]);
+            let put = requests.recv().expect("PUT request").to_ascii_lowercase();
+            let legacy_put = requests
+                .recv()
+                .expect("legacy PUT request")
+                .to_ascii_lowercase();
+            let delete = requests
+                .recv()
+                .expect("DELETE request")
+                .to_ascii_lowercase();
+            assert!(put.starts_with("put /cal/a.ics http/1.1"));
+            assert!(put.contains("if-match: \"v1\""));
+            assert!(legacy_put.starts_with("put /cal/legacy.ics http/1.1"));
+            assert!(legacy_put.contains("if-match: *"));
+            assert!(delete.starts_with("delete /cal/a.ics http/1.1"));
+            assert!(delete.contains("if-match: \"v2\""));
+        }
     }
 }
 
@@ -730,5 +1431,70 @@ mod tests {
             .find(|e| e.title == "Family dinner")
             .unwrap();
         assert_eq!(dinner.recurrence, crate::model::Recurrence::Weekly);
+    }
+
+    #[test]
+    fn multistatus_parses_stable_identity_revision_token_and_deletion() {
+        let xml = r#"<?xml version="1.0"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+ <D:sync-token>token-2</D:sync-token>
+ <D:response><D:href>/cal/a.ics</D:href><D:propstat><D:prop>
+  <D:getetag>&quot;v2&quot;</D:getetag><C:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+SUMMARY:Review
+DTSTART:20260615T090000
+DTEND:20260615T100000
+END:VEVENT
+END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+ <D:response><D:href>/cal/gone.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>
+</D:multistatus>"#;
+        let parsed = parse_multistatus(xml).unwrap();
+        assert_eq!(parsed.token.as_deref(), Some("token-2"));
+        assert_eq!(parsed.changed[0].0, "/cal/a.ics");
+        assert_eq!(parsed.changed[0].1.as_deref(), Some("\"v2\""));
+        assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
+        assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
+    }
+
+    #[test]
+    fn malformed_and_oversized_multistatus_are_rejected_without_partial_data() {
+        assert!(parse_multistatus("<D:multistatus>").is_err());
+        let oversized = "x".repeat(MAX_XML_BYTES + 1);
+        assert!(parse_multistatus(&oversized).is_err());
+    }
+
+    #[test]
+    fn sync_token_is_xml_escaped() {
+        let body = sync_collection_body("a<&\"'>");
+        assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
+        assert!(!body.contains("a<&"));
+    }
+
+    #[test]
+    fn absolute_and_path_dav_hrefs_share_one_identity() {
+        assert!(hrefs_equal(
+            "https://calendar.example/dav/work/a.ics",
+            "/dav/work/a.ics"
+        ));
+        assert!(!hrefs_equal(
+            "https://calendar.example/dav/work/a.ics",
+            "/dav/work/b.ics"
+        ));
+        assert!(!hrefs_equal(
+            "https://calendar.example/dav/work/a.ics",
+            "https://attacker.example/dav/work/a.ics"
+        ));
+    }
+
+    #[test]
+    fn new_put_is_create_only_until_a_remote_etag_is_known() {
+        let store = AccountStore::sample();
+        let (account, cal) = store.all_calendars().next().unwrap();
+        let event = pull_calendar(&account.config, cal, today())
+            .events
+            .remove(0);
+        let request = build_put_request(&account.config, cal, &event);
+        assert!(request.if_none_match);
+        assert!(request.if_match.is_none());
     }
 }

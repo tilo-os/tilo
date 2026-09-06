@@ -154,9 +154,9 @@ const HANDLE_OFFSET: f64 = 8.0;
 /// (rail + inspector) only fit comfortably above this width.
 const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
 /// Below this allocated width the inspector also collapses to a right-edge
-/// overlay flap, so the narrowest windows give the canvas the full width. Set
-/// below [`NARROW_BREAKPOINT`] so a mid-width window keeps the inspector docked.
-const INSPECTOR_BREAKPOINT: f64 = 760.0;
+/// overlay flap. It intentionally matches the rail breakpoint: a compact
+/// window must never sacrifice the canvas to two permanent sidebars.
+const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
 /// Size of the toolbar hamburger toggle that summons the collapsed rail.
 const HAMBURGER: f64 = 34.0;
 
@@ -524,6 +524,10 @@ pub struct SlidesApp {
     /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
+    /// Complete, incremental Ctrl+K index. Cloning its provider handle is
+    /// cheap; rebuilding a large deck's postings each frame is not.
+    search_provider: crate::search_provider::SlideSearchProvider,
+
     /// Path-keyed decode cache for image elements. Decodes off the UI thread;
     /// the slide shows a light loading state until the pixels land.
     images: ImageStore,
@@ -629,6 +633,7 @@ impl SlidesApp {
     }
 
     fn build(deck: Deck) -> Self {
+        let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
         SlidesApp {
             deck,
             rect: Rect::ZERO,
@@ -663,6 +668,7 @@ impl SlidesApp {
             flap_uninitialised: true,
             breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
+            search_provider,
             images: ImageStore::new(),
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
@@ -705,6 +711,10 @@ impl SlidesApp {
     fn apply_scenario(&mut self, shot: &str) {
         self.apply_scenario_layout(shot);
         self.apply_scenario_content(shot);
+        // Scenarios may deliberately swap or extend the in-memory deck before
+        // the first CRDT seed. Keep Ctrl+K's cached durable index truthful to
+        // the exact screen the capture (and accessibility harness) sees.
+        self.search_provider.refresh(&self.deck);
     }
 
     /// The `--shots` scenarios that only pick a mode / viewport preference —
@@ -761,6 +771,12 @@ impl SlidesApp {
             // Narrow layout with the inspector flap summoned open.
             "inspector" => self.inspector_flap.open(),
             // "edit" (and anything unknown) keeps the default editor screen.
+            "empty" => {
+                self.deck = starter_deck();
+                self.cur_slide = 0;
+                self.sel = None;
+                self.bootstrapped = true;
+            }
             _ => {}
         }
     }
@@ -811,6 +827,15 @@ impl SlidesApp {
             // A slide carrying a real decoded raster, to prove the image
             // pipeline in a headless screenshot.
             "image" => self.apply_scenario_image(),
+            // The first frame after image insertion has an intentional loading
+            // placeholder while decoding runs off-thread; it is a real editor
+            // state, captured here without pretending a bitmap is ready.
+            "image_loading" => self.apply_scenario_loading_image(),
+            // This is the same concise failure toast `drain_doc_portal` shows
+            // after a decoder rejects a user-selected presentation.
+            "open_error" => {
+                self.io_toast = Some(("Could not open the presentation".into(), ToastKind::Error));
+            }
             // Right-click context menus (opened on the first drawn frame once
             // the layout rect is known — see `draw`).
             "element_menu" => self.apply_scenario_element_menu(),
@@ -903,6 +928,25 @@ impl SlidesApp {
         }
     }
 
+    fn apply_scenario_loading_image(&mut self) {
+        let mut slide = Slide::new(Layout::TitleContent);
+        slide.add(
+            Element::text("Importing photo", 96.0, 70.0, 1088.0, 90.0, 56.0)
+                .with(|element| element.bold = true),
+        );
+        slide.add(Element::image(
+            "/tmp/qos-slides-intentionally-loading-image.png",
+            96.0,
+            200.0,
+            1088.0,
+            420.0,
+        ));
+        self.deck.slides.push(slide);
+        self.cur_slide = self.deck.slides.len() - 1;
+        self.sel = None;
+        self.bootstrapped = true;
+    }
+
     /// `edit_text` scenario body: select the first text element on slide 2
     /// and put it in edit mode with a live selection over its first word.
     fn apply_scenario_edit_text(&mut self) {
@@ -979,7 +1023,7 @@ impl SlidesApp {
     /// is snapped to its resolved default so a narrow first frame shows the
     /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
     /// once per frame before `compute_chrome`.
-    fn sync_flaps(&mut self, dt: f64) -> SplitLayout {
+    fn sync_flaps(&mut self, dt: f64, reduce_motion: bool) -> SplitLayout {
         let rail = self.rail_layout();
         let insp = self.inspector_layout();
         self.rail_flap.reconcile(rail);
@@ -991,6 +1035,9 @@ impl SlidesApp {
             // fall back to the layout default. Re-resolving via reconcile after
             // a fresh open_when_docked would re-snap, so instead just mark done.
             self.flap_uninitialised = false;
+        } else if reduce_motion {
+            self.rail_flap.snap(self.rail_flap.is_open(rail));
+            self.inspector_flap.snap(self.inspector_flap.is_open(insp));
         } else {
             self.rail_flap.tick(rail, dt);
             self.inspector_flap.tick(insp, dt);
@@ -1004,11 +1051,15 @@ impl SlidesApp {
         if self.drag.active() {
             return; // cache is authoritative mid-drag
         }
-        if let Some(deck) = SlidesDoc::load(doc) {
+        if let Some(deck) = SlidesDoc::load(doc)
+            && deck != self.deck
+        {
             self.deck = deck;
-            // Bump so the present-mode slide cache re-shapes after any edit /
-            // undo / remote change. Cheap — `reload` runs on events, not per
-            // frame, so this never thrashes the cache during a live talk.
+            self.search_provider.refresh(&self.deck);
+            // Bump only for an actual local/remote/undo deck change. `sync`
+            // runs per frame, so equality here keeps both the settled-slide
+            // cache and the complete search catalogue cold while a talk is
+            // simply being presented.
             self.deck_rev = self.deck_rev.wrapping_add(1);
         }
         if self.deck.slides.is_empty() {
@@ -1197,7 +1248,10 @@ impl SlidesApp {
         match ev {
             PageSidebarEvent::Select(i) => self.apply_hit(doc, Hit::SelectSlide(i)),
             PageSidebarEvent::Reorder { from, to } => {
-                self.perform_action(doc, &actions::move_slide_action(from, to));
+                let Some(id) = self.deck.slides.get(from).map(|slide| slide.id.clone()) else {
+                    return;
+                };
+                self.perform_action(doc, &actions::move_slide_action(from, to, id));
                 self.cur_slide = to;
                 self.reload(doc);
                 self.scroll_rail_to_current();
@@ -1252,8 +1306,12 @@ impl SlidesApp {
 
         // Title block, elided so it never runs under the tools or right group.
         let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
+        // At phone widths the compact right-hand controls can begin before the
+        // nominal insert-tools slot. The title must yield to those controls;
+        // otherwise its elided label is painted underneath the grid/palette.
+        let title_right = tools_x.min(right_edge - 12.0);
         let (title_rect, title_pos) =
-            self.toolbar_title_block(toolbar, title_x, tools_x, &mut labels);
+            self.toolbar_title_block(toolbar, title_x, title_right, &mut labels);
 
         // Centre tool group. Every insert tool must stay pointer-reachable at
         // any width: the ones that fit sit on the toolbar; the rest move behind
@@ -1505,15 +1563,23 @@ impl SlidesApp {
         &self,
         toolbar: Rect,
         title_x: f64,
-        tools_x: f64,
+        title_right: f64,
         labels: &mut Vec<Label>,
     ) -> (Rect, Point) {
-        let title_max = (tools_x - 12.0 - title_x).max(60.0);
+        // A 390px phone toolbar has room for the rail toggle, the one unified
+        // insert overflow and the always-available presentation controls, but
+        // not a useful title fragment. Leave that slot empty rather than paint
+        // ellipsis under a focusable control.
+        let title_max = if toolbar.width() < 480.0 {
+            0.0
+        } else {
+            (title_right - 12.0 - title_x).max(0.0)
+        };
         let title_pos = Point::new(title_x, toolbar.y0 + 11.0);
         // While renaming, the inline TextInput draws the title (with selection +
         // caret), so the static label is blanked; otherwise elide it so it never
         // runs under the tools.
-        let title_text = if self.editing_title {
+        let title_text = if self.editing_title || title_max < 1.0 {
             String::new()
         } else {
             elide(&self.deck.title, 17.0, title_max)
@@ -1532,22 +1598,24 @@ impl SlidesApp {
             title_x + title_max,
             toolbar.y0 + 46.0,
         );
-        labels.push(Label {
-            pos: Point::new(title_x, toolbar.y0 + 33.0),
-            text: elide(
-                &format!(
-                    "Slide {} of {}  ·  {}",
-                    self.cur_slide + 1,
-                    self.deck.slides.len(),
-                    self.deck.palette.label()
+        if title_max >= 1.0 {
+            labels.push(Label {
+                pos: Point::new(title_x, toolbar.y0 + 33.0),
+                text: elide(
+                    &format!(
+                        "Slide {} of {}  ·  {}",
+                        self.cur_slide + 1,
+                        self.deck.slides.len(),
+                        self.deck.palette.label()
+                    ),
+                    11.5,
+                    title_max,
                 ),
-                11.5,
-                title_max,
-            ),
-            font: 11.5,
-            color: LabelColor::Dim,
-            weight: TextWeight::Regular,
-        });
+                font: 11.5,
+                color: LabelColor::Dim,
+                weight: TextWeight::Regular,
+            });
+        }
         (title_rect, title_pos)
     }
 
@@ -1570,6 +1638,28 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
+        // The toolbar hamburger remains a toggle, but an open overlay must
+        // also advertise its local escape route where the user's attention is:
+        // the flap header. This keeps the narrow panel dismissible without a
+        // hunt back to the global toolbar (and gives AT a named button).
+        if self.rail_layout() == SplitLayout::Overlay && self.rail_flap.reveal() > 0.001 {
+            let close_w = 56.0;
+            let close = Rect::new(
+                rail.x1 - tpad - close_w,
+                rail.y0 + 5.0,
+                rail.x1 - tpad,
+                rail.y0 + 35.0,
+            );
+            buttons.push(UiButton {
+                rect: close,
+                kind: ButtonKind::Text {
+                    label: "Close".into(),
+                    active: false,
+                    danger: false,
+                },
+                hit: Hit::ToggleRail,
+            });
+        }
         // Rail action buttons at the bottom.
         let rb_h = 30.0;
         let rb_y = rail.y1 - tpad - rb_h;
@@ -2217,13 +2307,20 @@ impl SlidesApp {
             Hit::DuplicateElement => self.duplicate_element(doc),
             Hit::DeleteElement => self.delete_element(doc),
             Hit::SetLayout(l) => {
-                self.perform_action(doc, &actions::set_slide_layout_action(self.cur_slide, l));
+                if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
+                    self.perform_action(
+                        doc,
+                        &actions::set_slide_layout_action(self.cur_slide, id, l),
+                    );
+                }
             }
             Hit::SetBackground(b) => {
-                self.perform_action(
-                    doc,
-                    &actions::set_slide_background_action(self.cur_slide, b),
-                );
+                if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
+                    self.perform_action(
+                        doc,
+                        &actions::set_slide_background_action(self.cur_slide, id, b),
+                    );
+                }
             }
             Hit::SetPalette(p) => {
                 self.perform_action(doc, &actions::set_deck_palette_action(p));
@@ -2231,10 +2328,38 @@ impl SlidesApp {
             Hit::EditNotes => {
                 self.begin_notes_edit(doc);
             }
-            Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
-            Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
+            Hit::ToggleRail => self.toggle_rail_flap(),
+            Hit::ToggleInspector => self.toggle_inspector_flap(),
         }
         self.reload(doc);
+    }
+
+    /// Compact editing exposes one drawer at a time. Opening the slide rail
+    /// immediately dismisses an overlay inspector, keeping the slide usable
+    /// behind the drawer instead of sandwiching it between two panels.
+    fn toggle_rail_flap(&mut self) {
+        let layout = self.rail_layout();
+        if layout == SplitLayout::Overlay
+            && self.inspector_layout() == SplitLayout::Overlay
+            && !self.rail_open()
+        {
+            self.inspector_flap.snap(false);
+        }
+        self.rail_flap.toggle(layout);
+    }
+
+    /// Mirror [`Self::toggle_rail_flap`] for the Properties drawer. Docked
+    /// panels remain independent on roomy windows; mutual exclusion applies
+    /// only where both are overlays.
+    fn toggle_inspector_flap(&mut self) {
+        let layout = self.inspector_layout();
+        if layout == SplitLayout::Overlay
+            && self.rail_layout() == SplitLayout::Overlay
+            && !self.inspector_open()
+        {
+            self.rail_flap.snap(false);
+        }
+        self.inspector_flap.toggle(layout);
     }
 
     fn set_sel_str(&mut self, doc: &mut AutoCommit, key: &str, v: &str) {
@@ -2302,7 +2427,10 @@ impl SlidesApp {
         if self.deck.slides.len() <= 1 {
             return; // keep at least one slide
         }
-        self.perform_action(doc, &actions::delete_slide_action(self.cur_slide));
+        let Some(id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(doc, &actions::delete_slide_action(self.cur_slide, id));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
@@ -2317,7 +2445,13 @@ impl SlidesApp {
             other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
         };
         let id = el.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &el));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &el),
+        );
         self.sel = Some(id);
         self.editing_text = false;
     }
@@ -2538,7 +2672,13 @@ impl SlidesApp {
         // A comfortable default frame, centred on the slide; the user resizes.
         let el = Element::image(&src, 340.0, 168.0, 600.0, 384.0);
         let id = el.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &el));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &el),
+        );
         self.sel = Some(id);
         self.editing_text = false;
         self.reload(doc);
@@ -2553,7 +2693,13 @@ impl SlidesApp {
         copy.x += 24.0;
         copy.y += 24.0;
         let id = copy.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &copy));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &copy),
+        );
         self.sel = Some(id);
     }
 
@@ -4685,18 +4831,72 @@ impl Widget for SlidesApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        use crate::actions::SlidesOperation;
+
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::SlidesOperation;
         match operation {
             SlidesOperation::ShowEditor => self.mode = Mode::Edit,
             SlidesOperation::ShowOverview => self.mode = Mode::Overview,
             SlidesOperation::StartPresentation => self.enter_present(),
             SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::RevealSlide { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealElement {
+                slide,
+                element,
+                edit_text,
+            } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                let Some(target) = self
+                    .deck
+                    .slides
+                    .get(idx)
+                    .and_then(|candidate| candidate.element(&element))
+                else {
+                    return Err("element no longer exists".into());
+                };
+                if edit_text && target.kind != ElementKind::Text {
+                    return Err("element is not editable text".into());
+                }
+                let text_len = target.text.chars().count();
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.sel = Some(element);
+                self.editing_text = edit_text;
+                if edit_text {
+                    // A text search result restores an immediately useful edit
+                    // state: the exact text resource is selected in full.
+                    self.sel_anchor = 0;
+                    self.caret = text_len;
+                }
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealNotes { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.goto_slide(idx);
+                self.editing_notes = true;
+                self.editing_text = false;
+                self.sel = None;
+                self.scroll_rail_to_current();
+            }
             SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
                 return Err(
                     "presentation file operations require the lifecycle-capable host".into(),
@@ -4883,14 +5083,14 @@ impl Widget for SlidesApp {
             self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
-        self.presentation.expire_transition();
+        self.presentation.expire_transition(theme.reduce_motion);
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
         let now = std::time::Instant::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
-        self.sync_flaps(dt);
+        self.sync_flaps(dt, theme.reduce_motion);
         self.sync_scroll_offsets(dt);
         self.stage_shots_demo();
         match self.mode {
@@ -4957,6 +5157,17 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        if reduced {
+            self.presentation.expire_transition(true);
+            let rail = self.rail_layout();
+            let inspector = self.inspector_layout();
+            self.rail_flap.snap(self.rail_flap.is_open(rail));
+            self.inspector_flap
+                .snap(self.inspector_flap.is_open(inspector));
+        }
     }
 
     /// Present mode wants the surface promoted to true OS fullscreen so the
@@ -5189,6 +5400,10 @@ impl Widget for SlidesApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -5196,26 +5411,11 @@ impl Widget for SlidesApp {
         self.actions.take_committed()
     }
 
-    /// Fold the deck's slides into the unified Ctrl+K palette: a snapshot
-    /// [`SlideSearchProvider`](crate::search_provider::SlideSearchProvider)
-    /// makes every slide findable there by its text-box content or speaker
-    /// notes, alongside the actions the app exports.
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SlideSearchProvider::new(
-            &self.deck,
-        ))]
-    }
-
-    /// Navigate to the slide a chosen palette row identifies. The row carries
-    /// the slide's stable id; resolve it to the current index and jump there.
-    /// Navigation is app-local presentation, so the doc args are unused.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::SlideSearchProvider::parse_action_id(action_id)
-            && let Some(idx) = self.deck.index_of(id)
-        {
-            self.goto_slide(idx);
-            self.scroll_rail_to_current();
-        }
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -7143,7 +7343,7 @@ mod tests {
         s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
         let mut a = app_with(s);
         a.rect = Rect::new(0.0, 0.0, w, 800.0);
-        a.sync_flaps(0.0);
+        a.sync_flaps(0.0, false);
         a
     }
 
@@ -7208,6 +7408,26 @@ mod tests {
     }
 
     #[test]
+    fn phone_toolbar_elides_title_before_compact_controls() {
+        let app = app_sized(390.0);
+        let chrome = app.compute_chrome();
+        let first_right_control = chrome
+            .buttons
+            .iter()
+            .filter(|button| {
+                !matches!(button.kind, ButtonKind::Hamburger)
+                    && button.rect.center().y < chrome.toolbar.y1
+            })
+            .map(|button| button.rect.x0)
+            .min_by(f64::total_cmp)
+            .unwrap();
+        assert!(
+            chrome.title_rect.x1 <= first_right_control,
+            "the two-line title must not paint under compact toolbar controls"
+        );
+    }
+
+    #[test]
     fn opening_the_overlay_flap_reveals_the_rail_over_a_scrim() {
         let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
         // Summon via the production toggle path, then settle the animation.
@@ -7224,6 +7444,13 @@ mod tests {
         assert!(
             chrome.scrim.width() > 0.0,
             "an open overlay flap dims the body"
+        );
+        assert!(
+            chrome.buttons.iter().any(|button| {
+                matches!(&button.kind, ButtonKind::Text { label, .. } if label == "Close")
+                    && matches!(button.hit, Hit::ToggleRail)
+            }),
+            "the open overlay has a named Close control in its own header"
         );
     }
 
@@ -7299,6 +7526,44 @@ mod tests {
     }
 
     #[test]
+    fn compact_editor_keeps_the_canvas_wide_with_both_panels_as_drawers() {
+        let app = app_sized(820.0);
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.layout, SplitLayout::Overlay);
+        assert_eq!(chrome.inspector_layout, SplitLayout::Overlay);
+        assert!(
+            chrome.slide_dest.width() > 700.0,
+            "closed drawers leave a useful slide canvas at compact laptop widths"
+        );
+        assert!(
+            chrome
+                .buttons
+                .iter()
+                .any(|button| matches!(button.hit, Hit::ToggleRail))
+                && chrome
+                    .buttons
+                    .iter()
+                    .any(|button| matches!(button.hit, Hit::ToggleInspector)),
+            "both drawers retain explicit toolbar controls"
+        );
+    }
+
+    #[test]
+    fn compact_drawers_are_mutually_exclusive() {
+        let mut app = app_sized(820.0);
+        let mut doc = AutoCommit::new();
+        app.apply_hit(&mut doc, Hit::ToggleRail);
+        assert!(app.rail_open());
+        assert!(!app.inspector_open());
+        app.apply_hit(&mut doc, Hit::ToggleInspector);
+        assert!(app.inspector_open(), "properties drawer opens");
+        assert!(
+            !app.rail_open(),
+            "opening properties closes the slide drawer immediately"
+        );
+    }
+
+    #[test]
     fn resizing_across_the_breakpoint_returns_to_the_layout_default() {
         let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
         // User opens the flap while narrow.
@@ -7335,7 +7600,7 @@ mod tests {
         // flap sync (the real path) — both panels must become overlay flaps and
         // the canvas must span the full width.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
         assert_eq!(
             app.rail_layout(),
             SplitLayout::Overlay,
@@ -7374,7 +7639,7 @@ mod tests {
         a.cur_slide = 0;
         a.bootstrapped = true;
         a.rect = Rect::new(0.0, 0.0, 1280.0, h);
-        a.sync_flaps(0.0);
+        a.sync_flaps(0.0, false);
         a
     }
 
@@ -7483,7 +7748,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
         // Settle the flaps so nothing is mid-animation.
         for _ in 0..3 {
-            app.sync_flaps(1.0);
+            app.sync_flaps(1.0, false);
         }
         assert!(
             !app.needs_animation_frame(),
@@ -7495,6 +7760,20 @@ mod tests {
             app.needs_animation_frame(),
             "a live cross-fade pumps frames"
         );
+    }
+
+    #[test]
+    fn reduced_motion_settles_presentation_navigation_in_one_pass() {
+        let mut app = presenting_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.next_slide(1);
+        assert!(app.presentation.needs_animation_frame());
+
+        Widget::set_motion_reduced(&mut app, true);
+
+        assert!(!app.presentation.needs_animation_frame());
+        assert_eq!(app.presentation.transition_alpha(true), 1.0);
+        assert!(!app.needs_animation_frame());
     }
 
     // --- toolbar overflow menu ---------------------------------------------
@@ -7605,7 +7884,7 @@ mod tests {
         let mut app = app_with(s);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.sel = Some(id);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
         let chrome = app.compute_chrome();
         let el = app.selected_element().expect("a selected element").clone();
         let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
@@ -8294,7 +8573,7 @@ mod tests {
     }
     fn sized(app: &mut SlidesApp, w: f64, h: f64) {
         app.rect = Rect::new(0.0, 0.0, w, h);
-        app.sync_flaps(0.0);
+        app.sync_flaps(0.0, false);
     }
 
     // --- deck title rename (was display-only: set_title had no caller) ------
@@ -9234,5 +9513,53 @@ mod tests {
         assert_eq!(slides.role, ui::a11y::Role::List);
         assert_eq!(slides.children.len(), app.deck.slides.len());
         assert!(slides.children.iter().any(|slide| slide.state.selected));
+    }
+
+    #[test]
+    fn brokered_text_reveal_restores_exact_slide_element_and_selection() {
+        use ui::widget::Widget as _;
+
+        let mut app = SlidesApp::demo(None);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let slide_index = 2;
+        let slide = &app.deck.slides[slide_index];
+        let slide_id = slide.id.clone();
+        let element = slide
+            .elements
+            .iter()
+            .find(|element| element.kind == ElementKind::Text && !element.text.is_empty())
+            .unwrap();
+        let element_id = element.id.clone();
+        let text_len = element.text.chars().count();
+        let payload = serde_json::to_vec(&crate::actions::SlidesOperation::RevealElement {
+            slide: slide_id,
+            element: element_id.clone(),
+            edit_text: true,
+        })
+        .unwrap();
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::SLIDES_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.cur_slide, slide_index);
+        assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
+        assert!(app.editing_text);
+        assert_eq!(
+            app.selection(),
+            Selection {
+                anchor: 0,
+                cursor: text_len,
+            }
+        );
+        assert_eq!(app.mode, Mode::Edit);
     }
 }

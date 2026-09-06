@@ -47,8 +47,8 @@ pub(crate) struct WgpuEngine {
     /// The `Texture` should have the same size as the `Image`.
     pub(crate) image_overrides: HashMap<u64, wgpu::TexelCopyTextureInfoBase<Texture>>,
     pipeline_cache: Option<PipelineCache>,
-    /// Experimental opt-in command encoding path. Kept off by default so a
-    /// release binary can A/B shared compute passes without changing work.
+    /// Compute-pass batching policy: mode 2 (including deferred frees) is the
+    /// production default; explicit modes 0 and 1 remain available for A/B runs.
     compute_batch: u8,
     /// Logging is deliberately separate from enablement so timed A/B runs do
     /// not emit one line for every encoded pass.
