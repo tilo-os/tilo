@@ -1325,9 +1325,16 @@ impl ChatDoc {
     /// Create a category at the end of `ws`. Returns its fresh id.
     pub fn create_category(doc: &mut AutoCommit, ws: &str, name: &str) -> String {
         let id = format!("cat_{}", Uuid::new_v4().simple());
-        let order = Self::next_category_order(doc, ws);
-        Self::put_category(doc, &id, ws, name, order, false);
+        Self::insert_category(doc, &id, ws, name);
         id
+    }
+
+    /// Create a category with a caller-chosen stable id.  Authoring owns id
+    /// generation; deriving the end-of-workspace order from the replay base
+    /// keeps the replicated action deterministic.
+    pub fn insert_category(doc: &mut AutoCommit, id: &str, ws: &str, name: &str) {
+        let order = Self::next_category_order(doc, ws);
+        Self::put_category(doc, id, ws, name, order, false);
     }
 
     /// Create a workspace at the end of the rail, scaffolded with a minimal
