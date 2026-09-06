@@ -65,7 +65,18 @@ pub enum MailOperation {
     },
     /// Reveal an already-loaded message. The app records normal mark-read
     /// semantics through its document action at the next mutable sync boundary.
+    /// This is the operation behind the plainly named **Open message** action.
     RevealMessage {
+        id: String,
+    },
+    /// Inspect an already-loaded message without changing its read flag.
+    ///
+    /// This deliberately has a different operation and a deliberately explicit
+    /// label in the resource tree: an agent (or a person checking a message)
+    /// must never get a surprising read receipt merely by asking to inspect it.
+    /// Normal list activation and **Open message** still use [`Self::RevealMessage`]
+    /// and therefore mark an unread message as read.
+    InspectMessage {
         id: String,
     },
     RevealDraft,
@@ -418,6 +429,13 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
             id: message.id.clone(),
         },
     ));
+    resource = resource.with_action(view_spec(
+        "inspect",
+        "Preview without marking read",
+        &MailOperation::InspectMessage {
+            id: message.id.clone(),
+        },
+    ));
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -568,36 +586,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     // A message is nested under its physical folder only; Starred is virtual,
     // and duplicating resources there would make canonical ids ambiguous.
     for folder in Folder::ALL {
-        let mut folder_node = Resource::new(
-            format!("mail.folder:{}", folder.as_key()),
-            "mail.folder",
-            folder.title().to_string(),
-        )
-        .with_action(view_spec(
-            "open",
-            "Open folder",
-            &MailOperation::RevealFolder {
-                folder: folder.as_key().to_string(),
-            },
-        ));
-        if folder == Folder::Drafts && ctx.has_draft {
-            folder_node = folder_node.with_action(
-                immediate_spec("discard-draft", "Discard draft", &discard_draft_action())
-                    .destructive(),
-            );
-            folder_node = folder_node.with_child(
-                Resource::new("mail.draft:current", "mail.draft", "Current draft")
-                    .with_action(view_spec(
-                        "open",
-                        "Continue editing",
-                        &MailOperation::RevealDraft,
-                    ))
-                    .with_action(
-                        immediate_spec("discard", "Discard draft", &discard_draft_action())
-                            .destructive(),
-                    ),
-            );
-        }
+        let mut folder_node = system_folder_resource(folder, ctx.has_draft);
         if folder == ctx.current_folder {
             let mut threads: Vec<(String, Vec<&MessageRow>)> = Vec::new();
             for message in ctx
@@ -658,6 +647,43 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     }
 
     vec![root]
+}
+
+/// Build the canonical resource for a built-in folder. Kept separate from the
+/// tree assembly above so the search provider can materialize the *same*
+/// folder resource lazily instead of returning an address which only happens
+/// to work when another provider has already built the whole mailbox tree.
+pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resource {
+    let mut folder_node = Resource::new(
+        format!("mail.folder:{}", folder.as_key()),
+        "mail.folder",
+        folder.title().to_string(),
+    )
+    .with_action(view_spec(
+        "open",
+        "Open folder",
+        &MailOperation::RevealFolder {
+            folder: folder.as_key().to_string(),
+        },
+    ));
+    if folder == Folder::Drafts && has_draft {
+        folder_node = folder_node.with_action(
+            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
+        );
+        folder_node = folder_node.with_child(
+            Resource::new("mail.draft:current", "mail.draft", "Current draft")
+                .with_action(view_spec(
+                    "open",
+                    "Continue editing",
+                    &MailOperation::RevealDraft,
+                ))
+                .with_action(
+                    immediate_spec("discard", "Discard draft", &discard_draft_action())
+                        .destructive(),
+                ),
+        );
+    }
+    folder_node
 }
 
 fn thread_resource_key(subject: &str) -> String {
@@ -757,6 +783,44 @@ mod tests {
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
         (app, state)
+    }
+
+    #[test]
+    fn message_resource_distinguishes_open_from_read_state_neutral_preview() {
+        let (app, state) = seeded_app();
+        let message = app
+            .mail_resource_ctx(&state.doc)
+            .messages
+            .into_iter()
+            .find(|message| !message.read)
+            .expect("sample has an unread message");
+        let resource = message_resource(&message);
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("normal open action");
+        let preview = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "inspect")
+            .expect("explicit preview action");
+        assert_eq!(open.label, "Open message");
+        assert_eq!(preview.label, "Preview without marking read");
+        let ActionInput::Immediate(open_payload) = &open.input else {
+            panic!("open is an immediate view operation");
+        };
+        let ActionInput::Immediate(preview_payload) = &preview.input else {
+            panic!("preview is an immediate view operation");
+        };
+        assert!(matches!(
+            decode_operation(&open_payload.type_id, &open_payload.payload).unwrap(),
+            Some(MailOperation::RevealMessage { .. })
+        ));
+        assert!(matches!(
+            decode_operation(&preview_payload.type_id, &preview_payload.payload).unwrap(),
+            Some(MailOperation::InspectMessage { .. })
+        ));
     }
 
     /// A sample message id (as a string) taken from the Inbox.
