@@ -1674,7 +1674,7 @@ impl FilePicker {
                 self.move_selection(-1, shift);
                 *handled = true;
             }
-            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 match self.focus {
                     Some(PickerFocus::Cancel) => self.click_cancel(),
                     Some(PickerFocus::Confirm) if self.can_commit_open() => self.click_open(),
