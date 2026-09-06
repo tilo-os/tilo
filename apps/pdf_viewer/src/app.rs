@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -85,6 +85,14 @@ const RASTER_SS: f64 = 2.0;
 /// are always drawn (a cache hit is ~free), so steady-state scrolling is
 /// unaffected.
 const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchProjectionRevision {
+    doc_id: String,
+    heads: Vec<ChangeHash>,
+    page_ids: Vec<String>,
+    page_sources: Vec<usize>,
+}
 
 fn pdf_filter() -> FileFilter {
     FileFilter::new("PDF documents").mimetype("application/pdf")
@@ -397,6 +405,25 @@ pub struct PdfApp {
     /// inter-page gaps (see [`Self::content_stack_h`]).
     viewport: ViewportState,
     current_page: usize,
+    /// Durable CRDT page-plan identities, refreshed from the markup record.
+    resource_page_ids: Vec<String>,
+    /// Immutable source page backing each durable plan occurrence.
+    resource_page_sources: Vec<usize>,
+    /// Imported content metadata parallel to the durable plan; used to build
+    /// duplicate actions that retain the imported source identity.
+    resource_page_imports: Vec<Option<crate::doc::ImportedPage>>,
+    /// Original text-backend pages, used to materialise a remote plan.
+    source_pages: Vec<model::Page>,
+    /// Retained global-search namespace. Opening/typing in the palette only
+    /// clones this handle; projection happens during state sync.
+    search_catalog: ui::search::SearchCatalog,
+    search_catalog_ids: HashSet<String>,
+    search_projection_revision: Option<SearchProjectionRevision>,
+    #[cfg(test)]
+    search_projection_refreshes: usize,
+    /// Test-only/local compatibility nonce for direct model helpers; UI and
+    /// resource actions use the durable CRDT ids above.
+    legacy_page_nonce: u64,
     tool: Tool,
     swatch: Swatch,
     sidebar_tab: SidebarTab,
@@ -744,7 +771,10 @@ impl PdfApp {
         }
         let png = std::env::temp_dir().join("qos_pdf_demo_import.png");
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
-            self.import_file(&png);
+            // Screenshot-only helper; production imports receive the checked
+            // out shared record from `sync`/the portal path.
+            let mut state = AutoCommit::new();
+            self.import_file(&png, &mut state);
         }
     }
 
@@ -753,6 +783,8 @@ impl PdfApp {
         reason = "constructor lists the complete explicit state of this custom document workspace"
     )]
     fn build(doc: Document, seed_sample: bool) -> Self {
+        let page_count = doc.page_count();
+        let source_pages = doc.pages.clone();
         let author = std::env::var("QUICK_APP_ID")
             .ok()
             .filter(|s| !s.is_empty())
@@ -780,6 +812,18 @@ impl PdfApp {
                 .with_padding(VIEW_PAD)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             current_page: 1,
+            resource_page_ids: (1..=page_count)
+                .map(|page| format!("source-{page}"))
+                .collect(),
+            resource_page_sources: (1..=page_count).collect(),
+            resource_page_imports: vec![None; page_count],
+            source_pages,
+            search_catalog: ui::search::SearchCatalog::new(crate::search_provider::PDF_SEARCH_KIND),
+            search_catalog_ids: HashSet::new(),
+            search_projection_revision: None,
+            #[cfg(test)]
+            search_projection_refreshes: 0,
+            legacy_page_nonce: page_count as u64 + 1,
             tool: Tool::Select,
             swatch: Swatch::Yellow,
             sidebar_tab: SidebarTab::Comments,
@@ -883,11 +927,16 @@ impl PdfApp {
         if !self.has_document {
             return None;
         }
-        let doc_id = if self.doc_name.is_empty() {
-            "document".to_string()
-        } else {
-            self.doc_name.clone()
-        };
+        let doc_id = self.markup_record.as_ref().map_or_else(
+            || {
+                if self.seed_sample {
+                    "sample".to_string()
+                } else {
+                    "document".to_string()
+                }
+            },
+            |record| record.id.as_str().to_string(),
+        );
         let title = if self.doc.title.is_empty() {
             doc_id.clone()
         } else {
@@ -898,6 +947,9 @@ impl PdfApp {
             title,
             page: self.current_page,
             page_count: self.doc.page_count(),
+            page_ids: self.resource_page_ids.clone(),
+            page_sources: self.resource_page_sources.clone(),
+            page_imports: self.resource_page_imports.clone(),
             author: self.author.clone(),
             signature_date: today_ymd(),
             created_seed: self.created_counter,
@@ -914,6 +966,47 @@ impl PdfApp {
                 .map(|item| (item.title.clone(), item.page, item.level))
                 .collect(),
         })
+    }
+
+    /// Refresh global search only when the shared document or durable page
+    /// occurrence projection changed. Palette opening and keystrokes never
+    /// traverse document text or markup.
+    fn refresh_search_catalog(&mut self, state: &mut AutoCommit) {
+        let Some(ctx) = self.pdf_resource_ctx() else {
+            return;
+        };
+        let revision = SearchProjectionRevision {
+            doc_id: ctx.doc_id.clone(),
+            heads: state.get_heads(),
+            page_ids: ctx.page_ids.clone(),
+            page_sources: ctx.page_sources.clone(),
+        };
+        if self.search_projection_revision.as_ref() == Some(&revision) {
+            return;
+        }
+        let ids = match crate::search_provider::PdfSearchProvider::index_into(
+            &self.search_catalog,
+            &ctx,
+            &self.source_pages,
+            &self.annotations,
+            &self.comments,
+            &self.signatures,
+        ) {
+            Ok(ids) => ids,
+            Err(error) => {
+                self.status_note = Some(format!("Search index unavailable: {error}"));
+                return;
+            }
+        };
+        for stale in self.search_catalog_ids.difference(&ids) {
+            let _ = self.search_catalog.remove(stale);
+        }
+        self.search_catalog_ids = ids;
+        self.search_projection_revision = Some(revision);
+        #[cfg(test)]
+        {
+            self.search_projection_refreshes += 1;
+        }
     }
 
     // ---- seeding + cache refresh ------------------------------------
@@ -1265,13 +1358,42 @@ impl PdfApp {
     /// Apply the events the shared page rail produced this gesture: selection
     /// jumps, drag-reorder, context-menu duplicate/move/delete, and the import
     /// affordance.
-    fn apply_sidebar_events(&mut self, _state: &mut AutoCommit) {
+    fn apply_sidebar_events(&mut self, state: &mut AutoCommit) {
         for ev in self.page_sidebar.take_events() {
             match ev {
                 PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
-                PageSidebarEvent::Reorder { from, to } => self.reorder_pages(from, to),
-                PageSidebarEvent::Duplicate(i) => self.duplicate_page_at(i),
-                PageSidebarEvent::Delete(i) => self.delete_page_at(i),
+                PageSidebarEvent::Reorder { from, to } => {
+                    let Some(id) = self.resource_page_ids.get(from).cloned() else {
+                        continue;
+                    };
+                    let after = if to == 0 {
+                        None
+                    } else {
+                        self.resource_page_ids.get(to - 1).map(String::as_str)
+                    };
+                    let action = crate::actions::move_page_plan_action(&id, after);
+                    self.perform_action(state, &action);
+                }
+                PageSidebarEvent::Duplicate(i) => {
+                    let Some(id) = self.resource_page_ids.get(i) else {
+                        continue;
+                    };
+                    let source_page = self.resource_page_sources.get(i).copied().unwrap_or(i + 1);
+                    let action =
+                        crate::actions::duplicate_page_plan_action(&crate::doc::PagePlanEntry {
+                            id: id.clone(),
+                            source_page,
+                            imported: self.resource_page_imports.get(i).cloned().flatten(),
+                        });
+                    self.perform_action(state, &action);
+                }
+                PageSidebarEvent::Delete(i) => {
+                    let Some(id) = self.resource_page_ids.get(i) else {
+                        continue;
+                    };
+                    let action = crate::actions::delete_page_plan_action(id);
+                    self.perform_action(state, &action);
+                }
                 PageSidebarEvent::Add => self.request_import_via_portal(),
             }
         }
@@ -1282,6 +1404,7 @@ impl PdfApp {
     /// in the rasteriser's plan and `doc.pages` are size placeholders; in text
     /// mode `doc.pages` already carries the reordered content and only needs
     /// renumbering.
+    #[cfg(test)]
     fn after_page_edit(&mut self) {
         if let Some(rz) = self.raster.as_ref() {
             let n = rz.page_count().max(1);
@@ -1300,15 +1423,111 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Adopt the durable, collaboration-replayed page plan into whichever
+    /// local renderer is available. A peer without source bytes still keeps
+    /// the shared intent in its record; a renderer with the original source
+    /// can immediately materialise duplicates, deletes and order changes.
+    fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
+        let source_count = self.source_pages.len().max(1);
+        PdfDoc::ensure_page_plan(state, source_count);
+        PdfDoc::migrate_page_anchors(state);
+        let plan = PdfDoc::list_page_plan(state);
+        if plan.is_empty() {
+            return;
+        }
+        let plan_ids: Vec<String> = plan.iter().map(|entry| entry.id.clone()).collect();
+        let sources: Vec<usize> = plan.iter().map(|entry| entry.source_page).collect();
+        let plan_changed =
+            self.resource_page_ids != plan_ids || self.resource_page_sources != sources;
+        if let Some(raster) = self.raster.as_mut() {
+            if !raster.reconcile_page_plan(&plan) {
+                self.status_note =
+                    Some("Shared page plan needs source pages unavailable on this device".into());
+                return;
+            }
+            if let Some(imported) = plan
+                .iter()
+                .filter_map(|entry| entry.imported.as_ref())
+                .find(|imported| {
+                    qdoc::blobstore::state(&imported.hash) != qdoc::blobstore::BlobState::Resolved
+                })
+            {
+                let state = qdoc::blobstore::state(&imported.hash);
+                let note = match state {
+                    qdoc::blobstore::BlobState::Pending => {
+                        Some("Imported page content is arriving from collaborators".into())
+                    }
+                    qdoc::blobstore::BlobState::Unavailable => {
+                        Some("Imported page content is unavailable on this device".into())
+                    }
+                    qdoc::blobstore::BlobState::Resolved => None,
+                };
+                if let Some(note) = note {
+                    self.status_note = Some(note);
+                }
+            }
+            self.doc.pages = (1..=plan.len())
+                .map(|number| model::Page {
+                    number,
+                    blocks: Vec::new(),
+                })
+                .collect();
+        } else if plan.iter().any(|entry| entry.imported.is_some()) {
+            // Text backend cannot materialise imported PDF/image bytes, but it
+            // must retain their occurrences so another peer can hydrate them.
+            self.doc.pages = (1..=plan.len())
+                .map(|number| model::Page {
+                    number,
+                    blocks: Vec::new(),
+                })
+                .collect();
+            self.status_note =
+                Some("Imported pages are unavailable until a PDF renderer is available".into());
+        } else {
+            let Some(mut pages) = sources
+                .iter()
+                .map(|source| self.source_pages.get(source - 1).cloned())
+                .collect::<Option<Vec<_>>>()
+            else {
+                self.status_note =
+                    Some("Shared page plan needs source pages unavailable on this device".into());
+                return;
+            };
+            for (index, page) in pages.iter_mut().enumerate() {
+                page.number = index + 1;
+            }
+            self.doc.pages = pages;
+        }
+        self.resource_page_ids = plan_ids;
+        self.resource_page_sources = sources;
+        self.resource_page_imports = plan.iter().map(|entry| entry.imported.clone()).collect();
+        // A CRDT page-plan mutation changes the binary document that Save
+        // writes, even when it arrived from a collaborator rather than a local
+        // rail gesture. The original source plan compares equal and therefore
+        // does not make a freshly opened document appear dirty.
+        self.pages_dirty |= plan_changed;
+        self.current_page = self.current_page.clamp(1, self.doc.page_count().max(1));
+    }
+
     /// Whether the document's pages have been edited (reorder / delete /
     /// duplicate / import) since it was last saved.
     pub fn pages_dirty(&self) -> bool {
         self.pages_dirty
     }
 
-    /// Move displayed page `from` to final index `to`.
+    /// Test-only local raster-plan helper. Production page controls dispatch
+    /// `PdfViewerAction::MovePagePlan` through the shared action path.
+    #[cfg(test)]
+    fn next_local_page_id(&mut self) -> String {
+        let identity = format!("page-local-{}", self.legacy_page_nonce);
+        self.legacy_page_nonce = self.legacy_page_nonce.saturating_add(1);
+        identity
+    }
+
+    /// Test-only local raster-plan helper. Production page controls dispatch
+    #[cfg(test)]
     pub fn reorder_pages(&mut self, from: usize, to: usize) {
-        if from == to {
+        if from == to || from >= self.doc.page_count() || to >= self.doc.page_count() {
             return;
         }
         if let Some(rz) = self.raster.as_mut() {
@@ -1316,26 +1535,38 @@ impl PdfApp {
         } else {
             ui::widget::page_sidebar::move_item(&mut self.doc.pages, from, to);
         }
+        ui::widget::page_sidebar::move_item(&mut self.resource_page_ids, from, to);
         self.after_page_edit();
         self.go_to_page(to + 1);
-        self.status_note = Some("Page moved — Save to keep the new order".to_string());
+        self.status_note =
+            Some("Page moved in the shared plan — Save exports a flattened PDF".to_string());
     }
 
-    /// Duplicate displayed page `i`, inserting the copy right after it.
+    /// Test-only local raster-plan helper. Production page controls dispatch
+    /// `PdfViewerAction::DuplicatePagePlan` through the shared action path.
+    #[cfg(test)]
     pub fn duplicate_page_at(&mut self, i: usize) {
+        if i >= self.doc.page_count() {
+            return;
+        }
         if let Some(rz) = self.raster.as_mut() {
             rz.duplicate_page(i);
         } else if i < self.doc.pages.len() {
             ui::widget::page_sidebar::duplicate_after(&mut self.doc.pages, i);
         }
+        let page_id = self.next_local_page_id();
+        self.resource_page_ids.insert(i + 1, page_id);
         self.after_page_edit();
         self.go_to_page(i + 2);
-        self.status_note = Some("Page duplicated — Save to keep it".to_string());
+        self.status_note =
+            Some("Page duplicated in the shared plan — Save exports a flattened PDF".to_string());
     }
 
-    /// Remove displayed page `i` (never the last remaining page).
+    /// Test-only local raster-plan helper. Production page controls dispatch
+    /// `PdfViewerAction::DeletePagePlan` through the shared action path.
+    #[cfg(test)]
     pub fn delete_page_at(&mut self, i: usize) {
-        if self.doc.page_count() <= 1 {
+        if self.doc.page_count() <= 1 || i >= self.doc.page_count() {
             return;
         }
         if let Some(rz) = self.raster.as_mut() {
@@ -1343,20 +1574,25 @@ impl PdfApp {
         } else if i < self.doc.pages.len() {
             self.doc.pages.remove(i);
         }
+        self.resource_page_ids.remove(i);
         self.after_page_edit();
         self.go_to_page((i + 1).min(self.doc.page_count()));
-        self.status_note = Some("Page removed — Save to keep the change".to_string());
+        self.status_note =
+            Some("Page removed from the shared plan — Save exports a flattened PDF".to_string());
     }
 
-    /// Import a PDF or image file as new page(s) after the current page (raster
-    /// backend only). Returns true on success.
-    pub fn import_file(&mut self, path: &std::path::Path) -> bool {
-        let Some(rz) = self.raster.as_mut() else {
+    /// Import content-addressed PDF/image bytes as a shared, replayable page
+    /// plan action. The bytes live in qdoc's blob store, never in Automerge.
+    pub fn import_file(&mut self, path: &std::path::Path, state: &mut AutoCommit) -> bool {
+        const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
+        const MAX_IMPORT_PAGES: usize = 512;
+        let Some(rz) = self.raster.as_ref() else {
             self.status_note = Some("Importing pages needs the pdfium backend".to_string());
             self.dirty = true;
             return false;
         };
         let at = self.current_page; // 0-based index of the slot after the current page
+        let pages_before = self.doc.page_count();
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -1365,31 +1601,60 @@ impl PdfApp {
                 return false;
             }
         };
-        let is_pdf = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-            || bytes.starts_with(b"%PDF");
-        let result = if is_pdf {
-            rz.import_pdf(bytes, at)
-                .map(|n| format!("Imported {n} page(s) — Save to keep them"))
-        } else {
-            rz.import_image(&bytes, at)
-                .map(|()| "Imported image as a page — Save to keep it".to_string())
-        };
-        match result {
-            Ok(note) => {
-                self.after_page_edit();
-                self.go_to_page(at + 1);
-                self.status_note = Some(note);
-                true
-            }
-            Err(e) => {
-                self.status_note = Some(format!("Import failed: {e}"));
-                self.dirty = true;
-                false
-            }
+        if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
+            self.status_note = Some(format!(
+                "Import refused: file must be between 1 byte and {MAX_IMPORT_BYTES} bytes"
+            ));
+            return false;
         }
+        let (kind, sizes) = match rz.inspect_import(&bytes) {
+            Ok(meta) if meta.1.len() <= MAX_IMPORT_PAGES => meta,
+            Ok(_) => {
+                self.status_note = Some(format!(
+                    "Import refused: maximum is {MAX_IMPORT_PAGES} pages"
+                ));
+                return false;
+            }
+            Err(error) => {
+                self.status_note = Some(format!("Import failed: {error}"));
+                return false;
+            }
+        };
+        // Only publish validated bytes. A malformed or excessive payload has
+        // not mutated either local page plan or shared history at this point.
+        let hash = qdoc::blobstore::put(&bytes);
+        if !qdoc::blobstore::store().has(&hash) {
+            self.status_note =
+                Some("Import failed: local content store refused the payload".into());
+            return false;
+        }
+        let pages = sizes
+            .into_iter()
+            .enumerate()
+            .map(|(index, (width, height))| crate::doc::PagePlanEntry {
+                id: format!("import-{}", uuid::Uuid::new_v4()),
+                source_page: index + 1,
+                imported: Some(crate::doc::ImportedPage {
+                    hash: hash.clone(),
+                    kind: kind.clone(),
+                    page: index + 1,
+                    width_milli: (width * 1000.0).round() as u32,
+                    height_milli: (height * 1000.0).round() as u32,
+                }),
+            })
+            .collect();
+        let after = self
+            .resource_page_ids
+            .get(at.saturating_sub(1))
+            .map(String::as_str);
+        self.perform_action(state, &crate::actions::import_pages_action(after, pages));
+        self.reconcile_shared_page_plan(state);
+        self.go_to_page(at + 1);
+        self.status_note = Some(
+            "Imported pages are shared with collaborators; Save exports a flattened PDF".into(),
+        );
+        self.pages_dirty = self.doc.page_count() != pages_before;
+        true
     }
 
     fn request_import_via_portal(&mut self) {
@@ -1405,7 +1670,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn drain_portal_import(&mut self) {
+    fn drain_portal_import(&mut self, state: &mut AutoCommit) {
         let Some(rx) = self.portal_import_rx.as_ref() else {
             return;
         };
@@ -1414,7 +1679,7 @@ impl PdfApp {
                 self.portal_import_rx = None;
                 match outcome {
                     PortalOutcome::Opened(path) => {
-                        self.import_file(&path);
+                        self.import_file(&path, state);
                     }
                     PortalOutcome::Cancelled => {}
                     PortalOutcome::Failed(reason) => {
@@ -2515,6 +2780,13 @@ impl PdfApp {
                 self.fit = FitMode::Page;
                 self.viewport.set_scroll(0.0, 0.0);
                 self.current_page = 1;
+                self.resource_page_ids = (1..=self.doc.page_count())
+                    .map(|page| format!("source-{page}"))
+                    .collect();
+                self.resource_page_sources = (1..=self.doc.page_count()).collect();
+                self.resource_page_imports = vec![None; self.doc.page_count()];
+                self.source_pages = self.doc.pages.clone();
+                self.legacy_page_nonce = self.doc.page_count() as u64 + 1;
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.editing = None;
@@ -2606,15 +2878,6 @@ impl Widget for PdfApp {
             PdfOperation::ToggleRail => self.toggle_rail(),
             PdfOperation::OpenSearch => self.open_search(),
             PdfOperation::GoToPage { page } => self.go_to_page(page),
-            PdfOperation::DuplicatePage { page } => {
-                self.duplicate_page_at(page.saturating_sub(1));
-            }
-            PdfOperation::DeletePage { page } => {
-                self.delete_page_at(page.saturating_sub(1));
-            }
-            PdfOperation::MovePage { from, to } => {
-                self.reorder_pages(from.saturating_sub(1), to.saturating_sub(1));
-            }
             PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
                 return Err("file operations require the lifecycle-capable operation host".into());
             }
@@ -2720,6 +2983,17 @@ impl Widget for PdfApp {
         self.markup_record.clone()
     }
 
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.has_document
+            .then(|| {
+                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
+                    self.search_catalog.clone(),
+                )) as Box<dyn ui::search::SearchProvider>
+            })
+            .into_iter()
+            .collect()
+    }
+
     /// Publish the open document + its markup so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
@@ -2742,7 +3016,7 @@ impl Widget for PdfApp {
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
         // And any completed import (a PDF/image chosen to add as pages).
-        self.drain_portal_import();
+        self.drain_portal_import(state);
 
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
@@ -2753,7 +3027,11 @@ impl Widget for PdfApp {
             }
             self.seeded = true;
         }
+        if self.has_document {
+            self.reconcile_shared_page_plan(state);
+        }
         self.reload(state);
+        self.refresh_search_catalog(state);
 
         // Screenshot hook (never set at runtime): focus the first comment.
         if self.shots_edit_first_comment {
@@ -2928,6 +3206,11 @@ impl Widget for PdfApp {
             .thumb_rects()
             .into_iter()
             .map(|(index, bounds)| {
+                let page_id = self
+                    .resource_page_ids
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("page-{}", index + 1));
                 AccessNode::new(Role::ListItem)
                     .with_name(format!("Page {}", index + 1))
                     .with_description(if self.pages_with_markup().contains(&(index + 1)) {
@@ -2935,7 +3218,7 @@ impl Widget for PdfApp {
                     } else {
                         "No review markup"
                     })
-                    .with_action_target(format!("pdf.page:{}", index + 1))
+                    .with_action_target(format!("pdf.page:{page_id}"))
                     .with_bounds(bounds)
                     .with_position(index + 1, pages)
                     .with_state(focusable().selected(index + 1 == current))
@@ -3214,10 +3497,15 @@ impl Widget for PdfApp {
             return false;
         }
 
-        if let Some(page) = target
-            .strip_prefix("pdf.page:")
-            .and_then(|v| v.parse().ok())
-        {
+        if let Some(page_id) = target.strip_prefix("pdf.page:") {
+            let Some(page) = self
+                .resource_page_ids
+                .iter()
+                .position(|id| id == page_id)
+                .map(|index| index + 1)
+            else {
+                return false;
+            };
             self.go_to_page(page);
             return true;
         }
@@ -3671,6 +3959,362 @@ mod tests {
             &state.root,
         ));
         assert_ne!(app.show_sidebar, sidebar_before);
+    }
+
+    #[test]
+    fn stable_page_semantic_target_follows_a_reordered_page() {
+        use ui::a11y::Action;
+
+        let (mut app, mut state) = app_with_state();
+        let target_id = app.resource_page_ids[0].clone();
+        app.reorder_pages(0, 2);
+        assert_eq!(app.resource_page_ids[2], target_id);
+
+        assert!(app.perform_semantic_action(
+            &format!("pdf.page:{target_id}"),
+            &Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
+        assert!(
+            !app.perform_semantic_action(
+                "pdf.page:deleted-page",
+                &Action::Activate,
+                &mut state.doc,
+                &state.root,
+            ),
+            "unknown targets fail closed"
+        );
+    }
+
+    #[test]
+    fn global_search_pages_canonically_and_stale_page_hits_fail_closed() {
+        let (mut app, mut state) = app_with_state();
+        let provider = Widget::search_providers(&app)
+            .into_iter()
+            .next()
+            .expect("the open PDF contributes a global search provider");
+        assert!(provider.search_page("", None, 0, 1).results.is_empty());
+        let first = provider.search_page("", None, 1, 1);
+        assert_eq!(first.inspected, 1);
+        let stale_cursor = first.next.expect("catalogue paging stays bounded");
+        let hit = provider
+            .search("overview")
+            .into_iter()
+            .find_map(|result| result.action_address())
+            .expect("page text is globally searchable by a canonical action");
+        assert!(qos_actions::ResourceProvider::resource(&app, &state.doc, &hit.resource).is_some());
+
+        for needle in ["highlight", "Iroh relay"] {
+            let address = provider
+                .search(needle)
+                .into_iter()
+                .find_map(|result| result.action_address())
+                .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
+            let resource =
+                qos_actions::ResourceProvider::resource(&app, &state.doc, &address.resource)
+                    .expect("search door resolves the addressed annotation/comment resource");
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            );
+        }
+        let refreshes = app.search_projection_refreshes;
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.search_projection_refreshes, refreshes,
+            "unchanged sync avoids corpus traversal"
+        );
+
+        let stale_resource = "pdf.page:sample:source-1".to_string();
+        let action = crate::actions::delete_page_plan_action("source-1");
+        app.perform_action(&mut state.doc, &action);
+        app.sync(&mut state.doc, &state.root);
+        let restarted =
+            Widget::search_providers(&app)[0].search_page("", Some(&stale_cursor), 1, 1);
+        assert!(
+            restarted.results.len() <= 1,
+            "a stale cursor restarts against the new generation"
+        );
+        assert!(
+            qos_actions::ResourceProvider::resource(&app, &state.doc, &stale_resource).is_none()
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this integration test intentionally keeps replay, convergence, resource, and undo assertions in one lifecycle"
+    )]
+    fn shared_page_plan_replays_merges_undoes_and_keeps_addresses_stable() {
+        use crate::actions::{
+            PdfViewerAction, delete_page_plan_action, encode, move_page_plan_action,
+        };
+
+        let (mut a, mut state_a) = app_with_state();
+        state_a.doc.commit();
+        let base = state_a.doc.save();
+        let mut state_b = ui::State::new();
+        state_b.doc = AutoCommit::load(&base).expect("clone shared base");
+        let (mut b, _) = app_with_state();
+        let mut registry = qos_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+
+        // One peer authors an ordered duplicate/reorder sequence. The envelope
+        // carries the generated occurrence id, so the other replica need not
+        // (and must not) mint one while replaying it.
+        let duplicate = PdfViewerAction::DuplicatePagePlan {
+            id: "source-2".into(),
+            new_id: "copy-of-source-2".into(),
+            source_page: 2,
+            imported: None,
+        };
+        let env = qos_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
+            .expect("author duplicate");
+        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
+        let moved = move_page_plan_action("source-1", Some("copy-of-source-2"));
+        let env = qos_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
+            .expect("author reorder");
+        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
+        assert_eq!(
+            crate::doc::PdfDoc::list_page_plan(&state_a.doc),
+            crate::doc::PdfDoc::list_page_plan(&state_b.doc),
+            "the exact same action envelopes reproduce durable ids and order"
+        );
+
+        // Materialising the same shared plan gives both renderers the same
+        // address space, independent of their local source/raster instances.
+        a.sync(&mut state_a.doc, &state_a.root);
+        b.sync(&mut state_b.doc, &state_b.root);
+        assert_eq!(a.resource_page_ids, b.resource_page_ids);
+        let source_two_hits: Vec<qos_actions::ActionAddress> = Widget::search_providers(&a)[0]
+            .search("Per-cluster sandboxing")
+            .into_iter()
+            .filter_map(|result| result.action_address())
+            .collect();
+        assert!(
+            source_two_hits
+                .iter()
+                .any(|address| address.resource.ends_with(":source-2"))
+                && source_two_hits
+                    .iter()
+                    .any(|address| address.resource.ends_with(":copy-of-source-2")),
+            "duplicate occurrences retain the immutable source page's searchable text"
+        );
+        let page_id = "source-1";
+        let resource_id = format!("pdf.page:sample:{page_id}");
+        assert!(
+            qos_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_some(),
+            "the durable page id resolves through the provider"
+        );
+        assert_eq!(
+            a.resource_page_ids
+                .iter()
+                .position(|id| id == page_id)
+                .map(|index| index + 1),
+            Some(3),
+            "the stable page id moved while retaining its address"
+        );
+
+        // A stale delete cannot target a newly-created or reordered occurrence:
+        // after it wins, lazy resolution fails closed instead of falling back to
+        // an ordinal page address.
+        let delete = delete_page_plan_action(page_id);
+        let env = qos_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
+            .expect("author delete");
+        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
+        a.sync(&mut state_a.doc, &state_a.root);
+        b.sync(&mut state_b.doc, &state_b.root);
+        assert!(qos_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_none());
+        assert!(qos_actions::ResourceProvider::resource(&b, &state_b.doc, &resource_id).is_none());
+
+        // Concurrent page-plan actions merge like the other markup actions.
+        let mut left = AutoCommit::load(&base).expect("left replica");
+        let mut right = AutoCommit::load(&base).expect("right replica");
+        let left_action = PdfViewerAction::DuplicatePagePlan {
+            id: "source-1".into(),
+            new_id: "copy-left".into(),
+            source_page: 1,
+            imported: None,
+        };
+        let right_action = PdfViewerAction::DuplicatePagePlan {
+            id: "source-3".into(),
+            new_id: "copy-right".into(),
+            source_page: 3,
+            imported: None,
+        };
+        qos_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+        qos_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+        left.merge(&mut right).expect("merge concurrent page edits");
+        let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert!(merged_ids.contains(&"copy-left".to_string()));
+        assert!(merged_ids.contains(&"copy-right".to_string()));
+
+        // The host records page-plan dispatches as author-scoped history; undo
+        // rolls back the action boundary rather than silently mutating a local
+        // raster plan.
+        let (mut undo_app, mut undo_state) = app_with_state();
+        let before = crate::doc::PdfDoc::list_page_plan(&undo_state.doc);
+        let undo_action = PdfViewerAction::DuplicatePagePlan {
+            id: "source-1".into(),
+            new_id: "copy-undo".into(),
+            source_page: 1,
+            imported: None,
+        };
+        undo_app.perform_action(&mut undo_state.doc, &undo_action);
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut undo_app;
+        assert!(ui::undo::record_dispatched_action(
+            &mut undo_state,
+            root,
+            &std::collections::HashMap::new(),
+            &local_author,
+        ));
+        assert_eq!(
+            crate::doc::PdfDoc::list_page_plan(&undo_state.doc).len(),
+            before.len() + 1
+        );
+        undo_state
+            .undo_as(Some(&local_author), None, None)
+            .expect("shared page action has an undo boundary");
+        assert_eq!(crate::doc::PdfDoc::list_page_plan(&undo_state.doc), before);
+    }
+
+    #[test]
+    fn imported_occurrence_keeps_markup_through_move_duplicate_and_delete() {
+        use crate::actions::{PdfViewerAction, add_annotation_action, move_page_plan_action};
+        use crate::doc::{ImportedPage, PagePlanEntry};
+
+        let (mut app, mut state) = app_with_state();
+        let imported = ImportedPage {
+            hash: "c".repeat(64),
+            kind: "image".into(),
+            page: 1,
+            width_milli: 612_000,
+            height_milli: 408_000,
+        };
+        let page = PagePlanEntry {
+            id: "imported-occurrence".into(),
+            source_page: 1,
+            imported: Some(imported.clone()),
+        };
+        app.perform_action(
+            &mut state.doc,
+            &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.resource_page_ids[1], "imported-occurrence");
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.contains("unavailable"))
+        );
+
+        let annotation = Annotation {
+            id: "annotation-on-import".into(),
+            page: 2,
+            kind: AnnoKind::Note { x: 12.0, y: 24.0 },
+            color: Swatch::Yellow,
+            author: "You".into(),
+        };
+        app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
+        app.perform_action(
+            &mut state.doc,
+            &move_page_plan_action("imported-occurrence", Some("source-3")),
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            app.annotations
+                .iter()
+                .find(|annotation| annotation.id == "annotation-on-import")
+                .map(|annotation| annotation.page),
+            Some(4),
+            "anchor follows the imported occurrence"
+        );
+
+        app.perform_action(
+            &mut state.doc,
+            &PdfViewerAction::DuplicatePagePlan {
+                id: page.id.clone(),
+                new_id: "imported-copy".into(),
+                source_page: page.source_page,
+                imported: page.imported,
+            },
+        );
+        assert_eq!(
+            PdfDoc::list_page_plan(&state.doc)
+                .into_iter()
+                .find(|entry| entry.id == "imported-copy")
+                .and_then(|entry| entry.imported),
+            Some(imported),
+            "duplicate retains content hash and source page"
+        );
+        app.perform_action(
+            &mut state.doc,
+            &crate::actions::delete_page_plan_action("imported-occurrence"),
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert!(
+            app.annotations
+                .iter()
+                .all(|annotation| annotation.id != "annotation-on-import"),
+            "deleting one occurrence removes only its markup"
+        );
+        assert!(app.resource_page_ids.iter().any(|id| id == "imported-copy"));
+    }
+
+    /// Draw the truthful page-shaped state a collaborator sees before an
+    /// imported blob has arrived. Kept as a screenshot driver as well as an
+    /// assertion so release review can catch a misleading fallback render.
+    #[test]
+    #[serial(pdfium)]
+    #[serial(pdf_blobstore)]
+    fn drive_import_unavailable_shot() {
+        use qdoc::blobstore::{self, MemoryBlobStore};
+        use std::sync::Arc;
+
+        blobstore::clear_transport();
+        blobstore::set_store(Arc::new(MemoryBlobStore::default()));
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+        let mut app = PdfApp::open(path);
+        let mut state = ui::State::new();
+        app.perform_action(
+            &mut state.doc,
+            &crate::actions::import_pages_action(
+                Some("source-1"),
+                vec![crate::doc::PagePlanEntry {
+                    id: "review-unavailable-import".into(),
+                    source_page: 1,
+                    imported: Some(crate::doc::ImportedPage {
+                        hash: "d".repeat(64),
+                        kind: "image".into(),
+                        page: 1,
+                        width_milli: 612_000,
+                        height_milli: 408_000,
+                    }),
+                }],
+            ),
+        );
+        full_frame(
+            &mut app,
+            &mut state,
+            1280.0,
+            800.0,
+            Some("/tmp/pdf_viewer_release_shots/import_unavailable.png"),
+        );
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.contains("unavailable")),
+            "a missing imported blob is never rendered as a source page"
+        );
+        blobstore::set_store(Arc::new(MemoryBlobStore::default()));
     }
 
     /// Run one full `ui::App`-equivalent frame against `app`: build the taffy
@@ -5668,7 +6312,7 @@ mod tests {
     #[test]
     #[serial(pdfium)]
     fn import_image_adds_a_page_that_survives_save() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
+        let Some((mut app, mut st)) = open_laid_out_sample() else {
             return;
         };
         let n = app.doc.page_count();
@@ -5681,7 +6325,11 @@ mod tests {
             .save(&png)
             .expect("write the test PNG");
 
-        assert!(app.import_file(&png), "import: {:?}", app.status_note);
+        assert!(
+            app.import_file(&png, &mut st.doc),
+            "import: {:?}",
+            app.status_note
+        );
         assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
         assert!(app.pages_dirty());
 
@@ -5692,13 +6340,13 @@ mod tests {
     #[test]
     #[serial(pdfium)]
     fn import_pdf_appends_all_its_pages() {
-        let Some((mut app, _st)) = open_laid_out_sample() else {
+        let Some((mut app, mut st)) = open_laid_out_sample() else {
             return;
         };
         let n = app.doc.page_count();
         // Import the sample into itself: page count should exactly double.
         assert!(
-            app.import_file(std::path::Path::new(SAMPLE_PDF)),
+            app.import_file(std::path::Path::new(SAMPLE_PDF), &mut st.doc),
             "import: {:?}",
             app.status_note
         );
