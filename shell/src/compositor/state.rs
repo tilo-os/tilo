@@ -420,6 +420,14 @@ pub(crate) struct TrackedPopup {
     grabbed: bool,
 }
 
+#[derive(Debug, Clone)]
+struct HostLaunchActivation {
+    desktop_id: String,
+    display_name: String,
+    placement: crate::compositor::tab_binding::Placement,
+    issued: std::time::Instant,
+}
+
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
@@ -436,6 +444,14 @@ pub struct State {
     /// after [`XdgActivationHandler::token_created`] proves they came from a
     /// recent serial on this seat and a focused source surface.
     pub xdg_activation_state: XdgActivationState,
+    /// Metadata for compositor-created activation tokens passed to one host
+    /// launch. Kept separate from client token data: host app-ids need not
+    /// match their desktop-file id.
+    host_launch_activations: HashMap<String, HostLaunchActivation>,
+    /// Canonical labels claimed by a compositor-issued host-launch token.
+    /// A late client `set_app_id` may update routing identity but must not
+    /// replace this user-selected host application name.
+    host_launch_surface_labels: HashMap<u64, String>,
     /// `zxdg_decoration_manager_v1` global state — who draws the frame
     /// around a toplevel.
     ///
@@ -897,6 +913,8 @@ impl State {
             compositor_state,
             xdg_shell_state,
             xdg_activation_state,
+            host_launch_activations: HashMap::new(),
+            host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -2906,6 +2924,60 @@ impl State {
             popup.surface.send_popup_done();
         }
         true
+    }
+}
+
+impl State {
+    /// Mint the standard one-shot token immediately before a user-selected
+    /// host launch. Only the launched process receives its opaque value.
+    #[doc(hidden)]
+    pub fn issue_host_launch_activation(
+        &mut self,
+        desktop_id: String,
+        display_name: String,
+        placement: crate::compositor::tab_binding::Placement,
+    ) -> String {
+        self.expire_host_launch_activations();
+        let (token, _) = self.xdg_activation_state.create_external_token(None);
+        let token = token.as_str().to_string();
+        self.host_launch_activations.insert(
+            token.clone(),
+            HostLaunchActivation {
+                desktop_id,
+                display_name,
+                placement,
+                issued: std::time::Instant::now(),
+            },
+        );
+        token
+    }
+
+    pub(crate) fn cancel_host_launch_activation(&mut self, token: &str) {
+        self.host_launch_activations.remove(token);
+        let _ = self
+            .xdg_activation_state
+            .remove_token(&XdgActivationToken::from(token.to_string()));
+    }
+
+    /// Expire compositor-created launch tokens even when no subsequent launch
+    /// occurs. Smithay owns the protocol store; qOS owns the placement
+    /// metadata and retires both together after the same bounded age.
+    pub(crate) fn expire_host_launch_activations(&mut self) {
+        let now = std::time::Instant::now();
+        let stale: Vec<_> = self
+            .host_launch_activations
+            .iter()
+            .filter_map(|(token, launch)| {
+                (now.saturating_duration_since(launch.issued)
+                    > crate::compositor::activation::MAX_ACTIVATION_AGE)
+                    .then_some((token.clone(), launch.desktop_id.clone()))
+            })
+            .collect();
+        for (token, desktop_id) in stale {
+            self.cancel_host_launch_activation(&token);
+            crate::shell::launcher::clear_pending_placement(&desktop_id);
+        }
+    }
 }
 
 impl XdgActivationHandler for State {
@@ -2973,6 +3045,7 @@ impl XdgActivationHandler for State {
     ) {
         use crate::compositor::activation::{app_ids_match, evaluate_activation_request};
 
+        let host_launch = self.host_launch_activations.remove(token.as_str());
         // A token is a one-shot launch capability. Consume before evaluating
         // the target so neither an accepted request nor probing a wrong app id
         // can replay it later against another window.
@@ -2982,6 +3055,12 @@ impl XdgActivationHandler for State {
         let app_id_matches_target = data.app_id.as_deref().map_or(true, |requested| {
             actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
         });
+        if let Some(host_launch) = host_launch.as_ref() {
+            crate::shell::launcher::clear_pending_placement(&host_launch.desktop_id);
+            if host_launch.issued.elapsed() > crate::compositor::activation::MAX_ACTIVATION_AGE {
+                return;
+            }
+        }
         let result = evaluate_activation_request(
             data.timestamp.elapsed(),
             self.client_input.is_known(target) && actual_app_id.is_some(),
@@ -2998,6 +3077,18 @@ impl XdgActivationHandler for State {
             );
             return;
         }
+        if let Some(host_launch) = host_launch {
+            if tab_binding::relocate_foreign_toplevel(
+                &mut self.workspace_tree,
+                target,
+                host_launch.placement,
+                &host_launch.display_name,
+            ) {
+                self.host_launch_surface_labels
+                    .insert(target, host_launch.display_name.clone());
+                tracing::debug!(target, desktop_id = %host_launch.desktop_id, "placed host launch through activation token");
+            }
+        }
         if tab_binding::activate_surface(&mut self.workspace_tree, target) {
             self.set_client_keyboard_focus(Some(target));
             tracing::debug!(
@@ -3006,6 +3097,7 @@ impl XdgActivationHandler for State {
                 "accepted single-use xdg-activation focus request"
             );
         }
+    }
 }
 
 impl XdgShellHandler for State {
@@ -3087,6 +3179,7 @@ impl XdgShellHandler for State {
             self.fullscreen_output = None;
         }
         let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
+        self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
         // `attach(NULL)`, but a destroy without that prior detach left the
@@ -3152,10 +3245,15 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
-            let _ = tab_binding::rename_tab_for_app_id(
+            let host_launch_title = self
+                .host_launch_surface_labels
+                .get(&surface_id)
+                .map(String::as_str);
+            let _ = tab_binding::rename_tab_for_app_id_with_title(
                 &mut self.workspace_tree,
                 surface_id,
                 app_id.clone(),
+                host_launch_title,
             );
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);

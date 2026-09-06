@@ -894,6 +894,10 @@ impl DrmDispatchState {
             SeatEvent::PauseSession => {
                 tracing::info!("DRM backend: session paused");
                 self.key_repeat.cancel();
+                // VT/session loss cuts raw libinput delivery. Pair the
+                // repeat cancellation with a seat-level key reset instead
+                // of assuming every held key will get an up event later.
+                self.push(BackendEvent::InputStateReset);
                 SeatTick::Pause
             }
         };
@@ -1000,6 +1004,13 @@ impl DrmDispatchState {
                 // firing into whichever field receives focus next.
                 self.key_repeat.cancel();
                 self.slow_pending.clear();
+                if device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+                    // A vanished keyboard cannot send the releases which
+                    // clear Smithay's seat XKB state. Tell the compositor
+                    // boundary to retire those keys before another device
+                    // can type into a newly focused client.
+                    self.push(BackendEvent::InputStateReset);
+                }
                 self.devices.retain(|d| *d != device);
             }
             _ => {}
@@ -1582,6 +1593,7 @@ impl DrmRuntime {
                 .push(BackendEvent::ModifiersChanged(Modifiers::from(
                     ModifiersState::empty(),
                 )));
+            self.dispatch.push(BackendEvent::InputStateReset);
             tracing::info!(
                 sources = ?keyboard_settings.source_ids,
                 active = keyboard_settings.active_index,
