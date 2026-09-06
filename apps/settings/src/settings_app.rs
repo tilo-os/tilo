@@ -556,6 +556,17 @@ impl Widget for SettingsApp {
         "SettingsApp"
     }
 
+    /// Stable landmark for the responsive shell: the sidebar and pane subtree
+    /// may rebuild as a category changes, but the application surface itself
+    /// keeps one retained semantic identity.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Settings")
+                .with_semantic_key("settings.app"),
+        )
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
@@ -1164,5 +1175,17 @@ mod tests {
         );
         // And the resolved layout is the wide split.
         assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
+    }
+
+    #[test]
+    fn root_landmark_is_retained_across_responsive_shell_rebuilds() {
+        let mut app = SettingsApp::with_selected(Category::Appearance);
+        let wide = Widget::accessibility(&app).expect("Settings landmark");
+        assert_eq!(wide.name.as_deref(), Some("Settings"));
+        assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
+
+        layout_at(&mut app, 440.0, 820.0);
+        let narrow = Widget::accessibility(&app).expect("Settings landmark survives narrow shell");
+        assert_eq!(narrow.semantic_key, wide.semantic_key);
     }
 }
