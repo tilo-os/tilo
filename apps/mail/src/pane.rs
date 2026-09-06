@@ -1371,38 +1371,28 @@ impl Pane {
         };
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
-        let mut y = rr.y0 + HEADER_H + 8.0;
-        let subj = elide(
+        let mut y = Self::draw_reader_thread_heading(
+            scene,
+            t,
             tr,
-            &head.thread_subject(),
-            20.0,
-            TextWeight::Bold,
-            f64::from(content_w),
+            theme,
+            content_x,
+            content_w,
+            head,
+            msgs.len(),
+            st.folder,
+            rr.y0 + HEADER_H + 8.0,
         );
-        tr.draw_text_weighted(
+        y = Self::draw_inspection_badge(
             scene,
-            &subj,
-            20.0,
-            c.text_primary,
-            t * Affine::translate((content_x, y)),
-            None,
-            TextWeight::Bold,
+            t,
+            tr,
+            theme,
+            content_x,
+            y,
+            head.read,
+            st.inspection == Some(head.id),
         );
-        y += 30.0;
-        tr.draw_text(
-            scene,
-            &format!(
-                "{} message{} · {}",
-                msgs.len(),
-                if msgs.len() == 1 { "" } else { "s" },
-                st.folder.title()
-            ),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((content_x, y)),
-            None,
-        );
-        y += 26.0;
         fill_rect(
             scene,
             t,
@@ -1432,6 +1422,103 @@ impl Pane {
         self.reader_attachment_hits = chip_hits;
         drop(st);
         Some((head_id, head_html, webview_rect))
+    }
+
+    /// Draw the conversation title and its compact count/folder context,
+    /// returning the baseline after that header.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_reader_thread_heading(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content_x: f64,
+        content_w: f32,
+        head: &Message,
+        message_count: usize,
+        folder: Folder,
+        y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let subject = elide(
+            tr,
+            &head.thread_subject(),
+            20.0,
+            TextWeight::Bold,
+            f64::from(content_w),
+        );
+        tr.draw_text_weighted(
+            scene,
+            &subject,
+            20.0,
+            c.text_primary,
+            t * Affine::translate((content_x, y)),
+            None,
+            TextWeight::Bold,
+        );
+        let meta_y = y + 30.0;
+        tr.draw_text(
+            scene,
+            &format!(
+                "{message_count} message{} · {}",
+                if message_count == 1 { "" } else { "s" },
+                folder.title()
+            ),
+            12.0,
+            c.text_dim,
+            t * Affine::translate((content_x, meta_y)),
+            None,
+        );
+        meta_y + 26.0
+    }
+
+    /// Draw the persistent visual counterpart of an explicit no-side-effect
+    /// inspection. Returns the next baseline unchanged when the reader is
+    /// showing a normal message open.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inspection_badge(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content_x: f64,
+        y: f64,
+        already_read: bool,
+        inspecting: bool,
+    ) -> f64 {
+        if !inspecting {
+            return y;
+        }
+        let c = &theme.tokens.colors;
+        let label = if already_read {
+            "Preview · read state unchanged"
+        } else {
+            "Preview · remains unread"
+        };
+        let (label_w, _) = tr.measure(label, 11.0, None);
+        let pill = Rect::new(
+            content_x,
+            y - 5.0,
+            content_x + f64::from(label_w) + 34.0,
+            y + 17.0,
+        );
+        fill_round(scene, t, pill, 7.0, c.accent[5].with_alpha_factor(0.14));
+        Icon::Eye.draw(
+            scene,
+            t,
+            Rect::new(pill.x0 + 7.0, pill.y0 + 4.0, pill.x0 + 21.0, pill.y0 + 18.0),
+            c.accent[5],
+        );
+        tr.draw_text_weighted(
+            scene,
+            label,
+            11.0,
+            c.accent[5],
+            t * Affine::translate((pill.x0 + 25.0, pill.y0 + 4.0)),
+            None,
+            TextWeight::Medium,
+        );
+        y + 28.0
     }
 
     /// Draw each message card in the thread, starting at `y`: the head
