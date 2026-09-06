@@ -406,6 +406,11 @@ impl Session {
     /// separate mode from document listening: a title is not a document
     /// instruction, and an unattended task may invoke only actions that the
     /// authenticated broker currently publishes to this agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when receiving catalogue updates or reporting task
+    /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
@@ -413,62 +418,62 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.broker_surfaces = surfaces;
                 }
-                Some(CollabEvent::TaskRun(run)) => self.run_task(run)?,
+                Some(CollabEvent::TaskRun(run)) => self.run_task(&run)?,
                 Some(_) | None => {}
             }
         }
     }
 
-    fn run_task(&mut self, run: runtime_collab::TaskRunEnvelope) -> Result<()> {
-        if let Err(message) = validate_task_run(&run) {
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        if let Err(message) = validate_task_run(run) {
             tracing::warn!(run_id = run.run_id, %message, "refused malformed task run");
-            self.report_task(&run, runtime_collab::TaskRunUpdate::Failed { message })?;
+            self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
             return Ok(());
         }
-        self.report_task(&run, runtime_collab::TaskRunUpdate::Accepted)?;
+        self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         self.report_task(
-            &run,
+            run,
             runtime_collab::TaskRunUpdate::Progress {
                 message: "Reviewing the permission-filtered action catalogue".into(),
             },
         )?;
         self.wait_for_task_catalogue()?;
-        if self.task_cancelled(&run)? {
-            return self.cancel_task(&run, "Cancelled before planning");
+        if self.task_cancelled(run)? {
+            return self.cancel_task(run, "Cancelled before planning");
         }
-        let actions = match self.plan_task(&run) {
+        let actions = match self.plan_task(run) {
             Ok(actions) if !actions.is_empty() => actions,
             Ok(_) => {
-                return self.fail_task(&run, "No permitted live action can complete this task");
+                return self.fail_task(run, "No permitted live action can complete this task");
             }
-            Err(message) => return self.fail_task(&run, &message),
+            Err(message) => return self.fail_task(run, &message),
         };
         let mut previous = None;
         for (index, action) in actions.iter().enumerate() {
-            if self.task_cancelled(&run)? {
-                return self.cancel_task(&run, "Cancelled before the next action");
+            if self.task_cancelled(run)? {
+                return self.cancel_task(run, "Cancelled before the next action");
             }
             let arguments =
                 match arguments_for_step(action.carries, &action.arguments, previous.as_ref()) {
                     Ok(arguments) => arguments,
-                    Err(message) => return self.fail_task(&run, &message),
+                    Err(message) => return self.fail_task(run, &message),
                 };
             self.report_task(
-                &run,
+                run,
                 runtime_collab::TaskRunUpdate::Progress {
                     message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
                 },
             )?;
-            match self.invoke_task_action(&run, action, &arguments)? {
+            match self.invoke_task_action(run, action, &arguments)? {
                 Ok(outcome) => previous = Some(outcome),
                 Err(TaskActionStop::Cancelled) => {
-                    return self.cancel_task(&run, "Cancelled while an action was running");
+                    return self.cancel_task(run, "Cancelled while an action was running");
                 }
-                Err(TaskActionStop::Failed(message)) => return self.fail_task(&run, &message),
+                Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
         self.report_task(
-            &run,
+            run,
             runtime_collab::TaskRunUpdate::Succeeded {
                 message: format!("Completed {} broker-approved action(s)", actions.len()),
             },
@@ -1111,6 +1116,7 @@ impl Session {
             focus_offset: 0,
             target_blocks: focus.into_iter().collect(),
             format_spans: Vec::new(),
+            selection: None,
             region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: self.cfg.directory.clone(),
@@ -1879,12 +1885,24 @@ impl Session {
         };
         self.edit(
             &title_id,
-            &wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
+            &wp::set_paragraph_style_action(
+                wp::RegionKind::Body,
+                vec![title_id.clone()],
+                "heading",
+                Some(1),
+                None,
+            ),
         )?;
         if let Some(anchor) = found.sections.first().cloned() {
             self.edit(
                 &anchor,
-                &wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
+                &wp::set_paragraph_style_action(
+                    wp::RegionKind::Body,
+                    found.sections.clone(),
+                    "heading",
+                    Some(2),
+                    None,
+                ),
             )?;
         }
         tracing::info!(sections = found.sections.len(), "made the draft a document");
@@ -1893,6 +1911,10 @@ impl Session {
 
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
     /// pause so the room can see it happen.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one action lifecycle keeps invocation, attribution, broadcast, and user-visible reporting in a single auditable transaction"
+    )]
     fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let invocation = qos_actions::InvocationId::new();
@@ -2027,6 +2049,35 @@ fn word_action_anchor(
                 end: u64::try_from(at.saturating_add((*del).max(ins.chars().count())))
                     .unwrap_or(u64::MAX),
             }],
+        },
+        WordProcessorAction::ReplaceSelection {
+            start_block,
+            start,
+            end_block,
+            end,
+            ..
+        } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: if start_block == end_block {
+                vec![qos_actions::InteractionTextRange {
+                    block: start_block.clone(),
+                    start: u64::try_from(*start).unwrap_or(u64::MAX),
+                    end: u64::try_from(*end).unwrap_or(u64::MAX),
+                }]
+            } else {
+                vec![
+                    qos_actions::InteractionTextRange {
+                        block: start_block.clone(),
+                        start: u64::try_from(*start).unwrap_or(u64::MAX),
+                        end: u64::try_from(*start).unwrap_or(u64::MAX),
+                    },
+                    qos_actions::InteractionTextRange {
+                        block: end_block.clone(),
+                        start: u64::try_from(*end).unwrap_or(u64::MAX),
+                        end: u64::try_from(*end).unwrap_or(u64::MAX),
+                    },
+                ]
+            },
         },
         WordProcessorAction::SetMark { spans, .. } => qos_actions::InteractionAnchor::Text {
             region: "document".into(),
