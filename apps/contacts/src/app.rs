@@ -180,6 +180,68 @@ fn placeholder_for(slot: Slot) -> &'static str {
     }
 }
 
+/// The human-facing label and stable semantic suffix for an editable field.
+/// Keeping these together means a screen-reader's "Phone 2" is the same
+/// field identity an automation uses when it sends a value back to the form.
+fn form_field_metadata(slot: Slot) -> (String, String) {
+    match slot {
+        Slot::First => ("First name".into(), "first".into()),
+        Slot::Last => ("Last name".into(), "last".into()),
+        Slot::Org => ("Organization".into(), "organization".into()),
+        Slot::Title => ("Job title".into(), "title".into()),
+        Slot::Website => ("Website".into(), "website".into()),
+        Slot::Birthday => ("Birthday".into(), "birthday".into()),
+        Slot::Notes => ("Notes".into(), "notes".into()),
+        Slot::Groups => ("Groups".into(), "groups".into()),
+        Slot::Phone(index) => (format!("Phone {}", index + 1), format!("phone-{index}")),
+        Slot::Email(index) => (format!("Email {}", index + 1), format!("email-{index}")),
+        Slot::AddrStreet(index) => (
+            format!("Address {} street", index + 1),
+            format!("address-{index}-street"),
+        ),
+        Slot::AddrCity(index) => (
+            format!("Address {} city", index + 1),
+            format!("address-{index}-city"),
+        ),
+        Slot::AddrRegion(index) => (
+            format!("Address {} region", index + 1),
+            format!("address-{index}-region"),
+        ),
+        Slot::AddrPostal(index) => (
+            format!("Address {} postal code", index + 1),
+            format!("address-{index}-postal"),
+        ),
+        Slot::AddrCountry(index) => (
+            format!("Address {} country", index + 1),
+            format!("address-{index}-country"),
+        ),
+    }
+}
+
+fn form_field_target(id: ContactId, slot: Slot) -> String {
+    let (_, key) = form_field_metadata(slot);
+    format!("contacts.form:{id}:{key}")
+}
+
+fn type_option_target(id: ContactId, target: TypeTarget, label: &str) -> String {
+    format!(
+        "contacts.form.type-option:{id}:{}:{label}",
+        type_target_key(target)
+    )
+}
+
+fn calendar_target(id: ContactId) -> String {
+    format!("contacts.form.calendar:{id}")
+}
+
+fn calendar_day_target(id: ContactId, year: i32, month: u32, day: u32) -> String {
+    format!("contacts.form.calendar-day:{id}:{year:04}-{month:02}-{day:02}")
+}
+
+fn group_option_target(group: &str) -> String {
+    format!("contacts.group.option:{group}")
+}
+
 struct FieldInput {
     slot: Slot,
     ti: TextInput,
@@ -337,6 +399,8 @@ fn field(slot: Slot, value: &str) -> FieldInput {
 enum Popup {
     /// Phone/email/address type chip menu.
     TypeMenu { target: TypeTarget, anchor: Rect },
+    /// Explicit sort selector in the list header.
+    Sort { anchor: Rect },
     /// Group filter selector in the list header.
     GroupFilter { anchor: Rect },
     /// Birthday calendar.
@@ -395,11 +459,37 @@ const CONTEXT_ACTIONS: &[ContextAction] = &[
     ContextAction::Delete,
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum TypeTarget {
     Phone(usize),
     Email(usize),
     Addr(usize),
+}
+
+fn type_target_metadata(target: TypeTarget) -> (&'static str, usize) {
+    match target {
+        TypeTarget::Phone(index) => ("phone", index),
+        TypeTarget::Email(index) => ("email", index),
+        TypeTarget::Addr(index) => ("address", index),
+    }
+}
+
+fn type_target_name(target: TypeTarget) -> String {
+    let (kind, index) = type_target_metadata(target);
+    format!("{} {} type", kind, index + 1)
+}
+
+fn type_target_key(target: TypeTarget) -> String {
+    let (kind, index) = type_target_metadata(target);
+    format!("{kind}-{index}")
+}
+
+fn type_chip_target(id: ContactId, target: TypeTarget) -> String {
+    format!("contacts.form.type:{id}:{}", type_target_key(target))
+}
+
+fn remove_type_target(id: ContactId, target: TypeTarget) -> String {
+    format!("contacts.form.remove:{id}:{}", type_target_key(target))
 }
 
 /// Named hit rects recomputed every `apply_layout`, tested on click.
@@ -2774,6 +2864,7 @@ impl ContactsApp {
             Popup::TypeMenu { anchor, .. } => {
                 self.draw_popup_type_menu(scene, t, tr, theme, *anchor);
             }
+            Popup::Sort { anchor } => self.draw_popup_sort(scene, t, tr, theme, *anchor),
             Popup::GroupFilter { anchor } => {
                 self.draw_popup_group_filter(scene, t, tr, theme, *anchor);
             }
@@ -2804,6 +2895,33 @@ impl ContactsApp {
             if let Some(label) = TYPE_OPTIONS.get(i).copied() {
                 menu_item(scene, t, tr, theme, *r, label, hov, false);
             }
+        }
+    }
+
+    /// The list sort selector. This deliberately mirrors the group selector:
+    /// a chip opens a choice list instead of silently cycling a hidden state.
+    fn draw_popup_sort(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        anchor: Rect,
+    ) {
+        let options = [(SortKey::Name, "Name"), (SortKey::Org, "Organization")];
+        let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
+        menu_panel(scene, t, theme, panel);
+        for ((key, label), row) in options.iter().zip(rows) {
+            menu_item(
+                scene,
+                t,
+                tr,
+                theme,
+                row,
+                label,
+                row.contains(self.last_mouse),
+                *key == self.sort,
+            );
         }
     }
 
@@ -3405,6 +3523,356 @@ fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: b
 // Widget impl
 // =====================================================================
 
+impl ContactsApp {
+    /// Build the retained semantic representation of the selected contact.
+    /// The card is hand-painted, so without this adapter a screen reader could
+    /// reach the list but not the person's information or its durable actions.
+    fn accessibility_detail(&self) -> Option<AccessNode> {
+        let id = self.selected?;
+        let contact = self.store.get(id)?;
+        let mut children = vec![
+            AccessNode::new(Role::Heading { level: 1 })
+                .with_name(contact.display_name())
+                .with_hashed_key(("contacts.detail.heading", id)),
+            AccessNode::new(Role::StaticText)
+                .with_optional_name((!contact.subtitle().is_empty()).then(|| contact.subtitle()))
+                .with_hashed_key(("contacts.detail.subtitle", id)),
+            AccessNode::new(Role::ToggleButton)
+                .with_name(if contact.favorite {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                })
+                .with_action_target(format!("contacts.detail.favorite:{id}"))
+                .with_bounds(self.hit.fav)
+                .with_state(AccessState::new().focusable(true).checked(contact.favorite)),
+            AccessNode::new(Role::Button)
+                .with_name("Edit contact")
+                .with_action_target(format!("contacts.detail.edit:{id}"))
+                .with_bounds(self.hit.edit)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Delete contact")
+                .with_action_target(format!("contacts.detail.delete:{id}"))
+                .with_bounds(self.hit.delete)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+
+        for phone in &contact.phones {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(format!("{} phone", phone.label))
+                    .with_value(phone.value.clone())
+                    .with_hashed_key(("contacts.detail.phone", id, &phone.label, &phone.value)),
+            );
+        }
+        for email in &contact.emails {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(format!("{} email", email.label))
+                    .with_value(email.value.clone())
+                    .with_hashed_key(("contacts.detail.email", id, &email.label, &email.value)),
+            );
+        }
+        for address in &contact.addresses {
+            let value = address.one_line();
+            if !value.is_empty() {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(format!("{} address", address.label))
+                        .with_value(value)
+                        .with_hashed_key(("contacts.detail.address", id, &address.label)),
+                );
+            }
+        }
+        if let Some(birthday) = contact.birthday {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Birthday")
+                    .with_value(birthday.pretty())
+                    .with_hashed_key(("contacts.detail.birthday", id)),
+            );
+        }
+        if !contact.website.is_empty() {
+            let mut website = AccessNode::new(Role::Link)
+                .with_name(contact.website.clone())
+                .with_action_target(format!("contacts.detail.website:{id}"))
+                .with_state(AccessState::new().focusable(true));
+            if let Some(link) = &self.website_link {
+                website = website.with_bounds(link.get_rect());
+            }
+            children.push(website);
+        }
+        if !contact.notes.is_empty() {
+            children.push(
+                AccessNode::new(Role::Paragraph)
+                    .with_name("Notes")
+                    .with_value(contact.notes.clone())
+                    .with_hashed_key(("contacts.detail.notes", id)),
+            );
+        }
+
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Contact details")
+                .with_hashed_key(("contacts.detail", id))
+                .with_children(children),
+        )
+    }
+
+    /// Build semantics for the locally-buffered edit form. `SetValue` routes
+    /// to the exact same draft fields as physical typing; Save is the sole
+    /// durable boundary and dispatches the canonical [`ContactsAction`](crate::actions::ContactsAction).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hand-painted editor's semantic tree stays beside the corresponding stable targets"
+    )]
+    fn accessibility_form(&self) -> Option<AccessNode> {
+        let form = self.form.as_ref()?;
+        let id = form.draft.id;
+        let mut children = vec![
+            AccessNode::new(Role::Heading { level: 1 })
+                .with_name(if form.is_new {
+                    "New contact"
+                } else {
+                    "Edit contact"
+                })
+                .with_hashed_key(("contacts.form.heading", id)),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Favorite")
+                .with_action_target(format!("contacts.form.favorite:{id}"))
+                .with_bounds(self.hit.fav_toggle)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(form.draft.favorite),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target(format!("contacts.form.cancel:{id}"))
+                .with_bounds(self.hit.cancel)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name(if form.is_new {
+                    "Create contact"
+                } else {
+                    "Save changes"
+                })
+                .with_action_target(format!("contacts.form.save:{id}"))
+                .with_bounds(self.hit.save)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        for input in &form.inputs {
+            let (name, _) = form_field_metadata(input.slot);
+            let (anchor, focus) = input.ti.selection_range_public().unwrap_or_else(|| {
+                let end = input.ti.value().len();
+                (end, end)
+            });
+            let role = if input.slot == Slot::Notes {
+                Role::MultilineTextInput
+            } else {
+                Role::TextInput
+            };
+            children.push(
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_value(input.ti.value())
+                    .with_text_selection(anchor, focus)
+                    .with_action_target(form_field_target(id, input.slot))
+                    .with_bounds(input.ti.get_rect())
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(input.ti.is_focused())
+                            .multiline(input.slot == Slot::Notes),
+                    ),
+            );
+        }
+        for (target, bounds) in &self.hit.type_chips {
+            let expanded = matches!(
+                self.popup,
+                Some(Popup::TypeMenu { target: open, .. }) if open == *target
+            );
+            children.push(
+                AccessNode::new(Role::ComboBox)
+                    .with_name(type_target_name(*target))
+                    .with_value(type_label(&form.draft, *target))
+                    .with_action_target(type_chip_target(id, *target))
+                    .with_bounds(*bounds)
+                    .with_state(AccessState::new().focusable(true).expanded(expanded)),
+            );
+        }
+        for (target, bounds) in &self.hit.remove_btns {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Remove {}", type_target_name(*target)))
+                    .with_description("Remove this field from the draft")
+                    .with_action_target(remove_type_target(id, *target))
+                    .with_bounds(*bounds)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        children.extend([
+            AccessNode::new(Role::Button)
+                .with_name("Add phone")
+                .with_action_target(format!("contacts.form.add-phone:{id}"))
+                .with_bounds(self.hit.add_phone)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Add email")
+                .with_action_target(format!("contacts.form.add-email:{id}"))
+                .with_bounds(self.hit.add_email)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Add address")
+                .with_action_target(format!("contacts.form.add-address:{id}"))
+                .with_bounds(self.hit.add_address)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Choose birthday from calendar")
+                .with_optional_value(form.draft.birthday.map(|birthday| birthday.pretty()))
+                .with_action_target(calendar_target(id))
+                .with_bounds(self.hit.cal_btn)
+                .with_state(AccessState::new().focusable(true)),
+        ]);
+
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Contact editor")
+                .with_hashed_key(("contacts.form", id))
+                .with_children(children),
+        )
+    }
+
+    fn accessibility_type_menu(
+        &self,
+        id: ContactId,
+        target: TypeTarget,
+        anchor: Rect,
+    ) -> AccessNode {
+        let (panel, rows) = self.popup_menu_geometry(anchor, TYPE_OPTIONS.len(), 140.0);
+        let selected = self
+            .form
+            .as_ref()
+            .map_or("type", |form| type_label(&form.draft, target));
+        let children = TYPE_OPTIONS
+            .iter()
+            .zip(rows)
+            .map(|(label, bounds)| {
+                AccessNode::new(Role::RadioButton)
+                    .with_name(*label)
+                    .with_action_target(type_option_target(id, target, label))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(*label == selected),
+                    )
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name(format!("Choose {}", type_target_name(target)))
+            .with_hashed_key(("contacts.form.type-menu", id, type_target_key(target)))
+            .with_bounds(panel)
+            .with_children(children)
+    }
+
+    fn accessibility_group_menu(&self, anchor: Rect) -> AccessNode {
+        let mut options = vec!["All".to_string()];
+        options.extend(self.store.all_groups());
+        let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
+        let children = options
+            .iter()
+            .zip(rows)
+            .map(|(option, bounds)| {
+                let selected = self.group_filter.as_deref().unwrap_or("All") == option;
+                AccessNode::new(Role::RadioButton)
+                    .with_name(option.clone())
+                    .with_action_target(group_option_target(option))
+                    .with_bounds(bounds)
+                    .with_state(AccessState::new().focusable(true).checked(selected))
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name("Filter contacts by group")
+            .with_hashed_key("contacts.group.menu")
+            .with_bounds(panel)
+            .with_children(children)
+    }
+
+    fn accessibility_sort_menu(&self, anchor: Rect) -> AccessNode {
+        let options = [(SortKey::Name, "Name"), (SortKey::Org, "Organization")];
+        let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
+        let children = options
+            .iter()
+            .zip(rows)
+            .map(|((sort, label), bounds)| {
+                AccessNode::new(Role::RadioButton)
+                    .with_name(*label)
+                    .with_action_target(format!("contacts.sort.option:{}", sort.label()))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(*sort == self.sort),
+                    )
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name("Sort contacts")
+            .with_hashed_key("contacts.sort.menu")
+            .with_bounds(panel)
+            .with_children(children)
+    }
+
+    fn accessibility_calendar(
+        &self,
+        id: ContactId,
+        year: i32,
+        month: u32,
+        anchor: Rect,
+    ) -> AccessNode {
+        let (panel, prev, next, cells) = self.calendar_geometry(anchor, year, month);
+        let selected = self
+            .form
+            .as_ref()
+            .and_then(|form| form.draft.birthday)
+            .map(|birthday| birthday.iso());
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Previous month")
+                .with_action_target(format!("contacts.form.calendar-prev:{id}"))
+                .with_bounds(prev)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Next month")
+                .with_action_target(format!("contacts.form.calendar-next:{id}"))
+                .with_bounds(next)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        children.extend(cells.into_iter().map(|(day, bounds)| {
+            let iso = format!("{year:04}-{month:02}-{day:02}");
+            AccessNode::new(Role::Button)
+                .with_name(format!("{} {day}, {year}", date::month_name(month)))
+                .with_action_target(calendar_day_target(id, year, month, day))
+                .with_bounds(bounds)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(selected.as_deref() == Some(iso.as_str())),
+                )
+        }));
+        AccessNode::new(Role::Group)
+            .with_name(format!(
+                "Birthday calendar, {} {year}",
+                date::month_name(month)
+            ))
+            .with_hashed_key(("contacts.form.calendar", id))
+            .with_bounds(panel)
+            .with_children(children)
+    }
+}
+
 impl Widget for ContactsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
@@ -3918,22 +4386,364 @@ impl Widget for ContactsApp {
         let list = AccessNode::new(Role::List)
             .with_name("Contacts")
             .with_children(list_children);
+        let list_controls = AccessNode::new(Role::Group)
+            .with_name("Contact list controls")
+            .with_children(vec![
+                AccessNode::new(Role::ComboBox)
+                    .with_name(format!("Sort by {}", self.sort.label()))
+                    .with_action_target("contacts.sort")
+                    .with_bounds(self.hit.sort)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .expanded(matches!(self.popup, Some(Popup::Sort { .. }))),
+                    ),
+                AccessNode::new(Role::ComboBox)
+                    .with_name("Group filter")
+                    .with_value(self.group_filter.as_deref().unwrap_or("All"))
+                    .with_action_target("contacts.group")
+                    .with_bounds(self.hit.group)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .expanded(matches!(self.popup, Some(Popup::GroupFilter { .. }))),
+                    ),
+            ]);
+
+        let list_is_visible = !self.narrow || self.push.pane() == Pane::List;
+        let detail_is_visible = !self.narrow || self.push.pane() == Pane::Detail;
+        let mut children = vec![toolbar];
+        if list_is_visible {
+            children.extend([search, list_controls, list]);
+        }
+        if detail_is_visible {
+            if self.narrow && self.hit.back.width() > 0.0 {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Back to contacts")
+                        .with_action_target("contacts.back")
+                        .with_bounds(self.hit.back)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            if self.mode == Mode::Edit {
+                if let Some(form) = self.accessibility_form() {
+                    children.push(form);
+                }
+            } else if let Some(detail) = self.accessibility_detail() {
+                children.push(detail);
+            }
+        }
+        match self.popup {
+            Some(Popup::TypeMenu { target, anchor }) if self.mode == Mode::Edit => {
+                if let Some(id) = self.form.as_ref().map(|form| form.draft.id) {
+                    children.push(self.accessibility_type_menu(id, target, anchor));
+                }
+            }
+            Some(Popup::Sort { anchor }) => children.push(self.accessibility_sort_menu(anchor)),
+            Some(Popup::GroupFilter { anchor }) => {
+                children.push(self.accessibility_group_menu(anchor));
+            }
+            Some(Popup::Calendar {
+                year,
+                month,
+                anchor,
+            }) if self.mode == Mode::Edit => {
+                if let Some(id) = self.form.as_ref().map(|form| form.draft.id) {
+                    children.push(self.accessibility_calendar(id, year, month, anchor));
+                }
+            }
+            _ => {}
+        }
 
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Contacts")
-                .with_children(vec![toolbar, search, list]),
+                .with_children(children),
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the semantic adapter deliberately keeps every painted Contacts control and its action route in one auditable dispatch table"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+
+        // Editable form fields are private draft state until Save. Semantic
+        // input therefore follows the same local route as physical typing;
+        // the eventual save below remains the one canonical CRDT action.
+        if let Some(slot) = self.form.as_ref().and_then(|form| {
+            form.inputs
+                .iter()
+                .find(|input| target == form_field_target(form.draft.id, input.slot))
+                .map(|input| input.slot)
+        }) {
+            match action {
+                Action::Focus | Action::Activate => self.focus_form_slot(slot),
+                Action::SetValue(value) => {
+                    self.focus_form_slot(slot);
+                    if let Some(form) = &mut self.form
+                        && let Some(input) = form.inputs.iter_mut().find(|input| input.slot == slot)
+                    {
+                        input.ti.set_text(value);
+                    }
+                }
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+
+        if let Some(id) = self.form.as_ref().map(|form| form.draft.id) {
+            if target == format!("contacts.form.favorite:{id}")
+                && matches!(action, Action::Activate | Action::ToggleCheck)
+            {
+                if let Some(form) = &mut self.form {
+                    form.draft.favorite = !form.draft.favorite;
+                }
+                self.dirty = true;
+                return true;
+            }
+            if target == format!("contacts.form.save:{id}") && matches!(action, Action::Activate) {
+                self.save_edit(state);
+                return true;
+            }
+            if target == format!("contacts.form.cancel:{id}") && matches!(action, Action::Activate)
+            {
+                self.cancel_edit();
+                return true;
+            }
+            if matches!(action, Action::Activate) {
+                if let Some((row, anchor)) = self
+                    .hit
+                    .type_chips
+                    .iter()
+                    .find(|(row, _)| target == type_chip_target(id, *row))
+                    .copied()
+                {
+                    self.popup = Some(Popup::TypeMenu {
+                        target: row,
+                        anchor,
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+                if let Some(row) =
+                    self.hit.remove_btns.iter().find_map(|(row, _)| {
+                        (target == remove_type_target(id, *row)).then_some(*row)
+                    })
+                {
+                    self.form_remove(row);
+                    return true;
+                }
+                if target == calendar_target(id) {
+                    let seed = self.form.as_ref().and_then(|form| {
+                        form.inputs
+                            .iter()
+                            .find(|input| input.slot == Slot::Birthday)
+                            .and_then(|input| Birthday::parse(input.ti.value()))
+                            .or(form.draft.birthday)
+                    });
+                    let (year, month) = seed.map_or_else(
+                        || {
+                            let (year, month, _) = date::today();
+                            (year, month)
+                        },
+                        |birthday| {
+                            (
+                                birthday.year().unwrap_or_else(|| date::today().0),
+                                birthday.month(),
+                            )
+                        },
+                    );
+                    self.popup = Some(Popup::Calendar {
+                        year,
+                        month,
+                        anchor: self.hit.cal_btn,
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+                if target == format!("contacts.form.add-phone:{id}") {
+                    self.form_add(|draft| draft.phones.push(Labeled::new("mobile", "")));
+                    return true;
+                }
+                if target == format!("contacts.form.add-email:{id}") {
+                    self.form_add(|draft| draft.emails.push(Labeled::new("home", "")));
+                    return true;
+                }
+                if target == format!("contacts.form.add-address:{id}") {
+                    self.form_add(|draft| {
+                        draft.addresses.push(Address {
+                            label: "home".into(),
+                            ..Default::default()
+                        });
+                    });
+                    return true;
+                }
+            }
+
+            if matches!(action, Action::Activate | Action::ToggleCheck) {
+                for (row, _) in &self.hit.type_chips {
+                    for label in TYPE_OPTIONS {
+                        if target == type_option_target(id, *row, label)
+                            && matches!(
+                                self.popup,
+                                Some(Popup::TypeMenu { target: open, .. }) if open == *row
+                            )
+                        {
+                            if let Some(form) = &mut self.form {
+                                match row {
+                                    TypeTarget::Phone(index) => form
+                                        .draft
+                                        .phones
+                                        .get_mut(*index)
+                                        .map(|item| item.label = (*label).into()),
+                                    TypeTarget::Email(index) => form
+                                        .draft
+                                        .emails
+                                        .get_mut(*index)
+                                        .map(|item| item.label = (*label).into()),
+                                    TypeTarget::Addr(index) => form
+                                        .draft
+                                        .addresses
+                                        .get_mut(*index)
+                                        .map(|item| item.label = (*label).into()),
+                                };
+                            }
+                            self.popup = None;
+                            self.dirty = true;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(id) = self.form.as_ref().map(|form| form.draft.id)
+            && matches!(action, Action::Activate)
+            && let Some(Popup::Calendar {
+                year,
+                month,
+                anchor,
+            }) = self.popup
+        {
+            if target == format!("contacts.form.calendar-prev:{id}") {
+                let (year, month) = date::prev_month(year, month);
+                self.popup = Some(Popup::Calendar {
+                    year,
+                    month,
+                    anchor,
+                });
+                self.dirty = true;
+                return true;
+            }
+            if target == format!("contacts.form.calendar-next:{id}") {
+                let (year, month) = date::next_month(year, month);
+                self.popup = Some(Popup::Calendar {
+                    year,
+                    month,
+                    anchor,
+                });
+                self.dirty = true;
+                return true;
+            }
+            for (day, _) in self.calendar_geometry(anchor, year, month).3 {
+                if target == calendar_day_target(id, year, month, day) {
+                    let iso = format!("{year:04}-{month:02}-{day:02}");
+                    if let Some(form) = &mut self.form {
+                        form.draft.birthday = Birthday::parse(&iso);
+                        if let Some(input) = form
+                            .inputs
+                            .iter_mut()
+                            .find(|input| input.slot == Slot::Birthday)
+                        {
+                            input.ti.set_text(&iso);
+                        }
+                    }
+                    self.popup = None;
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
+
+        if matches!(action, Action::Activate | Action::ToggleCheck) {
+            if let Some(raw) = target.strip_prefix("contacts.detail.favorite:")
+                && let Ok(id) = raw.parse::<ContactId>()
+                && let Some(contact) = self.store.get(id)
+            {
+                let favorite = !contact.favorite;
+                self.perform_action(
+                    state,
+                    &crate::actions::set_favorite_action(id.to_string(), favorite),
+                );
+                if let Some(contact) = self.store.get_mut(id) {
+                    contact.favorite = favorite;
+                }
+                self.dirty = true;
+                return true;
+            }
+            if let Some(raw) = target.strip_prefix("contacts.detail.edit:")
+                && let Ok(id) = raw.parse::<ContactId>()
+                && let Some(contact) = self.store.get(id).cloned()
+            {
+                self.begin_edit(contact, false);
+                return true;
+            }
+            if let Some(raw) = target.strip_prefix("contacts.detail.delete:")
+                && let Ok(id) = raw.parse::<ContactId>()
+                && self.store.get(id).is_some()
+            {
+                self.selected = Some(id);
+                self.confirm_delete = Some(id);
+                self.dirty = true;
+                return true;
+            }
+            if let Some(raw) = target.strip_prefix("contacts.detail.website:")
+                && let Ok(id) = raw.parse::<ContactId>()
+                && self.selected == Some(id)
+                && let Some(link) = self.website_link.as_mut()
+            {
+                link.activate();
+                self.dirty = true;
+                return true;
+            }
+        }
+
+        if matches!(action, Action::Activate | Action::ToggleCheck) {
+            let mut groups = vec!["All".to_string()];
+            groups.extend(self.store.all_groups());
+            if let Some(group) = groups
+                .iter()
+                .find(|group| target == group_option_target(group))
+                && matches!(self.popup, Some(Popup::GroupFilter { .. }))
+            {
+                self.popup = None;
+                self.set_group_filter((group != "All").then(|| group.clone()));
+                return true;
+            }
+            for (sort, _) in [(SortKey::Name, "Name"), (SortKey::Org, "Organization")] {
+                if target == format!("contacts.sort.option:{}", sort.label())
+                    && matches!(self.popup, Some(Popup::Sort { .. }))
+                {
+                    self.sort = sort;
+                    self.list_scroll = 0.0;
+                    self.popup = None;
+                    self.relayout = true;
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
+
         match (target, action) {
             ("contacts.empty.new", Action::Focus) => {
                 self.empty_action_focused = true;
@@ -3954,8 +4764,49 @@ impl Widget for ContactsApp {
                 self.dirty = true;
                 true
             }
+            ("contacts.sort", Action::Activate | Action::Expand) => {
+                self.popup = Some(Popup::Sort {
+                    anchor: self.hit.sort,
+                });
+                self.dirty = true;
+                true
+            }
+            ("contacts.sort", Action::Collapse) => {
+                if matches!(self.popup, Some(Popup::Sort { .. })) {
+                    self.popup = None;
+                    self.dirty = true;
+                }
+                true
+            }
+            ("contacts.group", Action::Activate | Action::Expand) => {
+                self.popup = Some(Popup::GroupFilter {
+                    anchor: self.hit.group,
+                });
+                self.dirty = true;
+                true
+            }
+            ("contacts.group", Action::Collapse) => {
+                if matches!(self.popup, Some(Popup::GroupFilter { .. })) {
+                    self.popup = None;
+                    self.dirty = true;
+                }
+                true
+            }
+            ("contacts.back", Action::Activate) if self.narrow => {
+                self.push.show_list();
+                self.relayout = true;
+                self.dirty = true;
+                true
+            }
             ("contacts.search", Action::Activate | Action::Focus) => {
                 self.set_only_focus_search();
+                self.dirty = true;
+                true
+            }
+            ("contacts.search", Action::SetValue(value)) => {
+                self.set_only_focus_search();
+                self.search.set_text(value);
+                self.relayout = true;
                 self.dirty = true;
                 true
             }
@@ -4385,11 +5236,9 @@ impl ContactsApp {
 
         // List header chips.
         if self.hit.sort.contains(p) {
-            self.sort = match self.sort {
-                SortKey::Name => SortKey::Org,
-                SortKey::Org => SortKey::Name,
-            };
-            self.relayout = true;
+            self.popup = Some(Popup::Sort {
+                anchor: self.hit.sort,
+            });
             self.dirty = true;
             return true;
         }
@@ -4897,6 +5746,7 @@ impl ContactsApp {
         self.dirty = true;
         match popup {
             Popup::TypeMenu { target, anchor } => self.handle_popup_type_menu(target, anchor, p),
+            Popup::Sort { anchor } => self.handle_popup_sort(anchor, p),
             Popup::GroupFilter { anchor } => self.handle_popup_group_filter(anchor, p),
             Popup::ContextMenu { target, anchor } => {
                 self.handle_popup_context_menu(state, target, anchor, p);
@@ -4939,6 +5789,20 @@ impl ContactsApp {
         }
     }
 
+    /// Sort-popup selection. The popup is presentation-only, while the sort
+    /// preference remains local to this window.
+    fn handle_popup_sort(&mut self, anchor: Rect, p: Point) {
+        let options = [SortKey::Name, SortKey::Org];
+        let (_panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
+        if let Some(index) = rows.iter().position(|row| row.contains(p))
+            && let Some(sort) = options.get(index)
+        {
+            self.sort = *sort;
+            self.list_scroll = 0.0;
+        }
+        self.relayout = true;
+    }
+
     /// Group-filter selection: narrows the list to the picked group (or
     /// clears it for "All"), and keeps the selection valid.
     fn handle_popup_group_filter(&mut self, anchor: Rect, p: Point) {
@@ -4946,16 +5810,23 @@ impl ContactsApp {
         opts.extend(self.store.all_groups());
         let (_panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-            self.group_filter = if i == 0 { None } else { opts.get(i).cloned() };
-            self.list_scroll = 0.0;
-            // Keep selection valid.
-            if let Some(sel) = self.selected
-                && !self.visible_ids().contains(&sel)
-            {
-                self.selected = self.visible_ids().first().copied();
-            }
+            self.set_group_filter(if i == 0 { None } else { opts.get(i).cloned() });
         }
         self.relayout = true;
+    }
+
+    /// Apply a group-filter choice from either the pointer menu or its
+    /// semantic radio options, and keep the presentation selection valid.
+    fn set_group_filter(&mut self, group: Option<String>) {
+        self.group_filter = group;
+        self.list_scroll = 0.0;
+        if let Some(selected) = self.selected
+            && !self.visible_ids().contains(&selected)
+        {
+            self.selected = self.visible_ids().first().copied();
+        }
+        self.relayout = true;
+        self.dirty = true;
     }
 
     /// Per-contact context-menu selection: Edit / Favorite / Export /
@@ -7011,7 +7882,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_chip_click_toggles_name_org_and_reorders() {
+    fn sort_chip_opens_selector_then_reorders_on_choice() {
         let mut h = Harness::new(1280, 800);
         assert_eq!(h.app.sort, SortKey::Name);
         let first_by_name = h
@@ -7028,7 +7899,12 @@ mod tests {
             h.press_left(h.app.hit.sort.center()),
             "the sort chip is clickable"
         );
-        assert_eq!(h.app.sort, SortKey::Org, "clicking toggles to Org sort");
+        let Some(Popup::Sort { anchor }) = h.app.popup else {
+            panic!("the sort chip opens its explicit selector");
+        };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, 2, 180.0);
+        h.press_left(rows[1].center());
+        assert_eq!(h.app.sort, SortKey::Org, "choosing Org changes the sort");
         let first_by_org = h
             .app
             .store
@@ -7040,8 +7916,13 @@ mod tests {
             first_by_org, "Ada Lovelace",
             "org sort leads with Analytical Engines"
         );
-        // Toggling again returns to Name sort.
+        // Choosing Name returns to the name order.
         h.press_left(h.app.hit.sort.center());
+        let Some(Popup::Sort { anchor }) = h.app.popup else {
+            panic!("the sort selector opens again");
+        };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, 2, 180.0);
+        h.press_left(rows[0].center());
         assert_eq!(h.app.sort, SortKey::Name);
     }
 
@@ -8154,6 +9035,208 @@ mod tests {
         ));
         assert_eq!(app.mode, Mode::Edit);
         assert!(app.form.as_ref().is_some_and(|form| form.is_new));
+    }
+
+    fn access_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| access_target(child, target))
+    }
+
+    #[test]
+    fn detail_and_editor_semantics_reach_the_same_durable_action_path() {
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        apply_at(&mut app, 1280, 800);
+
+        let id = app.selected.expect("sample contact is selected");
+        let favorite = app.store.get(id).expect("selected contact exists").favorite;
+        let favorite_target = format!("contacts.detail.favorite:{id}");
+        let tree = app.accessibility().expect("Contacts exposes semantics");
+        let favorite_button = access_target(&tree, &favorite_target)
+            .expect("the painted favorite star is reachable to assistive tech");
+        assert_eq!(favorite_button.role, Role::ToggleButton);
+        assert_eq!(favorite_button.state.checked, Some(favorite));
+
+        assert!(app.perform_semantic_action(
+            &favorite_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(
+            app.store.get(id).map(|contact| contact.favorite),
+            Some(!favorite),
+            "semantic activation updates the visible model"
+        );
+        assert_eq!(
+            ContactsDoc::list_contacts(&doc)
+                .into_iter()
+                .find(|contact| contact.id == id)
+                .map(|contact| contact.favorite),
+            Some(!favorite),
+            "and dispatches the canonical collaborative action into the document"
+        );
+
+        let contact = app.store.get(id).cloned().unwrap();
+        app.begin_edit(contact.clone(), false);
+        apply_at(&mut app, 1280, 800);
+        let first_target = form_field_target(id, Slot::First);
+        let save_target = format!("contacts.form.save:{id}");
+        let tree = app.accessibility().expect("editor semantics are exposed");
+        assert_eq!(
+            access_target(&tree, &first_target).map(|node| node.role),
+            Some(Role::TextInput),
+            "a painted draft field is a real accessible text input"
+        );
+        assert!(access_target(&tree, &save_target).is_some());
+
+        assert!(app.perform_semantic_action(
+            &first_target,
+            &ui::a11y::Action::SetValue("Augusta".into()),
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(
+            app.form.as_ref().map(|form| form.draft.first.as_str()),
+            Some(contact.first.as_str()),
+            "SetValue remains a cancellable local draft until Save"
+        );
+        assert!(app.perform_semantic_action(
+            &save_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(
+            ContactsDoc::list_contacts(&doc)
+                .into_iter()
+                .find(|stored| stored.id == id)
+                .map(|stored| stored.first),
+            Some("Augusta".into()),
+            "Save commits the assistive edit through ContactsAction"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this end-to-end semantic route test intentionally exercises each popup control in one readable scenario"
+    )]
+    fn semantic_popup_controls_cover_type_remove_calendar_group_and_unique_targets() {
+        fn assert_unique_targets(node: &AccessNode, seen: &mut std::collections::HashSet<String>) {
+            if let Some(target) = &node.action_target {
+                assert!(
+                    seen.insert(target.clone()),
+                    "duplicate semantic target: {target}"
+                );
+            }
+            for child in &node.children {
+                assert_unique_targets(child, seen);
+            }
+        }
+
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let id = app.selected.unwrap();
+        app.begin_edit(app.store.get(id).cloned().unwrap(), false);
+        apply_at(&mut app, 1280, 800);
+
+        let (type_row, _) = app.hit.type_chips[0];
+        let type_target = type_chip_target(id, type_row);
+        assert!(app.perform_semantic_action(
+            &type_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert!(matches!(app.popup, Some(Popup::TypeMenu { .. })));
+        let option_target = type_option_target(id, type_row, "other");
+        let tree = app.accessibility().unwrap();
+        assert_eq!(
+            access_target(&tree, &option_target).map(|node| node.role),
+            Some(Role::RadioButton)
+        );
+        assert!(app.perform_semantic_action(
+            &option_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(
+            type_label(&app.form.as_ref().unwrap().draft, type_row),
+            "other"
+        );
+
+        let before = app.form.as_ref().unwrap().draft.phones.len();
+        let remove_target = remove_type_target(id, type_row);
+        assert!(app.perform_semantic_action(
+            &remove_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(app.form.as_ref().unwrap().draft.phones.len(), before - 1);
+
+        apply_at(&mut app, 1280, 800);
+        let calendar = calendar_target(id);
+        assert!(app.perform_semantic_action(
+            &calendar,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        let Some(Popup::Calendar { year, month, .. }) = app.popup else {
+            panic!("semantic calendar button opens the date picker");
+        };
+        let day = calendar_day_target(id, year, month, 1);
+        let tree = app.accessibility().unwrap();
+        assert!(
+            access_target(&tree, &day).is_some(),
+            "calendar days are exposed"
+        );
+        assert!(app.perform_semantic_action(&day, &ui::a11y::Action::Activate, &mut doc, &ROOT,));
+        assert_eq!(
+            app.form
+                .as_ref()
+                .unwrap()
+                .draft
+                .birthday
+                .map(|birthday| birthday.iso()),
+            Some(format!("{year:04}-{month:02}-01")),
+            "calendar selection remains in the cancellable draft"
+        );
+
+        app.cancel_edit();
+        apply_at(&mut app, 1280, 800);
+        assert!(app.perform_semantic_action(
+            "contacts.group",
+            &ui::a11y::Action::Expand,
+            &mut doc,
+            &ROOT,
+        ));
+        let group = "Friends";
+        let group_target = group_option_target(group);
+        let tree = app.accessibility().unwrap();
+        assert_eq!(
+            access_target(&tree, &group_target).map(|node| node.role),
+            Some(Role::RadioButton)
+        );
+        assert!(app.perform_semantic_action(
+            &group_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(app.group_filter.as_deref(), Some(group));
+
+        let mut targets = std::collections::HashSet::new();
+        assert_unique_targets(&app.accessibility().unwrap(), &mut targets);
     }
 
     /// Lay a single app instance out at `w`x`h` without rebuilding it, to
