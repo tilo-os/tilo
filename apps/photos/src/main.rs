@@ -140,16 +140,13 @@ fn render_scenario(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    // Kept concrete rather than boxed as `dyn Widget`: the `cropping`
-    // scenario has to zoom the viewer between the two passes, and the viewer
-    // only exists once the first pass has synced it into being.
     let mut widget = app;
 
-    // Two passes: the first lays the canvas out so the viewer knows its rect,
-    // the second renders with the framing that produced. A single pass would
-    // draw the "cropping" scenario before its viewport existed.
+    // Two ordinary frames settle responsive toolbar labels: the first gets the
+    // root bounds and the second rebuilds wide labels as icon-only where
+    // necessary. Neither frame changes the viewer's contain-fit zoom or pan.
     let mut scene = Scene::new();
-    for pass in 0..2 {
+    for _ in 0..2 {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -184,10 +181,6 @@ fn render_scenario(
             )?;
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-        if pass == 0 && scenario == "cropping" {
-            widget.set_zoom(photos::CROPPING_SCENARIO_ZOOM);
-        }
 
         scene = Scene::new();
         widget.draw_with_presence(

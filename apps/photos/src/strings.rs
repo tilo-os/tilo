@@ -68,6 +68,10 @@ mod tests {
             "photos-crop-noop",
             "photos-empty-title",
             "photos-empty-body",
+            "photos-app",
+            "photos-tools",
+            "photos-image",
+            "photos-image-help",
         ] {
             let got = tr(key);
             assert_ne!(got, key, "`{key}` is not in the bundle");
