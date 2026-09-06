@@ -205,6 +205,11 @@ pub enum EbookAction {
     /// Replace an annotation's free-text note (also used to edit a comment,
     /// which is a note row attached to a highlight group).
     EditAnnotationNote { id: String, note: String },
+    /// Mark an annotation as finished at an author-supplied timestamp. Draft
+    /// editors create their row first and then use this action on Save/Escape;
+    /// carrying the timestamp keeps the lifecycle replayable and avoids a
+    /// hidden wall-clock write in the widget layer.
+    FinalizeAnnotation { id: String, created: u64 },
     /// Delete a single annotation row (a standalone note, a bookmark, or one
     /// comment).
     DeleteAnnotation { id: String },
@@ -304,6 +309,16 @@ impl EbookAction {
             && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
         {
             doc.put(&entry, "note", note)?;
+        }
+        Ok(())
+    }
+
+    fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
+        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
+            && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
+        {
+            let created = i64::try_from(created).unwrap_or(i64::MAX);
+            doc.put(&entry, "created", created)?;
         }
         Ok(())
     }
@@ -521,6 +536,9 @@ impl Action for EbookAction {
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::FinalizeAnnotation { id, created } => {
+                Self::apply_finalize_annotation(doc, id, *created)
+            }
             EbookAction::DeleteAnnotation { id } => Self::apply_delete_annotation(doc, id),
             EbookAction::AddNote {
                 book_id,
@@ -644,6 +662,16 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     EbookAction::EditAnnotationNote {
         id: id.to_string(),
         note: note.to_string(),
+    }
+}
+
+/// Build the replayable draft-finalisation action used by both note and
+/// comment editors. `created` is minted at the user-visible completion point,
+/// never inside action application.
+pub fn finalize_annotation_action(id: Uuid, created: u64) -> EbookAction {
+    EbookAction::FinalizeAnnotation {
+        id: id.to_string(),
+        created,
     }
 }
 
@@ -1485,6 +1513,33 @@ mod tests {
                 fraction: 0.625,
                 opened: 1_700_000_000_000,
             }
+        );
+    }
+
+    #[test]
+    fn editor_finalisation_is_replayable_and_never_needs_a_direct_doc_write() {
+        let (_app, seeded, book_id, _group) = open_with_annotations();
+        let id = BooksDoc::annotations_for(&seeded, &book_id)
+            .into_iter()
+            .find(|annotation| annotation.kind == AnnoKind::Note)
+            .expect("seeded note")
+            .id;
+        let mut a = seeded;
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).expect("replica loads");
+        let action = finalize_annotation_action(id, 1_700_000_123_456);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action))
+            .expect("finalisation applies");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("finalisation replays");
+
+        assert_eq!(a.get_heads(), b.get_heads(), "peers converge exactly");
+        assert_eq!(
+            BooksDoc::annotations_for(&a, &book_id)
+                .into_iter()
+                .find(|annotation| annotation.id == id)
+                .expect("note remains")
+                .created,
+            1_700_000_123_456,
         );
     }
 
