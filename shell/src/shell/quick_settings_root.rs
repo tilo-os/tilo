@@ -308,16 +308,7 @@ impl QuickSettingsRoot {
             y,
         )
     }
-    pub fn power_profile_geometry(panel: Rect) -> Rect {
-        let y = Self::grid_top(panel) + 2.0 * Self::CARD + Self::GAP * 2.0;
-        Rect::new(
-            panel.x0 + Self::PAD,
-            y,
-            panel.x1 - Self::PAD,
-            y + Self::POWER,
-        )
-    }
-    fn power(&self, state: &QuickSettingsState) -> Rect {
+    pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
         let count = if self.edit_mode {
             self.edit_controls(state).len()
         } else {
@@ -328,14 +319,14 @@ impl QuickSettingsRoot {
         } else {
             count.div_ceil(2)
         };
-        let y = Self::grid_top(self.panel)
+        let y = Self::grid_top(panel)
             + n(rows) * Self::CARD
             + n(rows.saturating_sub(1)) * Self::GAP
             + Self::GAP;
         Rect::new(
-            self.panel.x0 + Self::PAD,
+            panel.x0 + Self::PAD,
             y,
-            self.panel.x1 - Self::PAD,
+            panel.x1 - Self::PAD,
             y + Self::POWER,
         )
     }
@@ -679,7 +670,7 @@ impl QuickSettingsRoot {
             let mut p = PendingRootActions::default();
             return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
         }
-        if self.power(state).contains(point) {
+        if self.power_geometry(panel, state).contains(point) {
             return self.cycle_power(state);
         }
         RootAction::None
@@ -1007,7 +998,7 @@ impl QuickSettingsRoot {
                 c,
             );
         }
-        let r = self.power(state);
+        let r = self.power_geometry(self.panel, state);
         Button::paint(
             scene,
             transform,

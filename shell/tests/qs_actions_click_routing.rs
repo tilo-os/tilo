@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::qs_actions::{PowerProfile, QsActions};
 use shell::shell::quick_settings::WifiNetwork;
@@ -307,11 +308,14 @@ fn wifi_toggle_click_routes_to_set_wifi() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
+    host = host
+        .with_qs_actions(Box::new(recorder.clone()))
+        .with_quick_settings_config(QuickSettingsConfig::default());
 
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
+        st.quick_settings.radios.wifi_available = true;
         st.bump();
     }
     host.force_quick_settings_settled();
@@ -335,11 +339,15 @@ fn bluetooth_toggle_click_routes_to_set_bluetooth() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
+    host = host
+        .with_qs_actions(Box::new(recorder.clone()))
+        .with_quick_settings_config(QuickSettingsConfig::default());
 
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
+        st.quick_settings.radios.wifi_available = true;
+        st.quick_settings.bluetooth_available = true;
         st.bump();
     }
     host.force_quick_settings_settled();
@@ -417,9 +425,10 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
-    // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
+    // The drill-in header and hotspot affordance reserve 116 px; rows are
+    // 56 px, so +28 into a row lands mid-row.
     let row_y =
-        |i: usize| rect.y0 + 56.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
+        |i: usize| rect.y0 + 116.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
 
     // Row 0 — secured, not joined: must prompt for a passphrase rather than
     // firing a connect that would fail silently.
