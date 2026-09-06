@@ -229,6 +229,49 @@ mod tests {
         assert_eq!(bv.to_i64(), av.to_i64());
     }
 
+    /// Two peers can author from the same base and receive each other's
+    /// envelopes after their own action has already advanced the live doc.
+    /// Replay must still reproduce each action at its recorded base and merge
+    /// the resulting CRDT change; applying either payload directly to the
+    /// newer live state would make document-reading actions order-dependent.
+    #[test]
+    fn concurrent_envelopes_replay_from_their_recorded_base() {
+        let (mut a, mut b) = two_replicas();
+        let left = Counter::Put {
+            key: "left".into(),
+            value: 1,
+        };
+        let right = Counter::Put {
+            key: "right".into(),
+            value: 2,
+        };
+
+        let left_env = apply_local(
+            &mut a,
+            &left,
+            EncodedAction::encode(COUNTER_TYPE, &left).unwrap(),
+        )
+        .unwrap();
+        let right_env = apply_local(
+            &mut b,
+            &right,
+            EncodedAction::encode(COUNTER_TYPE, &right).unwrap(),
+        )
+        .unwrap();
+
+        replay(&mut a, &right_env, &registry()).unwrap();
+        replay(&mut b, &left_env, &registry()).unwrap();
+
+        assert_eq!(a.get_heads(), b.get_heads());
+        for doc in [&a, &b] {
+            assert_eq!(doc.get(&ROOT, "left").unwrap().unwrap().0.to_i64(), Some(1));
+            assert_eq!(
+                doc.get(&ROOT, "right").unwrap().unwrap().0.to_i64(),
+                Some(2)
+            );
+        }
+    }
+
     /// The replayed change is content-addressed *identical* to the origin's,
     /// so if the replicas later exchange native Automerge changes (ordinary
     /// CRDT sync) the duplicate dedupes instead of double-applying — why
