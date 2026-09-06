@@ -10218,6 +10218,10 @@ impl Widget for ShellOverlayHost {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             return;
         }
+        // The root needs the active text scale before any of its popover
+        // geometry is resolved below; otherwise a first frame at large type
+        // has a default-height card and clips its two-line controls.
+        self.qs_root.set_layout_text_scale(theme.text_scale);
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
         // what it covers.
