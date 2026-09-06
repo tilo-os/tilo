@@ -30,6 +30,179 @@ use crate::shell::state::{
     WorkspaceId,
 };
 
+pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "qos.workspace.ownership-transfer.v1";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum OwnershipTransferOperation {
+    Propose {
+        recipient: String,
+        expires_unix: u64,
+    },
+    Accept {
+        proposal_digest: String,
+    },
+    Cancel {
+        proposal_digest: String,
+    },
+}
+
+fn encoded_ownership_operation(
+    operation: &OwnershipTransferOperation,
+) -> qos_actions::EncodedAction {
+    qos_actions::EncodedAction::encode_operation(OWNERSHIP_TRANSFER_ACTION_TYPE, operation)
+        .unwrap_or_else(|error| qos_actions::EncodedAction {
+            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            payload: error.to_string().into_bytes(),
+        })
+}
+
+/// Publish the active workspace and its ownership ceremony as typed,
+/// resource-addressed operations for search, automation, and assistive tools.
+/// Generic member-role actions remain separate and never include Owner.
+pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> qos_actions::Resource {
+    let mut resource = qos_actions::Resource::new(
+        format!("workspace:{}", ws.room),
+        "workspace.governance",
+        format!("{} ownership", ws.name),
+    );
+    if ws.owner.as_ref() == Some(local_user) {
+        resource.actions.push(ownership_proposal_action());
+    }
+    if let Some(pending) = &ws.pending_ownership_transfer {
+        let digest = pending.digest().map_or_else(|_| String::new(), hex::encode);
+        if public_key_member_id(pending.recipient) == *local_user {
+            resource.actions.push(ownership_accept_action(&digest));
+        }
+        if ws.owner.as_ref() == Some(local_user) {
+            resource.actions.push(ownership_cancel_action(&digest));
+        }
+    }
+    resource
+}
+
+fn ownership_proposal_action() -> qos_actions::ActionSpec {
+    use qos_actions::{
+        ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
+        PermissionRequirement, RiskLevel,
+    };
+
+    qos_actions::ActionSpec::typed_operation(
+        "ownership.propose",
+        "Propose ownership transfer",
+        "Recipient identity",
+        OperationKind::Effect,
+        OWNERSHIP_TRANSFER_ACTION_TYPE,
+        vec![
+            ActionParam::required_owned(
+                "recipient",
+                ParamType::Text,
+                "Exact certified recipient identity",
+            ),
+            ActionParam::required_owned(
+                "expires_unix",
+                ParamType::Integer,
+                "Unix expiry chosen by the current owner",
+            ),
+        ],
+        |arguments| {
+            let expires_unix = arguments
+                .integer("expires_unix")
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or_default();
+            encoded_ownership_operation(&OwnershipTransferOperation::Propose {
+                recipient: arguments.text("recipient").unwrap_or_default().to_string(),
+                expires_unix,
+            })
+        },
+    )
+    .with_description(
+        "Your signature authorizes ownership to transfer immediately if this exact administrator accepts before expiry.",
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
+        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
+        ..ActionContract::default()
+    })
+}
+
+fn ownership_accept_action(digest: &str) -> qos_actions::ActionSpec {
+    use qos_actions::{
+        ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
+    };
+
+    let operation = OwnershipTransferOperation::Accept {
+        proposal_digest: digest.to_string(),
+    };
+    qos_actions::ActionSpec::operation(
+        "ownership.accept",
+        "Accept workspace ownership",
+        OperationKind::Effect,
+        OWNERSHIP_TRANSFER_ACTION_TYPE,
+        &operation,
+    )
+    .unwrap_or_else(|_| {
+        qos_actions::ActionSpec::immediate_encoded(
+            "ownership.accept",
+            "Accept workspace ownership",
+            qos_actions::ExecutionLocus::ClientLocal,
+            encoded_ownership_operation(&operation),
+        )
+    })
+    .with_description(
+        "Acceptance immediately transfers ownership; generic role controls cannot perform this action.",
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Phrase {
+            phrase: "Accept ownership".into(),
+        },
+        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
+        ..ActionContract::default()
+    })
+}
+
+fn ownership_cancel_action(digest: &str) -> qos_actions::ActionSpec {
+    use qos_actions::{
+        ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
+    };
+
+    let operation = OwnershipTransferOperation::Cancel {
+        proposal_digest: digest.to_string(),
+    };
+    qos_actions::ActionSpec::operation(
+        "ownership.cancel",
+        "Cancel ownership transfer",
+        OperationKind::Effect,
+        OWNERSHIP_TRANSFER_ACTION_TYPE,
+        &operation,
+    )
+    .unwrap_or_else(|_| {
+        qos_actions::ActionSpec::immediate_encoded(
+            "ownership.cancel",
+            "Cancel ownership transfer",
+            qos_actions::ExecutionLocus::ClientLocal,
+            encoded_ownership_operation(&operation),
+        )
+    })
+    .with_description("Cancel the pending offer before the recipient accepts it.")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Low,
+        confirmation: ConfirmationPolicy::Confirm,
+        reversible: false,
+        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
+        ..ActionContract::default()
+    })
+}
+
+fn public_key_member_id(key: collab_types::Ed25519PublicKey) -> UserId {
+    hex::encode(key.as_bytes())
+}
+
 /// The right-pane drawer [`WorkspaceSettings::draw_body`] dispatches to.
 pub type PaneDrawer<'a> = dyn FnMut(&mut Scene, Affine, Rect, &mut TextRenderer, &Theme) + 'a;
 
@@ -1803,17 +1976,41 @@ pub fn draw_members_pane(
     let rows = members_pane_rows(ws, pane_rect);
 
     let roster_count = ordered_roster(ws).len();
+    let transfer_status = ownership_transfer_status(ws, local_user);
+    let member_help = transfer_status.as_deref().unwrap_or(
+        "Removing someone blocks future sync and edits; copies already downloaded stay with them.",
+    );
+    let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
+        .actions
+        .is_empty();
     draw_pane_intro(
         scene,
         transform,
         pane_rect,
         Icon::Home,
         &format!("{roster_count} people share this workspace"),
-        "Removing someone blocks future sync and edits; copies already downloaded stay with them.",
-        if is_owner { "You manage" } else { "View only" },
+        member_help,
+        if can_manage_transfer {
+            "Ownership"
+        } else if is_owner {
+            "You manage"
+        } else {
+            "View only"
+        },
         text_renderer,
         theme,
     );
+    if can_manage_transfer {
+        draw_primary_button(
+            scene,
+            transform,
+            ownership_action_rect(pane_rect),
+            "Ownership",
+            true,
+            text_renderer,
+            theme,
+        );
+    }
 
     if rows.is_empty() {
         let empty = Rect::new(
@@ -1864,6 +2061,41 @@ pub fn draw_members_pane(
 
     if !is_owner {
         draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    }
+}
+
+/// Pointer and accessibility target for the ownership action entry point in
+/// the Members intro card.
+pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
+    Rect::new(
+        pane_rect.x1 - PANE_PAD_X - 112.0,
+        pane_rect.y0 + PANE_PAD_TOP + 14.0,
+        pane_rect.x1 - PANE_PAD_X - 8.0,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT - 14.0,
+    )
+}
+
+/// Plain-language ownership state shared by visual rendering, accessibility
+/// snapshots, and deterministic UI tests.
+pub fn ownership_transfer_status(ws: &Workspace, local_user: &UserId) -> Option<String> {
+    let proposal = ws.pending_ownership_transfer.as_ref()?;
+    let recipient = public_key_member_id(proposal.recipient);
+    let owner = public_key_member_id(proposal.current_owner);
+    if &recipient == local_user {
+        Some(format!(
+            "{} offered you ownership. Review the workspace and explicitly accept before the offer expires.",
+            short_id(&owner)
+        ))
+    } else if &owner == local_user {
+        Some(format!(
+            "Waiting for {} to explicitly accept ownership. You can cancel until acceptance.",
+            short_id(&recipient)
+        ))
+    } else {
+        Some(format!(
+            "Ownership transfer to {} is awaiting that person's acceptance.",
+            short_id(&recipient)
+        ))
     }
 }
 
@@ -1922,10 +2154,15 @@ fn draw_member_row(
         None,
     );
 
+    let displayed_role = if row.role == CapRole::Owner && !row.is_workspace_owner {
+        "Admin"
+    } else {
+        role_label(row.role)
+    };
     let detail = match row.grant_count {
-        0 => format!("{} · no extra permissions", role_label(row.role)),
-        1 => format!("{} · 1 extra permission", role_label(row.role)),
-        n => format!("{} · {n} extra permissions", role_label(row.role)),
+        0 => format!("{displayed_role} · no extra permissions"),
+        1 => format!("{displayed_role} · 1 extra permission"),
+        n => format!("{displayed_role} · {n} extra permissions"),
     };
     let detail_size = tokens.typography.scale.xs;
     let detail_text = elide(&detail, detail_size, text_max, text_renderer);
@@ -1944,7 +2181,7 @@ fn draw_member_row(
         transform,
         row.role_rect,
         row.role,
-        role_label(row.role),
+        displayed_role,
         row.is_workspace_owner,
         can_manage_row,
         detail_size,
@@ -3633,6 +3870,60 @@ mod members_pane_tests {
         assert!(edit.is_empty());
         assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
         assert_eq!(ws.owner.as_deref(), Some(OWNER));
+    }
+
+    #[test]
+    fn ownership_ceremony_is_separate_typed_confirmed_and_accessible() {
+        let (owner_key, owner_public) = collab_types::generate_keypair();
+        let (_, recipient_public) = collab_types::generate_keypair();
+        let owner = hex::encode(owner_public.as_bytes());
+        let recipient = hex::encode(recipient_public.as_bytes());
+        let mut ws = Workspace::test_default(WorkspaceId(91), "Research");
+        ws.set_owner(owner.clone());
+        ws.grant_capability(CapOverride::membership(
+            Subject::person(recipient.clone()),
+            ws.room.to_string(),
+            Verb::Admin,
+        ));
+        ws.pending_ownership_transfer = Some(
+            collab_types::OwnershipTransferProposalV1::new(
+                ws.room.to_string(),
+                [8; 32],
+                owner_public,
+                recipient_public,
+                500,
+                &owner_key,
+            )
+            .unwrap(),
+        );
+
+        let owner_resource = ownership_transfer_resource(&ws, &owner);
+        assert!(owner_resource.actions.iter().any(|action| {
+            action.id == "ownership.propose"
+                && action.contract.confirmation == qos_actions::ConfirmationPolicy::Confirm
+        }));
+        assert!(
+            owner_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "ownership.cancel")
+        );
+        let recipient_resource = ownership_transfer_resource(&ws, &recipient);
+        let accept = recipient_resource
+            .actions
+            .iter()
+            .find(|action| action.id == "ownership.accept")
+            .unwrap();
+        assert!(matches!(
+            accept.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Phrase { .. }
+        ));
+        assert!(
+            ownership_transfer_status(&ws, &recipient)
+                .unwrap()
+                .contains("offered you ownership")
+        );
+        assert_eq!(role_verb(CapRole::Owner), None);
     }
 
     #[test]

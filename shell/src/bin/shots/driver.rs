@@ -955,6 +955,33 @@ impl ShellDriver {
     fn scene_ws_settings_members(&mut self) {
         self.seed_workspace_permissions();
         self.with_chrome(|st| {
+            let owner_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let owner_public =
+                collab_types::Ed25519PublicKey::from_bytes(owner_key.verifying_key().to_bytes());
+            let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
+                recipient_key.verifying_key().to_bytes(),
+            );
+            let owner = hex::encode(owner_public.as_bytes());
+            st.local_user_id = owner.clone();
+            if let Some(workspace) = st.tree_mut().active_workspace_mut() {
+                workspace.set_owner(owner);
+                workspace.grant_capability(shell::shell::state::CapOverride::membership(
+                    shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
+                    workspace.room.to_string(),
+                    shell::shell::state::Verb::Admin,
+                ));
+                workspace.pending_ownership_transfer =
+                    collab_types::OwnershipTransferProposalV1::new(
+                        workspace.room.to_string(),
+                        [23; 32],
+                        owner_public,
+                        recipient_public,
+                        u64::MAX,
+                        &owner_key,
+                    )
+                    .ok();
+            }
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Members;
         });

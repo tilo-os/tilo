@@ -85,15 +85,6 @@ pub enum ChannelEvent {
         /// Detached signature by `signed_by`.
         signature: Signature,
     },
-    /// Transfer channel ownership to a different identity, signed by the current owner.
-    OwnershipTransfer {
-        /// The incoming owner's public key.
-        new_owner: Ed25519PublicKey,
-        /// Signer of this transfer — must equal the current `Channel::owner`.
-        signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
-        signature: Signature,
-    },
     /// Change the channel's display name. Signed by the owner.
     Rename {
         /// New display name.
@@ -184,11 +175,6 @@ impl ChannelEvent {
                 signed_by,
                 signature: _,
             } => attestation_revoked_signing_bytes(attestation, signed_by),
-            ChannelEvent::OwnershipTransfer {
-                new_owner,
-                signed_by,
-                signature: _,
-            } => ownership_transfer_signing_bytes(new_owner, signed_by),
             ChannelEvent::Rename {
                 new_name,
                 signed_by,
@@ -220,7 +206,6 @@ impl ChannelEvent {
             ChannelEvent::Genesis { owner, .. } => *owner,
             ChannelEvent::AttestationIssued(ra) => ra.attestation.issued_by,
             ChannelEvent::AttestationRevoked { signed_by, .. }
-            | ChannelEvent::OwnershipTransfer { signed_by, .. }
             | ChannelEvent::Rename { signed_by, .. }
             | ChannelEvent::SettingsUpdate { signed_by, .. }
             | ChannelEvent::MemberAdded { signed_by, .. }
@@ -233,7 +218,6 @@ impl ChannelEvent {
         match self {
             ChannelEvent::Genesis { signature, .. }
             | ChannelEvent::AttestationRevoked { signature, .. }
-            | ChannelEvent::OwnershipTransfer { signature, .. }
             | ChannelEvent::Rename { signature, .. }
             | ChannelEvent::SettingsUpdate { signature, .. }
             | ChannelEvent::MemberAdded { signature, .. }
@@ -304,24 +288,6 @@ fn attestation_revoked_signing_bytes(
     canonical_bytes(&View {
         tag: 2,
         attestation,
-        signed_by,
-    })
-}
-
-/// `OwnershipTransfer`'s signing view (tag 3).
-fn ownership_transfer_signing_bytes(
-    new_owner: &Ed25519PublicKey,
-    signed_by: &Ed25519PublicKey,
-) -> Result<Vec<u8>, CanonicalError> {
-    #[derive(Serialize)]
-    struct View<'a> {
-        tag: u8,
-        new_owner: &'a Ed25519PublicKey,
-        signed_by: &'a Ed25519PublicKey,
-    }
-    canonical_bytes(&View {
-        tag: 3,
-        new_owner,
         signed_by,
     })
 }

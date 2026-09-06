@@ -65,6 +65,7 @@ pub mod identity;
 pub mod invite;
 pub mod mls_governance;
 pub mod op;
+pub mod ownership_transfer;
 pub mod peer;
 pub mod recipient_control;
 pub mod redaction;
@@ -126,6 +127,10 @@ pub use op::{
     DocumentMutation, DocumentMutationError, EncryptionMetadata, RoutedDocumentPayload, SignedOp,
     document_artifact_id, document_attestation_id, document_channel_id,
     validate_document_payload_route,
+};
+pub use ownership_transfer::{
+    OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
+    OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use recipient_control::{
