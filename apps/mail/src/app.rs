@@ -2633,6 +2633,22 @@ impl Widget for MailApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }

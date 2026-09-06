@@ -3002,6 +3002,31 @@ impl Widget for PdfApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| {
+                self.pdf_resource_ctx()
+                    .map(|ctx| crate::actions::document_root(&ctx))
+            })
+            .flatten()
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-page affordance dispatched
     /// its markup action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.

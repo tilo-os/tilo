@@ -55,7 +55,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertIn("Widget::resources", reasons)
         self.assertIn("ActionSpec", reasons)
 
-    def test_app_search_provider_must_override_limited_query(self):
+    def test_app_search_provider_must_override_limited_and_paged_queries(self):
         root = self.fixture(
             "use qos_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
@@ -65,7 +65,9 @@ class AppResourceActionContractTests(unittest.TestCase):
             "}\n"
         )
         violations, _ = contract.audit(root)
-        self.assertTrue(any("unbounded search_limited fallback" in item.reason for item in violations))
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertIn("unbounded search_limited fallback", reasons)
+        self.assertIn("non-paged search_page fallback", reasons)
 
     def test_app_search_provider_with_budgeted_override_passes_search_gate(self):
         root = self.fixture(
@@ -77,10 +79,44 @@ class AppResourceActionContractTests(unittest.TestCase):
             " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
             "   self.rows.iter().take(limit).cloned().collect()\n"
             " }\n"
+            " fn search_page(&self, q: &str, cursor: Option<&SearchCursor>, work: usize, limit: usize) -> SearchPage {\n"
+            "   self.catalog.query_page(q, cursor, work, limit)\n"
+            " }\n"
             "}\n"
         )
         violations, _ = contract.audit(root)
-        self.assertFalse(any("search_limited" in item.reason for item in violations))
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertNotIn("search_limited", reasons)
+        self.assertNotIn("search_page", reasons)
+
+    def test_limited_only_provider_still_fails_paging_gate(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
+            "   self.rows.iter().take(limit).cloned().collect()\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("non-paged search_page fallback" in item.reason for item in violations))
+
+    def test_paged_provider_cannot_materialise_a_legacy_search_then_slice_it(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search_limited(&self, _: &str, _: usize) -> Vec<SearchResult> { vec![] }\n"
+            " fn search_page(&self, q: &str, _: Option<&SearchCursor>, _: usize, limit: usize) -> SearchPage {\n"
+            "   let rows = self.search_limited(q, limit); SearchPage::new(rows)\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("materialising search fallback" in item.reason for item in violations))
 
     def test_limited_provider_cannot_search_everything_then_truncate(self):
         root = self.fixture(

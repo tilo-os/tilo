@@ -4384,6 +4384,21 @@ impl Widget for CodeApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| vec![crate::actions::project_root(&self.code_resource_ctx())])
+                .unwrap_or_default(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
     /// Resolve a searched file, symbol, or result through the current widget
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.

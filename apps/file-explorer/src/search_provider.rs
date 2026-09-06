@@ -11,13 +11,17 @@
 //! back/forward history. The query path touches no filesystem, so it stays
 //! synchronous.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 
-use ui::qos_actions::ActionAddress;
+use ui::qos_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult, SearchTextIndex,
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
 };
+
+#[cfg(test)]
+use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchTextIndex};
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
@@ -89,35 +93,106 @@ fn searchable_fields(fields: impl IntoIterator<Item = String>) -> String {
     fields.into_iter().collect::<Vec<_>>().join("\u{1f}")
 }
 
-/// A [`SearchProvider`] over a snapshot of the Favourites / Places list.
+/// A retained, revision-gated catalogue over the private Places list.  The
+/// widget changes the revision only after a favourite mutation, so a palette
+/// frame merely shares this Arc-backed index instead of re-walking paths.
+#[derive(Clone)]
 pub struct PlacesSearchProvider {
-    favorites: Vec<IndexedFavorite>,
-    index: SearchTextIndex,
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<PlacesSnapshot>>,
     kind: String,
 }
 
 #[derive(Clone, Debug)]
-struct IndexedFavorite {
-    favorite: Favorite,
+struct PlacesSnapshot {
+    revision: Option<u64>,
+    favorites: BTreeMap<String, Favorite>,
 }
 
 impl PlacesSearchProvider {
-    /// Snapshot the current favourites into a provider.
-    pub fn new(favorites: Vec<Favorite>) -> Self {
-        let favorites: Vec<_> = favorites
-            .into_iter()
-            .map(|favorite| IndexedFavorite { favorite })
-            .collect();
-        Self {
-            index: SearchTextIndex::new(favorites.iter().map(|entry| {
-                searchable_fields([
-                    entry.favorite.label.clone(),
-                    entry.favorite.path.to_string_lossy().into_owned(),
-                ])
+    /// Create a retained provider with an initial snapshot.
+    pub fn new(favorites: &[Favorite]) -> Self {
+        let provider = Self {
+            catalog: SearchCatalog::new(crate::i18n::t("files-a11y-places")),
+            snapshot: Arc::new(RwLock::new(PlacesSnapshot {
+                revision: None,
+                favorites: BTreeMap::new(),
             })),
-            favorites,
             kind: crate::i18n::t("files-a11y-places"),
+        };
+        provider.refresh(0, favorites);
+        provider
+    }
+
+    /// Reconcile only when the owner has observed a new source revision.
+    /// Supplying the same revision is intentionally a no-op: it must not turn
+    /// a steady-state `sync` into a full catalogue traversal.
+    pub fn refresh(&self, revision: u64, favorites: &[Favorite]) -> bool {
+        {
+            let snapshot = self
+                .snapshot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if snapshot.revision == Some(revision) {
+                return false;
+            }
         }
+        let mut current = BTreeMap::new();
+        for favorite in favorites {
+            let id = place_resource_id(&favorite.path);
+            let result = SearchResult::for_action(
+                &self.kind,
+                favorite.label.clone(),
+                place_open_address(&favorite.path),
+            )
+            .with_subtitle(favorite.path.display().to_string())
+            .with_icon(favorite.icon());
+            let _ = self.catalog.upsert(
+                id.clone(),
+                searchable_fields([
+                    favorite.label.clone(),
+                    favorite.path.to_string_lossy().into_owned(),
+                ]),
+                result,
+            );
+            current.insert(id, favorite.clone());
+        }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for removed in snapshot
+            .favorites
+            .keys()
+            .filter(|id| !current.contains_key(*id))
+        {
+            self.catalog.remove(removed);
+        }
+        snapshot.favorites = current;
+        snapshot.revision = Some(revision);
+        true
+    }
+
+    pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
+        let favorite = self.snapshot.read().ok()?.favorites.get(id)?.clone();
+        Some(
+            Resource::new(id, "files.place", favorite.label).with_action(
+                ActionSpec::operation(
+                    OPEN_ACTION,
+                    "Open",
+                    OperationKind::View,
+                    "files.open",
+                    &favorite.path.to_string_lossy().into_owned(),
+                )
+                .ok()?
+                .with_contract(ActionContract::view()),
+            ),
+        )
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
     }
 }
 
@@ -126,79 +201,11 @@ impl SearchProvider for PlacesSearchProvider {
         &self.kind
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
     }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.index
-            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
-            .into_iter()
-            .filter_map(|entry_id| self.favorites.get(entry_id))
-            .map(|entry| {
-                let favorite = &entry.favorite;
-                SearchResult::for_action(
-                    &self.kind,
-                    favorite.label.clone(),
-                    place_open_address(&favorite.path),
-                )
-                .with_subtitle(favorite.path.display().to_string())
-                .with_icon(favorite.icon())
-            })
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-            .collect()
-    }
-}
-
-/// Complete search over the mount's ACL-filtered room record catalog. Record
-/// UUIDs, rather than paths, are action identity: paths are mutable provenance
-/// used only for matching and presentation.
-pub struct CollaborativeRecordSearchProvider {
-    catalog: SearchCatalog,
-    kind: String,
-}
-
-impl CollaborativeRecordSearchProvider {
-    #[allow(
-        clippy::expect_used,
-        reason = "the action address and catalogue key are derived from the same immutable record UUID"
-    )]
-    pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
-        let mut seen = BTreeSet::new();
-        let kind = crate::i18n::t("files-search-collaborative-records");
-        let catalog = SearchCatalog::new(kind.clone());
-        for entry in entries.iter().filter(|entry| seen.insert(entry.record_id)) {
-            let address = record_reveal_address(entry.record_id);
-            let result = SearchResult::for_action(&kind, entry.name.clone(), &address)
-                .with_subtitle(crate::i18n::t_args(
-                    "files-search-record-provenance",
-                    &[
-                        crate::i18n::arg("path", entry.path.display().to_string()),
-                        crate::i18n::arg("record", entry.record_id.to_string()),
-                    ],
-                ))
-                .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir));
-            // `address` is constructed from the same immutable record id as
-            // the catalogue key, so a failed insert would be a programmer
-            // error rather than a recoverable data condition.
-            catalog
-                .upsert(
-                    address.resource,
-                    searchable_fields([
-                        entry.name.clone(),
-                        entry.path.to_string_lossy().into_owned(),
-                    ]),
-                    result,
-                )
-                .expect("collaborative search result addresses its record resource");
-        }
-        Self { catalog, kind }
-    }
-}
-
-impl SearchProvider for CollaborativeRecordSearchProvider {
-    fn name(&self) -> &str {
-        &self.kind
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -220,40 +227,273 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
         self.catalog
             .query_page(query, cursor, work_budget, result_limit)
     }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        (address.action == OPEN_ACTION)
+            .then(|| self.resource(&address.resource))
+            .flatten()
+    }
+}
+
+/// Complete search over the mount's ACL-filtered room record catalog. Record
+/// UUIDs, rather than paths, are action identity: paths are mutable provenance
+/// used only for matching and presentation.
+#[derive(Clone)]
+pub struct CollaborativeRecordSearchProvider {
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<RecordSnapshot>>,
+    kind: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordSnapshot {
+    revision: Option<u64>,
+    records: BTreeMap<String, WorkspaceRecord>,
+}
+
+impl CollaborativeRecordSearchProvider {
+    #[allow(
+        clippy::expect_used,
+        reason = "the action address and catalogue key are derived from the same immutable record UUID"
+    )]
+    pub(crate) fn new(entries: &[WorkspaceRecord]) -> Self {
+        let kind = crate::i18n::t("files-search-collaborative-records");
+        let provider = Self {
+            catalog: SearchCatalog::new(kind.clone()),
+            snapshot: Arc::new(RwLock::new(RecordSnapshot::default())),
+            kind,
+        };
+        provider.refresh(0, entries);
+        provider
+    }
+
+    pub(crate) fn refresh(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
+        {
+            let snapshot = self
+                .snapshot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if snapshot.revision == Some(revision) {
+                return false;
+            }
+        }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for removed in snapshot.records.keys() {
+            self.catalog.remove(removed);
+        }
+        snapshot.records.clear();
+        snapshot.revision = Some(revision);
+        drop(snapshot);
+        self.append_page(revision, entries);
+        true
+    }
+
+    /// Add one already-authorised mount page without revisiting earlier pages.
+    /// A source reset uses [`Self::refresh`] first; a mismatched revision is
+    /// refused rather than merging two authority generations.
+    pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if snapshot.revision != Some(revision) {
+            return false;
+        }
+        for entry in entries {
+            let address = record_reveal_address(entry.record_id);
+            let result = SearchResult::for_action(&self.kind, entry.name.clone(), &address)
+                .with_subtitle(crate::i18n::t_args(
+                    "files-search-record-provenance",
+                    &[
+                        crate::i18n::arg("path", entry.path.display().to_string()),
+                        crate::i18n::arg("record", entry.record_id.to_string()),
+                    ],
+                ))
+                .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir));
+            let _ = self.catalog.upsert(
+                address.resource.clone(),
+                searchable_fields([
+                    entry.name.clone(),
+                    entry.path.to_string_lossy().into_owned(),
+                ]),
+                result,
+            );
+            snapshot.records.insert(address.resource, entry.clone());
+        }
+        true
+    }
+
+    pub(crate) fn record(&self, record_id: uuid::Uuid) -> Option<WorkspaceRecord> {
+        self.snapshot
+            .read()
+            .ok()?
+            .records
+            .get(&record_resource_id(record_id))
+            .cloned()
+    }
+
+    pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
+        let record = self.snapshot.read().ok()?.records.get(id)?.clone();
+        Some(
+            Resource::new(id, "files.record", record.name).with_action(
+                ActionSpec::operation(
+                    REVEAL_ACTION,
+                    "Reveal in Files",
+                    OperationKind::View,
+                    "files.reveal-record",
+                    &record.record_id.to_string(),
+                )
+                .ok()?
+                .with_contract(ActionContract::view()),
+            ),
+        )
+    }
+}
+
+impl SearchProvider for CollaborativeRecordSearchProvider {
+    fn name(&self) -> &str {
+        &self.kind
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        (address.action == REVEAL_ACTION)
+            .then(|| self.resource(&address.resource))
+            .flatten()
+    }
 }
 
 /// Searchable snapshot of the canonical, non-secret file-provider accounts.
 /// This is deliberately a small metadata projection, not a remote directory
 /// crawler: the mount daemon owns remote I/O and Files must remain responsive
 /// and offline-safe while the palette is open.
+#[derive(Clone)]
 pub struct RemoteAccountSearchProvider {
-    accounts: Vec<IndexedRemoteAccount>,
-    index: SearchTextIndex,
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<RemoteAccountsSnapshot>>,
     kind: String,
 }
 
 #[derive(Clone, Debug)]
-struct IndexedRemoteAccount {
-    account: RemoteAccount,
+struct RemoteAccountsSnapshot {
+    revision: Option<u64>,
+    accounts: BTreeMap<String, RemoteAccount>,
 }
 
 impl RemoteAccountSearchProvider {
-    pub fn new(accounts: Vec<RemoteAccount>) -> Self {
-        let accounts: Vec<_> = accounts
-            .into_iter()
-            .map(|account| IndexedRemoteAccount { account })
-            .collect();
-        Self {
-            index: SearchTextIndex::new(accounts.iter().map(|entry| {
-                searchable_fields([
-                    entry.account.label.clone(),
-                    entry.account.host.clone(),
-                    entry.account.kind.label().to_owned(),
-                ])
+    pub fn new(accounts: &[RemoteAccount]) -> Self {
+        let provider = Self {
+            catalog: SearchCatalog::new("Remote file accounts"),
+            snapshot: Arc::new(RwLock::new(RemoteAccountsSnapshot {
+                revision: None,
+                accounts: BTreeMap::new(),
             })),
-            accounts,
             kind: "Remote file accounts".into(),
+        };
+        provider.refresh(0, accounts);
+        provider
+    }
+
+    pub fn refresh(&self, revision: u64, accounts: &[RemoteAccount]) -> bool {
+        {
+            let snapshot = self
+                .snapshot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if snapshot.revision == Some(revision) {
+                return false;
+            }
         }
+        let mut current = BTreeMap::new();
+        for account in accounts {
+            let id = crate::remote_accounts::resource_id(&account.id);
+            let result = SearchResult::for_action(
+                &self.kind,
+                account.label.clone(),
+                remote_account_open_address(account),
+            )
+            .with_subtitle(format!(
+                "{} · {} · {}",
+                account.kind.label(),
+                account.host,
+                account.health.label()
+            ))
+            .with_icon(ui::icons::icon_for_path(
+                std::path::Path::new("remote-folder"),
+                true,
+            ));
+            let _ = self.catalog.upsert(
+                id.clone(),
+                searchable_fields([
+                    account.label.clone(),
+                    account.host.clone(),
+                    account.kind.label().to_owned(),
+                ]),
+                result,
+            );
+            current.insert(id, account.clone());
+        }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for removed in snapshot
+            .accounts
+            .keys()
+            .filter(|id| !current.contains_key(*id))
+        {
+            self.catalog.remove(removed);
+        }
+        snapshot.accounts = current;
+        snapshot.revision = Some(revision);
+        true
+    }
+
+    pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
+        let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
+        let payload = vec!["details".to_string(), account.id.to_string()];
+        Some(
+            Resource::new(id, "files.remote-account", account.label).with_action(
+                ActionSpec::operation(
+                    REMOTE_ACCOUNT_OPEN_ACTION,
+                    "Show connection details",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &payload,
+                )
+                .ok()?
+                .with_contract(ActionContract::view()),
+            ),
+        )
     }
 }
 
@@ -262,35 +502,37 @@ impl SearchProvider for RemoteAccountSearchProvider {
         &self.kind
     }
 
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult> {
         self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.index
-            .matching_ids(query, DEFAULT_SEARCH_CANDIDATE_LIMIT)
-            .into_iter()
-            .filter_map(|entry_id| self.accounts.get(entry_id))
-            .map(|entry| {
-                let account = &entry.account;
-                SearchResult::for_action(
-                    &self.kind,
-                    account.label.clone(),
-                    remote_account_open_address(account),
-                )
-                .with_subtitle(format!(
-                    "{} · {} · {}",
-                    account.kind.label(),
-                    account.host,
-                    account.health.label()
-                ))
-                .with_icon(ui::icons::icon_for_path(
-                    std::path::Path::new("remote-folder"),
-                    true,
-                ))
-            })
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-            .collect()
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        (address.action == REMOTE_ACCOUNT_OPEN_ACTION)
+            .then(|| self.resource(&address.resource))
+            .flatten()
     }
 }
 
@@ -335,7 +577,8 @@ mod tests {
 
     #[test]
     fn provider_finds_a_place_by_label_or_path() {
-        let provider = PlacesSearchProvider::new(places());
+        let values = places();
+        let provider = PlacesSearchProvider::new(&values);
         assert!(
             provider
                 .search("projects")
@@ -353,9 +596,71 @@ mod tests {
     }
 
     #[test]
+    fn retained_places_catalogue_gates_unchanged_revisions_and_pages_with_hard_budgets() {
+        let values = places();
+        let provider = PlacesSearchProvider::new(&values);
+        let before = provider.stats();
+        let changed = vec![Favorite {
+            label: "Late place".into(),
+            path: "/home/tester/late-needle".into(),
+            is_home: false,
+            kind: FavKind::Folder,
+        }];
+        assert!(
+            !provider.refresh(0, &changed),
+            "the owner must advance the source revision before any traversal/reindex"
+        );
+        assert_eq!(provider.stats(), before);
+        assert!(provider.search("late-needle").is_empty());
+        assert!(provider.refresh(1, &changed));
+        assert_eq!(provider.search("late-needle").len(), 1);
+
+        let page = provider.search_page("late", None, 1, 1);
+        assert_eq!(page.inspected, 1);
+        assert_eq!(page.results.len(), 1);
+        assert!(page.next.is_none());
+    }
+
+    #[test]
+    fn every_retained_provider_supports_true_cursor_pages_and_lazy_action_equivalence() {
+        let accounts: Vec<_> = (0..20)
+            .map(|index| RemoteAccount {
+                id: accounts::AccountId::from(format!("account-{index}")),
+                kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+                label: format!("Shared record {index}"),
+                host: format!("host-{index}.example"),
+                health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+            })
+            .collect();
+        let provider = RemoteAccountSearchProvider::new(&accounts);
+        let first = provider.search_page("record", None, 3, 3);
+        assert_eq!(first.inspected, 3);
+        assert_eq!(first.results.len(), 3);
+        let second = provider.search_page("record", first.next.as_ref(), 3, 3);
+        assert_eq!(second.inspected, 3);
+        assert!(
+            second
+                .results
+                .iter()
+                .all(|hit| !first.results.contains(hit))
+        );
+
+        let hit = first.results.first().expect("a page has a result");
+        let address = hit.action_address().expect("canonical account address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the omitted account is materialized exactly");
+        let resources = [resource];
+        let spec = ui::qos_actions::door::resolve(&resources, &address)
+            .expect("the lazy action matches the search address");
+        assert_eq!(spec.id, REMOTE_ACCOUNT_OPEN_ACTION);
+    }
+
+    #[test]
     fn action_id_round_trips_to_the_destination_path() {
         let mut registry = SearchRegistry::new();
-        registry.register(Box::new(PlacesSearchProvider::new(places())));
+        let values = places();
+        registry.register(Box::new(PlacesSearchProvider::new(&values)));
         let hit = registry
             .query("documents")
             .into_iter()
@@ -378,7 +683,8 @@ mod tests {
             host: "cloud.example".into(),
             health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
         };
-        let provider = RemoteAccountSearchProvider::new(vec![account.clone()]);
+        let accounts = vec![account.clone()];
+        let provider = RemoteAccountSearchProvider::new(&accounts);
         for query in ["personal", "example", "nextcloud"] {
             assert_eq!(provider.search(query).len(), 1, "{query}");
         }

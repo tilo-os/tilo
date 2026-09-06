@@ -178,6 +178,26 @@ impl SearchProvider for ContainerSearchProvider {
         "Containers"
     }
 
+    fn action_directory_generation(&self) -> Option<u64> {
+        self.index
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.index
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult> {
         self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }

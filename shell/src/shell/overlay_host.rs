@@ -26,6 +26,10 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+#[cfg(test)]
+#[path = "../../tests/support/offscreen.rs"]
+mod overlay_test_offscreen;
+
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -564,6 +568,7 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    CommandPalette,
     MemberSheet,
     WorkspaceSettings,
     RoomActivity,
@@ -632,9 +637,17 @@ pub struct ShellOverlayHost {
     /// query field. Keeping the inert result (not a pre-bound callback) lets
     /// Enter perform the same strict `ActionArgs::bind_json` as scripts.
     pending_palette_action: Option<crate::shell::search::SearchResult>,
+    /// Atomic remote-directory admissions are not assumed accepted when the
+    /// user presses Enter. Their tickets are polled at frame refresh without
+    /// ever blocking the compositor on a broker RPC.
+    pending_action_admissions: Vec<(String, crate::shell::search::PendingInvocation)>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
+    /// Provider-index revision paired with `last_search_query`. A live
+    /// resource/action change must repaint an already-open palette even when
+    /// the person has not changed its text.
+    last_search_revision: String,
     /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
     /// Painted chip rects this frame, indexed like
@@ -1353,7 +1366,14 @@ type QsFastFields = (
 
 impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(5);
+        let mut order = Vec::with_capacity(6);
+        // The palette has a complete semantic tree (query, result list, and
+        // focused result).  It is drawn as a top overlay, so publish it from
+        // the same ordered synthetic tree as every other overlay rather than
+        // leaving screen readers with only the obscured workspace.
+        if self.palette_visible {
+            order.push(AccessibleOverlay::CommandPalette);
+        }
         if self.workspace_settings_overlay.member_sheet_is_open() {
             order.push(AccessibleOverlay::MemberSheet);
         }
@@ -1466,7 +1486,9 @@ impl ShellOverlayHost {
             search_registry,
             search_results: Vec::new(),
             pending_palette_action: None,
+            pending_action_admissions: Vec::new(),
             last_search_query: String::new(),
+            last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
@@ -4817,15 +4839,11 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; first-boot latency comes from the tantivy walker's initial pass.
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
-        // Short-circuits no-op refreshes from peer-state polling or palette re-entry.
-        if current_query == self.last_search_query {
-            return;
-        }
-        self.last_search_query.clone_from(&current_query);
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -4834,18 +4852,26 @@ impl ShellOverlayHost {
         };
         let groups = {
             let st = chrome.borrow();
-            self.search_registry.query_grouped(
-                &crate::shell::search::QueryArgs {
-                    needle: &current_query,
-                    scope,
-                    active_provider_id: active_provider.as_deref(),
-                    wanted_kinds: &self.active_kind_filter,
-                    chrome: &st,
-                    doc,
-                    doc_root: root,
-                },
-                PALETTE_ROW_BUDGET,
-            )
+            let args = crate::shell::search::QueryArgs {
+                needle: &current_query,
+                scope,
+                active_provider_id: active_provider.as_deref(),
+                wanted_kinds: &self.active_kind_filter,
+                chrome: &st,
+                doc,
+                doc_root: root,
+            };
+            let revision = self.search_registry.query_revision(&args);
+            // Short-circuits no-op refreshes from peer-state polling or
+            // palette re-entry, while allowing an open palette to see a
+            // changed retained provider index.
+            if current_query == self.last_search_query && revision == self.last_search_revision {
+                return;
+            }
+            self.last_search_query.clone_from(&current_query);
+            self.last_search_revision = revision;
+            self.search_registry
+                .query_grouped(&args, PALETTE_ROW_BUDGET)
         };
 
         // Kind travels as the row's section and glyph, not a `[Files]`
@@ -4879,6 +4905,36 @@ impl ShellOverlayHost {
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
+    }
+
+    fn poll_pending_action_admissions(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        self.pending_action_admissions
+            .retain(|(title, ticket)| match ticket() {
+                Ok(None) => true,
+                Ok(Some(receipt)) => {
+                    chrome.borrow_mut().push_notification_full(
+                        crate::shell::notification::Notification::new(
+                            format!("Started “{title}”"),
+                            format!(
+                                "Action job {} was admitted",
+                                receipt.broker_invocation_id.unwrap_or_default()
+                            ),
+                        )
+                        .with_app_name("Application actions"),
+                    );
+                    false
+                }
+                Err(error) => {
+                    chrome.borrow_mut().push_warning_notification(
+                        format!("Can't run “{title}”"),
+                        error.to_string(),
+                    );
+                    false
+                }
+            });
     }
 
     /// Mirrors any widget-side group missing from the persisted tree into
@@ -5151,7 +5207,20 @@ impl ShellOverlayHost {
                         &arguments,
                     )
                     .map_err(crate::shell::search::action_api::ActionError::Arguments)?;
-                    (result.on_open)(doc, root, &chrome, &bound)
+                    if let Some(begin) = &result.on_begin_invoke {
+                        match begin(doc, root, &chrome, &bound)? {
+                            crate::shell::search::InvocationDisposition::Accepted(_) => Ok(()),
+                            crate::shell::search::InvocationDisposition::Pending(ticket) => {
+                                self.pending_action_admissions
+                                    .push((result.title.clone(), ticket));
+                                Ok(())
+                            }
+                        }
+                    } else if let Some(invoke) = &result.on_invoke {
+                        invoke(doc, root, &chrome, &bound).map(|_| ())
+                    } else {
+                        (result.on_open)(doc, root, &chrome, &bound)
+                    }
                 });
             if let Err(error) = outcome {
                 if let Some(chrome) = self.chrome.clone() {
@@ -5195,7 +5264,20 @@ impl ShellOverlayHost {
                     return;
                 }
                 let args = crate::shell::search::action_api::ActionArgs::none();
-                if let Err(err) = (result.on_open)(doc, root, &chrome, &args) {
+                let outcome = if let Some(begin) = &result.on_begin_invoke {
+                    begin(doc, root, &chrome, &args).map(|disposition| match disposition {
+                        crate::shell::search::InvocationDisposition::Accepted(_) => (),
+                        crate::shell::search::InvocationDisposition::Pending(ticket) => {
+                            self.pending_action_admissions
+                                .push((result.title.clone(), ticket));
+                        }
+                    })
+                } else if let Some(invoke) = &result.on_invoke {
+                    invoke(doc, root, &chrome, &args).map(|_| ())
+                } else {
+                    (result.on_open)(doc, root, &chrome, &args)
+                };
+                if let Err(err) = outcome {
                     chrome.borrow_mut().push_warning_notification(
                         format!("Can't run “{}”", result.title),
                         err.to_string(),
@@ -10037,6 +10119,11 @@ impl Widget for ShellOverlayHost {
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::CommandPalette => {
+                    if let Some(palette) = self.palette.accessibility() {
+                        root.children.push(palette);
+                    }
+                }
                 AccessibleOverlay::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name("Workspace permission decision")
@@ -10109,6 +10196,9 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::CommandPalette => {
+                self.palette.synthetic_accessibility_rect(child_path)
+            }
             AccessibleOverlay::RoomActivity => {
                 let mut local_path = Vec::with_capacity(path.len());
                 local_path.push(0);
@@ -10135,6 +10225,9 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::CommandPalette => {
+                self.palette.focus_synthetic_accessibility(child_path)
+            }
             AccessibleOverlay::RoomActivity => {
                 let mut local_path = Vec::with_capacity(path.len());
                 local_path.push(0);
@@ -15992,6 +16085,7 @@ mod overlay_event_absorb_tests {
     //! underneath. Runs against the real `host.handle_event` path via a
     //! [`RecordingContent`] mock, not just the
     //! [`ShellOverlayHost::cursor_over_open_overlay`] predicate.
+    use super::overlay_test_offscreen as offscreen;
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
@@ -16109,6 +16203,54 @@ mod overlay_event_absorb_tests {
         log: Rc<RefCell<Vec<String>>>,
     }
 
+    /// Test-only stand-in for the shell's directory cache.  It has the same
+    /// inert `SearchResult` shape the live ActionDirectory bridge emits, so
+    /// palette layout is exercised without smuggling a capability or widget
+    /// reference into this synchronous render harness.
+    struct DirectoryPaletteFixtureProvider;
+
+    impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
+        fn id(&self) -> &str {
+            "directory-fixture"
+        }
+
+        fn name(&self) -> &str {
+            "Directory"
+        }
+
+        fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+            const KINDS: [crate::shell::search::ResourceKind; 1] =
+                [crate::shell::search::ResourceKind::Action];
+            &KINDS
+        }
+
+        fn available_in_active_app_scope(&self) -> bool {
+            true
+        }
+
+        fn query(
+            &self,
+            context: crate::shell::search::SearchContext<'_>,
+        ) -> Vec<crate::shell::search::SearchResult> {
+            if !context.needle.is_empty() && !"open project workspace".contains(context.needle) {
+                return Vec::new();
+            }
+            vec![crate::shell::search::SearchResult {
+                kind: crate::shell::search::ResourceKind::Action,
+                provider_id: "directory-fixture".into(),
+                id: "directory\u{1f}7\u{1f}r1\u{1f}code.project\u{1f}open".into(),
+                title: "Open project workspace".into(),
+                subtitle: Some("Example project · Code Editor".into()),
+                score: 100,
+                params: Vec::new(),
+                contract: Some(qos_actions::ActionContract::view()),
+                on_open: Rc::new(|_, _, _, _| Ok(())),
+                on_invoke: None,
+                on_begin_invoke: None,
+            }]
+        }
+    }
+
     fn build_harness() -> AbsorbHarness {
         build_harness_sized(1600.0, 900.0)
     }
@@ -16174,6 +16316,119 @@ mod overlay_event_absorb_tests {
             taffy,
             root_node: child,
             log,
+        }
+    }
+
+    /// Render a live-faithful directory action through the normal registry,
+    /// palette refresh, layout, and draw paths.  This is deliberately not a
+    /// direct `CommandPalette::set_entries` shortcut: it covers the title,
+    /// subtitle, grouping, focus, and narrow-card geometry used by the shell.
+    fn directory_palette_fixture(vw: f64, vh: f64) -> AbsorbHarness {
+        let mut harness = build_harness_sized(vw, vh);
+        harness
+            .host
+            .search_registry
+            .register(Rc::new(DirectoryPaletteFixtureProvider));
+        harness.host.set_palette_visible(true);
+        harness.host.set_palette_focus(true);
+        harness.host.force_palette_settled();
+        // Deliberately specific: the result under visual review is a live
+        // directory action, not an incidental built-in search result that
+        // happened to share the word "project".
+        harness.host.palette.set_query("open project workspace");
+        let mut doc = AutoCommit::new();
+        harness
+            .host
+            .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
+        settle(&mut harness, vw, vh);
+        harness
+    }
+
+    fn render_directory_palette_fixture(
+        harness: &mut AbsorbHarness,
+        width: u32,
+        height: u32,
+        path: &std::path::Path,
+    ) {
+        let theme = Theme::dark();
+        let mut text_renderer = TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        harness.host.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+        let mut renderer = offscreen::OffscreenRenderer::new(width, height);
+        renderer.render_png(&scene, vello::peniko::Color::BLACK, path);
+    }
+
+    #[test]
+    fn directory_action_row_is_painted_with_label_and_subtitle_at_normal_and_narrow_sizes() {
+        for (vw, vh) in [(1280.0, 800.0), (800.0, 600.0)] {
+            let mut harness = directory_palette_fixture(vw, vh);
+            let rows = harness.host.palette_rows_detailed();
+            assert!(
+                rows.iter().any(|(_, label, subtitle)| {
+                    label == "Open project workspace"
+                        && subtitle.as_deref() == Some("Example project · Code Editor")
+                }),
+                "directory action must reach the painted palette rows at {vw}x{vh}: {rows:?}"
+            );
+            assert!(
+                harness.host.palette.is_focused(),
+                "open directory palette must retain keyboard focus at {vw}x{vh}"
+            );
+            let palette = harness.host.palette.get_rect();
+            assert!(
+                palette.width() > 0.0 && palette.height() > 0.0,
+                "directory palette must retain a drawable card at {vw}x{vh}: {palette:?}"
+            );
+            paint(&mut harness);
+            assert!(
+                harness.host.palette_visible(),
+                "drawing the directory row must not dismiss the focused palette"
+            );
+            let semantics = harness.host.accessibility().expect("shell semantics");
+            let palette = semantics
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Command palette"))
+                .expect("the visible palette must be in the accessibility tree");
+            let result = palette
+                .children
+                .get(1)
+                .and_then(|list| list.children.first())
+                .expect("the directory action must be a semantic palette result");
+            assert_eq!(result.name.as_deref(), Some("Open project workspace"));
+            assert_eq!(
+                result.description.as_deref(),
+                Some("Example project · Code Editor")
+            );
+            assert!(
+                harness.host.focus_synthetic_accessibility(&[0, 1, 0]),
+                "the directory action must be reachable through the host accessibility path"
+            );
+        }
+    }
+
+    #[test]
+    fn directory_palette_fixture_writes_normal_and_narrow_pngs() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/directory-palette-review");
+        for (name, vw, vh, width, height) in [
+            ("normal.png", 1280.0, 800.0, 1280, 800),
+            ("narrow.png", 800.0, 600.0, 800, 600),
+        ] {
+            let mut harness = directory_palette_fixture(vw, vh);
+            let path = output.join(name);
+            render_directory_palette_fixture(&mut harness, width, height, &path);
+            assert!(
+                path.is_file(),
+                "directory palette screenshot missing: {}",
+                path.display()
+            );
         }
     }
 

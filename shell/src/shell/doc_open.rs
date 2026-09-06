@@ -414,21 +414,7 @@ pub fn continuation_file_reference_for_surface(
     let record_id = xattr::get(path, "user.qos.record-id")
         .ok()
         .flatten()
-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
-        .or_else(|| {
-            // Some filesystems do not expose per-file xattrs even though the
-            // mounted workspace root exposes the bounded record catalog.
-            // Match the already-open projected path there rather than losing
-            // the document and falling back to an app-only continuation.
-            let wanted = path.canonicalize().unwrap_or_else(|_| path.clone());
-            file_explorer::model::read_workspace_record_index(
-                &file_explorer::model::workspace_roots(),
-            )
-            .records
-            .into_iter()
-            .find(|entry| entry.path.canonicalize().unwrap_or(entry.path.clone()) == wanted)
-            .map(|entry| *entry.record_id.as_bytes())
-        })?;
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())?;
     let content_hash = xattr::get(path, "user.qos.content-hash")
         .ok()
         .flatten()
@@ -456,7 +442,7 @@ pub fn open_continuity_file_reference(
 ) -> Option<PathBuf> {
     let path = resolve_continuity_file_reference_in_roots(
         reference,
-        &file_explorer::model::workspace_roots(),
+        &file_explorer::model::workspace_record_authority_roots(),
     )?;
     let mut file = std::fs::File::open(&path).ok()?;
     let mut first_byte = [0_u8; 1];
@@ -469,13 +455,16 @@ pub fn open_continuity_file_reference(
 pub fn continuity_file_reference_label(
     reference: &crate::shell::personal_continuity::LaunchIntent,
 ) -> String {
-    resolve_continuity_file_reference_in_roots(reference, &file_explorer::model::workspace_roots())
-        .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "File".to_string())
+    resolve_continuity_file_reference_in_roots(
+        reference,
+        &file_explorer::model::workspace_record_authority_roots(),
+    )
+    .and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    })
+    .filter(|name| !name.trim().is_empty())
+    .unwrap_or_else(|| "File".to_string())
 }
 
 /// Production activation for a synchronized file-reference tab.  Resolution
@@ -509,10 +498,8 @@ fn resolve_continuity_file_reference_in_roots(
     let encoded = record_id.strip_prefix("file-record-")?;
     let bytes = hex::decode(encoded).ok()?;
     let record_id: [u8; 16] = bytes.try_into().ok()?;
-    let entry = file_explorer::model::read_workspace_record_index(roots)
-        .records
-        .into_iter()
-        .find(|entry| entry.record_id.as_bytes() == &record_id)?;
+    let entry =
+        file_explorer::model::resolve_workspace_record(roots, uuid::Uuid::from_bytes(record_id))?;
     // Hashes describe the capture-time content/preview and may seed a cache,
     // but they must never turn a normal edit into a failed reopen. The stable
     // collaborative FileRecordId above is the sole routing authority.
