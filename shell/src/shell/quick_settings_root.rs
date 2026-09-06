@@ -540,7 +540,9 @@ impl QuickSettingsRoot {
 
     pub fn focus_next(&mut self, state: &QuickSettingsState, backwards: bool) -> bool {
         let count = if self.edit_mode {
-            self.edit_controls(state).len() + 3
+            // Editable rows, Reset defaults, Done. The header no longer
+            // duplicates Done with an unexplained checkmark.
+            self.edit_controls(state).len() + 2
         } else {
             // Edit, labeled destinations, Brightness, Volume, controls, power.
             8 + self.visible_controls(state).len()
@@ -560,11 +562,7 @@ impl QuickSettingsRoot {
         };
         if self.edit_mode {
             let all = self.edit_controls(state);
-            if i == 0 {
-                self.edit_mode = false;
-                return RootAction::LayoutChanged;
-            }
-            if let Some(c) = all.get(i - 1).copied() {
+            if let Some(c) = all.get(i).copied() {
                 if !c.required() {
                     if self.config.controls.contains(&c) {
                         self.config.controls.retain(|x| *x != c);
@@ -575,12 +573,12 @@ impl QuickSettingsRoot {
                     return RootAction::LayoutChanged;
                 }
             }
-            if i == all.len() + 1 {
+            if i == all.len() {
                 self.config = QuickSettingsConfig::default();
                 self.save_config();
                 return RootAction::LayoutChanged;
             }
-            if i == all.len() + 2 {
+            if i == all.len() + 1 {
                 self.edit_mode = false;
                 return RootAction::LayoutChanged;
             }
@@ -618,11 +616,7 @@ impl QuickSettingsRoot {
             return false;
         }
         let all = self.edit_controls(state);
-        let Some(i) = self
-            .keyboard_focus
-            .and_then(|i| i.checked_sub(1))
-            .filter(|i| *i < all.len())
-        else {
+        let Some(i) = self.keyboard_focus.filter(|i| *i < all.len()) else {
             return false;
         };
         let c = all[i];
@@ -639,7 +633,7 @@ impl QuickSettingsRoot {
         };
         let c = self.config.controls.remove(from);
         self.config.controls.insert(to, c);
-        self.keyboard_focus = Some(to + 1);
+        self.keyboard_focus = Some(to);
         self.save_config();
         true
     }
@@ -679,7 +673,7 @@ impl QuickSettingsRoot {
         state: &mut QuickSettingsState,
     ) -> RootAction {
         self.panel = panel;
-        if self.edit_rect().contains(point) {
+        if !self.edit_mode && self.edit_rect().contains(point) {
             self.edit_mode = !self.edit_mode;
             self.keyboard_focus = Some(0);
             return RootAction::LayoutChanged;
@@ -899,19 +893,10 @@ impl QuickSettingsRoot {
             None,
             TextWeight::Semibold,
         );
-        for (r, icon, name) in [(
-            self.edit_rect(),
-            if self.edit_mode {
-                ui::icons::Icon::Check
-            } else {
-                ui::icons::Icon::Pencil
-            },
-            if self.edit_mode {
-                "Finish editing controls"
-            } else {
-                "Edit controls"
-            },
-        )] {
+        if !self.edit_mode {
+            let r = self.edit_rect();
+            let icon = ui::icons::Icon::Pencil;
+            let name = "Edit controls";
             Button::paint(
                 scene,
                 transform,
@@ -970,7 +955,7 @@ impl QuickSettingsRoot {
                 theme,
                 &ButtonFace::new(r, "")
                     .hovered(hovered)
-                    .focused(self.keyboard_focus == Some(i + 1))
+                    .focused(self.keyboard_focus == Some(i))
                     .accessible_name(accessible),
             );
             let color = if power {
@@ -1407,16 +1392,13 @@ impl QuickSettingsRoot {
                 ghost.x1 - self.scaled(6.),
                 ghost_y0 + metrics.item_extent,
             );
-            let shadow = Rect::new(
-                ghost.x0 + self.scaled(3.),
-                ghost.y0 + self.scaled(6.),
-                ghost.x1 + self.scaled(3.),
-                ghost.y1 + self.scaled(6.),
-            );
+            let shadow = ghost
+                .inflate(self.scaled(5.), self.scaled(5.))
+                .with_origin((ghost.x0 + self.scaled(4.), ghost.y0 + self.scaled(8.)));
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surfaces.base.with_alpha_factor(0.86),
+                colors.surfaces.base.with_alpha_factor(0.96),
                 None,
                 &RoundedRect::from_rect(shadow, self.scaled(10.)),
             );
@@ -1544,7 +1526,7 @@ impl QuickSettingsRoot {
             theme,
             &ButtonFace::new(reset, "Reset defaults")
                 .hovered(cursor.is_some_and(|p| reset.contains(p)))
-                .focused(self.keyboard_focus == Some(edit_count + 1))
+                .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name("Reset Quick Settings defaults"),
         );
         Button::paint(
@@ -1555,7 +1537,7 @@ impl QuickSettingsRoot {
             &ButtonFace::new(done, "Done")
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
-                .focused(self.keyboard_focus == Some(edit_count + 2))
+                .focused(self.keyboard_focus == Some(edit_count + 1))
                 .accessible_name("Finish editing Quick Settings"),
         );
     }
@@ -1569,15 +1551,13 @@ impl QuickSettingsRoot {
                 "Frequently used system controls"
             })
             .with_state(AccessState::new().modal(true));
-        root.children.push(
-            AccessNode::new(Role::Button)
-                .with_name(if self.edit_mode {
-                    "Finish editing controls"
-                } else {
-                    "Edit controls"
-                })
-                .with_state(AccessState::new().focusable(true)),
-        );
+        if !self.edit_mode {
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Edit controls")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         if !self.edit_mode {
             for name in ["Settings", "Privacy", "History", "Power"] {
                 root.children.push(
@@ -1628,7 +1608,7 @@ impl QuickSettingsRoot {
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.panel),
-            [0] => Some(self.edit_rect()),
+            [0] if !self.edit_mode => Some(self.edit_rect()),
             _ => None,
         }
     }
@@ -1724,7 +1704,7 @@ mod tests {
         state.radios.wifi_available = true;
         state.bluetooth_available = true;
         root.edit_mode = true;
-        root.keyboard_focus = Some(1);
+        root.keyboard_focus = Some(0);
         assert!(root.reorder_focused(&state, 1));
         assert_eq!(root.config.controls[1], QuickSettingsControl::Wifi);
         root.panel = PANEL;

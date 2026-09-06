@@ -960,6 +960,25 @@ impl KeyChord {
         })
     }
 
+    /// `F1` and Print Screen are compositor safety/help controls, never
+    /// editable application-navigation bindings.
+    pub fn is_reserved_system_key(&self) -> bool {
+        matches!(self.key.as_str(), "f1" | "printscreen")
+    }
+
+    fn is_valid_configurable(&self) -> bool {
+        let valid_modifiers = self
+            .modifiers
+            .iter()
+            .all(|modifier| matches!(modifier.as_str(), "Super" | "Ctrl" | "Alt" | "Shift"));
+        let printable_without_modifier = self.modifiers.is_empty() && self.key.chars().count() == 1;
+        valid_modifiers
+            && !self.key.is_empty()
+            && !self.key.contains(char::is_whitespace)
+            && !self.is_reserved_system_key()
+            && !printable_without_modifier
+    }
+
     pub fn display(&self) -> String {
         let key = match self.key.as_str() {
             "left" => "Left",
@@ -987,6 +1006,13 @@ impl KeyChord {
 #[serde(default)]
 pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutConfigError {
+    ReservedSystemKey,
+    InvalidChord,
+    Conflict(ShortcutAction),
 }
 
 impl Default for ShortcutConfig {
@@ -1017,26 +1043,16 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
-        fn alt_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Alt".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn alt_shift_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Alt".to_string(), "Shift".to_string()]),
-                key: key.to_string(),
-            }
-        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
             (ShortcutAction::ShortcutHelp, super_chord("/")),
-            (ShortcutAction::FocusPreviousWindow, alt_shift_chord("tab")),
-            (ShortcutAction::FocusNextWindow, alt_chord("tab")),
+            // Spatial arrows are the always-visible desktop model. Alt+Tab
+            // remains an immutable conventional ring alias in the shell.
+            (ShortcutAction::FocusPreviousWindow, super_chord("left")),
+            (ShortcutAction::FocusNextWindow, super_chord("right")),
             // Conventional application tab cycling belongs to the focused
             // qOS window group too. Keeping this distinct from Super+Tab
             // means the overview is never opened while changing tabs.
@@ -1058,32 +1074,102 @@ impl Default for ShortcutConfig {
 }
 
 impl ShortcutConfig {
+    /// Validate an already assembled table before it becomes live runtime
+    /// state.  Unlike [`Self::load`], this rejects rather than repairs so a
+    /// caller cannot install ambiguous ownership in a running session.
     /// # Errors
     ///
-    /// Returns the other [`ShortcutAction`] already bound to `chord`, if
-    /// any, without changing this binding's own chord.
-    pub fn set(&mut self, action: ShortcutAction, chord: KeyChord) -> Result<(), ShortcutAction> {
+    /// Returns an error when a chord is invalid or reserved, when the lock
+    /// shortcut differs from its immutable safety binding, or when two
+    /// actions claim the same chord.
+    pub fn validate(&self) -> Result<(), ShortcutConfigError> {
+        let defaults = Self::default();
+        let default_lock = defaults.bindings.get(&ShortcutAction::Lock);
+        let mut seen = BTreeMap::<&KeyChord, ShortcutAction>::new();
+        for (action, chord) in &self.bindings {
+            if *action == ShortcutAction::Lock && Some(chord) != default_lock {
+                return Err(ShortcutConfigError::InvalidChord);
+            }
+            if chord.is_reserved_system_key() {
+                return Err(ShortcutConfigError::ReservedSystemKey);
+            }
+            if !chord.is_valid_configurable() {
+                return Err(ShortcutConfigError::InvalidChord);
+            }
+            if let Some(other) = seen.insert(chord, *action) {
+                return Err(ShortcutConfigError::Conflict(other));
+            }
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error without changing this binding when `chord` is invalid,
+    /// system-reserved, or already belongs to another action.
+    pub fn set(
+        &mut self,
+        action: ShortcutAction,
+        chord: KeyChord,
+    ) -> Result<(), ShortcutConfigError> {
+        let defaults = Self::default();
+        if action == ShortcutAction::Lock
+            && defaults.bindings.get(&ShortcutAction::Lock) != Some(&chord)
+        {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
+        if chord.is_reserved_system_key() {
+            return Err(ShortcutConfigError::ReservedSystemKey);
+        }
+        if !chord.is_valid_configurable() {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
         if let Some((other, _)) = self
             .bindings
             .iter()
             .find(|(a, c)| **a != action && **c == chord)
         {
-            return Err(*other);
+            return Err(ShortcutConfigError::Conflict(*other));
         }
         self.bindings.insert(action, chord);
         Ok(())
     }
     pub fn load() -> Self {
-        let mut loaded: Self =
+        let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
                 .unwrap_or_default();
-        // Settings written by an older release contain a valid but partial
-        // map. Merge newly introduced actions without overwriting any chord
-        // the user already chose.
-        for (action, chord) in Self::default().bindings {
-            loaded.bindings.entry(action).or_insert(chord);
+        Self::normalise(loaded)
+    }
+
+    /// Deterministically repairs manual/corrupt persisted state: begin with
+    /// defaults, then accept a stored override only when it is a valid,
+    /// non-reserved, non-conflicting chord.  Bad entries fall back to their
+    /// default instead of leaving ambiguous client ownership.
+    #[must_use]
+    pub fn normalise(loaded: Self) -> Self {
+        let defaults = Self::default();
+        let mut effective = defaults.clone();
+        for (action, chord) in loaded.bindings {
+            if action == ShortcutAction::Lock {
+                continue;
+            }
+            if !chord.is_valid_configurable() {
+                continue;
+            }
+            effective.bindings.remove(&action);
+            if effective
+                .bindings
+                .values()
+                .any(|existing| existing == &chord)
+            {
+                if let Some(default) = defaults.bindings.get(&action) {
+                    effective.bindings.insert(action, default.clone());
+                }
+                continue;
+            }
+            effective.bindings.insert(action, chord);
         }
-        loaded
+        effective
     }
     /// # Errors
     ///
@@ -1273,9 +1359,110 @@ mod tests {
         let old = cfg.bindings[&ShortcutAction::Lock].clone();
         assert_eq!(
             cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-            Err(ShortcutAction::Search)
+            Err(ShortcutConfigError::InvalidChord)
         );
         assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    }
+
+    #[test]
+    fn reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter() {
+        let mut cfg = ShortcutConfig::default();
+        for key in ["f1", "printscreen"] {
+            assert_eq!(
+                cfg.set(
+                    ShortcutAction::Search,
+                    KeyChord {
+                        modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                        key: key.into(),
+                    },
+                ),
+                Err(ShortcutConfigError::ReservedSystemKey),
+                "{key} must remain compositor-owned"
+            );
+        }
+        cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
+            .unwrap();
+        assert_eq!(
+            cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
+            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
+        );
+    }
+
+    #[test]
+    fn corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership() {
+        let mut corrupt = ShortcutConfig::default();
+        corrupt.bindings.insert(
+            ShortcutAction::Search,
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                key: "f1".into(),
+            },
+        );
+        corrupt
+            .bindings
+            .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
+        corrupt.bindings.insert(
+            ShortcutAction::PreviousTab,
+            KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        corrupt
+            .bindings
+            .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
+
+        let repaired = ShortcutConfig::normalise(corrupt);
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::Search].display(),
+            "Super+k",
+            "reserved persisted keys revert to their action default"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::Lock].display(),
+            "Super+l",
+            "the native lock chord is immutable"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::PreviousTab].display(),
+            "Ctrl+j",
+            "the first action in stable action order owns a duplicate"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::NextTab].display(),
+            "Ctrl+Tab",
+            "the duplicate action deterministically falls back to default"
+        );
+        assert!(repaired.validate().is_ok());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "qos-shortcut-save-reload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        let mut saved = ShortcutConfig::default();
+        saved
+            .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
+            .unwrap();
+        saved.save().unwrap();
+        let reloaded = ShortcutConfig::load();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        std::fs::remove_dir_all(dir).ok();
+
+        assert_eq!(reloaded, saved);
+        assert!(reloaded.validate().is_ok());
     }
 
     #[test]
@@ -1286,11 +1473,11 @@ mod tests {
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(
             cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
-            "Alt+Shift+Tab"
+            "Super+Left"
         );
         assert_eq!(
             cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
-            "Alt+Tab"
+            "Super+Right"
         );
         assert_eq!(
             cfg.bindings[&ShortcutAction::PreviousTab].display(),

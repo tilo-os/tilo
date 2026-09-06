@@ -131,13 +131,23 @@ fn render_view(
             .copied()
             .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
             .expect("OOBE page has a vertical scroll viewport");
-        unsafe {
+        let scroll = unsafe {
             (*scroll)
                 .as_any_mut()
                 .and_then(|widget| widget.downcast_mut::<Scrollable>())
                 .expect("OOBE scroll viewport exposes its offset for review")
-                .scroll_by(0.0, f32::MAX);
-        }
+        };
+        let max_offset = scroll.max_offset_y();
+        assert!(
+            max_offset.is_finite(),
+            "OOBE bottom review needs a finite scroll extent"
+        );
+        scroll.set_offset_y(max_offset);
+        assert_eq!(
+            scroll.offset_y(),
+            max_offset,
+            "OOBE bottom review must land on the clamped maximum offset"
+        );
         // Scroll offsets move the child origin, so apply the unchanged taffy
         // layout once more before recording the bottom-reachability frame.
         view.apply_layout(&taffy, root, Point::ZERO);
@@ -177,7 +187,10 @@ fn render_onboarding_matrix() {
                     &root.join(format!("{width}x{height}-{theme_label}-{state}.png")),
                     false,
                 );
-                if state == "backup" {
+                // These are the two vertically dense pages. Their bottom
+                // frames prove that the fixed footer cannot make the last
+                // content or action unreachable at compact/a11y density.
+                if matches!(state, "backup" | "tour") {
                     let mut bottom_view = state_view(state);
                     let mut bottom_renderer = OffscreenRenderer::new(width, height);
                     render_view(

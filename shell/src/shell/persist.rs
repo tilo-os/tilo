@@ -130,12 +130,11 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut durable = tree.clone();
-    // A Wayland surface id belongs to this compositor process.  Persisting a
-    // `Foreign` tab makes that dead id look like a real window after the next
-    // login; when the application is launched again its new surface is added
-    // beside the stale one.  Keep explicit symbolic/continuation placeholders,
-    // but never put a live client binding on disk.
-    strip_foreign_surfaces(&mut durable);
+    // A Wayland surface id belongs to this compositor process. Preserve the
+    // user's open-app topology as symbolic local launch records, never as
+    // dead protocol ids; startup rebinds the replacement surface into the
+    // same tab.
+    symbolise_foreign_surfaces(&mut durable);
     for ws in &mut durable.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
@@ -189,7 +188,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Wayland surface ids.  This must happen before seeding the room document,
     // otherwise the dead window is immediately promoted back into the
     // authoritative topology.
-    strip_foreign_surfaces(&mut tree);
+    repair_legacy_foreign_surfaces(&mut tree);
     // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
     // nothing and existing workspaces never propagate after restart.
     tree.seed_doc_from_cache();
@@ -352,7 +351,30 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
 /// `PeerWindow` and `AppPlaceholder` are intentionally retained: unlike a
 /// `Foreign` tile they are symbolic records with no process-local object id,
 /// and are the explicit continuation contract.
-fn strip_foreign_surfaces(tree: &mut WorkspaceTree) {
+fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
+    use crate::shell::state::TileContent;
+
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    if let TileContent::Foreign { app_id, .. } = &tab.tile {
+                        tab.tile = TileContent::LocalApp {
+                            app_id: app_id.clone(),
+                            label: tab.title.clone(),
+                            note: String::new(),
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Old builds wrote raw foreign ids before the save-side sanitizer existed.
+/// Those records cannot be safely launched because their presence on disk is
+/// ambiguous, so retain the defensive deletion only for legacy input.
+fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
     use crate::shell::state::TileContent;
 
     let mut removed_tabs = std::collections::HashSet::new();
@@ -614,13 +636,30 @@ mod tests {
             .collect()
     }
 
+    fn local_apps(tree: &WorkspaceTree) -> Vec<(u64, String)> {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match &tab.tile {
+                crate::shell::state::TileContent::LocalApp { app_id, .. } => {
+                    Some((tab.id, app_id.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn live_foreign_surfaces_never_survive_a_state_round_trip() {
+    fn live_foreign_surface_round_trip_preserves_symbolic_app_and_exact_placement() {
         use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace_id = tree.workspaces[0].id;
+        let strip_id = tree.workspaces[0].strips[0].id;
         let survivor = 90_000;
         tree.workspaces[0].strips[0]
             .window_groups
@@ -649,6 +688,9 @@ mod tests {
             },
         });
         group.active_tab = 90_001;
+        tree.active = workspace_id;
+        tree.active_strip.insert(workspace_id, strip_id);
+        tree.active_group.insert(strip_id, 89_999);
 
         save_tree_to(&tree, &path).expect("save");
         let on_disk: WorkspaceTree =
@@ -661,15 +703,54 @@ mod tests {
         let loaded = load_tree_from(&path).expect("load");
 
         assert!(foreign_tabs(&loaded).is_empty());
+        assert_eq!(
+            local_apps(&loaded),
+            vec![(90_001, "org.example.Editor".into())],
+            "a live app becomes a relaunchable record in the same tab"
+        );
         let loaded_group = &loaded.workspaces[0].strips[0].window_groups[0];
-        assert_eq!(loaded_group.active_tab, survivor);
+        assert_eq!(loaded.active, workspace_id);
+        assert_eq!(loaded.active_strip.get(&workspace_id), Some(&strip_id));
+        assert_eq!(loaded.active_group.get(&strip_id), Some(&89_999));
+        assert_eq!(loaded_group.active_tab, 90_001);
         assert!(
             loaded_group
                 .tabs
                 .iter()
                 .any(|tab| tab.id == loaded_group.active_tab),
-            "removing a live surface must repair the selected tab"
+            "symbolising a live surface must preserve the selected tab"
         );
+    }
+
+    #[test]
+    fn a_closed_foreign_app_is_not_recreated_by_the_next_save() {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 92_001,
+                tabs: vec![Tab {
+                    id: 92_002,
+                    title: "Chat".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "com.example.Chat".into(),
+                        surface_id: 92_003,
+                    },
+                }],
+                active_tab: 92_002,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 92_003));
+
+        save_tree_to(&tree, &path).expect("save after close");
+        let loaded = load_tree_from(&path).expect("restart");
+        assert!(foreign_tabs(&loaded).is_empty());
+        assert!(local_apps(&loaded).is_empty());
     }
 
     #[test]
@@ -705,7 +786,7 @@ mod tests {
         tree.continuation_owned_tabs
             .insert(tab_id, tree.workspaces[0].room);
 
-        strip_foreign_surfaces(&mut tree);
+        repair_legacy_foreign_surfaces(&mut tree);
 
         assert!(tree.workspaces[0].strips[0].window_groups.is_empty());
         assert!(!tree.active_group.contains_key(&strip_id));

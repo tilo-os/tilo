@@ -23,7 +23,9 @@ pub const DEFAULT_BLANK_SECS: u64 = 300;
 /// Default idle duration before the session locks (5 minutes).
 pub const DEFAULT_LOCK_SECS: u64 = 300;
 
-/// Env var overriding the idle-to-blank timeout, in seconds; `0` disables blanking. Unset → [`DEFAULT_BLANK_SECS`].
+/// Env var seeding the idle-to-blank timeout, in seconds; `0` disables
+/// blanking. Unset → [`DEFAULT_BLANK_SECS`]. The Settings power policy
+/// replaces this seed in production via [`IdleConfig::with_blank`].
 pub const BLANK_SECS_ENV: &str = "QOS_IDLE_BLANK_SECS";
 
 /// Env var overriding idle-to-lock, in seconds. Unset → [`DEFAULT_LOCK_SECS`];
@@ -86,6 +88,15 @@ impl IdleConfig {
     #[must_use]
     pub fn with_suspend(mut self, suspend: Option<Duration>) -> Self {
         self.suspend_timeout = suspend;
+        self
+    }
+
+    /// Override the display-blank timeout from the Settings power policy.
+    /// `None` is the persisted "Never" choice. Like [`Self::with_suspend`],
+    /// this replaces the environment-derived seed in production.
+    #[must_use]
+    pub fn with_blank(mut self, blank: Option<Duration>) -> Self {
+        self.blank_timeout = blank;
         self
     }
 
@@ -223,6 +234,15 @@ impl SessionManager {
         self.suspended = false;
     }
 
+    /// Replace the live display-blank timeout without resetting user
+    /// activity. A changed policy takes effect on the next tick against the
+    /// current idle duration; changing it to `None` ("Never") prevents any
+    /// future automatic blanking but never wakes a display behind the user's
+    /// back.
+    pub fn set_blank_timeout(&mut self, timeout: Option<Duration>) {
+        self.config.blank_timeout = timeout;
+    }
+
     /// Un-latch a pending suspend the caller decided **not** to act on (typically an inhibitor
     /// held). Leaves the idle timer untouched, so `tick` re-emits [`SessionTransition::Suspend`] the moment the inhibitor releases, without waiting for fresh activity. No-op if none was latched.
     pub fn cancel_suspend(&mut self) {
@@ -349,6 +369,68 @@ mod tests {
             .with_suspend(Some(Duration::from_secs(1200)));
         assert_eq!(c.suspend_timeout, Some(Duration::from_secs(1200)));
         assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn with_blank_overrides_the_environment_seed() {
+        let c = IdleConfig::from_env_values(Some("300"), None, None)
+            .with_blank(Some(Duration::from_secs(600)));
+        assert_eq!(c.blank_timeout, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn live_blank_timeout_preserves_idle_time_and_never_disables_future_blanking() {
+        let t0 = Instant::now();
+        let mut session = SessionManager::new(cfg(None, None), t0);
+        assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
+
+        // A settings reload must apply the new policy against the existing
+        // idle episode, rather than making the user wait another full period.
+        session.set_blank_timeout(Some(Duration::from_secs(600)));
+        assert_eq!(
+            session.tick(t0 + Duration::from_secs(600)),
+            vec![SessionTransition::Blanked]
+        );
+
+        // "Never" applies live too. Activity starts a new episode, then no
+        // amount of elapsed idle time can blank it.
+        assert_eq!(
+            session.note_activity(t0 + Duration::from_secs(601)),
+            vec![SessionTransition::Woke]
+        );
+        session.set_blank_timeout(None);
+        assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
+        assert!(!session.is_blanked());
+    }
+
+    #[test]
+    fn settings_policy_blank_timeout_drives_the_live_session() {
+        let policy = qos_power_mgmt::config::policy_from_settings_json_for_profile(
+            r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
+            None,
+        );
+        let t0 = Instant::now();
+        // Isolate the display policy: lock and suspend are independent
+        // transitions and must not make the "Never blank" assertion fail for
+        // an unrelated reason.
+        let mut session = SessionManager::new(cfg(None, None).with_blank(policy.idle_blank), t0);
+
+        assert!(session.tick(t0 + Duration::from_secs(59)).is_empty());
+        assert_eq!(
+            session.tick(t0 + Duration::from_secs(60)),
+            vec![SessionTransition::Blanked]
+        );
+
+        let never = qos_power_mgmt::config::policy_from_settings_json_for_profile(
+            r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
+            None,
+        );
+        assert_eq!(
+            session.note_activity(t0 + Duration::from_secs(61)),
+            vec![SessionTransition::Woke]
+        );
+        session.set_blank_timeout(never.idle_blank);
+        assert!(session.tick(t0 + Duration::from_secs(100_000)).is_empty());
     }
 
     #[test]

@@ -16,6 +16,19 @@ pub enum PointerButtonKind {
     Middle,
 }
 
+/// Phase of a direct touchscreen contact injected through the explicit
+/// test-control socket. Kept separate from winit's type so the wire remains
+/// stable and serde-friendly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchPhaseKind {
+    Down,
+    Motion,
+    Up,
+    Cancel,
+    Frame,
+}
+
 /// Top-level command envelope. Tag is `op`; remaining fields are per-variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -99,6 +112,16 @@ pub enum Command {
         #[serde(default)]
         button: PointerButtonKind,
     },
+    /// Inject one direct-touch hardware edge through the shared DRM touch
+    /// ownership state. Only available on the explicitly opted-in test socket;
+    /// it exists so E2E clients can assert real `wl_touch` protocol delivery.
+    Touch {
+        device: String,
+        slot: u32,
+        phase: TouchPhaseKind,
+        x: f64,
+        y: f64,
+    },
     /// Copy `text` from in-process chrome, through `ui::text_selection::clipboard_copy` — lands on the real clipboard backend and is published as a Wayland selection on the next tick.
     ClipboardCopy {
         text: String,
@@ -106,6 +129,9 @@ pub enum Command {
         #[serde(default)]
         primary: bool,
     },
+    /// Copy a deterministic RGBA probe from in-process chrome. This exercises
+    /// the same image clipboard route used by screenshot capture.
+    ClipboardCopyImage,
     /// Paste from in-process chrome, through `ui::text_selection::clipboard_paste`. Returns [`Response::Clipboard`] with the text, or `null` when empty.
     ClipboardPaste {
         /// `true` reads the primary selection instead of the clipboard.
@@ -307,6 +333,15 @@ pub enum PlannedAction {
         pressed: bool,
         button: PointerButtonKind,
     },
+    /// One raw direct-touch edge, resolved at execution time by the same
+    /// ownership arena used by the DRM libinput path.
+    Touch {
+        device: String,
+        slot: u32,
+        phase: TouchPhaseKind,
+        x: f64,
+        y: f64,
+    },
     /// Inject a keyboard press or release for `key`. The transport maps `KeyTag` to `winit::keyboard::Key` and synthesises a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
     /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
@@ -490,7 +525,24 @@ pub fn dispatch_command<S: ControlState>(
             }],
         ),
         Command::PointerButton { pressed, button } => pointer_button(*pressed, *button),
+        Command::Touch {
+            device,
+            slot,
+            phase,
+            x,
+            y,
+        } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::Touch {
+                device: device.clone(),
+                slot: *slot,
+                phase: *phase,
+                x: *x,
+                y: *y,
+            }],
+        ),
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
+        Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
         Command::ActionsEnumerate { query } => (
             answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
@@ -775,6 +827,21 @@ fn clipboard_copy(text: &str, primary: bool) -> (Response, Vec<PlannedAction>) {
         ui::text_selection::clipboard_copy(text);
     }
     (Response::Ok { frame: 0 }, Vec::new())
+}
+
+fn clipboard_copy_image() -> (Response, Vec<PlannedAction>) {
+    let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
+    if ui::text_selection::clipboard_copy_image(2, 1, &rgba) {
+        (Response::Ok { frame: 0 }, Vec::new())
+    } else {
+        (
+            Response::Err {
+                code: "clipboard_image_refused".into(),
+                message: "the image clipboard backend refused the probe".into(),
+            },
+            Vec::new(),
+        )
+    }
 }
 
 /// [`Command::ClipboardPaste`]: read the clipboard or primary selection in-process.
