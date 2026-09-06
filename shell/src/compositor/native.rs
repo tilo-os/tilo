@@ -4498,7 +4498,8 @@ pub fn run() -> ! {
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
-        if std::mem::take(&mut outputs_dirty) {
+        let output_geometry_changed = std::mem::take(&mut outputs_dirty);
+        if output_geometry_changed {
             let outs = backend.outputs().to_vec();
             let combined = combined_geometry(&outs);
             tracing::info!(
@@ -4799,13 +4800,20 @@ pub fn run() -> ! {
             placements.extend(state.output_presentation_placements());
             state.update_surface_scales(&placements);
         }
-        reconcile_surface_output_memberships(
-            &mut surface_output_memberships,
-            &state,
-            &frame_builder,
-            backend.outputs(),
-            &output_globals,
-        );
+        // An output change has already installed the backend's new geometry,
+        // but the frame builder still exposes the previous frame's tile rects
+        // until `relayout` below. Diffing that mismatched pair would send a
+        // false transition and then reverse it after layout. Keep the last
+        // correct memberships until the new geometry is actually paintable.
+        if surface_output_geometry_is_current(output_geometry_changed) {
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
+        }
 
         // Decide whether this frame needs repainting before the expensive layout
         // pass: `needs_animation_frame` walks the widget tree, and the chrome
@@ -5735,6 +5743,146 @@ mod tests {
     }
 
     #[test]
+    fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
+        use crate::compositor::tab_binding::{self, Placement};
+
+        const FIRST_SURFACE: u64 = 71_001;
+        const SECOND_SURFACE: u64 = 71_002;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+
+        let mut ids = None;
+        fb.with_chrome(|chrome| {
+            let mut tree = chrome.tree_mut();
+            let first = tab_binding::adopt_toplevel_at(
+                &mut tree,
+                FIRST_SURFACE,
+                Some("org.example.first".into()),
+                Placement::NewGroup,
+            );
+            let (strip, group) = tree
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace.strips.iter().find_map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .find(|group| group.tabs.iter().any(|tab| tab.id == first))
+                            .map(|group| (strip.id, group.id))
+                    })
+                })
+                .expect("the first foreign tab has a group");
+            let second = tab_binding::adopt_toplevel_at(
+                &mut tree,
+                SECOND_SURFACE,
+                Some("org.example.second".into()),
+                Placement::TabIn(group),
+            );
+            ids = Some((strip, group, first, second));
+            drop(tree);
+            chrome.bump();
+        });
+        let (strip, group, first, _second) = ids.expect("fixture ids");
+        let _ = fb.paint_settled();
+
+        let output = Output {
+            id: OutputId(0),
+            position: (0, 0),
+            size: (1600, 900),
+            scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        };
+        let mut memberships = SurfaceOutputMemberships::default();
+        assert_eq!(
+            visible_tiled_surface_rects(&fb)
+                .into_iter()
+                .map(|(surface, _)| surface)
+                .collect::<Vec<_>>(),
+            vec![SECOND_SURFACE],
+            "only the active tab is painted"
+        );
+        assert_eq!(
+            memberships.reconcile(&[output.clone()], &visible_tiled_surface_rects(&fb)),
+            vec![SurfaceOutputChange::Enter {
+                surface_id: SECOND_SURFACE,
+                output: OutputId(0),
+            }]
+        );
+
+        assert!(
+            fb.host_mut().focus_window_widget(strip, group, first),
+            "the existing tab can be focused through the production widget path"
+        );
+        fb.host_mut().tick_active_tab_writeback_for_tests();
+        let _ = fb.paint_settled();
+        assert_eq!(
+            visible_tiled_surface_rects(&fb)
+                .into_iter()
+                .map(|(surface, _)| surface)
+                .collect::<Vec<_>>(),
+            vec![FIRST_SURFACE]
+        );
+        let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
+        assert_eq!(changes.len(), 2);
+        assert!(changes.contains(&SurfaceOutputChange::Leave {
+            surface_id: SECOND_SURFACE,
+            output: OutputId(0),
+        }));
+        assert!(changes.contains(&SurfaceOutputChange::Enter {
+            surface_id: FIRST_SURFACE,
+            output: OutputId(0),
+        }));
+    }
+
+    #[test]
+    fn changed_output_geometry_waits_for_relayout_before_membership_diff() {
+        let output = |id, x| Output {
+            id: OutputId(id),
+            position: (x, 0),
+            size: (100, 100),
+            scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        };
+        let old_outputs = [output(0, 0), output(1, 100)];
+        let moved_outputs = [output(0, 100), output(1, 0)];
+        let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
+        let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
+        let mut memberships = SurfaceOutputMemberships::default();
+        memberships.reconcile(&old_outputs, &[(7, old_rect)]);
+
+        let mut counterexample = SurfaceOutputMemberships::default();
+        counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
+        assert_eq!(
+            counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
+            vec![
+                SurfaceOutputChange::Leave {
+                    surface_id: 7,
+                    output: OutputId(0),
+                },
+                SurfaceOutputChange::Enter {
+                    surface_id: 7,
+                    output: OutputId(1),
+                },
+            ],
+            "old tile coordinates compared with new outputs create false wire transitions"
+        );
+
+        assert!(
+            !surface_output_geometry_is_current(true),
+            "the pre-layout reconciliation must be skipped after an output change"
+        );
+        assert!(
+            memberships
+                .reconcile(&moved_outputs, &[(7, relaid_rect)])
+                .is_empty(),
+            "post-layout geometry keeps the surface on the same physical output"
+        );
+    }
+
+    #[test]
     fn fresh_workspace_salt_does_not_create_a_transport_identity() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state_path = dir.path().join("config/state.json");
@@ -6611,23 +6759,34 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
 /// inactive tab with an output would advertise a monitor on which it has no
 /// pixels. Floating and OSK surfaces use their live widget geometry for the
 /// same reason.
-fn visible_surface_rects(state: &State, frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
-    let mut surfaces: Vec<(u64, Rect)> = state
-        .client_input
-        .placements()
-        .filter_map(|(surface_id, group)| {
-            frame_builder
-                .host()
-                .active_tile_rect(group)
-                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-                .map(|rect| (surface_id, rect))
-        })
-        .collect();
+fn visible_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
+    let mut surfaces = visible_tiled_surface_rects(frame_builder);
     surfaces.extend(frame_builder.floating_surface_rects());
     if let Some(surface) = frame_builder.osk_surface_rect() {
         surfaces.push(surface);
     }
     surfaces
+}
+
+/// Before `FrameBuilder::relayout`, its surface rectangles belong to the
+/// preceding output geometry. They can only be compared with the backend's
+/// output table when that table did not change this tick.
+const fn surface_output_geometry_is_current(output_geometry_changed: bool) -> bool {
+    !output_geometry_changed
+}
+
+/// Visible tiled clients are the active foreign tab of each painted group,
+/// not every client that has ever been placed in that group. Keeping this on
+/// the same [`client_input::foreign_tiles`] traversal used for hit testing
+/// makes output membership agree with the pixels and input target after a tab
+/// switch.
+fn visible_tiled_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
+    let chrome = frame_builder.chrome();
+    let tree = chrome.tree();
+    client_input::foreign_tiles(&tree, frame_builder.host())
+        .into_iter()
+        .map(|hit| (hit.surface_id, hit.rect))
+        .collect()
 }
 
 /// Emit the diff calculated by [`surface_outputs::Memberships`] against the
@@ -6651,9 +6810,16 @@ fn send_surface_output_changes(
             continue;
         };
         let Some(output) = output_globals.handle(output_id) else {
-            // The only expected missing handle is a freshly added output
-            // before `OutputGlobals::sync`; the next reconciliation retries
-            // after its global exists.
+            // Call ordering makes this an invariant breach, not a retryable
+            // state: removed outputs leave before sync withdraws their global,
+            // and current outputs reconcile after synchronous sync created or
+            // updated every handle. If a handle nevertheless vanished, there
+            // is no client-side output object on which a leave can be sent.
+            tracing::error!(
+                surface_id,
+                output = output_id.0,
+                "wl_surface output transition has no advertised wl_output handle"
+            );
             continue;
         };
         match change {
@@ -6670,7 +6836,23 @@ fn reconcile_surface_output_memberships(
     outputs: &[Output],
     output_globals: &output_globals::OutputGlobals,
 ) {
-    let changes = memberships.reconcile(outputs, &visible_surface_rects(state, frame_builder));
+    // `OutputGlobals::sync` is synchronous and precedes this call. Filtering
+    // is a defensive backstop: never advance the tracker into an Enter that
+    // cannot be emitted. If the handle appears on a later sync, that output
+    // joins this list and reconciliation produces the still-needed Enter.
+    let advertised_outputs: Vec<Output> = outputs
+        .iter()
+        .filter(|output| output_globals.handle(output.id).is_some())
+        .cloned()
+        .collect();
+    if advertised_outputs.len() != outputs.len() {
+        tracing::error!(
+            backend_outputs = outputs.len(),
+            advertised_outputs = advertised_outputs.len(),
+            "wl_output registry is behind the backend output table"
+        );
+    }
+    let changes = memberships.reconcile(&advertised_outputs, &visible_surface_rects(frame_builder));
     send_surface_output_changes(state, output_globals, changes);
 }
 
