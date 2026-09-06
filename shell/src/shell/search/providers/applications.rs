@@ -1291,6 +1291,7 @@ mod tests {
     /// Must say so in the same words an installed app's launch uses, not
     /// fail silently. Drives the real `on_open` closure.
     #[test]
+    #[serial_test::serial(launch_events)]
     fn activating_with_no_workspace_reports_it_the_same_way() {
         let p = ApplicationsProvider::new();
         let c = chrome_rc();
