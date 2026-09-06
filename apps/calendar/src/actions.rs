@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
     RetryPolicy,
 };
@@ -79,10 +79,17 @@ fn calendar_operation(
     id: &str,
     label: &str,
     kind: OperationKind,
-    operation: CalendarOperation,
+    operation: &CalendarOperation,
 ) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
-        .expect("CalendarOperation is always serializable");
+    let spec = ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, operation)
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(
+                id,
+                label,
+                ExecutionLocus::ClientLocal,
+                encode_operation(operation),
+            )
+        });
     match operation {
         CalendarOperation::OpenEvent { .. }
         | CalendarOperation::OpenTask { .. }
@@ -95,6 +102,19 @@ fn calendar_operation(
             .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
         CalendarOperation::ExportIcs => spec.destructive(),
     }
+}
+
+/// Encode an app-local operation without allowing a serialization fault to
+/// crash a desktop application. The enum only contains strings and unit
+/// variants today, but the fallback keeps its failure mode explicit if that
+/// changes in the future.
+fn encode_operation(operation: &CalendarOperation) -> EncodedAction {
+    EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, operation).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            payload: b"Calendar operation could not be encoded".to_vec(),
+        }
+    })
 }
 
 /// The datetime format events are stored in — matches [`crate::doc`].
@@ -188,6 +208,55 @@ pub struct TaskData {
     pub parent: String,
 }
 
+/// A sparse, field-level change to one event. `None` means “leave this CRDT
+/// register untouched”; an empty calendar id explicitly means the local
+/// calendar. This is the collaboration-safe counterpart to `EventData`:
+/// independent title, location, reminder, or time edits commute instead of a
+/// stale whole-event snapshot rewriting neighbouring fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventPatch {
+    pub title: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub all_day: Option<bool>,
+    pub location: Option<String>,
+    pub color: Option<usize>,
+    pub rrule: Option<String>,
+    pub reminder: Option<i64>,
+    pub calendar_id: Option<String>,
+    /// Only calendar moves affect the remote outbox. `Some(true)` queues a
+    /// remote upload; `Some(false)` removes a now-local event from it.
+    pub enqueue_remote: Option<bool>,
+}
+
+impl EventPatch {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// Derive the exact registers changed by an on-screen mutation. Keeping
+    /// this comparison next to the serializable action makes every caller use
+    /// the same merge-safe semantics.
+    #[must_use]
+    pub fn between(before: &Event, after: &Event) -> Self {
+        Self {
+            title: (before.title != after.title).then(|| after.title.clone()),
+            start: (before.start != after.start).then(|| after.start.format(DT_FMT).to_string()),
+            end: (before.end != after.end).then(|| after.end.format(DT_FMT).to_string()),
+            all_day: (before.all_day != after.all_day).then_some(after.all_day),
+            location: (before.location != after.location).then(|| after.location.clone()),
+            color: (before.color != after.color).then_some(after.color.index()),
+            rrule: (before.recurrence != after.recurrence).then(|| after.recurrence.to_rrule()),
+            reminder: (before.reminder_min != after.reminder_min)
+                .then_some(after.reminder_min.unwrap_or(-1)),
+            calendar_id: (before.calendar_id != after.calendar_id)
+                .then(|| after.calendar_id.clone().unwrap_or_default()),
+            enqueue_remote: None,
+        }
+    }
+}
+
 impl TaskData {
     pub fn from_task(t: &Task) -> Self {
         Self {
@@ -239,10 +308,9 @@ pub enum CalendarAction {
     /// Create or replace an event's scalar fields. One variant covers create,
     /// every field edit, and a move (a start/end change is just new datetimes).
     UpsertEvent(EventData),
-    /// Retarget an event to a calendar: write the (already resolved) event
-    /// fields and update the `CalDAV` push queue — enqueue for a remote target,
-    /// dequeue for the local one. The colour is already folded into `event`.
-    SetEventCalendar { event: EventData, enqueue: bool },
+    /// Update only named event registers. This is what all ordinary editor and
+    /// agent field edits use; `UpsertEvent` is reserved for creation/import.
+    PatchEvent { id: String, patch: EventPatch },
     /// Delete an event, clearing any queued upload. When the event was synced
     /// from a still-configured remote calendar, `remote_delete` carries that
     /// calendar id so `apply` also queues a `CalDAV` delete of the server copy.
@@ -269,8 +337,13 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
         CalendarAction::UpsertEvent(event) => {
             ("Update event", &event.id, "calendar.event", &event.title)
         }
-        CalendarAction::SetEventCalendar { event, .. } => {
-            ("Move event", &event.id, "calendar.event", &event.title)
+        CalendarAction::PatchEvent { id, patch } => {
+            let label = if patch.calendar_id.is_some() {
+                "Move event"
+            } else {
+                "Update event"
+            };
+            (label, id, "calendar.event", id)
         }
         CalendarAction::DeleteEvent { id, .. } => ("Delete event", id, "calendar.event", id),
         CalendarAction::UpsertTask(task) => ("Update task", &task.id, "calendar.task", &task.title),
@@ -294,14 +367,15 @@ impl Action for CalendarAction {
                     CalDoc::update_event(doc, &e);
                 }
             }
-            CalendarAction::SetEventCalendar { event, enqueue } => {
-                if let Some(e) = event.to_event() {
-                    let id = e.id;
-                    CalDoc::update_event(doc, &e);
-                    if *enqueue {
-                        CalDoc::enqueue_push(doc, id);
-                    } else {
-                        CalDoc::dequeue_push(doc, id);
+            CalendarAction::PatchEvent { id, patch } => {
+                if let Ok(uuid) = id.parse::<Id>() {
+                    CalDoc::patch_event(doc, uuid, patch);
+                    if let Some(enqueue) = patch.enqueue_remote {
+                        if enqueue {
+                            CalDoc::enqueue_push(doc, uuid);
+                        } else {
+                            CalDoc::dequeue_push(doc, uuid);
+                        }
                     }
                 }
             }
@@ -375,9 +449,24 @@ pub fn upsert_event_action(e: &Event) -> CalendarAction {
 
 /// File an event on a calendar and update the push queue accordingly.
 pub fn set_event_calendar_action(e: &Event, enqueue: bool) -> CalendarAction {
-    CalendarAction::SetEventCalendar {
-        event: EventData::from_event(e),
-        enqueue,
+    CalendarAction::PatchEvent {
+        id: e.id.to_string(),
+        patch: EventPatch {
+            calendar_id: Some(e.calendar_id.clone().unwrap_or_default()),
+            color: Some(e.color.index()),
+            enqueue_remote: Some(enqueue),
+            ..EventPatch::default()
+        },
+    }
+}
+
+/// Apply a sparse event mutation. Callers that have an in-memory before/after
+/// pair should use [`EventPatch::between`] so unchanged registers never become
+/// accidental last-writer-wins writes.
+pub fn patch_event_action(id: Id, patch: EventPatch) -> CalendarAction {
+    CalendarAction::PatchEvent {
+        id: id.to_string(),
+        patch,
     }
 }
 
@@ -430,6 +519,20 @@ pub struct TaskResource {
     pub subtasks: Vec<String>,
 }
 
+/// A destination that an event may be filed under. This is projected from the
+/// shared account store at resource-publication time, so an agent gets the
+/// same real target list as the editor's calendar picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarTargetResource {
+    /// `local` for the on-device calendar, otherwise the stable remote
+    /// collection id carried by Calendar accounts.
+    pub id: String,
+    pub label: String,
+    /// The selected remote calendar's palette index. Local does not impose a
+    /// colour, matching the visible editor behaviour.
+    pub color: Option<usize>,
+}
+
 /// The presentation context the calendar hands [`provide_resources`]: a template
 /// for a palette-created event (built from the current view) plus the events and
 /// tasks currently in the model. Everything here is derived from app
@@ -441,9 +544,78 @@ pub struct CalendarResourceCtx {
     pub new_event: EventData,
     pub events: Vec<EventResource>,
     pub tasks: Vec<TaskResource>,
+    pub calendar_targets: Vec<CalendarTargetResource>,
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
+}
+
+/// Return an explicit invalid-arguments envelope rather than silently turning
+/// a malformed agent request into a no-op document action.
+fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
+    EncodedAction {
+        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: reason.into().into_bytes(),
+    }
+}
+
+/// Build a replayable update to a snapshot of one event. The resource already
+/// names the exact event; the typed parameter declaration makes an agent's
+/// requested field edit strict before it becomes a CRDT action.
+fn event_update_spec<F>(
+    id: &str,
+    label: &str,
+    placeholder: &str,
+    params: Vec<ActionParam>,
+    data: EventData,
+    update: F,
+) -> ActionSpec
+where
+    F: Fn(&EventData, &ActionArgs) -> Result<CalendarAction, String> + Send + Sync + 'static,
+{
+    ActionSpec::typed(
+        id,
+        label,
+        placeholder,
+        ExecutionLocus::ClientLocal,
+        params,
+        move |args| {
+            match update(&data, args) {
+                Ok(action) => encode(&action),
+                Err(reason) => invalid_arguments(reason),
+            }
+        },
+    )
+}
+
+fn recurrence_from_choice(value: &str) -> Option<Recurrence> {
+    match value {
+        "none" => Some(Recurrence::None),
+        "daily" => Some(Recurrence::Daily),
+        "weekdays" => Some(Recurrence::Weekdays),
+        "weekly" => Some(Recurrence::Weekly),
+        "monthly" => Some(Recurrence::Monthly),
+        "yearly" => Some(Recurrence::Yearly),
+        _ => None,
+    }
+}
+
+fn palette_from_choice(value: &str) -> Option<Palette> {
+    match value {
+        "indigo" => Some(Palette::Indigo),
+        "emerald" => Some(Palette::Emerald),
+        "amber" => Some(Palette::Amber),
+        "red" => Some(Palette::Red),
+        "blue" => Some(Palette::Blue),
+        "violet" => Some(Palette::Violet),
+        "slate" => Some(Palette::Slate),
+        _ => None,
+    }
+}
+
+fn parse_local_datetime(value: &str, field: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(value, DT_FMT)
+        .map_err(|_| format!("{field} must use local date-time format YYYY-MM-DDTHH:MM"))
 }
 
 /// A one-line label for an event in the palette.
@@ -502,8 +674,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     "agenda" => CalendarOperation::ShowAgenda,
                     _ => CalendarOperation::ShowMonth,
                 };
-                EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation)
-                    .expect("CalendarOperation is always serializable")
+                encode_operation(&operation)
             },
         )
         .retry_policy(RetryPolicy::Idempotent),
@@ -512,7 +683,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         "sync",
         "Sync calendars",
         OperationKind::Effect,
-        CalendarOperation::Sync,
+        &CalendarOperation::Sync,
     );
     if ctx.syncing {
         sync = sync.unavailable(
@@ -527,7 +698,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         "export",
         "Export as ICS",
         OperationKind::Effect,
-        CalendarOperation::ExportIcs,
+        &CalendarOperation::ExportIcs,
     );
     if !ctx.can_export {
         export = export.unavailable("calendar_empty", "There are no events or tasks to export");
@@ -551,10 +722,40 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             encode(&CalendarAction::UpsertEvent(data))
         },
     ));
+    // Tasks share the Calendar CRDT and its history/undo model. Exposing task
+    // creation here closes the former agent-only dead end where tasks could be
+    // searched, toggled, and deleted but never created from a resource action.
+    root = root.with_action(ActionSpec::prompted(
+        "new-task",
+        "New task",
+        "Title",
+        "task title…",
+        ExecutionLocus::ClientLocal,
+        |title: &str| {
+            let title = title.trim();
+            if title.is_empty() {
+                return invalid_arguments("task title must contain non-whitespace text");
+            }
+            encode(&CalendarAction::UpsertTask(TaskData {
+                id: Uuid::new_v4().to_string(),
+                title: title.to_string(),
+                done: false,
+                due: String::new(),
+                priority: Priority::None.rank(),
+                project: String::new(),
+                parent: String::new(),
+            }))
+        },
+    ));
 
     for ev in &ctx.events {
         let id = ev.data.id.clone();
-        let parsed_id = id.parse::<Id>().expect("resource event ids are valid");
+        let Ok(parsed_id) = id.parse::<Id>() else {
+            // A corrupted snapshot must not make resource publication crash.
+            // The CRDT loader normally prevents this, but omitting one bad
+            // child keeps all other calendar resources usable.
+            continue;
+        };
         let mut child = Resource::new(
             event_resource_id(parsed_id),
             "calendar.event",
@@ -564,20 +765,234 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "open",
             "Open event",
             OperationKind::View,
-            CalendarOperation::OpenEvent { id: id.clone() },
+            &CalendarOperation::OpenEvent { id: id.clone() },
         ));
-        // Rename — a prompted action carrying the rest of the event unchanged.
-        let data = ev.data.clone();
-        child = child.with_action(ActionSpec::prompted(
+        child = child.with_action(event_update_spec(
             "edit",
             "Rename event",
-            "Title",
             "event title…",
-            ExecutionLocus::ClientLocal,
-            move |title: &str| {
-                let mut d = data.clone();
-                d.title = title.trim().to_string();
-                encode(&CalendarAction::UpsertEvent(d))
+            vec![
+                ActionParam::required("title", ParamType::Text, "Event title")
+                    .with_schema(serde_json::json!({"maxLength": 240})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let title = args.text("title").unwrap_or_default().trim();
+                if title.is_empty() {
+                    return Err("title must contain non-whitespace text".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        title: Some(title.to_string()),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-location",
+            "Set location",
+            "location, room, or meeting link…",
+            vec![
+                ActionParam::required(
+                    "location",
+                    ParamType::Text,
+                    "Event location, room, or meeting link",
+                )
+                .with_schema(serde_json::json!({"maxLength": 320})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        location: Some(args.text("location").unwrap_or_default().trim().to_string()),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-start",
+            "Set start time",
+            "YYYY-MM-DDTHH:MM",
+            vec![
+                ActionParam::required(
+                    "start",
+                    ParamType::Text,
+                    "Local start date and time in YYYY-MM-DDTHH:MM",
+                )
+                .with_schema(
+                    serde_json::json!({"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"}),
+                ),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let start = args.text("start").unwrap_or_default();
+                let start_value = parse_local_datetime(start, "start")?;
+                let end_value = parse_local_datetime(&data.end, "current end")?;
+                if start_value > end_value {
+                    return Err("start must not be after end".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch { start: Some(start.to_string()), ..EventPatch::default() },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-end",
+            "Set end time",
+            "YYYY-MM-DDTHH:MM",
+            vec![
+                ActionParam::required(
+                    "end",
+                    ParamType::Text,
+                    "Local end date and time in YYYY-MM-DDTHH:MM",
+                )
+                .with_schema(
+                    serde_json::json!({"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"}),
+                ),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let end = args.text("end").unwrap_or_default();
+                let end_value = parse_local_datetime(end, "end")?;
+                let start_value = parse_local_datetime(&data.start, "current start")?;
+                if end_value < start_value {
+                    return Err("end must not be before start".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch { end: Some(end.to_string()), ..EventPatch::default() },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-all-day",
+            "Set all-day",
+            "true or false",
+            vec![ActionParam::required(
+                "all_day",
+                ParamType::Boolean,
+                "Whether this event occupies the whole day",
+            )],
+            ev.data.clone(),
+            |data, args| {
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        all_day: Some(args.boolean("all_day").unwrap_or(false)),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-repeat",
+            "Set repeat",
+            "none / daily / weekdays / weekly / monthly / yearly",
+            vec![
+                ActionParam::required("repeat", ParamType::Text, "How often the event repeats")
+                    .with_choices(["none", "daily", "weekdays", "weekly", "monthly", "yearly"]),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let repeat = recurrence_from_choice(args.text("repeat").unwrap_or_default())
+                    .ok_or_else(|| "repeat is not supported".to_string())?;
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch { rrule: Some(repeat.to_rrule()), ..EventPatch::default() },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-reminder",
+            "Set reminder",
+            "none / 10 / 30 / 60",
+            vec![
+                ActionParam::required(
+                    "minutes_before",
+                    ParamType::Text,
+                    "Minutes before the event to notify, or none",
+                )
+                .with_choices(["none", "10", "30", "60"]),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let reminder = match args.text("minutes_before").unwrap_or_default() {
+                    "none" => -1,
+                    "10" => 10,
+                    "30" => 30,
+                    "60" => 60,
+                    _ => return Err("reminder is not supported".into()),
+                };
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch { reminder: Some(reminder), ..EventPatch::default() },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-color",
+            "Set color",
+            "indigo / emerald / amber / red / blue / violet / slate",
+            vec![
+                ActionParam::required("color", ParamType::Text, "Event colour").with_choices([
+                    "indigo", "emerald", "amber", "red", "blue", "violet", "slate",
+                ]),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let color = palette_from_choice(args.text("color").unwrap_or_default())
+                    .ok_or_else(|| "color is not supported".to_string())?;
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch { color: Some(color.index()), ..EventPatch::default() },
+                ))
+            },
+        ));
+        let targets = ctx.calendar_targets.clone();
+        child = child.with_action(event_update_spec(
+            "move-to-calendar",
+            "Move to calendar",
+            "calendar destination",
+            vec![
+                ActionParam::required(
+                    "calendar",
+                    ParamType::Text,
+                    "The local or configured remote calendar that should own this event",
+                )
+                .with_choices(targets.iter().map(|target| target.id.clone())),
+            ],
+            ev.data.clone(),
+            move |data, args| {
+                let id = args.text("calendar").unwrap_or_default();
+                let target = targets
+                    .iter()
+                    .find(|target| target.id == id)
+                    .ok_or_else(|| "calendar is no longer configured".to_string())?;
+                if target.id == "local" {
+                    Ok(patch_event_action(
+                        data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                        EventPatch {
+                            calendar_id: Some(String::new()),
+                            enqueue_remote: Some(false),
+                            ..EventPatch::default()
+                        },
+                    ))
+                } else {
+                    Ok(patch_event_action(
+                        data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                        EventPatch {
+                            calendar_id: Some(target.id.clone()),
+                            color: target.color,
+                            enqueue_remote: Some(true),
+                            ..EventPatch::default()
+                        },
+                    ))
+                }
             },
         ));
         child = child.with_action(immediate_spec(
@@ -590,7 +1005,9 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
 
     for tk in &ctx.tasks {
         let id = tk.data.id.clone();
-        let parsed_id = id.parse::<Id>().expect("resource task ids are valid");
+        let Ok(parsed_id) = id.parse::<Id>() else {
+            continue;
+        };
         let toggle_label = if tk.data.done {
             "Mark not done"
         } else {
@@ -605,7 +1022,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "open",
             "Open task",
             OperationKind::View,
-            CalendarOperation::OpenTask { id: id.clone() },
+            &CalendarOperation::OpenTask { id: id.clone() },
         ))
         .with_action(immediate_spec(
             "toggle",
@@ -721,12 +1138,13 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New event")), "{labels:?}");
+        assert!(labels.iter().any(|l| l.contains("New task")), "{labels:?}");
+        // The neutral action list is deliberately display-capped. Filtering
+        // must still bring every deeper event action into the same palette.
+        palette.set_query("set reminder");
+        let labels = palette.result_labels();
         assert!(
-            labels.iter().any(|l| l.contains("Delete event")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Rename event")),
+            labels.iter().any(|l| l.contains("Set reminder")),
             "{labels:?}"
         );
     }
@@ -977,18 +1395,27 @@ mod tests {
             "one source of truth for delete"
         );
 
-        // And the rename spec matches the upsert builder for the same title.
-        let mut ev = CalDoc::read_model(&doc)
-            .event(id.parse().unwrap())
-            .unwrap()
-            .clone();
+        // And the rename spec produces a field-level patch, not a stale whole
+        // event snapshot that could overwrite another collaborator's edit.
+        let event_id = id.parse().unwrap();
         let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "New title");
-        ev.title = "New title".into();
-        let from_builder = encode(&upsert_event_action(&ev));
+        let from_builder = encode(&patch_event_action(
+            event_id,
+            EventPatch {
+                title: Some("New title".into()),
+                ..EventPatch::default()
+            },
+        ));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "rename is one source of truth"
+        );
+        let blank = prompted_encode(edit_spec, "   ");
+        assert_eq!(
+            blank.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "rename refuses a whitespace-only title"
         );
     }
 
@@ -1015,6 +1442,108 @@ mod tests {
         assert!(
             model.events.iter().any(|e| e.title == "Coffee with Dana"),
             "the created event carries the committed title"
+        );
+    }
+
+    /// The event editor's full state is not trapped behind pointer-only
+    /// popovers: agents receive strict typed controls that produce the same
+    /// replayable field patches as direct editing.
+    #[test]
+    fn event_field_actions_are_typed_strict_and_replayable() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let event = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "calendar.event")
+            .expect("seeded event resource");
+        let id = event
+            .id
+            .as_str()
+            .trim_start_matches("calendar.event:")
+            .parse::<Id>()
+            .expect("event resource id");
+
+        let location = event
+            .actions
+            .iter()
+            .find(|action| action.id == "set-location")
+            .expect("location action");
+        let encoded = location
+            .build_args([(
+                "location".to_string(),
+                qos_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
+            )])
+            .expect("well-typed location request");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("location action dispatches");
+        assert_eq!(
+            CalDoc::read_model(&doc).event(id).expect("event").location,
+            "Studio 3 · https://meet.example"
+        );
+
+        let repeat = event
+            .actions
+            .iter()
+            .find(|action| action.id == "set-repeat")
+            .expect("repeat action");
+        assert!(
+            repeat
+                .build_args([(
+                    "repeat".to_string(),
+                    qos_actions::ArgValue::Text("every-other-tuesday".to_string()),
+                )])
+                .is_err(),
+            "the declared choices reject an invented recurrence rather than silently defaulting"
+        );
+        let encoded = repeat
+            .build_args([(
+                "repeat".to_string(),
+                qos_actions::ArgValue::Text("weekly".to_string()),
+            )])
+            .expect("declared recurrence is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("repeat action dispatches");
+        let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
+        assert_eq!(updated.recurrence, Recurrence::Weekly);
+        assert_eq!(
+            updated.location,
+            "Studio 3 · https://meet.example",
+            "a recurrence patch did not rewrite an independently-authored location"
+        );
+    }
+
+    #[test]
+    fn new_task_action_creates_a_collaborative_task() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "new-task")
+            .expect("new-task action");
+        let before = CalDoc::read_model(&doc).tasks.len();
+        let encoded = prompted_encode(spec, "Book dentist appointment");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("new task dispatches");
+        let model = CalDoc::read_model(&doc);
+        assert_eq!(model.tasks.len(), before + 1);
+        assert!(
+            model
+                .tasks
+                .iter()
+                .any(|task| task.title == "Book dentist appointment" && !task.done)
+        );
+        let blank = prompted_encode(spec, "\t ");
+        assert_eq!(
+            blank.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "new task refuses a whitespace-only title"
         );
     }
 }
