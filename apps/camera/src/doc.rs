@@ -153,6 +153,59 @@ pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
     let _ = doc.put(&m, "default_facing", s.default_facing.as_str());
 }
 
+/// Locate or initialise the settings map for one granular preference write.
+/// Each canonical Camera action calls only the key it owns, preserving other
+/// preferences that may have changed concurrently on a collaborating peer.
+fn settings_map(doc: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
+    map_at(doc, root, "settings").or_else(|| doc.put_object(root, "settings", ObjType::Map).ok())
+}
+
+pub fn set_resolution(doc: &mut AutoCommit, root: &ObjId, value: Resolution) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "resolution", value.as_str());
+    }
+}
+pub fn set_photo_format(doc: &mut AutoCommit, root: &ObjId, value: PhotoFormat) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "photo_format", value.as_str());
+    }
+}
+pub fn set_timer(doc: &mut AutoCommit, root: &ObjId, value: Timer) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "timer", value.seconds());
+    }
+}
+pub fn set_grid(doc: &mut AutoCommit, root: &ObjId, value: bool) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "grid", value);
+    }
+}
+pub fn set_level(doc: &mut AutoCommit, root: &ObjId, value: bool) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "level", value);
+    }
+}
+pub fn set_mirror_front(doc: &mut AutoCommit, root: &ObjId, value: bool) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "mirror_front", value);
+    }
+}
+pub fn set_geotag(doc: &mut AutoCommit, root: &ObjId, value: bool) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "geotag", value);
+    }
+}
+pub fn set_hdr(doc: &mut AutoCommit, root: &ObjId, value: bool) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "hdr", value);
+    }
+}
+pub fn set_default_facing(doc: &mut AutoCommit, root: &ObjId, value: Facing) {
+    if let Some(map) = settings_map(doc, root) {
+        let _ = doc.put(&map, "default_facing", value.as_str());
+    }
+}
+
 // ---- favorites -------------------------------------------------------
 
 /// The set of favorited library item ids (file names).
