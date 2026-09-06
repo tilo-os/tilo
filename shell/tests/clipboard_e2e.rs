@@ -252,6 +252,26 @@ impl Compositor {
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {
             command.arg("--host-desktop-session");
+            // The nested headless lane intentionally has no DRM render node.
+            // Keep Xwayland on its software path; the production session does
+            // not set these and continues to use hardware acceleration.
+            command
+                .env("XWAYLAND_NO_GLAMOR", "1")
+                .env("LIBGL_ALWAYS_SOFTWARE", "1");
+            // Cargo runs this repository in its declared build container.
+            // Use the immutable host's installed compatibility helper there,
+            // while leaving normal production PATH resolution untouched.
+            let host_bin = Path::new("/run/host/usr/bin/xwayland-satellite");
+            if host_bin.is_file() {
+                let mut paths = vec![PathBuf::from("/run/host/usr/bin")];
+                if let Some(current) = std::env::var_os("PATH") {
+                    paths.extend(std::env::split_paths(&current));
+                }
+                command.env(
+                    "PATH",
+                    std::env::join_paths(paths).expect("compose host helper PATH"),
+                );
+            }
         }
         command
             .env("XDG_RUNTIME_DIR", runtime_dir)
@@ -1422,6 +1442,16 @@ impl Drop for KillProcessGroup {
         // contains only the throwaway client command below, never this test
         // runner or the caller's graphical session.
         let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // A wedged Electron renderer must not wedge the test runner. The PID
+        // is also the private process-group id established in `pre_exec`.
+        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
         let _ = self.0.wait();
     }
 }
@@ -1434,20 +1464,48 @@ impl Drop for KillProcessGroup {
 fn spawn_isolated_chatgpt_x11(
     compositor: &Compositor,
 ) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
-    let chatgpt = Path::new("/usr/bin/chatgpt");
-    if !chatgpt.is_file() {
-        eprintln!("SKIP Xwayland/Electron lane: /usr/bin/chatgpt is not installed");
+    let configured = std::env::var_os("QOS_TEST_ELECTRON_BINARY").map(PathBuf::from);
+    let launch = configured
+        .filter(|path| path.is_file())
+        .map(|path| (path, None))
+        .or_else(|| {
+            let local = PathBuf::from("/usr/bin/chatgpt");
+            local.is_file().then_some((local, None))
+        })
+        .or_else(|| {
+            let bridge = PathBuf::from("/usr/bin/distrobox-host-exec");
+            let host_app = PathBuf::from("/run/host/usr/bin/chatgpt");
+            (bridge.is_file() && host_app.is_file())
+                .then_some((bridge, Some(PathBuf::from("/usr/bin/chatgpt"))))
+        });
+    let Some((program, host_program)) = launch else {
+        eprintln!(
+            "SKIP Xwayland/Electron lane: no installed ChatGPT binary (set QOS_TEST_ELECTRON_BINARY to override)"
+        );
         return None;
-    }
+    };
     let bridge = compositor.runtime_dir.join("qos-session/xwayland");
-    let authority = std::fs::read_dir(&bridge)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("Xauthority-"))
-        })?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let authority = loop {
+        let authority = std::fs::read_dir(&bridge).ok().and_then(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("Xauthority-"))
+                })
+        });
+        if let Some(authority) = authority {
+            break authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "qOS did not publish its private Xwayland authority; compositor log:\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     let number = authority
         .file_name()?
         .to_string_lossy()
@@ -1456,7 +1514,10 @@ fn spawn_isolated_chatgpt_x11(
     let profile = compositor.runtime_dir.join("chatgpt-profile");
     std::fs::create_dir_all(&profile).expect("create isolated Electron profile");
 
-    let mut command = Command::new(chatgpt);
+    let mut command = Command::new(&program);
+    if let Some(host_program) = host_program {
+        command.arg(host_program);
+    }
     command
         .arg("--ozone-platform=x11")
         .env("DISPLAY", format!(":{number}"))
