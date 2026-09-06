@@ -412,6 +412,11 @@ pub struct FeedsApp {
     /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
     /// next pass that holds the document.
     pending_doc_writes: Vec<DocWrite>,
+    /// Canonical mutations implied by a brokered View operation. Resource
+    /// handlers receive an immutable document, so opening an unread article
+    /// queues the same `MarkRead` action used by a direct list selection for the
+    /// next widget sync instead of writing around the action host.
+    pending_resource_actions: Vec<actions::FeedsAction>,
 
     // Responsive chrome. `sidebar` is the eased open/closed state of the
     // subscriptions flap (docked beside the content on a wide window; an
@@ -510,6 +515,7 @@ impl FeedsApp {
             resource_refresh_invocation: None,
             resource_refresh_result: None,
             pending_doc_writes: Vec::new(),
+            pending_resource_actions: Vec::new(),
             sidebar: FlapState::open_when_docked(),
             detail_pushed: false,
             settled_once: false,
@@ -905,6 +911,8 @@ impl FeedsApp {
         FeedsResourceCtx {
             folders,
             feeds,
+            unread: self.store.unread_ids_for(Filter::All),
+            next_feed_order: self.store.next_feed_order(None),
             next_folder_order,
             settings: self.settings,
         }
@@ -2834,7 +2842,10 @@ fn draw_list(
         &count_label,
         13.0,
         c.text_dim,
-        t * Affine::translate((title_x + title_w0 + 10.0, rect.y0 + 19.0)),
+        // `measure_w` can be a little tighter than the painted glyph bounds
+        // at high text contrast / fallback-font settings. Keep a generous,
+        // stable gap so “All Articles” and its count never read as one word.
+        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
         None,
     );
     let header_bottom = rect.y0 + HEADER_H;
@@ -3729,6 +3740,9 @@ impl Widget for FeedsApp {
         self.flush_doc_writes(state);
         self.drain_fetches_live();
         self.flush_doc_writes(state);
+        for action in std::mem::take(&mut self.pending_resource_actions) {
+            self.perform_action(state, &action);
+        }
         // Drain an in-flight OPML import portal request (holds the doc so the
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
@@ -3799,6 +3813,10 @@ impl Widget for FeedsApp {
                 self.set_filter(Filter::Feed(feed_id));
                 self.selected = Some(id);
                 self.reader_scroll = 0.0;
+                if self.store.mark_read(id, true) {
+                    self.pending_resource_actions
+                        .push(actions::mark_read_action(id, true));
+                }
                 if self.single_pane() {
                     self.detail_pushed = true;
                 }
