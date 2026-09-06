@@ -24,9 +24,17 @@ mkdir -p "$out/qpkg" "$out/work"
 plan="$out/plan.json"
 python3 "$repo_root/tools/app_release.py" --apps "$apps" > "$plan"
 mapfile -t packages < <(jq -r '.packages[]' "$plan")
-features=$(jq -r '.features | join(",")' "$plan")
+runtime_plan="$out/runtime-plan.json"
+python3 "$repo_root/tools/app_release.py" --collection default > "$runtime_plan"
+mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
+features=$(jq -r '.features | join(",")' "$runtime_plan")
 (cd "$repo_root" && cargo build --release --locked -p pkg-cli -p runtime-bundle)
-INCLUDE_PACKAGES="${packages[*]}" APP_FEATURES="$features" \
+# The Rust dylib ABI includes dependency crate hashes and Cargo unifies
+# features across the selected graph.  Always build the shared runtime against
+# the complete default collection, even when only a few changed qpkgs will be
+# emitted below.  This makes the runtime root independent of the partial app
+# selection and therefore safe to combine with unchanged qpkgs.
+INCLUDE_PACKAGES="${runtime_packages[*]}" APP_FEATURES="$features" \
     "$repo_root/os/scripts/build-thin-apps.sh"
 mapfile -t app_binaries < <(
     jq -r --arg root "$repo_root/target/thin-app" \
