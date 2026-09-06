@@ -65,13 +65,16 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
     delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -429,6 +432,10 @@ pub struct State {
     pub compositor_state: CompositorState,
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
+    /// `xdg_activation_v1` token store. Client-minted tokens enter it only
+    /// after [`XdgActivationHandler::token_created`] proves they came from a
+    /// recent serial on this seat and a focused source surface.
+    pub xdg_activation_state: XdgActivationState,
     /// `zxdg_decoration_manager_v1` global state — who draws the frame
     /// around a toplevel.
     ///
@@ -504,6 +511,11 @@ pub struct State {
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
+    /// Recently issued seat serials and their issue time. The activation
+    /// protocol carries a serial but no timestamp for the underlying input;
+    /// retaining this short bounded history lets us reject fabricated and
+    /// stale serials instead of treating the opaque integer as authority.
+    pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -834,6 +846,7 @@ impl State {
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
@@ -883,6 +896,7 @@ impl State {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_activation_state,
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -902,6 +916,7 @@ impl State {
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
+            activation_serials: VecDeque::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             surface_handles: HashMap::new(),
@@ -2891,7 +2906,106 @@ impl State {
             popup.surface.send_popup_done();
         }
         true
+}
+
+impl XdgActivationHandler for State {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
     }
+
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        use crate::compositor::activation::{ActivationFacts, evaluate_token_creation};
+
+        let now = std::time::Instant::now();
+        self.activation_serials.retain(|(_, _, issued)| {
+            now.saturating_duration_since(*issued)
+                <= crate::compositor::activation::MAX_ACTIVATION_AGE
+        });
+        let source_id = data.surface.as_ref().map(surface_id);
+        let serial_belongs_to_source = data.serial.as_ref().is_some_and(|(serial, _)| {
+            self.activation_serials
+                .iter()
+                .any(|(issued, recipient, _)| issued == serial && Some(*recipient) == source_id)
+        });
+        let seat_is_owned = data
+            .serial
+            .as_ref()
+            .is_some_and(|(_, seat)| self.seat.owns(seat));
+        let source_exists = source_id.is_some_and(|id| self.client_input.is_known(id));
+        let source_belongs_to_creator = data
+            .surface
+            .as_ref()
+            .and_then(Resource::client)
+            .zip(data.client_id.as_ref())
+            .is_some_and(|(client, creator)| client.id() == *creator);
+        let source_was_focused = source_id.is_some_and(|id| {
+            self.client_input.keyboard_focus() == Some(id)
+                || self.client_input.pointer_focus() == Some(id)
+        });
+        let facts = ActivationFacts {
+            age: now.saturating_duration_since(data.timestamp),
+            serial_belongs_to_source,
+            seat_is_owned,
+            source_exists,
+            source_belongs_to_creator,
+            source_was_focused,
+        };
+        match evaluate_token_creation(facts) {
+            Ok(()) => true,
+            Err(reason) => {
+                tracing::debug!(
+                    target: "shell::compositor::activation",
+                    ?reason,
+                    source_id,
+                    app_id = data.app_id.as_deref(),
+                    "refusing xdg-activation token"
+                );
+                false
+            }
+        }
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        use crate::compositor::activation::{app_ids_match, evaluate_activation_request};
+
+        // A token is a one-shot launch capability. Consume before evaluating
+        // the target so neither an accepted request nor probing a wrong app id
+        // can replay it later against another window.
+        let _ = self.xdg_activation_state.remove_token(&token);
+        let target = surface_id(&surface);
+        let actual_app_id = tab_binding::app_id_for_surface(&self.workspace_tree, target);
+        let app_id_matches_target = data.app_id.as_deref().map_or(true, |requested| {
+            actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
+        });
+        let result = evaluate_activation_request(
+            data.timestamp.elapsed(),
+            self.client_input.is_known(target) && actual_app_id.is_some(),
+            app_id_matches_target,
+        );
+        if let Err(reason) = result {
+            tracing::debug!(
+                target: "shell::compositor::activation",
+                ?reason,
+                target,
+                requested_app_id = data.app_id.as_deref(),
+                actual_app_id,
+                "refusing xdg-activation focus request"
+            );
+            return;
+        }
+        if tab_binding::activate_surface(&mut self.workspace_tree, target) {
+            self.set_client_keyboard_focus(Some(target));
+            tracing::debug!(
+                target: "shell::compositor::activation",
+                target,
+                "accepted single-use xdg-activation focus request"
+            );
+        }
 }
 
 impl XdgShellHandler for State {
@@ -3347,6 +3461,7 @@ impl FractionalScaleHandler for State {
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
 
 delegate_compositor!(State);
+delegate_xdg_activation!(State);
 delegate_xdg_shell!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);

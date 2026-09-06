@@ -153,3 +153,5 @@ mod vaapi_hardware_encode;
 mod wayland_test;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
+#[path = "xdg_activation.rs"]
+mod xdg_activation;
