@@ -644,7 +644,9 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
     clippy::too_many_lines,
     reason = "the mailbox hierarchy is intentionally authored together so every visible entity and operation shares one contract"
 )]
-pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+/// Stable mailbox root. Accounts, folders and messages are dynamic children
+/// served through Mail's retained provider rather than root browse pages.
+pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
 
     if let Ok(refresh) = ActionSpec::operation(
@@ -685,6 +687,11 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         .reversible(),
     );
 
+    root
+}
+
+pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = mailbox_root(ctx);
     root = root.with_child(
         Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
             ctx.accounts.iter().map(|(index, label, active)| {
