@@ -52,6 +52,8 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # the same crate `ui::portal` parses picked URIs with, so the round-trip is
 # exact for paths containing spaces and non-ASCII.
 url.workspace = true
+uuid.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
