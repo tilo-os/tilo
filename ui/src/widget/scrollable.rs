@@ -107,6 +107,12 @@ pub struct Scrollable {
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
     /// for the flex-grow alternative.
     fixed_height: Option<f32>,
+    /// Lets a document-size viewport shrink to its content while still
+    /// becoming scrollable before it crowds its parent. This is deliberately
+    /// distinct from `fixed_height`: dialogs often have short and long pages
+    /// in one flow and should not reserve a large empty viewport for the
+    /// short page.
+    max_height: Option<f32>,
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
@@ -177,6 +183,7 @@ impl Scrollable {
             decay: 0.92,
             sticky_header_height: 0.0,
             fixed_height: None,
+            max_height: None,
             fill_parent_height: false,
             child: None,
             child_node: None,
@@ -240,6 +247,15 @@ impl Scrollable {
     #[must_use]
     pub fn with_height(mut self, px: f32) -> Self {
         self.fixed_height = Some(px);
+        self
+    }
+
+    /// Keep the viewport only as tall as its content up to `px`. Overflowing
+    /// content remains scrollable, while a short page keeps an intrinsic,
+    /// compact surface rather than a large empty pane.
+    #[must_use]
+    pub fn with_max_height(mut self, px: f32) -> Self {
+        self.max_height = Some(px.max(0.0));
         self
     }
 
@@ -868,6 +884,7 @@ impl Widget for Scrollable {
         let height = match self.fixed_height {
             Some(px) => Dimension::length(px),
             None if self.fill_parent_height => Dimension::length(0.0),
+            None if self.max_height.is_some() => Dimension::auto(),
             None => Dimension::percent(1.0),
         };
         // Reserved as padding so nothing lays out under the overlay bar.
@@ -876,6 +893,10 @@ impl Widget for Scrollable {
             size: Size {
                 width: Dimension::percent(1.0),
                 height,
+            },
+            max_size: Size {
+                width: Dimension::auto(),
+                height: self.max_height.map_or(Dimension::auto(), Dimension::length),
             },
             flex_grow: if self.fill_parent_height { 1.0 } else { 0.0 },
             overflow: taffy::Point {
@@ -1554,6 +1575,30 @@ mod tests {
             scrolled,
             "a pinned-viewport pane with tall content must scroll"
         );
+    }
+
+    #[test]
+    fn max_height_keeps_short_documents_compact_and_long_ones_scrollable() {
+        let short = viewport_height_under_indefinite_parent(
+            Scrollable::new_vertical()
+                .with_child(Box::new(Text::new("one compact line")))
+                .with_max_height(300.0),
+        );
+        assert!(
+            short < 100.0,
+            "a short document must not reserve the full cap: {short}"
+        );
+
+        let (tall, scrolled) = can_scroll_under_indefinite_parent(
+            Scrollable::new_vertical()
+                .with_child(tall_child())
+                .with_max_height(300.0),
+        );
+        assert!(
+            (tall - 300.0).abs() < 0.5,
+            "a long document must stop at the cap: {tall}"
+        );
+        assert!(scrolled, "a capped long document must remain scrollable");
     }
 
     #[test]
