@@ -32,7 +32,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
-use ui::a11y::AccessNode;
+use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -674,6 +674,120 @@ impl PhotosApp {
             Hit::Save => {
                 self.perform_effect(crate::actions::PhotosOperation::Save { path: None }, doc);
             }
+        }
+    }
+
+    /// Synthetic semantics are necessary because Photos composes its toolbar
+    /// directly into the root layout instead of exposing it through
+    /// [`Widget::children`]. Keep the target based on the stable toolbar key,
+    /// not its visual index: the narrow layout changes labels, but an assistive
+    /// technology holding "Rotate right" must keep reaching that action.
+    fn toolbar_semantics(&self) -> AccessNode {
+        let children = self
+            .buttons
+            .iter()
+            .zip(TOOLBAR)
+            .map(|((_, button), (_, key, _, _))| {
+                AccessNode::new(Role::Button)
+                    .with_name(tr(key))
+                    .with_state(AccessState {
+                        focusable: button.is_focusable(),
+                        focused: button.is_focused(),
+                        disabled: !button.is_enabled(),
+                        ..Default::default()
+                    })
+                    .with_bounds(button.get_rect())
+                    .with_action_target(format!("photos:toolbar:{key}"))
+            })
+            .collect();
+        AccessNode::new(Role::Toolbar)
+            .with_name(tr("photos-tools"))
+            .with_bounds(self.toolbar_rect)
+            .with_hashed_key("photos:toolbar")
+            .with_children(children)
+    }
+
+    /// The canvas has no intrinsic source name — it is raw pixel data — so the
+    /// app supplies the file name and current edit state that a sighted person
+    /// gets from the status bar. The status remains a polite live region for
+    /// copy/save/open failures without stealing keyboard focus.
+    fn accessibility_tree(&self) -> AccessNode {
+        let image_label = || {
+            self.original.as_ref().map_or_else(
+                || tr("photos-image"),
+                |(path, _)| path.rsplit('/').next().unwrap_or(path).to_owned(),
+            )
+        };
+        let (image_name, image_description) = match self.rendered.as_ref() {
+            Some(rendered) if rendered.edits.is_identity() => {
+                (image_label(), tr("photos-image-help"))
+            }
+            Some(_) => (
+                format!("{} — {}", image_label(), tr("photos-edited")),
+                tr("photos-image-help"),
+            ),
+            None => (tr("photos-empty-title"), tr("photos-empty-body")),
+        };
+        let mut children = vec![
+            self.toolbar_semantics(),
+            AccessNode::new(Role::Image)
+                .with_name(image_name)
+                .with_description(image_description)
+                .with_bounds(self.canvas_rect)
+                .with_hashed_key("photos:canvas"),
+        ];
+        if !self.status.is_empty() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.status.clone())
+                    .with_live(Politeness::Polite)
+                    .with_bounds(self.status_rect)
+                    .with_hashed_key("photos:status"),
+            );
+        }
+        AccessNode::new(Role::Group)
+            .with_name(tr("photos-app"))
+            .with_bounds(self.rect)
+            .with_semantic_key("photos")
+            .with_children(children)
+    }
+
+    /// Dispatch a toolbar action requested by assistive technology through the
+    /// identical `drain_pending` path used by pointer and keyboard activation.
+    fn perform_toolbar_semantic_action(
+        &mut self,
+        target: &str,
+        action: &AccessAction,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        let Some(key) = target.strip_prefix("photos:toolbar:") else {
+            return false;
+        };
+        let Some((index, (hit, _, _, _))) = TOOLBAR
+            .iter()
+            .enumerate()
+            .find(|(_, (_, toolbar_key, _, _))| *toolbar_key == key)
+        else {
+            return false;
+        };
+        match action {
+            AccessAction::Focus => {
+                for (_, button) in &mut self.buttons {
+                    button.set_focus(false);
+                }
+                if let Some((_, button)) = self.buttons.get_mut(index) {
+                    button.set_focus(true);
+                }
+                true
+            }
+            AccessAction::Activate
+                if self.buttons.get(index).is_some_and(|(_, b)| b.is_enabled()) =>
+            {
+                self.pending.set(Some(*hit));
+                self.drain_pending(doc);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1372,8 +1486,29 @@ impl Widget for PhotosApp {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        use ui::a11y::Role;
-        Some(AccessNode::new(Role::Group))
+        Some(self.accessibility_tree())
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &AccessAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.perform_toolbar_semantic_action(target, action, state)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [0, button] => self
+                .buttons
+                .get(*button)
+                .map(|(_, button)| button.get_rect()),
+            [1] => Some(self.canvas_rect),
+            [2] if !self.status.is_empty() => Some(self.status_rect),
+            _ => None,
+        }
     }
 
     /// The open photograph and the edits it supports, published to whatever is
@@ -1424,5 +1559,73 @@ impl ui::widget::AppWidget for PhotosApp {
 
     fn permission_hint(&self) -> Option<ui::widget::AppKind> {
         Some(ui::widget::AppKind::Editor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shots_pattern;
+    use automerge::ROOT;
+
+    #[test]
+    fn accessibility_exposes_and_routes_every_toolbar_control() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        app.sync(&mut doc, &ROOT);
+
+        let empty = app.accessibility_tree();
+        assert_eq!(empty.role, Role::Group);
+        assert_eq!(empty.children[0].role, Role::Toolbar);
+        assert_eq!(empty.children[0].children.len(), TOOLBAR.len());
+        assert_eq!(empty.children[1].role, Role::Image);
+        assert_eq!(
+            empty.children[0].children[0].action_target.as_deref(),
+            Some("photos:toolbar:photos-open")
+        );
+        assert!(
+            empty.children[0].children[1].state.disabled,
+            "rotate must be unavailable without a photograph"
+        );
+        assert!(
+            !app.perform_toolbar_semantic_action(
+                "photos:toolbar:photos-rotate-right",
+                &AccessAction::Activate,
+                &mut doc,
+            ),
+            "a disabled semantic control must reject activation"
+        );
+
+        let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
+        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
+        app.refresh(&doc);
+        app.sync(&mut doc, &ROOT);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "photos:toolbar:photos-rotate-right",
+            &AccessAction::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
+        assert!(
+            app.take_committed_action().is_some(),
+            "the semantic route must create the normal undo boundary"
+        );
+
+        app.sync(&mut doc, &ROOT);
+        let opened = app.accessibility_tree();
+        assert_eq!(
+            opened.children[1].name.as_deref(),
+            Some("accessible.png — edited")
+        );
+        let status = opened
+            .children
+            .last()
+            .expect("opened image has status text");
+        assert_eq!(status.role, Role::StaticText);
+        assert_eq!(status.live, Some(Politeness::Polite));
     }
 }
