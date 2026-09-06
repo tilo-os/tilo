@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub trait AccountTester: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns a bounded, user-presentable connection or authentication error.
     fn test(
         &self,
         account: &accounts::Account,
@@ -27,7 +30,7 @@ impl LiveAccountTester {
         std::thread::spawn(move || {
             let resolved = (host_owned.as_str(), port)
                 .to_socket_addrs()
-                .map(|iter| iter.collect::<Vec<_>>())
+                .map(Iterator::collect::<Vec<_>>)
                 .map_err(|_| "server name could not be resolved".to_string());
             let _ = sender.send(resolved);
         });
@@ -80,7 +83,10 @@ impl LiveAccountTester {
             if read == 0 {
                 return Err("IMAP server closed the connection unexpectedly".into());
             }
-            response.extend_from_slice(&chunk[..read]);
+            let Some(bytes) = chunk.get(..read) else {
+                return Err("IMAP server reported an invalid response length".into());
+            };
+            response.extend_from_slice(bytes);
             if response.len() > MAX_RESPONSE {
                 return Err("IMAP server response exceeded the safety limit".into());
             }
