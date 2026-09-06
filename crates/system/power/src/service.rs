@@ -34,7 +34,7 @@ use crate::upower::UPowerMonitor;
 const SIGNAL_STREAM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn stream_retry_after(now: tokio::time::Instant) -> tokio::time::Instant {
-    now + SIGNAL_STREAM_RETRY_DELAY
+    now.checked_add(SIGNAL_STREAM_RETRY_DELAY).unwrap_or(now)
 }
 
 /// What a lid/power-key/critical decision resolves to for the service.
@@ -252,16 +252,14 @@ impl PowerService {
                         }
                     }
                     if profile_stream.is_none()
-                        && profile_monitor.is_some()
                         && now >= profile_stream_retry_at
+                        && let Some(monitor) = profile_monitor.as_ref()
                     {
-                        if let Some(monitor) = profile_monitor.as_ref() {
-                            // power-profiles-daemon's zbus property stream has
-                            // no fallible subscription step; if its stream
-                            // ended, creating a new one is the retry.
-                            profile_stream = Some(monitor.receive_active_profile_changed().await);
-                            info!(target: "qos::power", "subscribed to power-profile changes");
-                        }
+                        // power-profiles-daemon's zbus property stream has
+                        // no fallible subscription step; if its stream
+                        // ended, creating a new one is the retry.
+                        profile_stream = Some(monitor.receive_active_profile_changed().await);
+                        info!(target: "qos::power", "subscribed to power-profile changes");
                     }
                     self.reap_suspend_task().await;
                     self.drain_commands().await;
@@ -273,28 +271,24 @@ impl PowerService {
                     }
                 }
                 msg = next_or_pending(&mut sleep_stream), if sleep_stream.is_some() => {
-                    match msg {
-                        Some(msg) => self.handle_prepare_for_sleep(&msg).await,
-                        None => {
-                            warn!(target: "qos::power", "PrepareForSleep stream ended; scheduling resubscription");
-                            sleep_stream = None;
-                            sleep_stream_retry_at =
-                                stream_retry_after(tokio::time::Instant::now());
-                        }
+                    if let Some(msg) = msg {
+                        self.handle_prepare_for_sleep(&msg).await;
+                    } else {
+                        warn!(target: "qos::power", "PrepareForSleep stream ended; scheduling resubscription");
+                        sleep_stream = None;
+                        sleep_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
                     }
                 }
                 changed = next_or_pending(&mut profile_stream), if profile_stream.is_some() => {
-                    match changed {
-                        Some(changed) => match changed.get().await {
+                    if let Some(changed) = changed {
+                        match changed.get().await {
                             Ok(profile) => self.apply_active_profile(&profile),
                             Err(error) => debug!(target: "qos::power", %error, "active profile change could not be read"),
-                        },
-                        None => {
-                            debug!(target: "qos::power", "power-profile stream ended; scheduling resubscription");
-                            profile_stream = None;
-                            profile_stream_retry_at =
-                                stream_retry_after(tokio::time::Instant::now());
                         }
+                    } else {
+                        debug!(target: "qos::power", "power-profile stream ended; scheduling resubscription");
+                        profile_stream = None;
+                        profile_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
                     }
                 }
             }

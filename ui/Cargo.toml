@@ -254,6 +254,10 @@ tts = { path = "../crates/system/tts" }
 # Windows/macOS targets. The only call sites are already Linux-gated in
 # `clipboard.rs`, so keep the backend out of host bundles on other platforms.
 smithay-clipboard = "0.7"
+# The image source uses the regular focus-gated wl_data_device protocol. The
+# text-only smithay-clipboard facade cannot advertise binary MIME payloads,
+# while data-control would bypass qOS's focus/privilege boundary.
+smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
 
 [target.'cfg(unix)'.dependencies]
 # Launcher-provided identity capabilities use inherited Unix socket file

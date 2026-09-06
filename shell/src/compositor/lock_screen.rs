@@ -689,7 +689,19 @@ fn draw_status(
     let (value, color, size) = if view.verifying {
         ("Verifying…", theme.text_dim, 14.0)
     } else if let Some(err) = view.error {
-        (err, theme.tokens.colors.semantic.danger, 13.0)
+        // Keep the recovery action visible after a failed attempt. Replacing
+        // the only instruction with an error left keyboard users staring at
+        // a red diagnosis with no explicit way forward.
+        let retry = format!("{err} · Press Enter to try again");
+        draw_centered_text(
+            scene,
+            text,
+            &retry,
+            scaled_text_size(12.0, layout.scale, theme),
+            theme.tokens.colors.semantic.danger,
+            layout.status,
+        );
+        return;
     } else {
         ("Press Enter to unlock", theme.text_dim, 13.0)
     };

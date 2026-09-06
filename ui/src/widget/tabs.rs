@@ -355,6 +355,43 @@ impl TabBar {
         self.layout_anim_started = Some(Instant::now());
     }
 
+    /// Pin transient pill geometry at its resting state for deterministic
+    /// integration screenshots. This does not alter production animation;
+    /// it only removes wall-clock sampling from visual regression tests.
+    #[cfg(any(test, debug_assertions))]
+    pub fn force_settled_for_tests(&mut self) {
+        self.hover_idx = None;
+        self.hover_close_idx = None;
+        self.hover_max_idx = None;
+        self.hover_search_idx = None;
+        self.hover_new_tab = false;
+        self.press_origin = None;
+        self.pending_drag = None;
+        self.drag_offset = None;
+        self.drop_zone_target = None;
+        self.hover_drop_idx = None;
+        self.layout_anim_started = None;
+        self.prev_tab_rects_by_id.clear();
+        self.inserted_at.clear();
+        self.reveal_anim.clear();
+        self.reveal_px.clear();
+        self.drop_zone_animated_at = None;
+        self.hover_drop_animated_at = None;
+    }
+
+    /// Report whether a retained tab row has reached a genuinely static
+    /// resting state. Visual tests use this after one layout pass instead of
+    /// assuming that a fixed sleep covers every nested curve.
+    #[cfg(any(test, debug_assertions))]
+    pub fn is_settled_for_tests(&self) -> bool {
+        !self.needs_animation_frame()
+            && self.hover_idx.is_none()
+            && self.press_origin.is_none()
+            && self.pending_drag.is_none()
+            && self.drop_zone_target.is_none()
+            && self.hover_drop_idx.is_none()
+    }
+
     /// Paints at an arbitrary rect `r` — the pill's sprung visual rect from `draw`,
     /// or the cursor-following ghost rect. `self.close_rects` etc. are cached at
     /// the pill's *target* position, so they're offset by `r - self.tab_rects[i]`
