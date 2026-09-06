@@ -9839,7 +9839,13 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
-fn shortcut_chord_matches(
+/// Match a persisted shortcut against a live winit key event.
+///
+/// The native compositor uses this for session-owned bindings too. Keeping
+/// that path on the same key-name translation as the shortcut editor avoids
+/// claiming a configured named key before a client sees it and then failing
+/// to perform its action.
+pub(crate) fn shortcut_chord_matches(
     logical_key: &Key,
     modifiers: winit::event::Modifiers,
     chord: &settings_store::hardware::KeyChord,
