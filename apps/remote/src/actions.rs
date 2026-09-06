@@ -132,18 +132,19 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
             connection_id: connection.id,
         },
     )
-    .with_description("Open a live session to this saved connection")
+    .with_description(format!(
+        "Open a live session to this saved connection. {}",
+        crate::session::transport_readiness(connection.kind).detail(connection.kind)
+    ))
     .with_contract(ActionContract {
         retry: RetryPolicy::AtMostOnce,
         execution: ExecutionMode::Background { cancellable: false },
         tags: vec!["network".into(), "session".into()],
         ..ActionContract::default()
     });
-    if !crate::session::can_attempt_live(connection.kind) {
-        spec.unavailable(
-            "live_transport_disabled",
-            "This live transport is not enabled",
-        )
+    let readiness = crate::session::transport_readiness(connection.kind);
+    if !readiness.can_connect() {
+        spec.unavailable(readiness.code(), readiness.detail(connection.kind))
     } else if connection.presence == Presence::Offline {
         spec.unavailable("host_offline", "The saved host is currently offline")
     } else {
@@ -706,6 +707,37 @@ mod tests {
                 .contract
                 .availability
                 .is_available()
+        );
+    }
+
+    #[test]
+    fn legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate() {
+        let id = Uuid::new_v4();
+        let mut connection = sample(id, "Old Windows host");
+        connection.kind = ConnectionKind::Rdp;
+        let resources = {
+            let mut doc = AutoCommit::new();
+            RemoteDoc::upsert(&mut doc, &connection);
+            provide_resources(&doc)
+        };
+        let resource = &resources[0].children[0];
+        let connect = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "connect")
+            .expect("RDP profile stays manageable");
+        assert!(matches!(
+            &connect.contract.availability,
+            qos_actions::Availability::Unavailable { code, reason }
+                if code == "transport_backend_unavailable"
+                    && reason.contains("no RDP client backend")
+        ));
+        assert!(
+            connect
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("no RDP client backend")),
+            "search and agents receive the actionable reason"
         );
     }
 
