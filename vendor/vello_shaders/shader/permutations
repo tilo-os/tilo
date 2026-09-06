@@ -1,0 +1,44 @@
+pathtag_scan
++ pathtag_scan_large
++ pathtag_scan_small: small
+clip_leaf
++ clip_leaf
++ clip_leaf_single_group: clip_single_group
+fine
++ fine_area
++ fine_area_ppt8: area_ppt8
++ fine_msaa8: msaa msaa8
++ fine_msaa16: msaa msaa16
++ fine_sparse_area: sparse
++ fine_sparse_area_ppt8: sparse area_ppt8
++ fine_sparse_area_quad_skip: sparse quad_skip
++ fine_sparse_area_solid_fuse: sparse solid_fuse
++ fine_sparse_area_segment_row_mask: sparse segment_row_mask
+coarse
++ coarse
++ coarse_sparse: sparse
++ coarse_sparse_active: sparse active_bins
++ coarse_opaque_prune: opaque_prune
++ coarse_sparse_opaque_prune: sparse opaque_prune
++ coarse_sparse_active_opaque_prune: sparse active_bins opaque_prune
++ coarse_solid_fuse: solid_fuse
++ coarse_sparse_solid_fuse: sparse solid_fuse
++ coarse_sparse_active_solid_fuse: sparse active_bins solid_fuse
+tile_alloc
++ tile_alloc
++ tile_alloc_sparse: sparse_bounds
+draw_leaf
++ draw_leaf
++ draw_leaf_prefix: cpu_prefix
+path_count
++ path_count
++ path_count_direct: direct_dispatch
+path_tiling
++ path_tiling
++ path_tiling_direct: direct_dispatch
++ path_tiling_segment_row_mask: segment_row_mask
++ path_tiling_direct_segment_row_mask: direct_dispatch segment_row_mask
+canonical_segment_order
++ canonical_segment_order_full
++ canonical_segment_order_sparse: sparse
++ canonical_segment_order_sparse_solid_fuse: sparse solid_fuse

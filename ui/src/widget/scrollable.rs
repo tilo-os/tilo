@@ -24,6 +24,16 @@ pub enum ScrollAxis {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CursorMoveOutcome {
+    /// The child still needs this move to update its hover state.
+    Forward,
+    /// The move was consumed by an active scrollbar drag.
+    DragConsumed,
+    /// The same position was already routed and nothing moved underneath it.
+    Coalesced,
+}
+
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
 const MIN_THUMB_LEN: f64 = crate::widget::scrollbar::MIN_THUMB_LEN;
@@ -101,6 +111,9 @@ pub struct Scrollable {
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
     child: Option<Element>,
+    /// Retained Taffy identity for `child`; refreshed with the layout tree so
+    /// event and scroll-layout paths never allocate `taffy.children()`.
+    child_node: Option<NodeId>,
     rect: Rect,
     /// True whenever `scroll_by`/`tick` actually moved `offset_*`; a wheel
     /// event that only mutates this touches no descendant. Cleared by
@@ -110,6 +123,7 @@ pub struct Scrollable {
     /// Lets `MouseInput::Pressed` hit-test the thumb/track without a prior
     /// hover edge.
     last_cursor: Point,
+    cursor_initialized: bool,
     vbar: Scrollbar,
     hbar: Scrollbar,
     /// `true` (default): bar fades in on activity, out when idle. `false`:
@@ -129,6 +143,15 @@ pub struct Scrollable {
     /// Visual-only dirty flag (bar fade/hover): triggers a redraw but,
     /// unlike [`Self::scroll_dirty`], no `apply_layout`.
     bar_dirty: bool,
+    /// Whether the last submitted scene contained a visible overlay bar.
+    /// This keeps one terminal frame alive to erase a fully faded bar.
+    bar_visible_last_draw: Cell<bool>,
+    /// Set by the frame that first omits a previously visible bar, then
+    /// consumed by `mark_drawn` after its track damage is submitted.
+    terminal_fade_damage: Cell<bool>,
+    /// Theme setting sampled by the latest draw. It prevents a reduced-motion
+    /// bar (which intentionally remains visible) from requesting fade ticks.
+    reduce_motion_active: bool,
     /// Survives this widget being dropped and rebuilt — needed by apps that
     /// recreate their whole widget subtree every frame. Every offset
     /// mutation writes back through `clamp`. See
@@ -156,10 +179,12 @@ impl Scrollable {
             fixed_height: None,
             fill_parent_height: false,
             child: None,
+            child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
             show_scrollbar: true,
             last_cursor: Point::ZERO,
+            cursor_initialized: false,
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
             overlay: true,
@@ -169,6 +194,9 @@ impl Scrollable {
             focused: false,
             hold: None,
             bar_dirty: false,
+            bar_visible_last_draw: Cell::new(false),
+            terminal_fade_damage: Cell::new(false),
+            reduce_motion_active: false,
             persisted_offset: None,
             content_gutter: 0.0,
         }
@@ -244,11 +272,13 @@ impl Scrollable {
         self.content_w = w;
         self.content_h = h;
         self.clamp();
+        self.cursor_initialized = false;
     }
     pub fn set_viewport_size(&mut self, w: f32, h: f32) {
         self.viewport_w = w;
         self.viewport_h = h;
         self.clamp();
+        self.cursor_initialized = false;
     }
     pub fn offset_x(&self) -> f32 {
         self.offset_x
@@ -260,6 +290,7 @@ impl Scrollable {
     pub fn set_offset_y(&mut self, y: f32) {
         self.offset_y = y;
         self.clamp();
+        self.cursor_initialized = false;
     }
 
     pub fn vertical_overflows(&self) -> bool {
@@ -302,6 +333,7 @@ impl Scrollable {
         // stored value at all", not "are these two offsets close".
         if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
             self.scroll_dirty = true;
+            self.cursor_initialized = false;
             self.wake();
         }
     }
@@ -315,6 +347,7 @@ impl Scrollable {
         self.vy = vy;
     }
     pub fn tick(&mut self, dt: f32) {
+        let (ox, oy) = (self.offset_x, self.offset_y);
         self.offset_x += self.vx * dt;
         self.offset_y += self.vy * dt;
         self.vx *= self.decay;
@@ -326,8 +359,13 @@ impl Scrollable {
             self.vy = 0.0;
         }
         self.clamp();
+        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
+            self.scroll_dirty = true;
+            self.cursor_initialized = false;
+        }
     }
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let (ox, oy) = (self.offset_x, self.offset_y);
         if y < self.offset_y {
             self.offset_y = y;
         } else if y + h > self.offset_y + self.viewport_h {
@@ -339,6 +377,10 @@ impl Scrollable {
             self.offset_x = (x + w - self.viewport_w).max(0.0);
         }
         self.clamp();
+        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
+            self.scroll_dirty = true;
+            self.cursor_initialized = false;
+        }
     }
     fn clamp(&mut self) {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
@@ -492,13 +534,25 @@ impl Scrollable {
     }
 
     fn fade_in_progress(&self) -> bool {
-        if !self.overlay || self.bar_pinned() {
+        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
             return false;
         }
         match self.last_activity {
             None => false,
             Some(t) => t.elapsed() < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS),
         }
+    }
+
+    /// Once the fade deadline passes, the compositor still needs one frame to
+    /// replace the last visible thumb with the transparent scene.
+    fn needs_terminal_fade_frame(&self) -> bool {
+        self.terminal_fade_damage.get()
+            || (self.bar_visible_last_draw.get()
+                && self.overlay
+                && !self.reduce_motion_active
+                && !self.bar_pinned()
+                && self.last_activity.is_some()
+                && !self.fade_in_progress())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -546,11 +600,12 @@ impl Scrollable {
     }
 
     fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.show_scrollbar {
-            return;
-        }
         let opacity = self.bar_opacity(theme);
-        if opacity <= 0.003 {
+        let visible = self.show_scrollbar && opacity > 0.003;
+        if self.bar_visible_last_draw.replace(visible) && !visible {
+            self.terminal_fade_damage.set(true);
+        }
+        if !visible {
             return;
         }
         let radius = BAR_THICKNESS / 2.0;
@@ -602,14 +657,26 @@ impl Scrollable {
     }
 
     /// Cursor motion: continues an active drag, or refreshes bar
-    /// hover/fade state. Returns `true` when a drag consumed the motion
-    /// (the caller should not fall through to the child).
+    /// hover/fade state. Distinguishes a drag from a duplicate no-op so the
+    /// latter never creates an undo boundary or synchronization request.
     fn on_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
-    ) -> bool {
+    ) -> CursorMoveOutcome {
         let cur = Point::new(position.x / scale_factor, position.y / scale_factor);
+        // A duplicate position carries no hover information. Coalesce it at
+        // the viewport instead of routing it through every retained child.
+        // Active drags are excluded because their geometry may have changed
+        // independently between ticks while the pointer stayed still.
+        if self.cursor_initialized
+            && cur == self.last_cursor
+            && !self.vbar.is_dragging()
+            && !self.hbar.is_dragging()
+        {
+            return CursorMoveOutcome::Coalesced;
+        }
+        self.cursor_initialized = true;
         self.last_cursor = cur;
         if self.vbar.is_dragging() {
             if let Some(track) = self.vertical_track()
@@ -617,7 +684,7 @@ impl Scrollable {
             {
                 self.scroll_by(0.0, px(target) - self.offset_y);
             }
-            return true;
+            return CursorMoveOutcome::DragConsumed;
         }
         if self.hbar.is_dragging() {
             if let Some(track) = self.horizontal_track()
@@ -625,7 +692,7 @@ impl Scrollable {
             {
                 self.scroll_by(px(target) - self.offset_x, 0.0);
             }
-            return true;
+            return CursorMoveOutcome::DragConsumed;
         }
         // Falls through so the child updates its own hover too.
         let mut changed = false;
@@ -649,7 +716,7 @@ impl Scrollable {
         if changed {
             self.bar_dirty = true;
         }
-        false
+        CursorMoveOutcome::Forward
     }
 
     /// Thumb press begins a drag; track press pages toward the click and,
@@ -794,7 +861,7 @@ impl Widget for Scrollable {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let child_node = self
+        self.child_node = self
             .child
             .as_mut()
             .map(|c| c.build_layout(taffy, theme, node_map));
@@ -823,7 +890,7 @@ impl Widget for Scrollable {
             },
             ..Default::default()
         };
-        let node = match child_node {
+        let node = match self.child_node {
             Some(c) => taffy.parent_node(style, &[c]),
             None => taffy.leaf_node(style),
         };
@@ -832,6 +899,9 @@ impl Widget for Scrollable {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // Geometry may have moved beneath a stationary pointer. The next
+        // same-position event must therefore be routed once again.
+        self.cursor_initialized = false;
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -842,7 +912,7 @@ impl Widget for Scrollable {
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
         if let Some(c) = &mut self.child {
-            if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
+            if let Some(child_node) = self.child_node {
                 c.apply_layout(
                     taffy,
                     child_node,
@@ -884,6 +954,7 @@ impl Widget for Scrollable {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion_active = theme.reduce_motion;
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -910,6 +981,7 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        self.reduce_motion_active = theme.reduce_motion;
         if presence.should_cull(self.get_rect()) {
             return;
         }
@@ -943,9 +1015,13 @@ impl Widget for Scrollable {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                if self.on_cursor_moved(*position, scale_factor) {
-                    *handled = true;
-                    return;
+                match self.on_cursor_moved(*position, scale_factor) {
+                    CursorMoveOutcome::Forward => {}
+                    CursorMoveOutcome::DragConsumed => {
+                        *handled = true;
+                        return;
+                    }
+                    CursorMoveOutcome::Coalesced => return,
                 }
             }
             WindowEvent::MouseInput {
@@ -996,8 +1072,7 @@ impl Widget for Scrollable {
             return;
         }
         if let Some(child) = &mut self.child
-            && let Ok(children) = taffy.children(node_id)
-            && let Some(&child_node) = children.first()
+            && let Some(child_node) = self.child_node
         {
             child.handle_event(
                 event,
@@ -1019,6 +1094,12 @@ impl Widget for Scrollable {
             .map(|c| c.as_ref() as &dyn Widget)
             .into_iter()
             .collect()
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(child) = &self.child {
+            visitor(child.as_ref());
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1060,6 +1141,7 @@ impl Widget for Scrollable {
     fn needs_animation_frame(&self) -> bool {
         self.hold.is_some()
             || self.fade_in_progress()
+            || self.needs_terminal_fade_frame()
             || self
                 .child
                 .as_ref()
@@ -1073,7 +1155,33 @@ impl Widget for Scrollable {
         self.scroll_dirty
             || self.bar_dirty
             || self.fade_in_progress()
+            || self.needs_terminal_fade_frame()
             || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.scroll_dirty {
+            regions.push(self.rect);
+            return;
+        }
+
+        if let Some(child) = &self.child {
+            let first = regions.len();
+            child.collect_damage(regions);
+            if let Some(child_regions) = regions.get_mut(first..) {
+                for rect in child_regions {
+                    *rect = rect.intersect(self.rect);
+                }
+            }
+        }
+        if self.bar_dirty || self.fade_in_progress() || self.needs_terminal_fade_frame() {
+            for bar in [self.vertical_track(), self.horizontal_track()]
+                .into_iter()
+                .flatten()
+            {
+                regions.push(bar);
+            }
+        }
     }
 
     /// A scroll demands `apply_layout` even though nothing changed size.
@@ -1093,6 +1201,7 @@ impl Widget for Scrollable {
     fn mark_drawn(&mut self) {
         self.scroll_dirty = false;
         self.bar_dirty = false;
+        self.terminal_fade_damage.set(false);
         if let Some(c) = &mut self.child {
             c.mark_drawn();
         }
@@ -1160,6 +1269,40 @@ mod tests {
             &tree,
         );
         handled
+    }
+
+    #[test]
+    fn duplicate_cursor_motion_is_coalesced_without_becoming_an_action() {
+        let mut s = vertical(1200.0);
+        let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
+
+        assert_eq!(s.on_cursor_moved(position, 1.0), CursorMoveOutcome::Forward,);
+        assert_eq!(
+            s.on_cursor_moved(position, 1.0),
+            CursorMoveOutcome::Coalesced,
+        );
+        assert!(
+            !dispatch(&mut s, &cursor_moved(position.x, position.y)),
+            "a coalesced move must not become a handled user action",
+        );
+    }
+
+    #[test]
+    fn scrolling_invalidates_duplicate_cursor_coalescing() {
+        let mut s = vertical(1200.0);
+        let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
+        assert_eq!(s.on_cursor_moved(position, 1.0), CursorMoveOutcome::Forward,);
+        assert_eq!(
+            s.on_cursor_moved(position, 1.0),
+            CursorMoveOutcome::Coalesced,
+        );
+
+        s.scroll_by(0.0, 10.0);
+        assert_eq!(
+            s.on_cursor_moved(position, 1.0),
+            CursorMoveOutcome::Forward,
+            "content moving under a stationary pointer requires one fresh route",
+        );
     }
 
     #[test]
@@ -1831,6 +1974,34 @@ mod tests {
             ),
             0.0,
             "fully faded out once idle",
+        );
+    }
+
+    #[test]
+    fn terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb() {
+        let mut s = vertical(1200.0);
+        s.last_activity =
+            Some(Instant::now() - Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1));
+        // Model the preceding submitted frame, where the thumb was visible.
+        s.bar_visible_last_draw.set(true);
+        let mut scene = Scene::new();
+        s.draw_scrollbars(&mut scene, Affine::IDENTITY, &Theme::dark());
+
+        assert!(
+            s.needs_terminal_fade_frame(),
+            "the first transparent frame must be submitted"
+        );
+        let mut regions = Vec::new();
+        s.collect_damage(&mut regions);
+        assert!(
+            !regions.is_empty(),
+            "the transparent terminal frame must repaint the former track"
+        );
+
+        s.mark_drawn();
+        assert!(
+            !s.needs_terminal_fade_frame(),
+            "the terminal repaint is a one-frame latch"
         );
     }
 

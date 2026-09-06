@@ -119,9 +119,7 @@ pub(crate) fn collect_widget_resources(
     resources: &mut Vec<qos_actions::Resource>,
 ) {
     resources.extend(widget.resources(doc));
-    for child in widget.children() {
-        collect_widget_resources(child, doc, resources);
-    }
+    widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
 }
 
 /// Resolve one lazily published resource from the retained widget tree.
@@ -161,6 +159,8 @@ pub struct ActionEmitter<I> {
     available: bool,
 }
 
+const ACTION_EMITTER_QUEUE_LIMIT: usize = 64;
+
 impl<I> ActionEmitter<I> {
     pub fn new(binding: qos_actions::ActionBinding<I>) -> Self {
         Self {
@@ -178,7 +178,16 @@ impl<I> ActionEmitter<I> {
     /// declared parameter contract.
     pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
         if self.available {
-            self.pending.push_back(self.binding.invoke(input)?);
+            let invocation = self.binding.invoke(input)?;
+            if self.pending.len() >= ACTION_EMITTER_QUEUE_LIMIT {
+                self.pending.pop_front();
+                tracing::warn!(
+                    action = ?self.binding.address(),
+                    limit = ACTION_EMITTER_QUEUE_LIMIT,
+                    "control invocation backlog full; evicting oldest intent"
+                );
+            }
+            self.pending.push_back(invocation);
         }
         Ok(())
     }
@@ -438,6 +447,14 @@ pub trait Widget {
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
+    /// Allocation-free read-only child traversal. Existing custom containers
+    /// inherit a compatibility adapter over [`Self::children`]; toolkit
+    /// containers override this to walk their retained storage directly.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for child in self.children() {
+            visitor(child);
+        }
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![]
     }
@@ -458,9 +475,7 @@ pub trait Widget {
             .iter()
             .map(|handler| (*handler).to_string())
             .collect::<HashSet<_>>();
-        for child in self.children() {
-            handlers.extend(child.resource_operation_handlers());
-        }
+        self.for_each_child(&mut |child| handlers.extend(child.resource_operation_handlers()));
         handlers
     }
     fn name(&self) -> &str;
@@ -787,7 +802,13 @@ pub trait Widget {
         false
     }
     fn needs_commit(&self) -> bool {
-        self.children().iter().any(|child| child.needs_commit())
+        let mut needed = false;
+        self.for_each_child(&mut |child| {
+            if !needed {
+                needed = child.needs_commit();
+            }
+        });
+        needed
     }
     /// Drain semantic provenance for the native transaction currently asking
     /// the host to commit. Use this for CRDT-native edits such as flowing text;
@@ -810,11 +831,7 @@ pub trait Widget {
     /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = semantic_action_bindings(self.accessibility());
-        bindings.extend(
-            self.children()
-                .iter()
-                .flat_map(|child| child.control_action_bindings()),
-        );
+        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
         bindings
     }
     /// Push the fresh local permission-filtered action surface into every
@@ -1256,7 +1273,13 @@ pub trait Widget {
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
-        self.children().iter().any(|c| c.needs_animation_frame())
+        let mut needed = false;
+        self.for_each_child(&mut |child| {
+            if !needed {
+                needed = child.needs_animation_frame();
+            }
+        });
+        needed
     }
 
     /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
@@ -1264,10 +1287,13 @@ pub trait Widget {
     /// the event loop asleep until the requested instant and is appropriate
     /// for filesystem/status polling rather than animation.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.children()
-            .iter()
-            .filter_map(|child| child.next_wake_deadline())
-            .min()
+        let mut earliest = None;
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.
@@ -1276,7 +1302,13 @@ pub trait Widget {
     /// behind the modal is clickable. Containers MUST forward (the default
     /// does, via first `Some` among children).
     fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
-        self.children().iter().find_map(|c| c.modal_capture())
+        let mut capture = None;
+        self.for_each_child(&mut |child| {
+            if capture.is_none() {
+                capture = child.modal_capture();
+            }
+        });
+        capture
     }
 
     /// True if this subtree's structural composition (children
@@ -1293,10 +1325,27 @@ pub trait Widget {
     /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
     /// descendant is.
     fn needs_redraw(&self) -> bool {
-        if self.children().is_empty() {
-            true
-        } else {
-            self.children().iter().any(|c| c.needs_redraw())
+        let mut has_children = false;
+        let mut dirty = false;
+        self.for_each_child(&mut |child| {
+            has_children = true;
+            if !dirty {
+                dirty = child.needs_redraw();
+            }
+        });
+        !has_children || dirty
+    }
+
+    /// Logical-pixel bounds whose visual output differs from the last frame.
+    ///
+    /// The conservative default covers this widget's complete layout box.
+    /// Pure layout containers should override this and union descendant
+    /// damage so a small animated leaf does not force a full-window raster.
+    /// Callers add an anti-alias/effect safety margin and fall back to a full
+    /// redraw for layout, structure, overlays, or invalid retained targets.
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        if self.needs_redraw() {
+            regions.push(self.get_rect());
         }
     }
 
@@ -1308,15 +1357,30 @@ pub trait Widget {
         }
     }
 
+    /// Release retained encoded-scene storage in this subtree without
+    /// marking its visual/model state dirty. Outer caches call this after a
+    /// successful reuse: while the outer display list is authoritative,
+    /// keeping byte-for-byte descendant encodings only duplicates memory.
+    /// A later outer rebuild causes descendants to record/cache normally.
+    fn release_scene_cache(&mut self) {
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     /// Default `true`; widgets with a fixed intrinsic size should override
     /// to `false` unless a size-affecting mutation landed. Containers MUST
     /// forward: layout-dirty iff any descendant is.
     fn is_layout_dirty(&self) -> bool {
-        if self.children().is_empty() {
-            true
-        } else {
-            self.children().iter().any(|c| c.is_layout_dirty())
-        }
+        let mut has_children = false;
+        let mut dirty = false;
+        self.for_each_child(&mut |child| {
+            has_children = true;
+            if !dirty {
+                dirty = child.is_layout_dirty();
+            }
+        });
+        !has_children || dirty
     }
 
     /// Whether a `layout_dirty` frame needs taffy to **re-solve** sizes
@@ -1325,11 +1389,18 @@ pub trait Widget {
     /// in `apply_layout` without changing any taffy size, so re-solving on
     /// every scroll frame is pure waste.
     fn layout_needs_measure(&self) -> bool {
-        let kids = self.children();
-        if kids.is_empty() {
-            self.is_layout_dirty()
+        let mut has_children = false;
+        let mut dirty = false;
+        self.for_each_child(&mut |child| {
+            has_children = true;
+            if !dirty {
+                dirty = child.layout_needs_measure();
+            }
+        });
+        if has_children {
+            dirty
         } else {
-            kids.iter().any(|c| c.layout_needs_measure())
+            self.is_layout_dirty()
         }
     }
 
@@ -1689,5 +1760,21 @@ mod tests {
             Widget::test_id(&s).is_none(),
             "default Widget::test_id should be None"
         );
+    }
+
+    #[test]
+    fn action_emitter_backlog_is_bounded_and_keeps_the_newest_intent() {
+        let mut emitter = ActionEmitter::new(test_bool_action_binding());
+        for _ in 0..ACTION_EMITTER_QUEUE_LIMIT.saturating_add(1) {
+            emitter.emit(false).expect("valid boolean intent");
+        }
+        emitter.emit(true).expect("valid boolean intent");
+        assert_eq!(emitter.pending.len(), ACTION_EMITTER_QUEUE_LIMIT);
+
+        let mut last = None;
+        while let Some(invocation) = emitter.take() {
+            last = invocation.arguments.get("value").cloned();
+        }
+        assert_eq!(last, Some(serde_json::Value::Bool(true)));
     }
 }

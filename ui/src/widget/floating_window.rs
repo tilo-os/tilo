@@ -1048,6 +1048,10 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         vec![&self.content]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.content);
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.content]
     }
