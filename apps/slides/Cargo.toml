@@ -26,7 +26,10 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 vello.workspace = true
-image = { workspace = true, default-features = true }
+# The image picker accepts these four raster formats.  Keeping the list
+# explicit matters for the one-Cargo-graph qpkg build: `default-features`
+# would enable every codec for every app that shares `image`, including Files.
+image = { workspace = true, default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 winit.workspace = true
 taffy.workspace = true
 # LibreOffice .odp read/write: an ODF package is a ZIP of XML parts. Versions
