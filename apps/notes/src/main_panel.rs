@@ -370,6 +370,8 @@ impl MainPanel {
 
     /// Drain local editor changes for the app's canonical action dispatcher.
     pub fn take_block_ops(&mut self) -> Vec<BlockEditOp> {
+        self.pending_block_ops
+            .extend(self.editor.take_pending_semantic_ops());
         std::mem::take(&mut self.pending_block_ops)
     }
 

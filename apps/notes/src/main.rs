@@ -44,6 +44,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "first_note",
     "drawer",
     "drag",
+    "block_drag",
     "menu",
     "rename",
     "rename_commit",
@@ -54,6 +55,8 @@ const SHOT_SCENARIOS: &[&str] = &[
     "recipes",
     "formula",
     "status",
+    "saving",
+    "save_error",
     "presence",
 ];
 
