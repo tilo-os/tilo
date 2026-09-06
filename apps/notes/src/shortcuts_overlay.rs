@@ -58,6 +58,7 @@ const GROUPS: &[Group] = &[
             ("Open block menu", "/"),
             ("Link another page", "[["),
             ("Toggle checklist item", "click"),
+            ("Move focused block", "Alt-↑ / Alt-↓"),
         ],
     },
     Group {
