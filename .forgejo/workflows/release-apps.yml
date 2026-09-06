@@ -64,7 +64,14 @@ on:
 
 concurrency:
   group: release-apps-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # A main run may be the one that republishes the complete collection after
+  # a shared runtime/toolkit change. Cancelling it when the next app commit
+  # lands loses that information: the successor diffs only against its direct
+  # parent, builds a partial app set, and can never combine it with the older
+  # collection because their runtime roots differ. Serialize main releases so
+  # every published collection advances in commit order; only supersede PR
+  # validation, where no channel state is mutated.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
