@@ -1200,7 +1200,10 @@ impl SlidesApp {
         match ev {
             PageSidebarEvent::Select(i) => self.apply_hit(doc, Hit::SelectSlide(i)),
             PageSidebarEvent::Reorder { from, to } => {
-                self.perform_action(doc, &actions::move_slide_action(from, to));
+                let Some(id) = self.deck.slides.get(from).map(|slide| slide.id.clone()) else {
+                    return;
+                };
+                self.perform_action(doc, &actions::move_slide_action(from, to, id));
                 self.cur_slide = to;
                 self.reload(doc);
                 self.scroll_rail_to_current();
@@ -1255,8 +1258,12 @@ impl SlidesApp {
 
         // Title block, elided so it never runs under the tools or right group.
         let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
+        // At phone widths the compact right-hand controls can begin before the
+        // nominal insert-tools slot. The title must yield to those controls;
+        // otherwise its elided label is painted underneath the grid/palette.
+        let title_right = tools_x.min(right_edge - 12.0);
         let (title_rect, title_pos) =
-            self.toolbar_title_block(toolbar, title_x, tools_x, &mut labels);
+            self.toolbar_title_block(toolbar, title_x, title_right, &mut labels);
 
         // Centre tool group. Every insert tool must stay pointer-reachable at
         // any width: the ones that fit sit on the toolbar; the rest move behind
@@ -1508,15 +1515,23 @@ impl SlidesApp {
         &self,
         toolbar: Rect,
         title_x: f64,
-        tools_x: f64,
+        title_right: f64,
         labels: &mut Vec<Label>,
     ) -> (Rect, Point) {
-        let title_max = (tools_x - 12.0 - title_x).max(60.0);
+        // A 390px phone toolbar has room for the rail toggle, the one unified
+        // insert overflow and the always-available presentation controls, but
+        // not a useful title fragment. Leave that slot empty rather than paint
+        // ellipsis under a focusable control.
+        let title_max = if toolbar.width() < 480.0 {
+            0.0
+        } else {
+            (title_right - 12.0 - title_x).max(0.0)
+        };
         let title_pos = Point::new(title_x, toolbar.y0 + 11.0);
         // While renaming, the inline TextInput draws the title (with selection +
         // caret), so the static label is blanked; otherwise elide it so it never
         // runs under the tools.
-        let title_text = if self.editing_title {
+        let title_text = if self.editing_title || title_max < 1.0 {
             String::new()
         } else {
             elide(&self.deck.title, 17.0, title_max)
@@ -1535,22 +1550,24 @@ impl SlidesApp {
             title_x + title_max,
             toolbar.y0 + 46.0,
         );
-        labels.push(Label {
-            pos: Point::new(title_x, toolbar.y0 + 33.0),
-            text: elide(
-                &format!(
-                    "Slide {} of {}  ·  {}",
-                    self.cur_slide + 1,
-                    self.deck.slides.len(),
-                    self.deck.palette.label()
+        if title_max >= 1.0 {
+            labels.push(Label {
+                pos: Point::new(title_x, toolbar.y0 + 33.0),
+                text: elide(
+                    &format!(
+                        "Slide {} of {}  ·  {}",
+                        self.cur_slide + 1,
+                        self.deck.slides.len(),
+                        self.deck.palette.label()
+                    ),
+                    11.5,
+                    title_max,
                 ),
-                11.5,
-                title_max,
-            ),
-            font: 11.5,
-            color: LabelColor::Dim,
-            weight: TextWeight::Regular,
-        });
+                font: 11.5,
+                color: LabelColor::Dim,
+                weight: TextWeight::Regular,
+            });
+        }
         (title_rect, title_pos)
     }
 
@@ -1573,6 +1590,28 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
+        // The toolbar hamburger remains a toggle, but an open overlay must
+        // also advertise its local escape route where the user's attention is:
+        // the flap header. This keeps the narrow panel dismissible without a
+        // hunt back to the global toolbar (and gives AT a named button).
+        if self.rail_layout() == SplitLayout::Overlay && self.rail_flap.reveal() > 0.001 {
+            let close_w = 56.0;
+            let close = Rect::new(
+                rail.x1 - tpad - close_w,
+                rail.y0 + 5.0,
+                rail.x1 - tpad,
+                rail.y0 + 35.0,
+            );
+            buttons.push(UiButton {
+                rect: close,
+                kind: ButtonKind::Text {
+                    label: "Close".into(),
+                    active: false,
+                    danger: false,
+                },
+                hit: Hit::ToggleRail,
+            });
+        }
         // Rail action buttons at the bottom.
         let rb_h = 30.0;
         let rb_y = rail.y1 - tpad - rb_h;
@@ -2220,13 +2259,20 @@ impl SlidesApp {
             Hit::DuplicateElement => self.duplicate_element(doc),
             Hit::DeleteElement => self.delete_element(doc),
             Hit::SetLayout(l) => {
-                self.perform_action(doc, &actions::set_slide_layout_action(self.cur_slide, l));
+                if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
+                    self.perform_action(
+                        doc,
+                        &actions::set_slide_layout_action(self.cur_slide, id, l),
+                    );
+                }
             }
             Hit::SetBackground(b) => {
-                self.perform_action(
-                    doc,
-                    &actions::set_slide_background_action(self.cur_slide, b),
-                );
+                if let Some(id) = self.slide().map(|slide| slide.id.clone()) {
+                    self.perform_action(
+                        doc,
+                        &actions::set_slide_background_action(self.cur_slide, id, b),
+                    );
+                }
             }
             Hit::SetPalette(p) => {
                 self.perform_action(doc, &actions::set_deck_palette_action(p));
@@ -2305,7 +2351,10 @@ impl SlidesApp {
         if self.deck.slides.len() <= 1 {
             return; // keep at least one slide
         }
-        self.perform_action(doc, &actions::delete_slide_action(self.cur_slide));
+        let Some(id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(doc, &actions::delete_slide_action(self.cur_slide, id));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
@@ -2320,7 +2369,13 @@ impl SlidesApp {
             other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
         };
         let id = el.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &el));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &el),
+        );
         self.sel = Some(id);
         self.editing_text = false;
     }
@@ -2541,7 +2596,13 @@ impl SlidesApp {
         // A comfortable default frame, centred on the slide; the user resizes.
         let el = Element::image(&src, 340.0, 168.0, 600.0, 384.0);
         let id = el.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &el));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &el),
+        );
         self.sel = Some(id);
         self.editing_text = false;
         self.reload(doc);
@@ -2556,7 +2617,13 @@ impl SlidesApp {
         copy.x += 24.0;
         copy.y += 24.0;
         let id = copy.id.clone();
-        self.perform_action(doc, &actions::add_element_action(self.cur_slide, &copy));
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        self.perform_action(
+            doc,
+            &actions::add_element_action(self.cur_slide, slide_id, &copy),
+        );
         self.sel = Some(id);
     }
 
@@ -7257,6 +7324,26 @@ mod tests {
     }
 
     #[test]
+    fn phone_toolbar_elides_title_before_compact_controls() {
+        let app = app_sized(390.0);
+        let chrome = app.compute_chrome();
+        let first_right_control = chrome
+            .buttons
+            .iter()
+            .filter(|button| {
+                !matches!(button.kind, ButtonKind::Hamburger)
+                    && button.rect.center().y < chrome.toolbar.y1
+            })
+            .map(|button| button.rect.x0)
+            .min_by(f64::total_cmp)
+            .unwrap();
+        assert!(
+            chrome.title_rect.x1 <= first_right_control,
+            "the two-line title must not paint under compact toolbar controls"
+        );
+    }
+
+    #[test]
     fn opening_the_overlay_flap_reveals_the_rail_over_a_scrim() {
         let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
         // Summon via the production toggle path, then settle the animation.
@@ -7273,6 +7360,13 @@ mod tests {
         assert!(
             chrome.scrim.width() > 0.0,
             "an open overlay flap dims the body"
+        );
+        assert!(
+            chrome.buttons.iter().any(|button| {
+                matches!(&button.kind, ButtonKind::Text { label, .. } if label == "Close")
+                    && matches!(button.hit, Hit::ToggleRail)
+            }),
+            "the open overlay has a named Close control in its own header"
         );
     }
 
