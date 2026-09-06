@@ -14,7 +14,8 @@
 //!
 //! **Document-mutating → an action:** mark read/unread, star, move to a folder
 //! (archive / delete-to-trash / junk / move-to-inbox are all a move), add/remove a
-//! label, create/rename/delete a local folder, and save/discard the draft.
+//! label, create/rename/delete a local folder, permanently purge a trashed
+//! message, and save/discard the draft.
 //!
 //! **External, non-deterministic → never an action:** IMAP fetch/sync, SMTP send,
 //! and account auth all write mailbox state as *external ingestion* driven by the
@@ -52,6 +53,46 @@ use crate::model::{Draft, Folder};
 /// Registry `type_id` for every Mail action.
 pub const MAIL_ACTION_TYPE: &str = "mail.action";
 pub const MAIL_OPERATION_TYPE: &str = "mail.operation";
+
+/// Bounds applied at the replicated-action boundary.  The UI normally keeps
+/// values much smaller; these limits make a malformed, remote, or replayed
+/// envelope unable to turn one mail action into an unbounded CRDT delta.
+const MAX_MESSAGE_IDS_PER_ACTION: usize = 256;
+const MAX_MESSAGE_ID_CHARS: usize = 128;
+const MAX_LABEL_CHARS: usize = 128;
+const MAX_FOLDER_NAME_CHARS: usize = 96;
+const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
+const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
+const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
+
+/// Take at most `max` Unicode scalar values without slicing a UTF-8 byte
+/// offset.  Control characters are removed from one-line fields; bodies keep
+/// normal newlines but still reject NUL and other control injection.
+fn bounded_text(value: &str, max: usize, multiline: bool) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() || (multiline && matches!(ch, '\n' | '\r' | '\t')))
+        .take(max)
+        .collect()
+}
+
+/// Normalise a batch before applying it.  This both bounds work and makes a
+/// duplicated id in a hostile payload behave exactly like one requested id.
+fn bounded_ids(ids: &[String]) -> Vec<&str> {
+    let mut result = Vec::with_capacity(ids.len().min(MAX_MESSAGE_IDS_PER_ACTION));
+    for id in ids {
+        if result.len() == MAX_MESSAGE_IDS_PER_ACTION {
+            break;
+        }
+        let id = id.trim();
+        if id.is_empty() || id.chars().count() > MAX_MESSAGE_ID_CHARS || result.contains(&id) {
+            continue;
+        }
+        result.push(id);
+    }
+    result
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MailOperation {
@@ -116,23 +157,29 @@ pub struct DraftData {
 impl DraftData {
     pub fn from_draft(d: &Draft) -> Self {
         Self {
-            to: d.to.clone(),
-            cc: d.cc.clone(),
-            bcc: d.bcc.clone(),
-            subject: d.subject.clone(),
-            body: d.body.clone(),
-            html_body: d.html_body.clone(),
+            to: bounded_text(&d.to, MAX_DRAFT_ADDRESS_CHARS, false),
+            cc: bounded_text(&d.cc, MAX_DRAFT_ADDRESS_CHARS, false),
+            bcc: bounded_text(&d.bcc, MAX_DRAFT_ADDRESS_CHARS, false),
+            subject: bounded_text(&d.subject, MAX_DRAFT_SUBJECT_CHARS, false),
+            body: bounded_text(&d.body, MAX_DRAFT_BODY_CHARS, true),
+            html_body: d
+                .html_body
+                .as_deref()
+                .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
         }
     }
 
     fn to_draft(&self) -> Draft {
         Draft {
-            to: self.to.clone(),
-            cc: self.cc.clone(),
-            bcc: self.bcc.clone(),
-            subject: self.subject.clone(),
-            body: self.body.clone(),
-            html_body: self.html_body.clone(),
+            to: bounded_text(&self.to, MAX_DRAFT_ADDRESS_CHARS, false),
+            cc: bounded_text(&self.cc, MAX_DRAFT_ADDRESS_CHARS, false),
+            bcc: bounded_text(&self.bcc, MAX_DRAFT_ADDRESS_CHARS, false),
+            subject: bounded_text(&self.subject, MAX_DRAFT_SUBJECT_CHARS, false),
+            body: bounded_text(&self.body, MAX_DRAFT_BODY_CHARS, true),
+            html_body: self
+                .html_body
+                .as_deref()
+                .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
             attachments: Vec::new(),
             in_reply_to: None,
         }
@@ -154,6 +201,10 @@ pub enum MailAction {
     /// [`Folder::as_key`]). Archive, delete-to-trash, junk, and move-to-inbox are
     /// all this with a specific target. An unknown key is a no-op.
     Move { ids: Vec<String>, folder: String },
+    /// Permanently remove a batch which is already in Trash. This writes a
+    /// tombstone rather than directly altering a peer's hydrated corpus, so a
+    /// delayed action cannot resurrect its flags.
+    Purge { ids: Vec<String> },
     /// Add a label/tag to a batch of messages. Idempotent per message.
     AddLabel { ids: Vec<String>, label: String },
     /// Remove a label/tag from a batch of messages.
@@ -175,42 +226,75 @@ impl Action for MailAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MailAction::SetRead { ids, read } => {
-                for id in ids {
-                    MailDoc::set_read(doc, id, *read);
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::set_read(doc, id, *read);
+                    }
                 }
             }
             MailAction::SetStarred { ids, starred } => {
-                for id in ids {
-                    MailDoc::set_starred(doc, id, *starred);
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::set_starred(doc, id, *starred);
+                    }
                 }
             }
             MailAction::Move { ids, folder } => {
                 // An unknown folder key (e.g. a stale local-folder id) is a no-op
                 // rather than a wrong move — the system `Folder` enum is total.
                 if let Some(f) = Folder::from_key(folder) {
-                    for id in ids {
-                        MailDoc::set_folder_for(doc, id, f);
+                    for id in bounded_ids(ids) {
+                        if MailDoc::is_present_message(doc, id) {
+                            MailDoc::set_folder_for(doc, id, f);
+                        }
+                    }
+                }
+            }
+            MailAction::Purge { ids } => {
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::mark_message_purged(doc, id);
                     }
                 }
             }
             MailAction::AddLabel { ids, label } => {
-                for id in ids {
-                    MailDoc::add_label(doc, id, label);
+                let label = bounded_text(label, MAX_LABEL_CHARS, false);
+                if label.is_empty() {
+                    return Ok(());
+                }
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::add_label(doc, id, &label);
+                    }
                 }
             }
             MailAction::RemoveLabel { ids, label } => {
-                for id in ids {
-                    MailDoc::remove_label(doc, id, label);
+                let label = bounded_text(label, MAX_LABEL_CHARS, false);
+                if label.is_empty() {
+                    return Ok(());
+                }
+                for id in bounded_ids(ids) {
+                    if MailDoc::is_present_message(doc, id) {
+                        MailDoc::remove_label(doc, id, &label);
+                    }
                 }
             }
             MailAction::CreateFolder { id, name } => {
-                MailDoc::create_folder(doc, id, name);
+                let name = bounded_text(name, MAX_FOLDER_NAME_CHARS, false);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS && !name.is_empty() {
+                    MailDoc::create_folder(doc, id, &name);
+                }
             }
             MailAction::RenameFolder { id, name } => {
-                MailDoc::rename_folder(doc, id, name);
+                let name = bounded_text(name, MAX_FOLDER_NAME_CHARS, false);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS && !name.is_empty() {
+                    MailDoc::rename_folder(doc, id, &name);
+                }
             }
             MailAction::DeleteFolder { id } => {
-                MailDoc::delete_folder(doc, id);
+                if id.chars().count() <= MAX_MESSAGE_ID_CHARS {
+                    MailDoc::delete_folder(doc, id);
+                }
             }
             MailAction::SaveDraft(data) => {
                 MailDoc::store_draft(doc, &data.to_draft());
@@ -268,6 +352,11 @@ pub fn move_action(ids: Vec<String>, folder: Folder) -> MailAction {
         ids,
         folder: folder.as_key().to_string(),
     }
+}
+
+/// Permanently purge a batch of already-trashed messages.
+pub fn purge_action(ids: Vec<String>) -> MailAction {
+    MailAction::Purge { ids }
 }
 
 /// Add a label to a batch of messages.
@@ -455,14 +544,20 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         "Archive",
         &move_action(vec![message.id.clone()], Folder::Archive),
     ));
-    resource = resource.with_action(
+    let delete = if message.folder == Folder::Trash {
+        immediate_spec(
+            "delete",
+            "Delete permanently",
+            &purge_action(vec![message.id.clone()]),
+        )
+    } else {
         immediate_spec(
             "delete",
             "Delete",
             &move_action(vec![message.id.clone()], Folder::Trash),
         )
-        .destructive(),
-    );
+    };
+    resource = resource.with_action(delete.destructive());
 
     let message_id = message.id.clone();
     resource = resource.with_action(ActionSpec::prompted(
@@ -1175,5 +1270,97 @@ mod tests {
         );
         // And it really moved the message in the document.
         assert_eq!(MailDoc::get_folder_for(&doc, &id), Some(Folder::Archive));
+    }
+
+    #[test]
+    fn stale_or_unknown_message_actions_fail_closed_without_orphan_flags() {
+        let mut doc = AutoCommit::new();
+        let action = set_read_action(vec!["not-a-loaded-message".into()], true);
+        action.apply(&mut doc).unwrap();
+        assert_eq!(
+            MailDoc::get_read(&doc, "not-a-loaded-message"),
+            None,
+            "an action from a stale palette row cannot mint flags"
+        );
+
+        MailDoc::register_message(&mut doc, "gone");
+        MailDoc::mark_message_purged(&mut doc, "gone");
+        set_starred_action(vec!["gone".into()], true)
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(
+            MailDoc::get_starred(&doc, "gone"),
+            None,
+            "an explicit tombstone refuses delayed replay"
+        );
+    }
+
+    #[test]
+    fn replicated_text_and_batch_deltas_are_unicode_safe_and_bounded() {
+        let mut doc = AutoCommit::new();
+        MailDoc::register_message(&mut doc, "m");
+        let ids = std::iter::repeat_n("m".to_string(), MAX_MESSAGE_IDS_PER_ACTION + 20).collect();
+        let label = format!("  {}\0ignored", "🦀".repeat(MAX_LABEL_CHARS + 4));
+        MailAction::AddLabel { ids, label }.apply(&mut doc).unwrap();
+        let labels = MailDoc::get_labels(&doc, "m");
+        assert_eq!(labels.len(), 1, "duplicate ids are one logical target");
+        assert_eq!(labels[0].chars().count(), MAX_LABEL_CHARS);
+        assert!(labels[0].chars().all(|ch| !ch.is_control()));
+
+        let draft = Draft {
+            subject: "é".repeat(MAX_DRAFT_SUBJECT_CHARS + 10),
+            body: format!("{}\0", "🦀".repeat(MAX_DRAFT_BODY_CHARS + 10)),
+            ..Draft::default()
+        };
+        save_draft_action(&draft).apply(&mut doc).unwrap();
+        let stored = MailDoc::load_draft(&doc);
+        assert_eq!(stored.subject.chars().count(), MAX_DRAFT_SUBJECT_CHARS);
+        assert_eq!(stored.body.chars().count(), MAX_DRAFT_BODY_CHARS);
+        assert!(stored.body.is_char_boundary(stored.body.len()));
+        assert!(!stored.body.contains('\0'));
+    }
+
+    #[test]
+    fn purge_replays_to_peers_and_refuses_late_flag_resurrection() {
+        let mut a = AutoCommit::new();
+        MailDoc::register_message(&mut a, "m");
+        MailDoc::set_folder_for(&mut a, "m", Folder::Trash);
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+
+        let action = purge_action(vec!["m".into()]);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "purge is replay-identical");
+        assert!(!MailDoc::is_present_message(&b, "m"));
+
+        let late = set_read_action(vec!["m".into()], true);
+        late.apply(&mut b).unwrap();
+        assert_eq!(MailDoc::get_read(&b, "m"), None);
+    }
+
+    #[test]
+    fn trash_resource_uses_the_same_purge_action_as_the_delete_affordance() {
+        let row = MessageRow {
+            id: "m".into(),
+            subject: "Already trashed".into(),
+            thread_subject: "Already trashed".into(),
+            folder: Folder::Trash,
+            read: true,
+            starred: false,
+            labels: Vec::new(),
+            attachments: Vec::new(),
+        };
+        let resource = message_resource(&row);
+        let delete = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .expect("delete action");
+        assert_eq!(delete.label, "Delete permanently");
+        let encoded = immediate_encode(delete);
+        let expected = encode(&purge_action(vec!["m".into()]));
+        assert_eq!(encoded.type_id, expected.type_id);
+        assert_eq!(encoded.payload, expected.payload);
     }
 }
