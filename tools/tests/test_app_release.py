@@ -126,6 +126,15 @@ class AppReleaseTests(unittest.TestCase):
                 ["notes"],
             )
 
+    def test_default_collection_is_the_complete_publication_boundary(self) -> None:
+        catalog = app_release.app_catalog(ROOT)
+        self.assertEqual(
+            app_release.resolve_collection(
+                "default", catalog, app_release.config(ROOT / "release/app-collections.toml")
+            ),
+            sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+        )
+
     def test_os_integrated_browser_change_does_not_use_generic_builder(self) -> None:
         catalog = {**CATALOG, "browser": {}}
         self.assertEqual(

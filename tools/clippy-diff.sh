@@ -77,6 +77,20 @@ target_dir=${CARGO_TARGET_DIR:-$root/target}
 base_target_dir="$target_dir/clippy-diff/$base/base"
 head_target_dir="$target_dir/clippy-diff/$base/head"
 
+cleanup_builds() {
+    # A comparison compiles two complete dependency graphs.  Keeping both
+    # graphs until process exit doubles peak disk use, and leaked graphs from
+    # interrupted CI runs eventually make an otherwise clean Clippy compile
+    # fail without a diagnostic.  Each graph is disposable once its JSON has
+    # been captured.
+    rm -rf "$base_target_dir" "$head_target_dir"
+}
+
+# Extend the earlier scratch/worktree cleanup now that the build directories
+# have been resolved.  The paths are rooted below Cargo's target directory and
+# include the exact comparison revision, never an unresolved glob.
+trap 'cleanup_builds; cleanup' EXIT
+
 run_clippy() {
     local tree=$1
     local output=$2
@@ -122,6 +136,9 @@ if [ "$base_package_count" -gt 0 ]; then
         sed -n '1,160p' "$base_stderr" >&2
         exit 2
     fi
+    # The baseline diagnostics are self-contained in base.json.  Reclaim its
+    # artifact graph before compiling HEAD so peak usage stays at one graph.
+    rm -rf "$base_target_dir"
 else
     : >"$base_json"
 fi
