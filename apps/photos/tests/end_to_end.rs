@@ -193,6 +193,24 @@ fn the_whole_photograph_is_inside_the_canvas_at_every_window_size() {
     }
 }
 
+/// A portrait source is the stress case for a narrow portrait window: its
+/// initial view must still be contain-fit rather than inheriting an inspection
+/// zoom or presenting a cropped corner as though it were the whole image.
+#[test]
+fn a_portrait_photograph_initially_fits_a_narrow_portrait_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 800, 1200);
+    let mut hz = Harness::new(390.0, 844.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    hz.frame();
+
+    let visible = hz.app.visible_rect();
+    assert!(
+        visible.is_full(),
+        "a newly opened portrait photograph was clipped instead of fitted: {visible:?}"
+    );
+}
+
 /// A frame with a photograph loaded must actually put something in the scene.
 /// A layout that is correct while nothing is drawn would pass every geometry
 /// assertion above.
