@@ -78,7 +78,7 @@ impl ChatSearchProvider {
 }
 
 impl SearchProvider for ChatSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Chat"
     }
 
