@@ -68,7 +68,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
             .max_positionals(1)
-            .scenarios(&["empty", "settings", "fullscreen"]),
+            .scenarios(&["empty", "settings", "metadata", "fullscreen"]),
     )?;
     Ok(())
 }
