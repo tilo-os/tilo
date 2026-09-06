@@ -6661,7 +6661,7 @@ impl WorkspaceTree {
             let mut apps = continuation.apps.clone();
             apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
             for app in apps {
-                let (title, tile) = match &app.launch {
+                let (title, tile_content) = match &app.launch {
                     crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
                         // A newer app winner may reuse the durable tab id of
                         // an earlier file-reference card.  Do not let the
@@ -6757,7 +6757,7 @@ impl WorkspaceTree {
                 let tab = Tab {
                     id: app.id.0,
                     title,
-                    tile,
+                    tile: tile_content,
                 };
                 if !existing_continuation_tabs.contains(&app.id.0) {
                     inserted_continuation_tabs.push(app.id.0);
