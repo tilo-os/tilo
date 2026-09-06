@@ -44,7 +44,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
+use ui::widget::{BlockEditOp, BlockEditor, EditOutcome, EditableLabel, EmptyState};
 
 use crate::model::PageId;
 use crate::num;
@@ -63,6 +63,21 @@ const TITLE_TO_EDITOR_GAP: f64 = 14.0;
 /// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
 /// caret band without clipping descenders.
 const TITLE_HEIGHT: f64 = 44.0;
+
+fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
+        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
+        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
+        BlockKind::Checklist { indent, done } => {
+            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
+        }
+        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
+        BlockKind::Divider => "divider".into(),
+    }
+}
 
 pub struct MainPanel {
     /// Currently displayed page (None until a selection lands). Also the
@@ -120,6 +135,10 @@ pub struct MainPanel {
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
+    /// Semantic deltas emitted by the action-owned editor during an input
+    /// event. The app drains these through `NotesAction::ApplyBlockOps` before
+    /// the next sync; the widget itself never owns a document mutation.
+    pending_block_ops: Vec<BlockEditOp>,
 }
 
 impl MainPanel {
@@ -144,6 +163,7 @@ impl MainPanel {
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
             empty_action_focused: false,
+            pending_block_ops: Vec::new(),
         }
     }
 
@@ -244,10 +264,11 @@ impl MainPanel {
 
     /// Bind the panel's editor to a page's `blocks` List in the shared
     /// Automerge document. `body` is the page's markdown, used only to
-    /// **seed** the doc when its block list is still empty (a brand-new
-    /// page); if the doc already has blocks (an existing or remote page)
-    /// the editor adopts them and `body` is ignored. After this, every
-    /// edit syncs through the CRDT and remote edits appear via `sync`.
+    /// adopts an action-seeded list (a brand-new page is seeded by
+    /// `NotesAction::ApplyBlockOps` before this method runs); if the doc
+    /// already has blocks (an existing or remote page) `body` is ignored.
+    /// After this, the editor emits semantic operations for the app action
+    /// host and remote edits appear via `sync`.
     pub fn bind_page(
         &mut self,
         state: &mut AutoCommit,
@@ -263,7 +284,9 @@ impl MainPanel {
         self.editor = BlockEditor::new();
         self.editor.set_blocks(blocks);
         self.editor.set_local_author(self.local_author.clone());
-        // Seeds the doc if empty, otherwise adopts the doc's blocks.
+        self.editor.set_action_interception(true);
+        // The app action-seeds a new document before binding. This only adopts
+        // the action-owned list; it must not create or mutate it itself.
         self.editor.bind_blocks(state, blocks_list);
         self.editor.set_focus(true);
         self.editor
@@ -320,6 +343,34 @@ impl MainPanel {
     /// the editor's dirty flag.
     pub fn editor_is_dirty(&mut self) -> bool {
         self.editor.is_dirty()
+    }
+
+    /// Turn markdown into the action payload that seeds an empty durable page.
+    /// The parser mints stable UUIDs once here; the resulting action can be
+    /// replayed identically on every peer without the editor touching Automerge.
+    pub fn seed_block_ops(body: &str) -> Vec<BlockEditOp> {
+        let specs = crate::markdown::parse(body);
+        let blocks = crate::markdown::specs_to_blocks(&specs);
+        let mut after = None;
+        blocks
+            .into_iter()
+            .map(|block| {
+                let id = block.id.clone();
+                let op = BlockEditOp::Insert {
+                    block_id: id.clone(),
+                    after: after.clone(),
+                    kind: block_kind_wire(&block.kind),
+                    text: block.text().to_string(),
+                };
+                after = Some(id);
+                op
+            })
+            .collect()
+    }
+
+    /// Drain local editor changes for the app's canonical action dispatcher.
+    pub fn take_block_ops(&mut self) -> Vec<BlockEditOp> {
+        std::mem::take(&mut self.pending_block_ops)
     }
 
     /// Re-serialise the editor's content into the cached `body` and
@@ -787,6 +838,7 @@ impl Widget for MainPanel {
             }
         }
         if let Some(n) = self.editor_node {
+            self.editor.begin_action_intercept();
             self.editor.handle_event(
                 event,
                 scale_factor,
@@ -798,6 +850,8 @@ impl Widget for MainPanel {
                 n,
                 taffy,
             );
+            self.pending_block_ops
+                .extend(self.editor.take_intercepted_ops());
         }
     }
 
