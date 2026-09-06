@@ -781,6 +781,116 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
     );
 }
 
+/// Drive the two independent close affordances and then ordinary group
+/// navigation as one user session.  This deliberately runs a frame between
+/// each mutation: historically the stale widget tree written back on the
+/// following frame was enough to resurrect a just-closed group.
+#[test]
+fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
+    {
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        for (tab, surface_id) in [(h.tabs[0][0], 0xA11CE_u64), (h.tabs[0][1], 0xA11CF_u64)] {
+            let tab = tree.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter_mut()
+                .find(|candidate| candidate.id == tab)
+                .expect("fixture tab");
+            tab.tile = TileContent::Foreign {
+                app_id: "org.example.ExternalEditor".into(),
+                surface_id,
+            };
+        }
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+    }
+
+    let first = h.tabs[0][0];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(first))
+        .expect("pointer close target");
+    h.click(close.center());
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CE],
+        "the pointer path must issue one exact client close"
+    );
+    h.tick();
+
+    h.key(Key::Character("w".into()), ModifiersState::SUPER);
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CF],
+        "Super+W must issue one exact client close for the remaining tab"
+    );
+    h.tick();
+
+    let after_close: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .map(|group| group.id)
+        .collect();
+    assert!(
+        !after_close.contains(&h.groups[0]),
+        "closing the last tab removes the complete group before later input"
+    );
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    h.tick();
+    let reordered: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .map(|group| group.id)
+        .collect();
+    assert_eq!(&reordered[..2], &[h.groups[2], h.groups[1]]);
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window(),
+        (h.groups[1], h.tabs[1][1]),
+        "focus first advances within the moved live group"
+    );
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window().0,
+        h.groups[3],
+        "focus navigation must continue past the moved group, never a closed one"
+    );
+
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("the complete interaction sequence persists a loadable state");
+    let restarted_groups = &restarted.workspaces[0].strips[0].window_groups;
+    assert!(restarted_groups.iter().all(|group| group.id != h.groups[0]));
+    assert_eq!(
+        restarted_groups
+            .iter()
+            .map(|group| group.id)
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![h.groups[2], h.groups[1]],
+        "restart retains keyboard reorder after pointer and keyboard closes"
+    );
+    let active = restarted
+        .active_group_for(h.strip)
+        .expect("restart keeps an active group");
+    assert!(restarted_groups.iter().any(|group| group.id == active));
+}
+
 #[test]
 fn f1_toggles_the_desktop_guide() {
     let mut h = Harness::new();
