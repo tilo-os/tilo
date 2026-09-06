@@ -2985,15 +2985,19 @@ impl BooksApp {
         self.perform_action(doc, &action);
     }
 
-    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
+    fn set_composing_text(&mut self, doc: &mut AutoCommit, text: &str) -> bool {
         let Some(id) = self.composing else {
             return false;
         };
         self.set_annotation_text(doc, id, text)
     }
 
-    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: String) -> bool {
-        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: &str) -> bool {
+        if !self
+            .annotations
+            .iter()
+            .any(|annotation| annotation.id == id)
+        {
             if self.composing == Some(id) {
                 self.composing = None;
                 self.note_composer.close();
@@ -3002,9 +3006,11 @@ impl BooksApp {
                 self.comment_overlay.finish_editing();
             }
             return false;
-        };
-        annotation.note = text;
-        BooksDoc::upsert_annotation(doc, &annotation);
+        }
+        // Editors use the same action builder as the canonical resource tree.
+        // This keeps typed input undoable/replayable instead of smuggling a
+        // direct CRDT mutation around the action executor.
+        self.perform_action(doc, &crate::actions::edit_note_action(id, text));
         true
     }
 
@@ -3016,11 +3022,18 @@ impl BooksApp {
         if note_editor_open {
             self.note_composer.close();
         }
-        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+        let Some(created) = self
+            .annotations
+            .iter()
+            .find(|annotation| annotation.id == id)
+            .map(|annotation| annotation.created)
+        else {
             return false;
         };
-        annotation.created = annotation.created.max(now_ms());
-        BooksDoc::upsert_annotation(doc, &annotation);
+        self.perform_action(
+            doc,
+            &crate::actions::finalize_annotation_action(id, created.max(now_ms())),
+        );
         true
     }
 
@@ -3455,13 +3468,32 @@ impl Widget for BooksApp {
                 let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
                     return Err("book is no longer in the library".into());
                 };
-                let chapter_count = self
-                    .library
-                    .get(index)
-                    .map_or(0, |book| book.chapters.len());
+                let Some(book) = self.library.get(index) else {
+                    return Err("book is no longer in the library".into());
+                };
+                // A resource address is an authority-bearing snapshot. Do not
+                // silently clamp a chapter or annotation target from an old
+                // search/resource row: a peer may have replaced the EPUB, and
+                // opening a nearby passage would be materially misleading.
+                if book.chapters.is_empty() {
+                    if chapter != 0 || block.is_some() {
+                        return Err("book no longer contains the requested reading target".into());
+                    }
+                } else {
+                    let Some(chapter_item) = book.chapters.get(chapter) else {
+                        return Err("chapter is no longer available in this book".into());
+                    };
+                    if let Some(block) = block
+                        && block >= chapter_item.blocks.len()
+                    {
+                        return Err(
+                            "annotation target is no longer available in this chapter".into()
+                        );
+                    }
+                }
                 self.book_idx = index;
                 self.view = View::Reader;
-                self.chapter = chapter.min(chapter_count.saturating_sub(1));
+                self.chapter = chapter;
                 self.page = page;
                 self.pending_jump_block = block;
                 self.clear_selection();
@@ -4028,7 +4060,7 @@ impl Widget for BooksApp {
             .perform_editor_semantic_action(target, action, doc, path)
         {
             if let CommentSemanticOutcome::Changed(id, text) = outcome {
-                self.set_annotation_text(doc, id, text);
+                self.set_annotation_text(doc, id, &text);
             }
             self.refresh_from_doc(doc);
             self.dirty = true;
@@ -4040,7 +4072,7 @@ impl Widget for BooksApp {
         {
             match outcome {
                 NoteSemanticOutcome::Changed(text) => {
-                    self.set_composing_text(doc, text);
+                    self.set_composing_text(doc, &text);
                 }
                 NoteSemanticOutcome::Save => {
                     self.finish_composing(doc);
@@ -4218,7 +4250,7 @@ impl BooksApp {
             &mut input_handled,
         );
         if let Some((id, text)) = comment_text {
-            self.set_annotation_text(doc, id, text);
+            self.set_annotation_text(doc, id, &text);
         }
         if comment_submitted {
             input_handled = true;
@@ -4235,7 +4267,7 @@ impl BooksApp {
             &mut input_handled,
         );
         if let Some(text) = note_text {
-            self.set_composing_text(doc, text);
+            self.set_composing_text(doc, &text);
         }
         if submit {
             self.finish_composing(doc);
@@ -10237,6 +10269,46 @@ mod interaction_tests {
         );
         assert!(app.resource_invocation.is_none());
         assert!(app.resource_open_path.is_none());
+    }
+
+    #[test]
+    fn stale_resource_reveal_refuses_missing_chapter_or_annotation_target() {
+        let mut app = app_with_sample();
+        let doc = AutoCommit::new();
+        let book_id = app.open_book().expect("sample book").id.clone();
+        let before = (app.book_idx, app.chapter, app.page, app.pending_jump_block);
+        for operation in [
+            crate::actions::EbookOperation::Reveal {
+                book_id: book_id.clone(),
+                chapter: usize::MAX,
+                page: 0,
+                block: None,
+            },
+            crate::actions::EbookOperation::Reveal {
+                book_id,
+                chapter: 0,
+                page: 0,
+                block: Some(usize::MAX),
+            },
+        ] {
+            let payload = serde_json::to_vec(&operation).expect("operation serializes");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    qos_actions::OperationKind::View,
+                    crate::actions::EBOOK_OPERATION_TYPE,
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .is_err()
+            );
+            assert_eq!(
+                (app.book_idx, app.chapter, app.page, app.pending_jump_block),
+                before,
+                "a stale target must not navigate to a neighbouring passage"
+            );
+        }
     }
 
     fn app_with_math_sample() -> BooksApp {
