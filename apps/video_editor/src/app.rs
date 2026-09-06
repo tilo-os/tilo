@@ -5503,6 +5503,10 @@ impl VideoEditorApp {
         self.clamp_scroll(r);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one geometry pass keeps every inspector section aligned to the same scroll coordinate system"
+    )]
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
         let mut l = InspectorLayout::default();
         // Markers belong to the project, not to any clip, so the list is laid
@@ -6464,6 +6468,10 @@ impl VideoEditorApp {
     /// Deterministically arrange editor state for a `--shots` scenario. Real
     /// production edit paths are used (split/grade through the CRDT) so the
     /// captured frame reflects genuine behaviour, not a mock.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
+    )]
     fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
@@ -17403,6 +17411,10 @@ impl VideoEditorApp {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the export dialog paint pass shares one geometry calculation across its presets, status, and controls"
+    )]
     fn draw_export_modal(
         &self,
         scene: &mut Scene,
