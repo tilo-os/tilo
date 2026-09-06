@@ -76,6 +76,10 @@ fn id(kind: &str, url: &str) -> String {
 }
 
 impl SearchProvider for BrowserSearchProvider {
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "The shared SearchProvider trait requires a borrowed literal name."
+    )]
     fn name(&self) -> &str {
         "Browser"
     }
@@ -140,7 +144,7 @@ mod tests {
                 index,
             );
         }
-        let provider = BrowserSearchProvider::new(&history, &Default::default());
+        let provider = BrowserSearchProvider::new(&history, &crate::library::Bookmarks::default());
         assert_eq!(provider.rows.len(), MAX_SCAN);
         let hits = provider.search_limited("Page", 12);
         assert_eq!(hits.len(), 12);
