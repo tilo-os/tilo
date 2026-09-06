@@ -1,8 +1,8 @@
 //! Per-user hosted model gateway.
 //!
 //! This intentionally is a narrow OpenAI-compatible/Anthropic relay, not a
-//! general LiteLLM deployment. qOS needs one profile-selected planning call;
-//! adding LiteLLM would introduce an unpinned Python control plane and more
+//! general `LiteLLM` deployment. qOS needs one profile-selected planning call;
+//! adding `LiteLLM` would introduce an unpinned Python control plane and more
 //! provider surface than is audited here.
 
 use std::fs;
@@ -436,7 +436,9 @@ fn provider_url(profile: &ProviderProfile) -> String {
 
 fn same_user(stream: &UnixStream) -> bool {
     let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
+        return false;
+    };
     // SAFETY: getsockopt writes into a correctly sized ucred buffer.
     let result = unsafe {
         libc::getsockopt(
@@ -444,7 +446,7 @@ fn same_user(stream: &UnixStream) -> bool {
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
             credentials.as_mut_ptr().cast(),
-            &mut length,
+            &raw mut length,
         )
     };
     result == 0
