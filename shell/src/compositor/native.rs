@@ -2563,18 +2563,6 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) -> boo
 }
 
 fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    if event.state != ElementState::Pressed {
-        return false;
-    }
-    let key = match &event.logical_key {
-        Key::Character(s) => s.as_str(),
-        Key::Named(NamedKey::Tab) => "tab",
-        Key::Named(NamedKey::Escape) => "escape",
-        _ => return false,
-    };
     let config = settings_store::hardware::ShortcutConfig::load();
     let Some(chord) = config
         .bindings
@@ -2582,12 +2570,25 @@ fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
     else {
         return false;
     };
-    let state = modifiers.state();
-    (chord.modifiers.contains("Super") == state.super_key())
-        && (chord.modifiers.contains("Ctrl") == state.control_key())
-        && (chord.modifiers.contains("Alt") == state.alt_key())
-        && (chord.modifiers.contains("Shift") == state.shift_key())
-        && chord.key.eq_ignore_ascii_case(key)
+    lock_chord_matches(event, modifiers, chord)
+}
+
+/// Session-lock bindings run before client routing, so their matching must
+/// accept every key the editable shortcut UI can persist.  In particular,
+/// named keys such as F12 are already withheld from the focused client by
+/// `configured_shortcut_matches`.
+fn lock_chord_matches(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    chord: &settings_store::hardware::KeyChord,
+) -> bool {
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return false;
+    };
+    if event.state != ElementState::Pressed {
+        return false;
+    }
+    crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
 /// Map a live winit key event to the lock screen's normalised [`LockKey`]
@@ -6827,6 +6828,34 @@ mod tests {
     fn super_l_release_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
         assert!(!is_lock_chord(&ev, mods_with_super(true)));
+    }
+
+    #[test]
+    fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
+            .expect("the shortcut editor accepts named function keys");
+        let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
+        assert!(lock_chord_matches(&f12_press, ctrl, &f12));
+
+        let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
+        assert!(
+            !lock_chord_matches(&f11_press, ctrl, &f12),
+            "a nearby client-owned function key must not be claimed"
+        );
+        let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
+        assert!(
+            !lock_chord_matches(&f12_release, ctrl, &f12),
+            "only the captured press may lock; its release stays non-actioning"
+        );
+
+        let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
+            .expect("the shortcut editor accepts named navigation keys");
+        let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
+        assert!(
+            lock_chord_matches(&left_press, ctrl, &navigation),
+            "a named navigation binding must use the same matcher as the editor"
+        );
     }
 
     /// `Super+Esc` on press is the remote-input kill switch.
