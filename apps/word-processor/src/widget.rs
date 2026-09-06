@@ -478,6 +478,9 @@ impl NumField {
 /// A clickable target inside the styles panel, resolved on press.
 #[derive(Clone, Debug, PartialEq)]
 enum PanelHit {
+    /// Dismiss the contextual inspector. Especially important when the panel
+    /// is a narrow-window overlay rather than a docked rail.
+    Close,
     /// Apply this style id to the selection / caret block.
     Pick(String),
     /// Set the alignment of the **current paragraph(s)** (an instance `align`
@@ -1821,10 +1824,69 @@ impl WordProcessorWidget {
         );
     }
 
+    /// Replace one exact, already-resolved text range through the canonical
+    /// action executor.  Find/replace, autocorrection, and ordinary typing all
+    /// use this rather than opening a second CRDT write path in the widget.
+    fn splice_via_action(
+        &mut self,
+        state: &mut AutoCommit,
+        region: crate::actions::RegionKind,
+        block: &str,
+        start: usize,
+        end: usize,
+        text: &str,
+    ) {
+        self.perform_action(
+            state,
+            &crate::actions::splice_text_action(region, block, start, end, text),
+        );
+    }
+
+    /// Insert ordinary typed text through the same serializable actions exposed
+    /// to agents and Ctrl+K.  A multi-block selection is a structural merge,
+    /// represented by its own single envelope rather than a hidden UI-only
+    /// sequence of splice/delete writes.
+    fn insert_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
+        if let Some((start, end)) = self.inner.selection_span(state) {
+            let region = self.inner.region_kind();
+            self.perform_action(
+                state,
+                &crate::actions::replace_selection_action(
+                    region,
+                    &start.block,
+                    start.offset,
+                    &end.block,
+                    end.offset,
+                    text,
+                ),
+            );
+            self.inner.set_caret(start);
+            self.inner.clear_anchor();
+            return;
+        }
+        let caret = self.inner.caret().clone();
+        let region = self.inner.region_kind();
+        self.splice_via_action(
+            state,
+            region,
+            &caret.block,
+            caret.offset,
+            caret.offset,
+            text,
+        );
+        self.inner.set_caret(Caret {
+            block: caret.block,
+            offset: caret.offset.saturating_add(text.chars().count()),
+        });
+    }
+
     /// The context Ctrl+K needs to build the document's resource tree: the caret
     /// anchor for structural inserts and the blocks a block-level format targets.
     /// `None` until the document is bound (a fresh, unsynced widget).
-    pub(crate) fn wp_resource_ctx(&self) -> Option<crate::actions::WpResourceCtx> {
+    pub(crate) fn wp_resource_ctx(
+        &self,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::WpResourceCtx> {
         let caret = self.inner.caret();
         if caret.block.is_empty() {
             return None;
@@ -1850,6 +1912,14 @@ impl WordProcessorWidget {
                     .filter(|(_, start, end)| start < end)
                     .collect(),
             ),
+            selection: self.inner.selection_span(doc).map(|(start, end)| {
+                crate::actions::SelectionTarget {
+                    start_block: start.block,
+                    start: start.offset,
+                    end_block: end.block,
+                    end: end.offset,
+                }
+            }),
             region: self.inner.region_kind(),
         })
     }
@@ -1944,7 +2014,13 @@ impl WordProcessorWidget {
         if blocks.is_empty() {
             return;
         }
-        let action = crate::actions::set_paragraph_style_action(blocks, kind, level, ordered);
+        let action = crate::actions::set_paragraph_style_action(
+            self.inner.region_kind(),
+            blocks,
+            kind,
+            level,
+            ordered,
+        );
         self.perform_action(state, &action);
     }
 
@@ -1960,7 +2036,14 @@ impl WordProcessorWidget {
             Some((k, l, o)) => (Some(k), l, o),
             None => (None, None, None),
         };
-        let action = crate::actions::apply_named_style_action(blocks, id, kind, level, ordered);
+        let action = crate::actions::apply_named_style_action(
+            self.inner.region_kind(),
+            blocks,
+            id,
+            kind,
+            level,
+            ordered,
+        );
         self.perform_action(state, &action);
     }
 
@@ -2515,8 +2598,14 @@ impl WordProcessorWidget {
                     return;
                 };
                 let replacement = self.find.replacement().to_string();
-                self.inner
-                    .splice_block(state, &bid, start, end, &replacement);
+                self.splice_via_action(
+                    state,
+                    crate::actions::RegionKind::Body,
+                    &bid,
+                    start,
+                    end,
+                    &replacement,
+                );
                 self.refresh_blocks(state);
                 self.needs_commit = true;
                 let effect = self.find.refresh(&self.blocks);
@@ -2529,8 +2618,14 @@ impl WordProcessorWidget {
                 // in a block stay valid.
                 matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
                 for (bid, start, end) in matches.into_iter().rev() {
-                    self.inner
-                        .splice_block(state, &bid, start, end, &replacement);
+                    self.splice_via_action(
+                        state,
+                        crate::actions::RegionKind::Body,
+                        &bid,
+                        start,
+                        end,
+                        &replacement,
+                    );
                 }
                 self.refresh_blocks(state);
                 self.needs_commit = true;
@@ -3488,6 +3583,23 @@ impl WordProcessorWidget {
         let right = panel.x1 - pad;
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
+
+        // A visible dismissal affordance matters on narrow screens: the
+        // inspector overlays the document there, so relying only on a tap in
+        // the dimmed background makes the way back needlessly undiscoverable.
+        let close = Rect::new(right - 62.0, y, right, y + 24.0);
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            close,
+            &t("panel-close"),
+            false,
+            true,
+        );
+        self.panel_hits.push((close, PanelHit::Close));
+        y += 30.0;
 
         // When an image is selected, the panel becomes an image inspector
         // (resize + flip) instead of the paragraph editor.
@@ -7343,8 +7455,8 @@ impl WordProcessorWidget {
         }
         let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
         let block = self.inner.caret.block.clone();
-        self.inner
-            .splice_block(state, &block, start, end, &replacement);
+        let region = self.inner.region_kind();
+        self.splice_via_action(state, region, &block, start, end, &replacement);
         let replacement_end = start.saturating_add(replacement.chars().count());
         self.inner.caret.offset = replacement_end;
         Some(DocumentAutocorrection {
@@ -7383,8 +7495,10 @@ impl WordProcessorWidget {
             self.last_autocorrection = None;
             return false;
         }
-        self.inner.splice_block(
+        let region = self.inner.region_kind();
+        self.splice_via_action(
             state,
+            region,
             &correction.block,
             correction.start,
             correction.boundary_end,
@@ -7435,7 +7549,7 @@ impl WordProcessorWidget {
                 } else if self.inner.tab_advance(state) {
                     // Caret advanced to the next tab stop.
                 } else {
-                    self.inner.insert_str(state, "    ");
+                    self.insert_text_via_action(state, "    ");
                 }
             }
             Key::Named(NamedKey::Enter) => {
@@ -7488,7 +7602,7 @@ impl WordProcessorWidget {
             Key::Named(NamedKey::Space) => {
                 let correction = self.autocorrect_before_boundary(state);
                 if !self.inner.autoformat_on_space(state) {
-                    self.inner.insert_str(state, " ");
+                    self.insert_text_via_action(state, " ");
                 }
                 self.last_autocorrection = correction.map(|mut correction| {
                     correction.boundary_end = self.inner.caret.offset;
@@ -7507,7 +7621,7 @@ impl WordProcessorWidget {
                         .next()
                         .filter(|character| character.is_ascii_punctuation() && *character != '\'')
                         .and_then(|_| self.autocorrect_before_boundary(state));
-                    self.inner.insert_str(state, &typed);
+                    self.insert_text_via_action(state, &typed);
                     self.last_autocorrection = correction.map(|mut correction| {
                         correction.boundary_end = self.inner.caret.offset;
                         correction
@@ -7725,7 +7839,7 @@ impl WordProcessorWidget {
             "c" => self.clipboard_copy(state),
             "x" => {
                 self.clipboard_copy(state);
-                self.inner.delete_selection(state);
+                self.insert_text_via_action(state, "");
             }
             // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
             "v" if shift => self.clipboard_paste_plain(state),
@@ -8873,6 +8987,12 @@ impl WordProcessorWidget {
     /// Dispatch a click on a styles-panel target.
     fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
         match hit {
+            PanelHit::Close => {
+                self.styles_panel_open = false;
+                self.editing_field = None;
+                self.scrub = None;
+                self.dirty = true;
+            }
             PanelHit::Pick(id) => {
                 // A built-in style implies a structural kind, applied together as one
                 // action/undo boundary: picking "Heading 1" yields a *real* heading
@@ -12424,6 +12544,46 @@ mod tests {
 
         assert!(wp.undo_document_autocorrection(&mut state.doc));
         assert_eq!(wp.inner.current_text(&state.doc), "teh");
+    }
+
+    #[test]
+    fn multi_block_typing_dispatches_one_replace_selection_action() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "alpha");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "beta");
+        let ids = qdoc::model::blocks_in_order(
+            &state.doc,
+            &qdoc::model::open(&state.doc, &state.root).unwrap(),
+        );
+        wp.model_mut().set_caret(Caret {
+            block: ids[0].clone(),
+            offset: 2,
+        });
+        wp.model_mut().set_anchor();
+        wp.model_mut().set_caret(Caret {
+            block: ids[1].clone(),
+            offset: 2,
+        });
+
+        wp.insert_text_via_action(&mut state.doc, "X");
+
+        let dispatched = wp.last_dispatched_for_test().expect("action dispatched");
+        let action: crate::actions::WordProcessorAction =
+            serde_json::from_slice(&dispatched.payload).unwrap();
+        assert!(matches!(
+            action,
+            crate::actions::WordProcessorAction::ReplaceSelection { .. }
+        ));
+        let blocks = qdoc::model::materialize(
+            &state.doc,
+            &qdoc::model::open(&state.doc, &state.root).unwrap(),
+        )
+        .blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "alXta");
     }
 
     #[test]
