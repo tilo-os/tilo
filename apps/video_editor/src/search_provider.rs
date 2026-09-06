@@ -14,7 +14,7 @@ use ui::search::{
     SearchResult,
 };
 
-use crate::model::{Clip, Marker, MediaItem, Project, Track};
+use crate::model::{Clip, ClipEffect, Marker, MediaItem, Project, Track};
 use crate::timecode;
 
 /// Result-group headers. Separate kinds make a mixed query readable rather
@@ -23,6 +23,7 @@ pub const MARKER_KIND: &str = "Timeline markers";
 pub const CLIP_KIND: &str = "Timeline clips";
 pub const TRACK_KIND: &str = "Tracks";
 pub const MEDIA_KIND: &str = "Media";
+pub const EFFECT_KIND: &str = "Clip effects";
 
 /// A complete, cheap-to-clone catalogue over the current document snapshot.
 ///
@@ -68,6 +69,9 @@ impl ProjectSearchProvider {
                 continue;
             };
             provider.index_clip(clip, item, track);
+            for effect in &clip.effects {
+                provider.index_effect(clip, effect, item, track);
+            }
             for marker in &clip.markers {
                 provider.index_clip_marker(clip, marker, item);
             }
@@ -141,6 +145,25 @@ impl ProjectSearchProvider {
             )
             .with_subtitle(format!("{} · {}", track.name, timecode::clock(clip.start)))
             .with_icon(Icon::Film),
+        );
+    }
+
+    fn index_effect(&self, clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Track) {
+        let title = format!("{} effect", effect.kind.label());
+        self.put(
+            format!("{}\0{}\0{}", title, media.name, track.name),
+            SearchResult::for_action(
+                EFFECT_KIND,
+                title,
+                crate::actions::reveal_effect_address(clip.id, effect.id),
+            )
+            .with_subtitle(format!(
+                "{} · {} · {:.0}%",
+                media.name,
+                track.name,
+                effect.amount * 100.0
+            ))
+            .with_icon(Icon::Sparkles),
         );
     }
 
@@ -413,6 +436,48 @@ mod tests {
         assert!(
             palette.take_operation().is_none(),
             "deleted target is refused"
+        );
+    }
+
+    #[test]
+    fn duplicate_effect_instances_are_searchable_by_id_and_a_stale_one_is_refused() {
+        let mut project = project_with_things();
+        let clip_id = project.clips[0].id;
+        let clip = project.clip_mut(clip_id).expect("fixture clip");
+        clip.add_effect(crate::model::EffectKind::Sepia);
+        clip.add_effect(crate::model::EffectKind::Sepia);
+        let first = clip.effects[0].id;
+        let second = clip.effects[1].id;
+        assert_ne!(first, second, "two Sepias are distinct durable instances");
+
+        let provider = ProjectSearchProvider::new(&project);
+        let address = crate::actions::reveal_effect_address(clip_id, second);
+        let _hit = provider
+            .search("sepia effect")
+            .into_iter()
+            .find(|hit| hit.action_address() == Some(address.clone()))
+            .expect("the exact second Sepia is searchable");
+        let resources = crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
+            project: project.clone(),
+            ..Default::default()
+        });
+        assert!(
+            qos_actions::door::resolve(&resources, &address).is_some(),
+            "search address resolves through the canonical resource tree",
+        );
+
+        project
+            .clip_mut(clip_id)
+            .expect("fixture clip")
+            .remove_effect_id(second);
+        let current_resources =
+            crate::actions::provide_resources(&crate::actions::VideoResourceCtx {
+                project,
+                ..Default::default()
+            });
+        assert!(
+            qos_actions::door::resolve(&current_resources, &address).is_none(),
+            "the stale duplicate's canonical address cannot resolve to its neighbour",
         );
     }
 }
