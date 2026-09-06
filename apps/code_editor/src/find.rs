@@ -25,6 +25,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ButtonStyle, SearchField, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -120,6 +121,9 @@ pub struct FindBar {
     replace: SearchField,
     case_sensitive: bool,
     whole_word: bool,
+    /// Compact layouts keep match options behind a small overflow button so
+    /// the query remains editable without making those power options vanish.
+    options_open: bool,
 
     /// Match count and position, pushed in by the app after each recount.
     total: usize,
@@ -144,6 +148,7 @@ enum Btn {
     Case,
     Word,
     ToggleReplace,
+    Options,
     Close,
     ReplaceOne,
     ReplaceAll,
@@ -163,6 +168,7 @@ impl FindBar {
                 .without_clear(),
             case_sensitive: false,
             whole_word: false,
+            options_open: false,
             total: 0,
             current: None,
             rect: Rect::ZERO,
@@ -205,6 +211,7 @@ impl FindBar {
         }
         self.find.set_focused(true);
         self.replace.set_focused(false);
+        self.options_open = false;
         self.needs_redraw = true;
         self.events.push(FindEvent::QueryChanged);
     }
@@ -257,16 +264,26 @@ impl FindBar {
         }
     }
 
-    /// The controls showing right now, right-to-left from the bar's edge.
-    fn buttons() -> Vec<Btn> {
-        vec![
-            Btn::Case,
-            Btn::Word,
-            Btn::Prev,
-            Btn::Next,
-            Btn::ToggleReplace,
-            Btn::Close,
-        ]
+    /// Default the unmeasured first layout to compact, so a narrow first frame
+    /// never paints controls beyond the viewport.
+    fn compact_layout(&self) -> bool {
+        self.rect.width() <= 0.0 || self.rect.width() < 520.0
+    }
+
+    /// On narrow windows preserve the editable field, navigation and replace
+    /// affordances. Case/whole-word stay available from their keyboard/menu
+    /// commands without crowding the last visible button off-screen.
+    fn buttons(&self) -> Vec<Btn> {
+        let mut buttons = Vec::new();
+        if !self.compact_layout() {
+            buttons.extend([Btn::Case, Btn::Word]);
+        }
+        buttons.extend([Btn::Prev, Btn::Next, Btn::ToggleReplace]);
+        if self.compact_layout() {
+            buttons.push(Btn::Options);
+        }
+        buttons.push(Btn::Close);
+        buttons
     }
 
     fn label_of(b: Btn) -> &'static str {
@@ -276,6 +293,7 @@ impl FindBar {
             Btn::Case => "Aa",
             Btn::Word => "W",
             Btn::ToggleReplace => "\u{21C4}",
+            Btn::Options => "\u{2026}",
             Btn::Close => "\u{2715}",
             Btn::ReplaceOne => "Replace",
             Btn::ReplaceAll => "All",
@@ -289,6 +307,7 @@ impl FindBar {
             Btn::Case => "Match case",
             Btn::Word => "Whole word",
             Btn::ToggleReplace => "Toggle replace",
+            Btn::Options => "Find options",
             Btn::Close => "Close find bar",
             Btn::ReplaceOne => "Replace this match",
             Btn::ReplaceAll => "Replace all matches",
@@ -301,6 +320,7 @@ impl FindBar {
             Btn::Case => self.case_sensitive,
             Btn::Word => self.whole_word,
             Btn::ToggleReplace => self.replace_open,
+            Btn::Options => self.options_open,
             _ => false,
         }
     }
@@ -319,6 +339,7 @@ impl FindBar {
                 self.events.push(FindEvent::QueryChanged);
             }
             Btn::ToggleReplace => self.replace_open = !self.replace_open,
+            Btn::Options => self.options_open = !self.options_open,
             Btn::Close => {
                 self.close();
                 self.events.push(FindEvent::Close);
@@ -338,6 +359,7 @@ impl FindBar {
             "case" => Btn::Case,
             "word" => Btn::Word,
             "replace-toggle" => Btn::ToggleReplace,
+            "options" => Btn::Options,
             "close" => Btn::Close,
             "replace-one" => Btn::ReplaceOne,
             "replace-all" => Btn::ReplaceAll,
@@ -355,6 +377,15 @@ impl FindBar {
     /// Set the replacement as if typed.
     pub fn set_replacement(&mut self, r: &str) {
         self.replace.set_query(r);
+    }
+
+    /// Headless-review hook for the compact overflow menu.
+    pub fn show_options_for_shots(&mut self) {
+        self.options_open = true;
+        // The review state must demonstrate the checked treatment as well as
+        // the unchecked labels; ordinary interaction still starts both false.
+        self.case_sensitive = true;
+        self.needs_redraw = true;
     }
 
     /// Lay out the find row: the shared `SearchField`, padded on the right
@@ -407,7 +438,7 @@ impl FindBar {
     ) -> NodeId {
         let replace_node = self.replace.build_layout(taffy, theme, node_map);
         // The replace row's two buttons sit where the find row's cluster is.
-        let replace_controls = PAD * 2.0 + 96.0 + GAP + 56.0;
+        let replace_controls = PAD * 2.0 + REPLACE_ONE_W + GAP + REPLACE_ALL_W;
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and a freshly-created child cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -450,6 +481,11 @@ const GAP: f64 = 6.0;
 const PAD: f64 = 10.0;
 /// Width reserved for the "3 of 17" readout.
 const STATUS_W: f64 = 92.0;
+const COMPACT_STATUS_W: f64 = 60.0;
+/// Compact enough for a 390px editor while retaining the full, explicit
+/// labels. The old 96px/56px pair pushed "All" beyond the narrow viewport.
+const REPLACE_ONE_W: f64 = 80.0;
+const REPLACE_ALL_W: f64 = 48.0;
 
 impl Widget for FindBar {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -493,7 +529,12 @@ impl Widget for FindBar {
         // The find row leaves room on the right for the status readout and the
         // control cluster; the fields themselves are shared widgets sized by
         // their own layout.
-        let controls_w = STATUS_W + Self::buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
+        let status_w = if self.compact_layout() {
+            COMPACT_STATUS_W
+        } else {
+            STATUS_W
+        };
+        let controls_w = status_w + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
         let find_row = self.build_find_row(taffy, theme, node_map, controls_w);
 
         let mut rows = vec![find_row];
@@ -614,6 +655,9 @@ impl Widget for FindBar {
         self.draw_find_controls(scene, transform, text_renderer, theme);
         if self.replace_open {
             self.draw_replace_buttons(scene, transform, text_renderer, theme);
+        }
+        if self.compact_layout() && self.options_open {
+            self.draw_compact_options(scene, transform, text_renderer, theme);
         }
     }
 
@@ -741,6 +785,60 @@ impl Widget for FindBar {
         Some("find-bar")
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        self.visible.then(|| {
+            let mut node = AccessNode::new(Role::Toolbar)
+                .with_name(if self.replace_open {
+                    "Find and replace"
+                } else {
+                    "Find"
+                })
+                .with_description("Enter searches; Shift+Enter searches backwards; Escape closes")
+                .with_value(self.status_label())
+                .with_state(AccessState::new().focusable(true));
+            if self.compact_layout() && self.options_open {
+                node = node.with_children(vec![
+                    AccessNode::new(Role::Checkbox)
+                        .with_name("Match case")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(self.case_sensitive),
+                        ),
+                    AccessNode::new(Role::Checkbox)
+                        .with_name("Whole word")
+                        .with_state(AccessState::new().focusable(true).checked(self.whole_word)),
+                ]);
+            }
+            node
+        })
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.visible {
+            let mut children: Vec<&dyn Widget> = vec![&self.find];
+            if self.replace_open {
+                children.push(&self.replace);
+            }
+            children
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.visible {
+            let mut children: Vec<&mut dyn Widget> = vec![&mut self.find];
+            if self.replace_open {
+                children.push(&mut self.replace);
+            }
+            children
+        } else {
+            Vec::new()
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -772,7 +870,7 @@ impl FindBar {
         let find_row_mid = self.rect.y0 + BAR_HEIGHT / 2.0;
 
         // Status readout, immediately left of the control cluster.
-        let buttons = Self::buttons();
+        let buttons = self.buttons();
         let cluster_w = buttons.len() as f64 * (BTN_W + GAP);
         let cluster_x0 = self.rect.x1 - PAD - cluster_w;
         let status = self.status_label();
@@ -826,6 +924,65 @@ impl FindBar {
         }
     }
 
+    /// A real compact overflow menu rather than silently removing case and
+    /// whole-word matching. It intentionally floats over the replace row: the
+    /// options are transient, and doing so avoids reallocating the editor while
+    /// a user is typing a find query.
+    fn draw_compact_options(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let w = 172.0;
+        let h = BTN_H + PAD * 2.0;
+        let x1 = (self.rect.x1 - PAD).min(self.rect.x1);
+        let menu = Rect::new(
+            x1 - w,
+            self.rect.y0 + BAR_HEIGHT - 2.0,
+            x1,
+            self.rect.y0 + BAR_HEIGHT - 2.0 + h,
+        );
+        let shape = vello::kurbo::RoundedRect::from_rect(menu, 7.0);
+        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
+        for (index, button) in [Btn::Case, Btn::Word].into_iter().enumerate() {
+            let rect = Rect::new(
+                menu.x0 + PAD + index as f64 * 76.0,
+                menu.y0 + PAD,
+                menu.x0 + PAD + index as f64 * 76.0 + 70.0,
+                menu.y1 - PAD,
+            );
+            let label = match (button, self.is_active(button)) {
+                (Btn::Case, true) => "✓ Aa case",
+                (Btn::Case, false) => "Aa case",
+                (Btn::Word, true) => "✓ Whole",
+                (Btn::Word, false) => "Whole",
+                _ => "Option",
+            };
+            let face = ButtonFace::new(rect, label)
+                .style(if self.is_active(button) {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Ghost
+                })
+                .radius(6.0)
+                .text_size(11.0)
+                .hovered(rect.contains(self.hover))
+                .accessible_name(Self::accessible_name_of(button));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.button_rects.push((button, rect));
+        }
+    }
+
     /// Draw the replace row's "Replace"/"All" buttons, recording their hit
     /// rects.
     fn draw_replace_buttons(
@@ -837,13 +994,13 @@ impl FindBar {
     ) {
         let mid = self.rect.y0 + BAR_HEIGHT + (BAR_HEIGHT_REPLACE - BAR_HEIGHT) / 2.0;
         let all = Rect::new(
-            self.rect.x1 - PAD - 56.0,
+            self.rect.x1 - PAD - REPLACE_ALL_W,
             mid - BTN_H / 2.0,
             self.rect.x1 - PAD,
             mid + BTN_H / 2.0,
         );
         let one = Rect::new(
-            all.x0 - GAP - 96.0,
+            all.x0 - GAP - REPLACE_ONE_W,
             mid - BTN_H / 2.0,
             all.x0 - GAP,
             mid + BTN_H / 2.0,
