@@ -80,21 +80,27 @@ impl HostApplicationsProvider {
                     if let Some(app) = host_apps::find(&desktop_id) {
                         let st = chrome.borrow();
                         let tree = st.tree();
-                        crate::shell::placement::note_placement_for_launch_identities(
-                            &app.desktop_id,
-                            &app.window_identities,
-                            &tree,
-                            st.strip_viewport(),
-                        );
+                        let placement =
+                            crate::shell::placement::note_placement_for_launch_identities(
+                                &app.desktop_id,
+                                &app.window_identities,
+                                &tree,
+                                st.strip_viewport(),
+                            );
+                        let portal_workspace_id = tree
+                            .active_workspace()
+                            .map(|workspace| workspace.room.to_string());
+                        host_apps::queue_launch(host_apps::QueuedLaunch {
+                            desktop_id: app.desktop_id,
+                            display_name: app.name,
+                            placement,
+                            portal_workspace_id,
+                        });
+                        return;
                     }
                     // No capability publication or workspace id: no
                     // sandbox for either to act on.
-                    let portal_workspace_id = chrome
-                        .borrow()
-                        .tree()
-                        .active_workspace()
-                        .map(|workspace| workspace.room.to_string());
-                    if let Err(err) = host_apps::launch(&desktop_id, portal_workspace_id) {
+                    if let Err(err) = host_apps::launch(&desktop_id, None) {
                         tracing::error!(
                             target: "qos::app_launch",
                             desktop_id = %desktop_id,

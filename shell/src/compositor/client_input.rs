@@ -921,6 +921,38 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
+    /// Revoke client keyboard focus and retire every pressed seat key without
+    /// delivering it to an application.
+    ///
+    /// This is for a trusted input-source reset (lock/seat loss), where the
+    /// backend cannot promise that the physical release will arrive.  Smithay
+    /// owns the authoritative XKB pressed-key set, so clearing our small
+    /// routing ledger alone would leave modifiers stuck in the Wayland seat.
+    /// Focus is removed *before* the synthetic releases: forwarding then
+    /// clears Smithay's forwarded-key bookkeeping while no client can observe
+    /// a fabricated release.
+    pub fn reset_client_keyboard_state(&mut self) {
+        self.set_client_keyboard_focus(None);
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            self.client_input.forwarded_keys.clear();
+            return;
+        };
+        let pressed = keyboard.pressed_keys();
+        for keycode in pressed {
+            let serial = mint_serial(self);
+            let time = event_time(self);
+            let _: Option<()> = keyboard.input(
+                self,
+                keycode,
+                KeyState::Released,
+                serial,
+                time,
+                |_, _, _| FilterResult::Forward,
+            );
+        }
+        self.client_input.forwarded_keys.clear();
+    }
+
     /// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         if self.client_input.keyboard_focus == surface_id {
@@ -1459,6 +1491,32 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
     });
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+/// Advance the compositor seat's keyboard state while a trusted shell
+/// surface (currently the lock screen) owns the visible interaction.
+///
+/// The lock must never forward input to an application, but it cannot simply
+/// drop physical edges: a modifier pressed before lock and released while
+/// locked would otherwise remain pressed in Smithay after unlock.  Smithay
+/// only retires its forwarded-key set when the filter says `Forward`, so this
+/// path deliberately forwards every capture edge *after* revoking focus.
+/// With focus `None` no client sees it, while a pre-lock client key and a key
+/// held across unlock get the same coherent seat bookkeeping.
+pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return;
+    };
+    let Some(code) = evdev_keycode(key) else {
+        return;
+    };
+    state.set_client_keyboard_focus(None);
+    let pressed = key.state == ElementState::Pressed;
+    let _ = track_forwarded_key(&mut state.client_input.forwarded_keys, code, pressed, false);
+    // `Intercept` updates XKB but does not remove a previously forwarded
+    // key from Smithay's focus-enter key array.  Focus is already `None`, so
+    // `Forward` advances that internal ledger without emitting to an app.
+    let _ = state.deliver_client_key(code, pressed, true);
 }
 
 fn gate_keyboard_focus(candidate: Option<u64>, chrome_captures: bool) -> Option<u64> {
@@ -3114,6 +3172,103 @@ mod tests {
             false,
         ));
         state
+    }
+
+    /// A bare production seat used to test the lock/device-loss key-state
+    /// boundary without inventing an in-process text widget.
+    fn seat_state() -> crate::compositor::state::State {
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        crate::compositor::state::State::new(event_loop.handle(), display.handle())
+    }
+
+    fn seat_has_evdev_key(state: &crate::compositor::state::State, evdev: u32) -> bool {
+        state
+            .seat
+            .get_keyboard()
+            .expect("seat keyboard")
+            .pressed_keys()
+            .iter()
+            .any(|code| u32::from(*code) == evdev.saturating_add(8))
+    }
+
+    /// A lock is a trusted input-capture boundary, not permission to stop
+    /// advancing the seat XKB state.  This is the direct regression for a
+    /// held Shift/Ctrl/Backspace whose release happens while the lock is up.
+    #[test]
+    fn captured_keyboard_edges_retire_modifiers_and_editing_keys() {
+        let mut state = seat_state();
+        for (key, evdev) in [
+            (Key::Named(NamedKey::Shift), 42),
+            (Key::Named(NamedKey::Control), 29),
+            (Key::Named(NamedKey::Backspace), 14),
+        ] {
+            consume_keyboard_while_captured(&mut state, &key_event(key.clone(), true));
+            assert!(
+                seat_has_evdev_key(&state, evdev),
+                "captured press for {key:?} must still reach the seat XKB state"
+            );
+            consume_keyboard_while_captured(&mut state, &key_event(key, false));
+            assert!(
+                !seat_has_evdev_key(&state, evdev),
+                "captured release for evdev {evdev} must clear the seat state"
+            );
+        }
+    }
+
+    /// A lock/modal can begin after a client saw the press but before its
+    /// physical release. The captured release must consume the same routing
+    /// ledger entry, otherwise a later unrelated release could be forwarded
+    /// as an unmatched key-up after focus returns.
+    #[test]
+    fn captured_release_retires_a_preexisting_client_key_ledger_entry() {
+        let mut state = seat_state();
+        state.client_input.forwarded_keys.insert(14);
+        consume_keyboard_while_captured(
+            &mut state,
+            &key_event(Key::Named(NamedKey::Backspace), false),
+        );
+        assert!(
+            state.client_input.forwarded_keys.is_empty(),
+            "the captured Backspace release must retire the prior client press"
+        );
+    }
+
+    /// VT/device loss has no reliable release edge.  Resetting the seat,
+    /// rather than only stopping repeat, prevents that lost Backspace/Shift
+    /// from leaking into the next focused application after resume.
+    #[test]
+    fn keyboard_state_reset_clears_all_pressed_keys_without_client_focus() {
+        let mut state = seat_state();
+        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), true));
+        consume_keyboard_while_captured(
+            &mut state,
+            &key_event(Key::Named(NamedKey::Backspace), true),
+        );
+        assert!(seat_has_evdev_key(&state, 42));
+        assert!(seat_has_evdev_key(&state, 14));
+
+        state.reset_client_keyboard_state();
+
+        assert!(
+            state
+                .seat
+                .get_keyboard()
+                .expect("seat keyboard")
+                .pressed_keys()
+                .is_empty(),
+            "an input-source reset must leave no latent modifier or repeat key"
+        );
+        assert!(
+            state.client_input.forwarded_keys.is_empty(),
+            "the compositor routing ledger must retire with Smithay's seat state"
+        );
+        assert_eq!(state.client_input.keyboard_focus(), None);
     }
 
     const KILL_PEER: u64 = 77;

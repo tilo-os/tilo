@@ -1744,7 +1744,7 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
                     for tab in &mut group.tabs {
                         if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
                             && *surface_id == want.surface_id
-                            && *app_id != want.app_id
+                            && (*app_id != want.app_id || tab.title != want.title)
                         {
                             want.app_id.clone_into(app_id);
                             want.title.clone_into(&mut tab.title);

@@ -88,6 +88,7 @@ const CLEARED_ENV: &[&str] = &[
     "QOS_IDENTITY_BROKER_FD",
     "QOS_CLI_COMMAND",
     "QOS_NET_GATE",
+    "QOS_HOST_ACTIVATION_TOKEN",
 ];
 
 /// The desktop name qOS announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
@@ -173,6 +174,10 @@ pub struct LaunchEnv {
     pub x11_display: Option<String>,
     /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
     pub x11_authority: Option<PathBuf>,
+    /// A compositor-minted, single-use activation token for this user
+    /// initiated launch. It selects/focuses the first toplevel only; it is
+    /// not a sandbox capability or qOS authority.
+    pub activation_token: Option<String>,
     /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
     pub files: Vec<String>,
     /// URLs to open. Feed `%u`/`%U`.
@@ -288,6 +293,13 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     for key in CLEARED_ENV {
         env.remove(*key);
     }
+    if let Some(token) = env_spec
+        .activation_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    {
+        env.insert("XDG_ACTIVATION_TOKEN".to_string(), token.to_string());
+    }
     if let (Some(display), Some(authority)) = (&env_spec.x11_display, &env_spec.x11_authority) {
         env.insert("DISPLAY".to_string(), display.clone());
         env.insert(
@@ -295,6 +307,16 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
             authority.to_string_lossy().to_string(),
         );
         env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
+        // Keep the conventional startup-id channel for X11 clients.  The
+        // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
+        // from the X client's environment and relays it on map.
+        if let Some(token) = env_spec
+            .activation_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+        {
+            env.insert("DESKTOP_STARTUP_ID".to_string(), token.to_string());
+        }
     }
     env
 }
@@ -400,6 +422,30 @@ mod tests {
             !launch.env.contains_key("DISPLAY"),
             "without an explicit Xwayland bridge, a stale DISPLAY is worse than none"
         );
+    }
+
+    #[test]
+    fn activation_token_is_standard_child_environment_not_qos_authority() {
+        let launch = plan(
+            &spotify(),
+            &LaunchEnv {
+                activation_token: Some("one-shot-token".into()),
+                x11_display: Some(":42".into()),
+                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                ..Default::default()
+            },
+        )
+        .expect("plans");
+        assert_eq!(
+            launch.env.get("XDG_ACTIVATION_TOKEN").map(String::as_str),
+            Some("one-shot-token")
+        );
+        assert_eq!(
+            launch.env.get("DESKTOP_STARTUP_ID").map(String::as_str),
+            Some("one-shot-token"),
+            "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
+        );
+        assert!(!launch.env.contains_key("QOS_HOST_ACTIVATION_TOKEN"));
     }
 
     #[test]
