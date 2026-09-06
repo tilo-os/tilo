@@ -5241,6 +5241,13 @@ mod tests {
         admitted: &AdmittedJoinIdentity,
         op: &SignedOp,
     ) {
+        let artifact = op.artifact;
+        let accepted_before = broker_channels
+            .lock()
+            .expect("broker channels")
+            .state_for(artifact)
+            .scrollback_for(artifact, u64::MAX, 10)
+            .0;
         handle_signed_op_send(state, 1, route, admitted, op.clone());
         let mut forged = op.clone();
         forged.seq = 2;
@@ -5249,7 +5256,6 @@ mod tests {
             .expect("typed incremental");
         handle_signed_op_send(state, 1, route, admitted, forged);
 
-        let artifact = op.artifact;
         let audit = state
             .broker_channels
             .lock()
@@ -5274,8 +5280,8 @@ mod tests {
                 .state_for(artifact)
                 .scrollback_for(artifact, u64::MAX, 10)
                 .0,
-            vec![op.clone()],
-            "only the valid operation enters scrollback",
+            accepted_before,
+            "replay and forgery must not change the accepted scrollback",
         );
     }
 
