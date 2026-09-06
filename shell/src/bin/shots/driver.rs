@@ -807,6 +807,8 @@ impl ShellDriver {
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
             "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
+            "power-menu" => self.scene_power_menu(false),
+            "power-menu-confirm" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -1057,6 +1059,12 @@ impl ShellDriver {
             ];
         });
         self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_power_menu(&mut self, arm_shutdown: bool) {
+        self.fb
+            .host_mut()
+            .force_power_menu_for_visual_test(arm_shutdown);
     }
 
     fn scene_ws_settings_general(&mut self) {
@@ -1640,6 +1648,8 @@ impl ShellDriver {
         "qs-bt-drillin",
         "qs-bt-long-labels",
         "qs-vpn-long-labels",
+        "power-menu",
+        "power-menu-confirm",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",

@@ -20,8 +20,8 @@ use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
 
 #[derive(Debug, PartialEq, Eq)]
 enum KeyboardWire {
@@ -296,6 +296,212 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
             },
         ],
         "focus replacement must hand the held key to the new surface, then exactly one release follows there"
+    );
+}
+
+/// The ownership decision has to happen before a foreign client receives the
+/// press: merely teaching the chrome about a custom binding is too late once
+/// an Electron/RPM/Flatpak client has consumed it.  Keep the matching release
+/// out of the client as well, then prove the same cached config drives the
+/// actual navigation action.  F1 is intentionally non-configurable desktop
+/// help and must follow the same foreign-client boundary.
+#[test]
+fn custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .expect("xdg shell");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.ShortcutOwnership".into());
+    h.pump();
+    let foreign_surface_id = foreign_id(&h.state, "org.example.ShortcutOwnership");
+    h.state.set_client_keyboard_focus(Some(foreign_surface_id));
+    h.pump();
+    h.client.keyboard.clear();
+
+    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+    shortcuts
+        .set(
+            settings_store::hardware::ShortcutAction::NextTab,
+            settings_store::hardware::KeyChord::parse("Ctrl+J").expect("valid custom chord"),
+        )
+        .expect("custom chord is not shared by another action");
+    frame
+        .host_mut()
+        .set_shortcut_config(shortcuts)
+        .expect("valid effective shortcut configuration");
+
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    let bare_ctrl_press = captured_key_event(Key::Named(NamedKey::Control), true);
+    let bare_ctrl_release = captured_key_event(Key::Named(NamedKey::Control), false);
+    let old_tab_press = captured_key_event(Key::Named(NamedKey::Tab), true);
+    let old_tab_release = captured_key_event(Key::Named(NamedKey::Tab), false);
+    let custom_press = captured_key_event(Key::Character("j".into()), true);
+    let custom_release = captured_key_event(Key::Character("j".into()), false);
+
+    // Ctrl+Tab was Next Tab before the rebind.  The static compositor
+    // firewall must not keep claiming that old default after the effective
+    // table assigns Next Tab to Ctrl+J.
+    assert!(shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &bare_ctrl_press,
+        &ctrl,
+    ));
+    assert!(shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &old_tab_press,
+        &ctrl,
+    ));
+    assert!(shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &old_tab_release,
+        &ctrl,
+    ));
+    assert!(shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &bare_ctrl_release,
+        &Modifiers::default(),
+    ));
+    h.pump();
+    assert_eq!(
+        h.client.keyboard,
+        vec![
+            KeyboardWire::Key {
+                key: 29,
+                pressed: true
+            },
+            KeyboardWire::Key {
+                key: 15,
+                pressed: true
+            },
+            KeyboardWire::Key {
+                key: 15,
+                pressed: false
+            },
+            KeyboardWire::Key {
+                key: 29,
+                pressed: false
+            },
+        ],
+        "the previous Ctrl+Tab default must be a balanced client chord after rebinding"
+    );
+    h.client.keyboard.clear();
+
+    let before_tab = frame.chrome().tree().workspaces[0].strips[0].window_groups[0].active_tab;
+    assert!(
+        shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &bare_ctrl_press,
+            &ctrl,
+        ),
+        "a bare modifier must remain visible to the foreign client's xkb state"
+    );
+    assert!(
+        !shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &custom_press,
+            &ctrl,
+        ),
+        "Ctrl+J must be claimed before the focused foreign client"
+    );
+    let mut doc = automerge::AutoCommit::new();
+    let mut focus = None;
+    assert!(frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,));
+    assert!(
+        !shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &custom_release,
+            &ctrl,
+        ),
+        "the foreign client must not receive a release for its unseen Ctrl+J press"
+    );
+    assert!(
+        shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &bare_ctrl_release,
+            &Modifiers::default(),
+        ),
+        "the modifier release must still balance the foreign client's xkb state"
+    );
+    h.pump();
+    assert_eq!(
+        h.client.keyboard,
+        vec![
+            KeyboardWire::Key {
+                key: 29,
+                pressed: true,
+            },
+            KeyboardWire::Key {
+                key: 29,
+                pressed: false,
+            },
+        ],
+        "only the bare Ctrl transitions, never the custom Ctrl+J pair, may reach the foreign-client wire"
+    );
+    assert_ne!(
+        frame.chrome().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+        before_tab,
+        "the cached custom binding must fire Next Tab after pre-routing"
+    );
+
+    h.client.keyboard.clear();
+
+    let f1_press = captured_key_event(Key::Named(NamedKey::F1), true);
+    let f1_release = captured_key_event(Key::Named(NamedKey::F1), false);
+    let no_modifiers = Modifiers::default();
+    assert!(
+        !shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &f1_press,
+            &no_modifiers,
+        ),
+        "F1 desktop help must be claimed before the focused foreign client"
+    );
+    assert!(frame.dispatch_event(
+        &f1_press,
+        &no_modifiers,
+        &mut doc,
+        &automerge::ROOT,
+        &mut focus,
+    ));
+    assert!(
+        !shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &f1_release,
+            &no_modifiers,
+        ),
+        "the foreign client must not receive an unmatched F1 release"
+    );
+    h.pump();
+    assert!(
+        h.client.keyboard.is_empty(),
+        "F1 must never reach the focused foreign client"
+    );
+    assert!(
+        frame.chrome().overlays.shortcut_help,
+        "F1 must open the compositor-owned keyboard guide"
     );
 }
 

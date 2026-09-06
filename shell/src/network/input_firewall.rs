@@ -510,7 +510,12 @@ impl RemoteInputFirewall {
 
         let chord = chord_key_for_evdev(keycode);
 
-        // Everything the shell grabs from local input, in one table, so a chord added to the shell is refused here automatically.
+        // Remote input intentionally does not invoke the local user's
+        // configurable shortcuts: a sharing peer may type into the selected
+        // client, but cannot operate the desktop or race a Settings rebind.
+        // It still shares the immutable-system policy with local input (F1,
+        // Print Screen, launcher/lock chords), so remote input cannot bypass
+        // those compositor safety boundaries.
         if shell_owns_chord(chord, mods, overlay_open) {
             return Err(Denial::SystemChord);
         }
@@ -931,27 +936,19 @@ mod tests {
         );
     }
 
-    /// A chord the shell grabs is refused by the same table without naming it here: `Ctrl+K` opens the search palette.
+    /// An immutable chord is refused by the same table without a second
+    /// remote-only list. Configurable desktop bindings deliberately remain
+    /// client input for a sharing peer.
     #[test]
-    fn a_chord_the_shell_grabs_is_refused_from_the_shared_table() {
+    fn immutable_chord_is_refused_from_the_shared_table() {
         let mut fw = firewall();
         let now = Instant::now();
-        let _ = fw.review(
-            PEER,
-            SHARED,
-            &InputEvent::Key {
-                keysym: keycode::LEFT_CTRL,
-                pressed: true,
-                modifiers: 0,
-            },
-            now,
-        );
         assert_eq!(
             fw.review(
                 PEER,
                 SHARED,
                 &InputEvent::Key {
-                    keysym: 37, // 'k'
+                    keysym: 59, // F1
                     pressed: true,
                     modifiers: 0
                 },

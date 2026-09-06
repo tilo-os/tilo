@@ -195,8 +195,11 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             // Where a host package and an identically identified Flatpak are
             // both installed, retain the Flatpak. It has its own confinement,
             // and this matches the host-app catalogue's existing preference.
-            if entry_is_flatpak(&entry) && !entry_is_flatpak(&entries[existing_index]) {
-                entries[existing_index] = entry;
+            if let Some(existing) = entries.get_mut(existing_index)
+                && entry_is_flatpak(&entry)
+                && !entry_is_flatpak(existing)
+            {
+                *existing = entry;
             }
         } else {
             entries.push(entry);

@@ -365,6 +365,11 @@ pub struct ChromeState {
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
     session_locked: bool,
+    /// Edge-triggered request from the shell's power menu.  The native
+    /// compositor drains this and is the only layer allowed to transition
+    /// the session lock state, so a UI action cannot diverge from the lock
+    /// screen, client-focus and input-capture lifecycle.
+    session_lock_requested: bool,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`].
@@ -446,6 +451,7 @@ impl ChromeState {
             dnd: false,
             visual_alert_until: None,
             session_locked: false,
+            session_lock_requested: false,
             fullscreen_group: None,
             maximized_group: None,
             peer_sync_enabled: false,
@@ -759,9 +765,9 @@ impl ChromeState {
         let app_id = match &tab.tile {
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
-            TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
-                app_id.clone()
-            }
+            TileContent::Foreign { app_id, .. }
+            | TileContent::PeerWindow { app_id, .. }
+            | TileContent::LocalApp { app_id, .. } => app_id.clone(),
             TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
                 kind.app_id()
             }
@@ -1223,6 +1229,20 @@ impl ChromeState {
 
     pub fn session_locked(&self) -> bool {
         self.session_locked
+    }
+
+    /// Queue a lock requested by the in-compositor power menu.  This is an
+    /// edge, rather than a second source of truth for whether the session is
+    /// locked: the native loop drains it into [`SessionManager`].
+    pub fn request_session_lock(&mut self) {
+        self.session_lock_requested = true;
+    }
+
+    /// Consume one pending shell-originated lock request.  Kept private to
+    /// the shell crate because only the compositor runtime may perform the
+    /// session transition.
+    pub(crate) fn take_session_lock_request(&mut self) -> bool {
+        std::mem::take(&mut self.session_lock_requested)
     }
 
     /// Called once per frame; no-op when no bridge is installed.

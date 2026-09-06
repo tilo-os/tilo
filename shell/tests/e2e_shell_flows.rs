@@ -28,13 +28,14 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
@@ -801,17 +802,18 @@ fn e2e_tab_drag_reorder() {
         "the actual content hosts must follow the reordered tab strip",
     );
     let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
-
-    // TabBar's layout-spring: `LAYOUT_ANIM_MS = 180` (ui/src/widget/tabs.rs).
-    // 250 ms gives margin for every pill to converge from its pre-drop
-    // `prev_rect` to `tab_rects[i]` before the golden capture — without it
-    // the spring is still ~70% interpolated and back-to-back runs diverge.
-    std::thread::sleep(Duration::from_millis(250));
-    // Event-less pump + draw so the bar sees "post-LAYOUT_ANIM_MS" next draw.
+    group.bar_mut_for_tests().force_settled_for_tests();
+    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
+    assert!(
+        group.bar_mut_for_tests().is_settled_for_tests(),
+        "the golden must sample a static tab row, not wall-clock animation"
+    );
+    // One event-less draw primes title shaping at the pinned resting state.
     {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
+    let (_settled_taffy, _settled_child) = layout_drag_reorder_group(&mut group, &theme, &mut tr);
 
     render_frame_to(
         &mut group,
@@ -1000,27 +1002,35 @@ fn e2e_open_quick_settings() {
         "root-level click on the three-dot tray pill should open the quick-settings overlay"
     );
 
-    // Let the 180 ms open fade settle so the capture shows a fully-open tray.
-    let deadline = Instant::now() + Duration::from_millis(400);
-    while h.root.needs_animation_frame() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(30));
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        h.root
-            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-    }
+    // The open intent is stored in shared chrome state, while the retained
+    // host owns the transition. Pin that production transition at its resting
+    // value so this assertion captures Quick Settings rather than a valid
+    // state whose first animation frame is still fully transparent.
+    h.root
+        .as_any_mut()
+        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+        .expect("shell integration root remains a ShellOverlayHost")
+        .force_quick_settings_settled();
 
     h.draw_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-07-quick-settings-open.png"),
     );
     if renderer_opt.is_some() {
+        let before = out_dir.join("e2e-06-quick-settings-pre.png");
         let rendered = out_dir.join("e2e-07-quick-settings-open.png");
         assert_png_nonempty(&rendered);
+        let panel = h
+            .root
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+            .expect("shell integration root remains a ShellOverlayHost")
+            .quick_settings_rect_for_tests();
+        assert_region_visibly_differs(&before, &rendered, panel, 1_000);
         // The topbar clock (chrono::Local) shows behind the quick-settings
         // popover, making this render wall-clock-dependent — a golden would flake
-        // once a minute, so only the state transition + non-empty PNG are
-        // asserted until the clock is mockable.
+        // once a minute. Compare only the panel's deterministic footprint so
+        // a boolean open state can never pass while the overlay is absent.
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
@@ -1275,76 +1285,6 @@ fn e2e_maximized_tile_floating_controls() {
     );
 }
 
-/// Sibling `TabBar` returning full `tab_rects` (unlike `probe_tab_centers`),
-/// for per-pill hover-cluster coordinates.
-fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
-    let mut concrete = TabBar::new(
-        "g200",
-        vec![
-            TabDescriptor {
-                id: 1,
-                title: "Notes".into(),
-                app_kind: Some(AppKind::Editor),
-            },
-            TabDescriptor {
-                id: 2,
-                title: "Files".into(),
-                app_kind: Some(AppKind::Files),
-            },
-            TabDescriptor {
-                id: 3,
-                title: "Terminal".into(),
-                app_kind: Some(AppKind::Terminal),
-            },
-            TabDescriptor {
-                id: 4,
-                title: "Browser".into(),
-                app_kind: Some(AppKind::Browser),
-            },
-        ],
-        1,
-    );
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = concrete.build_layout(&mut taffy, &theme, &mut map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(40.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let map_copy = map.clone();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(40.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_copy.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    concrete.apply_layout(&taffy, child, Point::ORIGIN);
-    let mut s = Scene::new();
-    let presence = PresenceCtx::default();
-    concrete.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-    concrete.tab_rects().to_vec()
-}
-
 fn assert_png_nonempty(path: &Path) {
     let meta = std::fs::metadata(path)
         .unwrap_or_else(|e| panic!("expected PNG at {}: {e}", path.display()));
@@ -1429,6 +1369,37 @@ fn assert_frames_visibly_differ(before: &Path, after: &Path) {
     );
 }
 
+fn assert_region_visibly_differs(before: &Path, after: &Path, region: Rect, minimum: usize) {
+    let before = decode_rgba(before);
+    let after = decode_rgba(after);
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "region-changing frames must have matching dimensions",
+    );
+    let x0 = region.x0.floor().max(0.0) as u32;
+    let y0 = region.y0.floor().max(0.0) as u32;
+    let x1 = region.x1.ceil().min(f64::from(before.width)) as u32;
+    let y1 = region.y1.ceil().min(f64::from(before.height)) as u32;
+    assert!(
+        x0 < x1 && y0 < y1,
+        "comparison region must intersect the frame"
+    );
+    let mut changed = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let offset = ((y * before.width + x) * 4) as usize;
+            if before.rgba[offset..offset + 3] != after.rgba[offset..offset + 3] {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed >= minimum,
+        "expected at least {minimum} changed pixels inside {region:?}, found {changed}",
+    );
+}
+
 // Test 5: live-binary global hotkey routing
 //
 // Guards Cmd+K / Cmd+Tab / Escape as the running binary actually wires
@@ -1485,7 +1456,7 @@ fn pump_host(
 }
 
 #[test]
-fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
+fn e2e_super_k_opens_search_palette_in_live_binary_path() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1495,12 +1466,12 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
 
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
     let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
-    assert!(handled, "Ctrl+K must be consumed by the overlay host");
+    assert!(handled, "Super+K must be consumed by the overlay host");
     assert!(
         host.palette_visible(),
-        "Ctrl+K must open the global-search palette in the live-binary event path"
+        "Super+K must open the global-search palette in the live-binary event path"
     );
 }
 
@@ -1512,9 +1483,9 @@ fn e2e_escape_closes_search_palette() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
-    // Open via Ctrl+K rather than bypassing the host's state machine, guarding
+    // Open via Super+K rather than bypassing the host's state machine, guarding
     // against a mutation-ordering regression.
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
     let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
     assert!(host.palette_visible());
 
@@ -1832,16 +1803,6 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         &out_dir.join("e2e-undo-baseline.png"),
     );
 
-    // Confirms the tab-close undo gap noted above; this test passes via the
-    // editor-character path below.
-    probe_tab_close_undo_gap(&mut h);
-    // Rebuild a fresh editor — the tab list may already have been clobbered.
-    let mut h = UndoHarness::new();
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-undo-baseline.png"),
-    );
-
     // --- Mutate: type 'a'; EditorApp splices into state.doc's BODY_KEY Text. ---
     let mods = Modifiers::default();
     h.pump_event(&char_key_press("a"), mods);
@@ -1879,56 +1840,6 @@ fn e2e_undo_redo_round_trip_restores_golden() {
     );
 
     assert_undo_redo_goldens(renderer_opt.as_ref(), &out_dir);
-}
-
-/// Click the (possibly nonexistent) tab's close button and report whether
-/// that pushed an undo entry — the CRDT-vs-widget-only tab list gap this
-/// test falls through past. Split out of
-/// [`e2e_undo_redo_round_trip_restores_golden`] to keep that test short.
-fn probe_tab_close_undo_gap(h: &mut UndoHarness) {
-    let before = h.state.peek_last_undo().is_some();
-    // Close-rect geometry from TabBar offsets (close_w=18, close_inset=4); with
-    // one tab, probe_tab_rects()[0].x1 is close enough to the live pill's edge.
-    let probe = probe_tab_rects();
-    if let Some(pill) = probe.first() {
-        // x0 = x1 - 22 + 9 for centre
-        let close_center = Point::new(pill.x1 - 13.0, f64::midpoint(pill.y0, pill.y1));
-        let mods = Modifiers::default();
-        h.pump_event(
-            &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(close_center.x, close_center.y),
-            },
-            mods,
-        );
-        h.pump_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        h.pump_event(
-            &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-            mods,
-        );
-        h.state.commit_action(None, None);
-    }
-    let after = h.state.peek_last_undo().is_some();
-    if before == after && !after {
-        eprintln!(
-            "critical finding: tab-close gesture left state.undo_stack \
-             empty (before={before}, after={after}). Tab list is widget-\
-             only, not CRDT-persisted — Ctrl+Z cannot roll it back. Test \
-             falls through to editor-character gesture to exercise the \
-             undo plumbing end-to-end."
-        );
-    }
 }
 
 /// The three-PNG non-emptiness, diff, and golden checks for the undo

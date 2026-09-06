@@ -882,7 +882,9 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         // foreign surface and a peer window wear the catch-all `Settings`
         // glyph — and keep wearing it when a `PeerWindow` binds in and
         // becomes `Foreign`, so the pill doesn't change under the user.
-        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } => UiKind::Settings,
+        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } | ShellTile::LocalApp { .. } => {
+            UiKind::Settings
+        }
     }
 }
 
@@ -903,6 +905,14 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
         ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: note.clone(),
+        },
+        ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
+            title: label.clone(),
+            detail: if note.is_empty() {
+                "Restoring this window…".into()
+            } else {
+                note.clone()
+            },
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
             ShellKind::Terminal => match TerminalWidget::spawn_default() {
