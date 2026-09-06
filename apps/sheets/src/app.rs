@@ -3973,6 +3973,24 @@ impl Widget for SheetsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The workbook is the sole stable top-level root. Sheets/cells remain
+        // in the revisioned retained search provider, not this RPC page.
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| vec![crate::actions::workbook_root(&self.sheets_resource_ctx())])
+            .unwrap_or_default();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }

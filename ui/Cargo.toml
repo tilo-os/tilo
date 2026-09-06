@@ -75,6 +75,7 @@ adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 # runtime-collab is the qOS collab broker Cap'n Proto SDK.
 # `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
+capnp.workspace = true
 capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # Load the launcher-bound identity and certified device presentation used to

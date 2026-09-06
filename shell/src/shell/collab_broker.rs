@@ -448,8 +448,50 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
+    /// Construct the shell-facing facade around a real broker state for
+    /// LocalSet integration tests. Production construction remains owned by
+    /// the shell bootstrap, so tests cannot accidentally bypass it in a
+    /// non-test build.
+    #[cfg(test)]
+    pub(crate) fn from_state_for_test(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
+    /// Bounded, nonblocking bridge from shell chrome into the broker's
+    /// LocalSet-owned application directory capabilities. Palette code must
+    /// poll the returned oneshot in its cache owner; it must never block a
+    /// compositor frame on a Cap'n Proto RPC.
+    #[must_use]
+    pub fn action_directory_request_queue(
+        &self,
+    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRequestQueue {
+        self.state.action_directory_request_queue()
+    }
+
     pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
         self.state.published_surfaces()
+    }
+
+    /// Small inert routes for currently connected ActionDirectory sources.
+    /// Shell search uses these to fan out bounded pull queries; capabilities
+    /// themselves remain owned by the broker LocalSet.
+    pub fn action_directory_roots(
+        &self,
+    ) -> Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot> {
+        self.state.action_directory_roots()
+    }
+
+    /// Fetch one deterministic, bounded page of inert directory routes.
+    /// Callers that expose root navigation retain `next_after_peer`; routine
+    /// palette queries use the first page without rebuilding the registry.
+    #[must_use]
+    pub fn action_directory_root_page(
+        &self,
+        after_peer: Option<u64>,
+        max_results: usize,
+    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRootPage {
+        self.state
+            .action_directory_root_page(after_peer, max_results)
     }
 
     /// Invoke one published application action.

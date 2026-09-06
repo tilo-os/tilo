@@ -20,7 +20,9 @@ pub use qos_actions::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
-use super::{ActionReceipt, QueryArgs, ResourceKind, SearchRegistry, SearchResult};
+use super::{
+    ActionReceipt, InvocationDisposition, QueryArgs, ResourceKind, SearchRegistry, SearchResult,
+};
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,12 +264,33 @@ impl SelectedAction<'_> {
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<ActionReceipt, ActionError> {
+        match self.invoke_disposition(doc, root, chrome, args)? {
+            InvocationDisposition::Accepted(receipt) => Ok(receipt),
+            InvocationDisposition::Pending(_) => Err(ActionError::Refused(
+                "action admission is pending; use invoke_disposition and poll its ticket".into(),
+            )),
+        }
+    }
+
+    /// Begin an invocation without fabricating success for a remote action
+    /// whose current authority is still being checked. Agents can retain and
+    /// poll the returned ticket just as the visual palette does.
+    pub fn invoke_disposition(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        args: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<InvocationDisposition, ActionError> {
         let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
+        if let Some(begin) = &self.result.on_begin_invoke {
+            return begin(doc, root, chrome, &bound);
+        }
         if let Some(invoke) = &self.result.on_invoke {
-            invoke(doc, root, chrome, &bound)
+            invoke(doc, root, chrome, &bound).map(InvocationDisposition::Accepted)
         } else {
             (self.result.on_open)(doc, root, chrome, &bound)?;
-            Ok(ActionReceipt::completed())
+            Ok(InvocationDisposition::Accepted(ActionReceipt::completed()))
         }
     }
 
@@ -627,6 +650,7 @@ mod tests {
                     Ok(())
                 }),
                 on_invoke: None,
+                on_begin_invoke: None,
             }]
         }
     }
@@ -665,6 +689,7 @@ mod tests {
                         },
                     })
                 })),
+                on_begin_invoke: None,
             }]
         }
     }

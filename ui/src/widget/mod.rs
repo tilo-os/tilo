@@ -137,6 +137,51 @@ pub(crate) fn resolve_widget_resource(
         .find_map(|child| resolve_widget_resource(child, doc, id))
 }
 
+/// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
+/// is meaningful only while `exhausted` is false and is never interpreted by
+/// a different widget or document revision.
+pub struct ActionDirectoryResourcePage {
+    pub resources: Vec<qos_actions::Resource>,
+    pub next_cursor: Vec<u8>,
+    pub exhausted: bool,
+}
+
+/// Return the retained widget at a stable pre-order position without asking it
+/// to materialize resources.  The app-owned cursor binds this ordinal to the
+/// directory revision, so a structural change invalidates instead of shifting
+/// a caller into an unrelated sibling.
+pub(crate) fn action_directory_widget_at<'a>(
+    widget: &'a dyn Widget,
+    target: usize,
+    ordinal: &mut usize,
+) -> Option<&'a dyn Widget> {
+    if *ordinal == target {
+        return Some(widget);
+    }
+    *ordinal = ordinal.saturating_add(1);
+    for child in widget.children() {
+        if let Some(found) = action_directory_widget_at(child, target, ordinal) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Ask the resource's owning widget for its explicit directory disclosure
+/// capability without traversing or materialising any lazy descendants.
+pub(crate) fn resolve_action_directory_visibility(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<qos_actions::ActionAddress> {
+    widget.action_directory_visibility(doc, id).or_else(|| {
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| resolve_action_directory_visibility(child, doc, id))
+    })
+}
+
 /// Last-resort accessible label for controls whose constructor already
 /// requires a stable id. Explicit localized names remain preferable, but a
 /// standard control should never become silent merely because an author did
@@ -1042,9 +1087,46 @@ pub trait Widget {
         Vec::new()
     }
 
+    /// One cursor-addressable page of resource roots safe to expose through
+    /// the broker pull directory. `max_results` is a hard ceiling; a live
+    /// provider must return a non-empty opaque cursor when it has a tail.
+    /// `None` is intentionally the default: a legacy
+    /// [`Self::resources`] implementation may build an unbounded contextual
+    /// snapshot, which must not be reached from a remote query or revision.
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        _cursor: &[u8],
+        _max_results: usize,
+    ) -> Option<ActionDirectoryResourcePage> {
+        None
+    }
+
+    /// Revision of non-CRDT bounded directory roots. Return `None` when this
+    /// widget has no independently mutable remote directory state; callers
+    /// combine provided values with document heads and search generations.
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        None
+    }
+
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
     fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<qos_actions::Resource> {
+        None
+    }
+
+    /// Explicit disclosure authority for an actionless resource container in
+    /// the broker pull directory. Returning `None` means its label and
+    /// hierarchy are not remotely discoverable unless the resource itself has
+    /// a safe view action. This is intentionally separate from `resources`:
+    /// selecting an arbitrary mutating action as a visibility proxy could
+    /// leak a container name to someone who may only perform that action in a
+    /// different context.
+    fn action_directory_visibility(
+        &self,
+        _doc: &AutoCommit,
+        _resource_id: &str,
+    ) -> Option<qos_actions::ActionAddress> {
         None
     }
 

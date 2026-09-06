@@ -500,6 +500,20 @@ pub struct FileExplorerWidget {
     /// The qOS collaborative-workspace roots the FUSE driver mounts, surfaced as
     /// first-class System locations in the sidebar. Resolved once at startup.
     workspace_roots: Vec<PathBuf>,
+    /// Durable global-search projections. These are retained for the widget's
+    /// lifetime: opening Ctrl+K clones cheap handles and never rescans Files'
+    /// sources. The monotonically increasing source revision is advanced only
+    /// by an explicit Files refresh/mutation.
+    places_search_revision: u64,
+    collaborative_search_revision: Cell<u64>,
+    remote_accounts_search_revision: u64,
+    places_search: crate::search_provider::PlacesSearchProvider,
+    collaborative_search: crate::search_provider::CollaborativeRecordSearchProvider,
+    /// One bounded mount page is admitted at a time. `RefCell` lets opening
+    /// global search advance a continuation without making its query path
+    /// rescan or materialise the whole workspace.
+    collaborative_record_pager: RefCell<crate::model::WorkspaceRecordIndexPager>,
+    remote_accounts_search: crate::search_provider::RemoteAccountSearchProvider,
     /// The row a drag started on. `Some(path)` while a drag is live; a floating
     /// ghost tracks the cursor. On release the app resolves the drop: onto a
     /// folder row (or the Up target) moves [`Self::drag_paths`] there; over the
@@ -658,6 +672,10 @@ impl FileExplorerWidget {
     /// so the standard favourites are deterministic without depending on the
     /// build machine's locale.
     #[doc(hidden)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor declares the complete stable widget state in one auditable place"
+    )]
     pub fn with_persistence_dirs(
         config_dir: Option<PathBuf>,
         home: Option<PathBuf>,
@@ -674,6 +692,20 @@ impl FileExplorerWidget {
             (None, _) => Vec::new(),
         };
         let show_hidden = false;
+        let workspace_roots = crate::model::workspace_roots();
+        // Construct each durable namespace once. Subsequent refreshes are
+        // revision-gated by `refresh_external_search_catalogs`, never by palette input.
+        let places_search = crate::search_provider::PlacesSearchProvider::new(&favorites);
+        let mut collaborative_record_pager = crate::model::WorkspaceRecordIndexPager::new(
+            &crate::model::workspace_record_authority_roots(),
+        );
+        let initial_collaborative_page = collaborative_record_pager.next_page();
+        let collaborative_search = crate::search_provider::CollaborativeRecordSearchProvider::new(
+            &initial_collaborative_page.records,
+        );
+        let remote_accounts = crate::remote_accounts::load();
+        let remote_accounts_search =
+            crate::search_provider::RemoteAccountSearchProvider::new(&remote_accounts);
         let mut entries = read_dir_sync(&cwd).unwrap_or_default();
         if !show_hidden {
             entries.retain(|e| !e.name.starts_with('.'));
@@ -746,7 +778,14 @@ impl FileExplorerWidget {
             zoom_level,
             show_hidden,
             user_dirs,
-            workspace_roots: crate::model::workspace_roots(),
+            workspace_roots,
+            places_search_revision: 0,
+            collaborative_search_revision: Cell::new(0),
+            remote_accounts_search_revision: 0,
+            places_search,
+            collaborative_search,
+            collaborative_record_pager: RefCell::new(collaborative_record_pager),
+            remote_accounts_search,
             pin_drag: None,
             drag_paths: Vec::new(),
             armed_drag: None,
@@ -797,6 +836,47 @@ impl FileExplorerWidget {
         if let Some(dir) = self.config_dir.as_deref() {
             favorites::save(dir, &self.favs.borrow().favorites);
         }
+    }
+
+    /// Refresh an already-loaded private Places projection. This is deliberately
+    /// called only by the favourite mutation paths, never by a palette query or
+    /// normal CRDT `sync`.
+    fn refresh_places_search(&mut self) {
+        self.places_search_revision = self.places_search_revision.wrapping_add(1);
+        let favorites = self.favs.borrow().favorites.clone();
+        self.places_search
+            .refresh(self.places_search_revision, &favorites);
+    }
+
+    /// Admit the next bounded collaborative mount page. Search state is reset
+    /// only when the source authority generation changes; otherwise the
+    /// retained `SearchCatalog` gets exactly the newly fetched rows.
+    fn advance_collaborative_search_page(&self) -> crate::model::WorkspaceRecordIndexPage {
+        let page = self.collaborative_record_pager.borrow_mut().next_page();
+        let revision = self.collaborative_search_revision.get();
+        if page.reset {
+            let next = revision.wrapping_add(1);
+            self.collaborative_search_revision.set(next);
+            self.collaborative_search.refresh(next, &page.records);
+        } else {
+            self.collaborative_search
+                .append_page(revision, &page.records);
+        }
+        page
+    }
+
+    /// Refresh external metadata after an explicit directory refresh/navigation
+    /// or completed remote operation. The mount portion consumes a single
+    /// bounded continuation page, never its entire authority.
+    fn refresh_external_search_catalogs(&mut self) {
+        let page = self.advance_collaborative_search_page();
+        if page.truncated {
+            self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+        }
+        self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
+        let accounts = crate::remote_accounts::load();
+        self.remote_accounts_search
+            .refresh(self.remote_accounts_search_revision, &accounts);
     }
 
     /// The entries currently shown. (There is no in-app search field — search
@@ -1185,6 +1265,7 @@ impl FileExplorerWidget {
         // previous valid directory and silently clearing the error.
         self.current_path = path;
         self.is_loading = false;
+        self.refresh_external_search_catalogs();
     }
 
     /// Go to the parent directory (history-aware).
@@ -1229,11 +1310,18 @@ impl FileExplorerWidget {
             return false;
         }
         self.next_metadata_refresh = now + LIVE_METADATA_REFRESH_INTERVAL;
+        let catalog_changed = self
+            .collaborative_record_pager
+            .borrow_mut()
+            .poll_generation();
+        // `sync` admits the one bounded page for this turn. Keep polling and
+        // admission separate so an authority change cannot consume two pages
+        // in one UI frame.
         let identities_changed = self.refresh_trusted_identities(None);
         if self.renaming.is_some() || self.pin_drag.is_some() {
-            return identities_changed;
+            return identities_changed || catalog_changed;
         }
-        self.refresh_metadata_preserving_view() || identities_changed
+        self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
@@ -2676,6 +2764,7 @@ impl FileExplorerWidget {
         };
         if added {
             self.save_favorites();
+            self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
         }
         true
@@ -2689,6 +2778,7 @@ impl FileExplorerWidget {
         };
         if removed {
             self.save_favorites();
+            self.refresh_places_search();
             self.status = Some(t("files-removed-favourite"));
         }
         true
@@ -2696,12 +2786,13 @@ impl FileExplorerWidget {
 
     /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
     /// (drag-to-reorder drop).
-    fn apply_reorder_favorite(&self, from: usize, to: usize) -> bool {
+    fn apply_reorder_favorite(&mut self, from: usize, to: usize) -> bool {
         {
             let mut favs = self.favs.borrow_mut();
             favorites::reorder(&mut favs.favorites, from, to);
         }
         self.save_favorites();
+        self.refresh_places_search();
         true
     }
 
@@ -5971,6 +6062,103 @@ impl FileExplorerWidget {
     }
 }
 
+impl FileExplorerWidget {
+    /// The small, stable root exposed to the broker directory.  Listing a
+    /// folder may entail hundreds of thousands of entries, so entries,
+    /// templates, places, and remote projections stay behind their retained
+    /// search providers rather than being copied into this root page.
+    fn action_directory_folder_root(&self) -> Resource {
+        let mut folder = Resource::new(
+            crate::search_provider::folder_resource_id(&self.current_path),
+            "files.folder",
+            self.current_path.display().to_string(),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh folder",
+            OperationKind::Effect,
+            "files.refresh",
+            &"",
+        ) {
+            folder.actions.push(spec.with_contract(ActionContract {
+                availability: if self.current_path.exists() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_missing".into(),
+                        reason: "The current folder no longer exists".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::default()
+            }));
+        }
+        folder.actions.push(
+            ActionSpec::prompted_operation(
+                "navigate",
+                "Open location",
+                "Folder path",
+                "/path/to/folder",
+                OperationKind::View,
+                "files.navigate",
+                |path| {
+                    EncodedAction::encode_operation("files.navigate", &path)
+                        .expect("string payload")
+                },
+            )
+            .with_contract(ActionContract::view()),
+        );
+        let new_folder = ActionSpec::prompted_operation(
+            "new-folder",
+            "New folder",
+            "Folder name",
+            "New Folder",
+            OperationKind::Effect,
+            "files.new-folder",
+            |name| {
+                EncodedAction::encode_operation("files.new-folder", &name)
+                    .expect("folder name is serializable")
+            },
+        )
+        .with_contract(ActionContract {
+            availability: if self.current_path.is_dir() {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "location_unavailable".into(),
+                    reason: "The current location cannot contain a new folder".into(),
+                }
+            },
+            permission: PermissionRequirement::Write,
+            reversible: false,
+            ..ActionContract::default()
+        });
+        folder.actions.push(new_folder);
+        folder.actions.push(
+            ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
+                .expect("file operation payload is serializable")
+                .with_contract(ActionContract {
+                    availability: if self.clipboard.is_empty() {
+                        Availability::Unavailable {
+                            code: "clipboard_empty".into(),
+                            reason: "Copy or cut files before pasting".into(),
+                        }
+                    } else {
+                        Availability::Available
+                    },
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Low,
+                    confirmation: ConfirmationPolicy::None,
+                    retry: RetryPolicy::AtMostOnce,
+                    reversible: false,
+                    ..ActionContract::default()
+                }),
+        );
+        folder
+    }
+}
+
 impl Widget for FileExplorerWidget {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -6480,45 +6668,10 @@ impl Widget for FileExplorerWidget {
             }
             folder.children.push(resource);
         }
-        // Collaborative identity is the immutable record UUID. The operation
-        // resolves its mutable path only when invoked, so rename/move races do
-        // not turn stale search provenance into navigation authority.
-        // An entry already visible in this folder publishes the canonical
-        // record resource below, with its complete command surface. Avoid a
-        // second resource with the same UUID address here: duplicates make an
-        // action-door lookup depend on incidental tree order.
-        let visible_record_ids: std::collections::BTreeSet<_> = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.record_id.map(uuid::Uuid::from_bytes))
-            .collect();
-        let mut exported_records = std::collections::BTreeSet::new();
-        for record in crate::model::read_workspace_record_index(&self.workspace_roots)
-            .records
-            .into_iter()
-            .filter(|record| {
-                !visible_record_ids.contains(&record.record_id)
-                    && exported_records.insert(record.record_id)
-            })
-        {
-            let resource = Resource::new(
-                crate::search_provider::record_resource_id(record.record_id),
-                "files.record",
-                record.name,
-            )
-            .with_action(
-                ActionSpec::operation(
-                    crate::search_provider::REVEAL_ACTION,
-                    "Reveal in Files",
-                    OperationKind::View,
-                    "files.reveal-record",
-                    &record.record_id.to_string(),
-                )
-                .expect("record id is serializable")
-                .with_contract(ActionContract::view()),
-            );
-            folder.children.push(resource);
-        }
+        // Do not eagerly copy a whole workspace catalogue into the contextual
+        // tree. A large mount can contain hundreds of thousands of records;
+        // collaborative hits resolve their exact current row through
+        // `resource` below, while the visible folder remains truthful here.
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
             let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
@@ -6735,6 +6888,37 @@ impl Widget for FileExplorerWidget {
         vec![folder]
     }
 
+    fn action_directory_resource_page(
+        &self,
+        _doc: &automerge::AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| self.action_directory_folder_root())
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    /// Materialise an exact search-addressed row only when the action host is
+    /// about to resolve it. This keeps the open resource tree bounded to the
+    /// actual folder while preserving canonical action equivalence for Places,
+    /// remote accounts, and late collaborative records.
+    fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+        (id == crate::search_provider::folder_resource_id(&self.current_path))
+            .then(|| self.action_directory_folder_root())
+            .or_else(|| {
+                self.places_search
+                    .resource(id)
+                    .or_else(|| self.collaborative_search.resource(id))
+                    .or_else(|| self.remote_accounts_search.resource(id))
+            })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "this is the single protocol dispatcher for the declared local file operations; keeping the match together makes handler coverage auditable"
@@ -6822,11 +7006,13 @@ impl Widget for FileExplorerWidget {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let record_id = uuid::Uuid::parse_str(&value)
                     .map_err(|_| "invalid collaborative record id".to_string())?;
-                let record = crate::model::read_workspace_record_index(&self.workspace_roots)
-                    .records
-                    .into_iter()
-                    .find(|record| record.record_id == record_id)
-                    .ok_or_else(|| "collaborative record is no longer available".to_string())?;
+                let record = self
+                    .collaborative_search
+                    .record(record_id)
+                    .ok_or_else(|| "collaborative record is not indexed yet".to_string())?;
+                if crate::model::read_record_id(&record.path) != Some(*record_id.as_bytes()) {
+                    return Err("collaborative record is no longer available".into());
+                }
                 if record.path.parent() != Some(self.current_path.as_path())
                     && let Some(parent) = record.path.parent().map(Path::to_path_buf)
                 {
@@ -7132,6 +7318,14 @@ impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::ReadDoc;
         self.refresh_metadata_if_due(Instant::now());
+        // One bounded catalogue page per idle/sync turn. The palette only
+        // reads its retained SearchCatalog; it never performs mount I/O.
+        if self.collaborative_record_pager.borrow().has_more() {
+            let page = self.advance_collaborative_search_page();
+            if page.truncated {
+                self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+            }
+        }
         // Seed the inline-rename field's backing Text object *before* the
         // children sync so the rename input resolves a real object to write
         // into (the toolkit's TextInput binds to an existing Text but never
@@ -7622,19 +7816,10 @@ impl Widget for FileExplorerWidget {
     /// actions carry stable record UUIDs; their current paths are provenance,
     /// never identity.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let collaborative = crate::model::read_workspace_record_index(&self.workspace_roots);
         vec![
-            Box::new(crate::search_provider::PlacesSearchProvider::new(
-                self.favs.borrow().favorites.clone(),
-            )),
-            Box::new(
-                crate::search_provider::CollaborativeRecordSearchProvider::new(
-                    &collaborative.records,
-                ),
-            ),
-            Box::new(crate::search_provider::RemoteAccountSearchProvider::new(
-                crate::remote_accounts::load(),
-            )),
+            Box::new(self.places_search.clone()),
+            Box::new(self.collaborative_search.clone()),
+            Box::new(self.remote_accounts_search.clone()),
         ]
     }
 
@@ -7648,7 +7833,9 @@ impl Widget for FileExplorerWidget {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.nav.needs_idle_sync() || self.toolbar.needs_idle_sync()
+        self.collaborative_record_pager.borrow().has_more()
+            || self.nav.needs_idle_sync()
+            || self.toolbar.needs_idle_sync()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -10010,6 +10197,12 @@ mod command_path_tests {
         widget.current_path = dir.path().to_path_buf();
         widget.entries.clear();
         widget.workspace_roots = vec![dir.path().to_path_buf()];
+        widget.collaborative_record_pager = RefCell::new(
+            crate::model::WorkspaceRecordIndexPager::new(&widget.workspace_roots),
+        );
+        // Workspace roots are an explicit external-source revision boundary;
+        // refresh once, then Ctrl+K itself performs no mount traversal.
+        widget.refresh_external_search_catalogs();
 
         let providers = widget.search_providers();
         // Places and remote-account discovery remain separate providers; find
@@ -10025,7 +10218,11 @@ mod command_path_tests {
             .expect("collaborative record is searchable");
         let doc = automerge::AutoCommit::new();
         let address = hit.action_address().expect("canonical reveal action");
-        let resources = Widget::resources(&widget, &doc);
+        let mut resources = Widget::resources(&widget, &doc);
+        resources.push(
+            Widget::resource(&widget, &doc, &address.resource)
+                .expect("late record materializes exactly for this address"),
+        );
         let spec = ui::qos_actions::door::resolve(&resources, &address)
             .expect("search reveal action is exported");
         let kind = spec.kind;

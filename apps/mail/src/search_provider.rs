@@ -179,6 +179,14 @@ impl SearchProvider for MailSearchProvider {
         MAIL_KIND
     }
 
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
     fn search(&self, query: &str) -> Vec<SearchResult> {
         self.search_up_to(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }
